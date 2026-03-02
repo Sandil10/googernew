@@ -7,4 +7,7 @@ export const config = {
     },
 };
 
-export default app;
+export default function handler(req, res) {
+    // This allows Express to handle the request properly within Next.js API route
+    return app(req, res);
+}

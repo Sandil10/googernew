@@ -34,6 +34,11 @@ app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/market', marketRoutes);
 
+// Fallback mounting for Vercel/Next.js bridge where /api might be stripped
+app.use('/auth', authRoutes);
+app.use('/wallet', walletRoutes);
+app.use('/market', marketRoutes);
+
 // Health check route
 app.get('/api/health', async (req, res) => {
     try {
