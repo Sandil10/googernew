@@ -2,7 +2,7 @@ const { Pool } = require('pg');
 require('dotenv').config();
 
 // Workaround for "self-signed certificate" issues with Vercel/Supabase
-if (process.env.NODE_ENV === 'production' && !process.env.DB_HOST) {
+if (process.env.NODE_ENV === 'production') {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 }
 
