@@ -1,0 +1,39 @@
+﻿
+> googer-next@0.1.0 build
+> next build
+
+Γû▓ Next.js 16.1.6 (Turbopack)
+- Environments: .env
+
+  Creating an optimized production build ...
+Γ£ô Compiled successfully in 4.6s
+  Running TypeScript ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/16) ...
+  Generating static pages using 7 workers (4/16) 
+  Generating static pages using 7 workers (8/16) 
+  Generating static pages using 7 workers (12/16) 
+Γ£ô Generating static pages using 7 workers (16/16) in 1060.0ms
+  Finalizing page optimization ...
+
+Route (app)
+Γöî Γùï /
+Γö£ Γùï /_not-found
+Γö£ Γùï /dashboard
+Γö£ Γùï /dashboard/chats
+Γö£ Γùï /dashboard/profile
+Γö£ Γùï /dashboard/shop
+Γö£ ╞Æ /dashboard/shop/[id]
+Γö£ Γùï /dashboard/wallet
+Γö£ Γùï /dashboard/wallet/coins-management
+Γö£ Γùï /dashboard/wallet/my-wallet
+Γö£ Γùï /dashboard/wallet/topup
+Γö£ Γùï /dashboard/wallet/topup/bank-transfer
+Γö£ Γùï /dashboard/wallet/transactions
+Γö£ Γùï /dashboard/wallet/withdrawal
+Γöö Γùï /register
+
+
+Γùï  (Static)   prerendered as static content
+╞Æ  (Dynamic)  server-rendered on demand
+

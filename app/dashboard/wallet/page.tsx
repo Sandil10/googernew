@@ -10,13 +10,49 @@ import { walletService } from "@/services/walletService";
 export default function WalletPage() {
     const [balance, setBalance] = useState(0);
     const [txCount, setTxCount] = useState(0);
+    const [googerId, setGoogerId] = useState("");
     const [loading, setLoading] = useState(true);
+    const [copied, setCopied] = useState(false);
+
+    const referralLink = typeof window !== 'undefined' ? `${window.location.origin}/register?ref=${googerId}` : '';
+
+    const handleCopy = async () => {
+        if (referralLink) {
+            try {
+                await navigator.clipboard.writeText(referralLink);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+            } catch (err) {
+                console.error('Failed to copy', err);
+            }
+        }
+    };
+
+    const handleShare = async () => {
+        if (navigator.share && referralLink) {
+            try {
+                await navigator.share({
+                    title: 'Join Googer',
+                    text: 'Join me on Googer and start earning!',
+                    url: referralLink,
+                });
+            } catch (err) {
+                console.log('Error sharing:', err);
+            }
+        } else {
+            handleCopy();
+        }
+    };
 
     useEffect(() => {
         const fetchData = async () => {
             try {
                 const profile = await authService.getProfile();
                 setBalance(parseFloat(profile.wallet_balance) || 0);
+
+                // Use the numeric user_id if available, fallback to username
+                const displayId = profile.user_id || profile.googer_id || profile.username || "";
+                setGoogerId(displayId);
 
                 const txData = await walletService.getTransactionHistory();
                 setTxCount(txData.length || 0);
@@ -90,50 +126,50 @@ export default function WalletPage() {
 
     return (
         <div className="pb-10 relative min-h-screen">
-            <h1 className="text-2xl font-bold mb-6 text-white">Wallet</h1>
+            {/* New Header */}
+            <div className="bg-white rounded-xl p-4 mb-6 shadow-sm flex flex-col items-center justify-center gap-3">
+                <h1 className="text-black font-bold text-lg text-center tracking-wide">( My Googer ID - {googerId} )</h1>
+
+                {/* Referral Link Section */}
+                <div className="w-full max-w-sm bg-gray-100 rounded-lg p-2 pl-3 flex items-center justify-between gap-2 border border-gray-200">
+                    <div className="text-gray-500 text-xs truncate flex-1 font-mono">
+                        {referralLink}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        <button
+                            onClick={handleCopy}
+                            className={`p-2 rounded-lg shadow-sm transition-all flex items-center justify-center ${copied ? 'bg-green-100 text-green-600' : 'bg-white text-blue-500 hover:bg-blue-50'}`}
+                            title="Copy Link"
+                        >
+                            <IonIcon name={copied ? "checkmark-outline" : "copy-outline"} className="text-lg" />
+                        </button>
+                        <button
+                            onClick={handleShare}
+                            className="p-2 bg-white rounded-lg shadow-sm hover:bg-purple-50 transition-all text-purple-500 flex items-center justify-center"
+                            title="Share Link"
+                        >
+                            <IonIcon name="share-social-outline" className="text-lg" />
+                        </button>
+                    </div>
+                </div>
+            </div>
 
             {/* Total Balance Card */}
-            <div className="bg-[#162033] border border-gray-800 rounded-2xl p-6 md:p-8 mb-8 shadow-lg relative overflow-hidden transition-all hover:border-gray-700">
+            <div className="bg-[#162033] border border-gray-800 rounded-2xl p-6 md:p-8 mb-8 shadow-lg relative overflow-hidden transition-all hover:border-gray-700 flex flex-col items-center justify-center text-center">
                 {/* Subtle Decorative Elements */}
                 <div className="absolute top-0 right-0 w-48 h-48 bg-blue-500/5 rounded-full blur-3xl"></div>
                 <div className="absolute bottom-0 left-0 w-32 h-32 bg-purple-500/5 rounded-full blur-2xl"></div>
 
-                <div className="relative z-10">
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
-                        <div>
-                            <p className="text-gray-400 text-xs font-semibold mb-2 uppercase tracking-wider">Total Balance</p>
-                            <div className="flex flex-row items-center gap-3 flex-nowrap overflow-visible">
-                                <div className="relative w-12 h-6 md:w-20 md:h-10 shrink-0">
-                                    <Image src="/assets/images/rupee.png" alt="Rupee" fill className="object-contain" priority />
-                                </div>
-                                <h2 className="text-3xl md:text-5xl font-bold text-white tracking-tight leading-none whitespace-nowrap">
-                                    {balance.toFixed(2)}
-                                </h2>
-                            </div>
-                            <p className="text-green-400 text-xs font-medium mt-3 flex items-center gap-1.5">
-                                <IonIcon name="trending-up-outline" />
-                                <span>+0.0% this month</span>
-                            </p>
-                        </div>
-                        <div className="w-12 h-12 md:w-16 md:h-16 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center">
-                            <IonIcon name="wallet-outline" className="text-2xl md:text-3xl text-white" />
-                        </div>
-                    </div>
+                <div className="relative z-10 flex flex-col items-center w-full">
+                    <h2 className="text-lg md:text-xl font-bold text-white mb-4 tracking-wide">My total Ruppier Coins balance</h2>
 
-                    {/* Quick Actions */}
-                    <div className="grid grid-cols-4 gap-2 md:gap-4">
-                        {quickActions.map((action) => (
-                            <Link
-                                key={action.id}
-                                href={action.href}
-                                className="flex flex-col items-center gap-2 p-3 bg-[#0d1421] hover:bg-gray-800 border border-gray-800/50 hover:border-gray-600 rounded-xl transition-all active:scale-95 group text-center"
-                            >
-                                <div className={`w-9 h-9 md:w-11 md:h-11 ${action.color} rounded-lg flex items-center justify-center text-xl group-hover:scale-105 transition-transform`}>
-                                    <IonIcon name={action.icon} />
-                                </div>
-                                <span className="text-gray-400 group-hover:text-white text-[10px] md:text-xs font-medium transition-colors text-center">{action.label}</span>
-                            </Link>
-                        ))}
+                    <div className="flex flex-row items-center gap-3 justify-center mb-2">
+                        <div className="relative w-12 h-6 md:w-16 md:h-10 shrink-0">
+                            <Image src="/assets/images/rupee.png" alt="Rupee" fill className="object-contain" priority />
+                        </div>
+                        <h2 className="text-3xl md:text-5xl font-bold text-white tracking-tight leading-none whitespace-nowrap">
+                            {balance.toFixed(2)}
+                        </h2>
                     </div>
                 </div>
             </div>

@@ -245,6 +245,31 @@ exports.login = async (req, res) => {
     }
 };
 
+// Verify user password
+exports.verifyPassword = async (req, res) => {
+    try {
+        const { password } = req.body;
+        if (!password) {
+            return res.status(400).json({ success: false, message: 'Password is required' });
+        }
+
+        const user = await pool.query('SELECT password FROM users WHERE id = $1', [req.user.id]);
+        if (user.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.rows[0].password);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: 'Incorrect password' });
+        }
+
+        res.status(200).json({ success: true, message: 'Password verified' });
+    } catch (error) {
+        console.error('Verify password error:', error);
+        res.status(500).json({ success: false, message: 'Verification failed' });
+    }
+};
+
 // Get current user profile
 exports.getProfile = async (req, res) => {
     try {

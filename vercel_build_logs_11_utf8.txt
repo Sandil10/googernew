@@ -1,0 +1,194 @@
+﻿node.exe : Vercel CLI 48.4.0
+At 
+C:\nvm4w\nodejs\npx.ps1:29 
+char:3
++   & $NODE_EXE $NPX_CLI_JS 
+$args
++   
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: (Vercel   
+  CLI 48.4.0:String) [], R   
+ emoteException
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 
+> [debug] 
+[2026-03-02T05:16:46.536Z] 
+user supplied known 
+subcommand: "build"
+> [debug] 
+[2026-03-02T05:16:46.761Z] 
+Found ".git\config" - 
+detected "F:\googer 
+new\googer-next" as repo root
+WARN! Build not running on 
+Vercel. System environment 
+variables will not be 
+available.
+> [debug] 
+[2026-03-02T05:16:46.772Z] 
+Loaded environment variables 
+from "F:\googer new\googer-ne
+xt\.vercel\.env.preview.local
+"
+> [debug] 
+[2026-03-02T05:16:46.798Z] 
+Locating files F:\googer 
+new\googer-next
+> [debug] 
+[2026-03-02T05:16:46.801Z] 
+Ignoring F:\googer 
+new\googer-next\.git
+> [debug] 
+[2026-03-02T05:16:46.801Z] 
+Ignoring F:\googer 
+new\googer-next\.gitignore
+> [debug] 
+[2026-03-02T05:16:46.801Z] 
+Ignoring F:\googer 
+new\googer-next\.vercel
+> [debug] 
+[2026-03-02T05:16:46.802Z] 
+Ignoring F:\googer 
+new\googer-next\node_modules
+> [debug] 
+[2026-03-02T05:16:46.804Z] 
+Ignoring F:\googer new\googer
+-next\backend\node_modules
+> [debug] 
+[2026-03-02T05:16:46.810Z] 
+Locating files F:\googer 
+new\googer-next [12ms]
+> [debug] 
+[2026-03-02T05:16:47.219Z] 
+Imported Builder 
+"@vercel/node" from 
+"C:\Users\Bhagya Ranawake\App
+Data\Roaming\npm\node_modules
+\vercel\node_modules\@vercel\
+node"
+> [debug] 
+[2026-03-02T05:16:47.233Z] 
+Imported Builder 
+"@vercel/next" from 
+"C:\Users\Bhagya Ranawake\App
+Data\Roaming\npm\node_modules
+\vercel\node_modules\@vercel\
+next"
+> [debug] 
+[2026-03-02T05:16:47.255Z] 
+Setting env VERCEL_PROJECT_SE
+TTINGS_NODE_VERSION to "22.x"
+> [debug] 
+[2026-03-02T05:16:47.255Z] 
+Building entrypoint 
+"package.json" with 
+"@vercel/next"
+Installing dependencies...
+npm warn Unknown cli config 
+"--unsafe-perm". This will 
+stop working in the next 
+major version of npm.
+
+up to date in 1s
+
+143 packages are looking for funding
+  run `npm fund` for details
+Detected Next.js version: 15.1.6
+Running "npm run build"
+
+> googer-next@0.1.0 build
+> next build
+
+Attention: Next.js now collects completely anonymous telemetry regarding usage.
+This information is used to shape Next.js' roadmap and prioritize features.
+You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+https://nextjs.org/telemetry
+
+   Γû▓ Next.js 15.1.6
+   - Environments: .env
+
+   Creating an optimized production build ...
+ Γ£ô Compiled successfully
+   Linting and checking validity of types ...
+ Γ¿» ESLint: Cannot find 
+module 'F:\googer new\googer-
+next\node_modules\eslint-conf
+ig-next\core-web-vitals' 
+imported from F:\googer new\g
+ooger-next\eslint.config.mjs 
+Did you mean to import "eslin
+t-config-next/core-web-vitals
+.js"?
+   Collecting page data ...
+   Generating static pages (0/17) ...
+   Generating static pages (4/17) 
+   Generating static pages (8/17) 
+   Generating static pages (12/17) 
+ Γ£ô Generating static pages (17/17)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                Size     First Load JS
+Γöî Γùï /                                      3.31 kB         118 kB
+Γö£ Γùï /_not-found                            986 B           107 kB
+Γö£ Γùï /dashboard                             2.11 kB         113 kB
+Γö£ Γùï /dashboard/chats                       888 B           107 kB
+Γö£ Γùï /dashboard/profile                     3.1 kB          114 kB
+Γö£ Γùï /dashboard/shop                        5.44 kB         117 kB
+Γö£ ╞Æ /dashboard/shop/[id]                   2.03 kB         113 kB
+Γö£ Γùï /dashboard/wallet                      3.69 kB         119 kB
+Γö£ Γùï /dashboard/wallet/coins-management     3.25 kB         117 kB
+Γö£ Γùï /dashboard/wallet/my-wallet            5.42 kB         259 kB
+Γö£ Γùï /dashboard/wallet/topup                2.84 kB         109 kB
+Γö£ Γùï /dashboard/wallet/topup/bank-transfer  1.89 kB         113 kB
+Γö£ Γùï /dashboard/wallet/transactions         3.57 kB         248 kB
+Γö£ Γùï /dashboard/wallet/withdrawal           2.84 kB         109 kB
+Γöö Γùï /register                              3.44 kB         118 kB
++ First Load JS shared by all              106 kB
+  Γö£ chunks/4bd1b696-c00a2d2dc1666e9f.js    53 kB
+  Γö£ chunks/517-ac4ced700a32de13.js         50.7 kB
+  Γöö other shared chunks (total)            2.09 kB
+
+
+Γùï  (Static)   prerendered as static content
+╞Æ  (Dynamic)  server-rendered on demand
+
+Traced Next.js server files in: 1.988s
+Tracing entries due to missing build traces:
+[
+  "F:/googer new/googer-next/.next/server/app/_not-found/page.js",
+  "F:/googer new/googer-next/.next/server/app/register/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/chats/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/coins-management/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/shop/[id]/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/shop/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/my-wallet/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/topup/bank-transfer/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/topup/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/transactions/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/withdrawal/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/profile/page.js",
+  "F:/googer new/googer-next/.next/server/app/favicon.ico/route.js"
+]: 3.450s
+Created all serverless functions in: 3.661s
+Error: Unable to find lambda 
+for route: /dashboard/shop
+> [debug] 
+[2026-03-02T05:17:56.459Z] 
+Vercel CLI 48.4.0
+
+> [debug] 
+[2026-03-02T05:17:57.217Z] 
+Telemetry event tracked
+> [debug] 
+[2026-03-02T05:17:57.811Z] 
+Telemetry subprocess exited 
+with code 0
+> [debug] 
+[2026-03-02T05:17:57.918Z] 
+Telemetry subprocess killed 
+due to timeout

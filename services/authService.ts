@@ -140,6 +140,28 @@ export const authService = {
         }
     },
 
+    verifyPassword: async (password: string) => {
+        try {
+            const token = storage.get('token');
+            if (!token) throw new Error('No session found');
+
+            const response = await fetch(`${API_URL}/auth/verify-password`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ password }),
+            });
+
+            const result = await safeJson(response);
+            if (!response.ok) throw new Error(result?.message || 'Verification failed');
+            return result;
+        } catch (error: any) {
+            throw error;
+        }
+    },
+
     logout: () => {
         storage.remove('token');
         storage.remove('user');

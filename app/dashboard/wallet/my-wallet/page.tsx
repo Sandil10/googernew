@@ -6,8 +6,10 @@ import { authService } from '../../../../services/authService';
 import { walletService } from '../../../../services/walletService';
 import Link from 'next/link';
 import Image from 'next/image';
-import IonIcon from '../../../components/IonIcon';
-import ConfirmTransferModal from '../../../../components/ConfirmTransferModal';
+import IonIcon from '@/app/components/IonIcon';
+import ConfirmTransferModal from '@/app/components/ConfirmTransferModal';
+import SecurityVerificationModal from '@/app/components/SecurityVerificationModal';
+import { generateTransactionReceipt } from '../../../../utils/pdfGenerator';
 
 export default function MyWallet() {
     const router = useRouter();
@@ -27,6 +29,8 @@ export default function MyWallet() {
     const [pendingRequests, setPendingRequests] = useState<any[]>([]);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
     const [confirmAction, setConfirmAction] = useState<{ type: 'sell' | 'buy', user: any } | null>(null);
+    const [showSecurityModal, setShowSecurityModal] = useState(false);
+    const [securityAction, setSecurityAction] = useState<any>(null);
 
     const fetchAllData = async () => {
         try {
@@ -63,7 +67,27 @@ export default function MyWallet() {
         fetchAllData();
     }, [router]);
 
-    const handleRespond = async (requestId: number, action: 'accept' | 'reject') => {
+    const handleRespond = (requestId: number, action: 'accept' | 'reject') => {
+        if (action === 'reject') {
+            handleRespondInternal(requestId, action);
+            return;
+        }
+        const request = pendingRequests.find(r => r.id === requestId);
+        setSecurityAction({
+            type: 'respond',
+            requestId,
+            action,
+            transaction: {
+                type: 'Pay',
+                amount: parseFloat(request?.amount || 0).toFixed(2),
+                discount: request?.commission_percentage || 0,
+                recipient: `@${request?.sender_username || 'User'}`
+            }
+        });
+        setShowSecurityModal(true);
+    };
+
+    const handleRespondInternal = async (requestId: number, action: 'accept' | 'reject') => {
         setIsProcessing(true);
         try {
             const res = await walletService.respondToRequest(requestId, action);
@@ -105,49 +129,73 @@ export default function MyWallet() {
         setShowSuggestions(false);
     };
 
-    const handleTransfer = async (type: 'sell' | 'buy') => {
+    const handleTransfer = (type: 'sell' | 'buy') => {
         if (!selectedUser || !amount) {
             alert("Please select a user and enter amount");
             return;
         }
+        setSecurityAction({
+            type: 'transfer',
+            transferType: type,
+            transaction: {
+                type: type === 'sell' ? 'Send' : 'Request',
+                amount: amount,
+                discount: commission || 0,
+                recipient: `@${selectedUser.username} (${selectedUser.user_id})`
+            }
+        });
+        setShowSecurityModal(true);
+    };
 
-        // Show confirmation popup for both sell and buy
-        const actionText = type === 'sell' ? 'send money to' : 'request money from';
-        const confirmMessage = `Are you sure you want to ${actionText} ${selectedUser.username}?\n\nAmount: ${amount}\nCommission: ${commission || 0}%`;
-
-        if (!confirm(confirmMessage)) {
-            return;
-        }
+    const executeVerifiedTransfer = async (password: string) => {
+        if (!securityAction) return;
 
         setIsProcessing(true);
         try {
-            // Pass the correct type to the backend
-            const requestType = type === 'sell' ? 'sell' : 'request';
+            // 1. Verify Password First
+            await authService.verifyPassword(password);
 
-            const res = await walletService.requestMoney(
-                selectedUser.id,
-                parseFloat(amount),
-                "",
-                commission ? parseFloat(commission) : 0,
-                requestType
-            );
+            // 2. If verified, proceed
+            if (securityAction.type === 'transfer') {
+                const requestType = securityAction.transferType === 'sell' ? 'sell' : 'request';
 
-            if (res.success) {
-                const successMsg = type === 'sell'
-                    ? `Money transfer sent to ${selectedUser.username}. Amount is on hold until they accept.`
-                    : `Money request sent to ${selectedUser.username}. They will pay if they accept.`;
-                alert(successMsg);
+                const res = await walletService.requestMoney(
+                    selectedUser.id,
+                    parseFloat(amount),
+                    "",
+                    commission ? parseFloat(commission) : 0,
+                    requestType
+                );
 
-                // Refresh data
-                await fetchAllData();
+                if (res.success) {
+                    const successMsg = res.message || (securityAction.transferType === 'sell'
+                        ? `Money transfer sent to ${selectedUser.username}. Amount is on hold until they accept.`
+                        : `Money request sent to ${selectedUser.username}. They will pay if they accept.`);
 
-                setAmount("");
-                setCommission("");
-                setTargetQuery("");
-                setSelectedUser(null);
+                    alert(successMsg);
+
+                    // Refresh data
+                    await fetchAllData();
+
+                    setAmount("");
+                    setCommission("");
+                    setTargetQuery("");
+                    setSelectedUser(null);
+                }
+            } else if (securityAction.type === 'respond') {
+                const res = await walletService.respondToRequest(securityAction.requestId, securityAction.action);
+                if (res.success) {
+                    alert(`Request ${securityAction.action}ed successfully`);
+                    await fetchAllData();
+                }
             }
+
+            setShowSecurityModal(false);
+            setSecurityAction(null);
+
         } catch (error: any) {
-            alert(error.message || "Failed to process transfer");
+            // Error handling for password or transfer
+            throw error; // Re-throw so modal can show the error
         } finally {
             setIsProcessing(false);
         }
@@ -183,76 +231,47 @@ export default function MyWallet() {
                 </button>
             </div>
 
-            <h1 className="text-2xl font-bold mb-6 text-white tracking-tight">My Wallet</h1>
+            {/* Googer ID Header */}
+            <div className="bg-white rounded-xl p-4 mb-6 shadow-sm flex flex-col items-center justify-center gap-1">
+                <h1 className="text-black font-bold text-lg text-center tracking-wide">( My Googer ID - {user?.user_id || user?.googer_id || user?.username || "..."} )</h1>
+            </div>
 
             {/* Total Balance Card */}
-            <div className="bg-[#162033] border border-gray-800 rounded-2xl p-6 md:p-8 mb-8 shadow-lg relative overflow-hidden transition-all hover:border-gray-700">
+            <div className="bg-[#162033] border border-gray-800 rounded-2xl p-6 md:p-8 mb-8 shadow-lg relative overflow-hidden transition-all hover:border-gray-700 flex flex-col items-center justify-center text-center">
                 <div className="absolute top-0 right-0 w-48 h-48 bg-blue-500/5 rounded-full blur-3xl"></div>
-                <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-                    <div>
-                        <p className="text-gray-400 text-[10px] font-bold mb-3 uppercase tracking-widest">Available Balance</p>
-                        <div className="flex flex-row items-baseline gap-3 flex-nowrap overflow-visible">
-                            <div className="relative w-12 h-6 md:w-16 md:h-8 shrink-0">
-                                <Image
-                                    src="/assets/images/rupee.png"
-                                    alt="Rupee"
-                                    width={100}
-                                    height={50}
-                                    className="object-contain"
-                                    priority
-                                />
-                            </div>
-                            <h2 className="text-3xl md:text-5xl font-bold text-white leading-none whitespace-nowrap tracking-tight">
-                                {user?.wallet_balance !== undefined ? Number(user.wallet_balance).toFixed(2) : "0.00"}
-                            </h2>
+                <div className="relative z-10 flex flex-col items-center w-full">
+                    <h2 className="text-lg md:text-xl font-bold text-white mb-4 tracking-wide">My total Ruppier Coins balance</h2>
+
+                    <div className="flex flex-row items-baseline gap-3 justify-center mb-2">
+                        <div className="relative w-12 h-6 md:w-16 md:h-10 shrink-0">
+                            <Image
+                                src="/assets/images/rupee.png"
+                                alt="Rupee"
+                                width={100}
+                                height={50}
+                                className="object-contain"
+                                priority
+                            />
                         </div>
-                        {user?.hold_balance > 0 && (
-                            <p className="text-amber-400 text-[9px] font-bold mt-2 uppercase tracking-wider">
-                                Hold: R {Number(user.hold_balance).toFixed(2)}
-                            </p>
-                        )}
+                        <h2 className="text-3xl md:text-5xl font-bold text-white tracking-tight leading-none whitespace-nowrap">
+                            {user?.wallet_balance !== undefined ? Number(user.wallet_balance).toFixed(2) : "0.00"}
+                        </h2>
                     </div>
-                    <div className="w-12 h-12 md:w-16 md:h-16 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center">
-                        <IonIcon name="wallet-outline" className="text-2xl md:text-3xl text-white" />
-                    </div>
+                    {user?.hold_balance > 0 && (
+                        <p className="text-amber-400 text-[9px] font-bold mt-2 uppercase tracking-wider">
+                            Hold: R {Number(user.hold_balance).toFixed(2)}
+                        </p>
+                    )}
                 </div>
             </div>
 
-            {/* User ID Card */}
-            <div className="bg-[#162033] border border-gray-800 rounded-xl p-4 mb-6 text-center shadow-lg">
-                <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">User ID Account</p>
-                <h3 className="font-bold text-xl text-white tracking-wider">{user?.user_id || "..."}</h3>
-            </div>
 
-            {/* Referral Link Card */}
-            <div className="bg-[#162033] border border-gray-800 rounded-xl p-6 mb-8 shadow-lg relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-24 h-24 bg-blue-500/5 rounded-full blur-2xl"></div>
-                <h3 className="text-xs font-bold text-white mb-4 uppercase tracking-wider flex items-center gap-2">
-                    <IonIcon name="share-social-outline" className="text-blue-400" />
-                    Referral Invite Link
-                </h3>
-                <div className="flex flex-col md:flex-row gap-4">
-                    <input
-                        type="text"
-                        readOnly
-                        value={referralLink || "Generating..."}
-                        className="flex-1 bg-[#0d1421] border border-gray-800 rounded-xl px-4 py-3 text-xs font-mono text-blue-400 focus:outline-none shadow-inner"
-                    />
-                    <button
-                        onClick={copyToClipboard}
-                        className="px-6 py-3 bg-zinc-800/80 hover:bg-zinc-800 text-white font-bold rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 shadow-md group"
-                    >
-                        <IonIcon name="copy-outline" className="text-lg group-hover:scale-105 transition-transform" />
-                        <span className="text-xs uppercase tracking-wide">Copy Link</span>
-                    </button>
-                </div>
-            </div>
 
             {/* Tabs & Main Card */}
             <div className="bg-[#162033] border border-gray-800 rounded-2xl overflow-hidden mb-20 shadow-lg">
                 <div className="border-b border-gray-800 px-6">
                     <div className="flex gap-6 overflow-x-auto scrollbar-hide">
-                        {['wallet', 'transactions', 'request', 'referrals'].map((tab) => (
+                        {['wallet', 'transactions', 'request', 'referrals', 'rewards'].map((tab) => (
                             <button
                                 key={tab}
                                 onClick={() => setActiveTab(tab)}
@@ -261,7 +280,7 @@ export default function MyWallet() {
                                     : 'text-gray-500 border-transparent hover:text-gray-300'
                                     }`}
                             >
-                                {tab === 'wallet' ? 'Manage' : tab === 'transactions' ? 'History' : tab === 'request' ? 'Requests' : 'Referrals'}
+                                {tab === 'wallet' ? 'Manage' : tab === 'transactions' ? 'History' : tab === 'request' ? 'Requests' : tab === 'referrals' ? 'Referrals' : 'Rewards'}
                             </button>
                         ))}
                     </div>
@@ -286,7 +305,7 @@ export default function MyWallet() {
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-center text-gray-400 font-bold text-[10px] uppercase tracking-widest mb-3">Commission %</label>
+                                        <label className="block text-center text-gray-400 font-bold text-[10px] uppercase tracking-widest mb-3">Discount %</label>
                                         <div className="relative">
                                             <input
                                                 type="text"
@@ -335,18 +354,18 @@ export default function MyWallet() {
 
                                 <div className="flex gap-4 pt-4">
                                     <button
+                                        onClick={() => handleTransfer('buy')}
+                                        disabled={isProcessing}
+                                        className={`flex-1 py-3.5 bg-green-600 hover:bg-green-700 text-white font-bold rounded-full transition-all active:scale-95 shadow-md text-xs uppercase tracking-widest ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    >
+                                        {isProcessing ? 'Processing...' : 'Buy'}
+                                    </button>
+                                    <button
                                         onClick={() => handleTransfer('sell')}
                                         disabled={isProcessing}
                                         className={`flex-1 py-3.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-full transition-all active:scale-95 shadow-md text-xs uppercase tracking-widest ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
                                     >
-                                        {isProcessing ? 'Processing...' : 'Sell Coins'}
-                                    </button>
-                                    <button
-                                        onClick={() => handleTransfer('buy')}
-                                        disabled={isProcessing}
-                                        className={`flex-1 py-3.5 bg-zinc-800/80 hover:bg-zinc-800 text-white font-bold rounded-full transition-all active:scale-95 shadow-md text-xs uppercase tracking-widest ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                    >
-                                        {isProcessing ? 'Processing...' : 'Buy Coins'}
+                                        {isProcessing ? 'Processing...' : 'Sell'}
                                     </button>
                                 </div>
                             </div>
@@ -392,13 +411,20 @@ export default function MyWallet() {
                                                     <div className="flex justify-between items-center">
                                                         <p className="text-[10px] text-gray-500 font-medium italic">
                                                             {tx.note || (isSent ? 'Direct coin transfer' : 'Coins received')}
-                                                            {tx.commission_percentage > 0 && ` (Incl. ${tx.commission_percentage}% commission)`}
+                                                            {tx.commission_percentage > 0 && ` (Incl. ${tx.commission_percentage}% discount)`}
                                                         </p>
                                                         <span className={`text-[9px] uppercase font-bold text-gray-500`}>
                                                             Status: {tx.status}
                                                         </span>
                                                     </div>
                                                 </div>
+                                                <button
+                                                    onClick={() => generateTransactionReceipt(tx, user)}
+                                                    className="w-10 h-10 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center text-gray-400 hover:text-white hover:bg-blue-600 transition-all active:scale-90"
+                                                    title="Download Receipt"
+                                                >
+                                                    <IonIcon name="download-outline" className="text-xl" />
+                                                </button>
                                             </div>
                                         </div>
                                     );
@@ -439,7 +465,7 @@ export default function MyWallet() {
                                                 </div>
                                                 {req.commission_percentage > 0 && (
                                                     <div className="text-[9px] text-gray-500 font-black uppercase tracking-widest leading-none">
-                                                        Incl. {req.commission_percentage}% Commission
+                                                        Incl. {req.commission_percentage}% Discount
                                                     </div>
                                                 )}
                                             </div>
@@ -521,11 +547,41 @@ export default function MyWallet() {
                             )}
                         </div>
                     )}
+
+                    {activeTab === 'rewards' && (
+                        <div className="flex flex-col items-center justify-center py-20 text-center">
+                            <div className="w-20 h-20 bg-purple-500/10 rounded-full flex items-center justify-center mb-6 animate-pulse">
+                                <IonIcon name="gift-outline" className="text-4xl text-purple-400" />
+                            </div>
+                            <h3 className="text-xl font-bold text-white mb-2">Rewards Center</h3>
+                            <p className="text-gray-400 text-sm max-w-xs mb-8">
+                                Check back soon for exclusive rewards and bonuses!
+                            </p>
+                            <button
+                                onClick={() => router.push('/dashboard/rewards')}
+                                className="px-8 py-3 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-xl transition-all active:scale-95 shadow-md border border-white/5 text-xs uppercase tracking-widest"
+                            >
+                                Go to Rewards Page
+                            </button>
+                        </div>
+                    )}
                 </div>
             </div>
 
             {/* Spacer for mobile bottom bar */}
             <div className="h-20 md:hidden"></div>
+
+            {/* Security Verification Modal */}
+            <SecurityVerificationModal
+                isOpen={showSecurityModal}
+                onClose={() => {
+                    setShowSecurityModal(false);
+                    setSecurityAction(null);
+                }}
+                onVerify={executeVerifiedTransfer}
+                isProcessing={isProcessing}
+                transaction={securityAction?.transaction}
+            />
         </div>
     );
 }

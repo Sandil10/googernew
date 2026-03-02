@@ -1,5 +1,5 @@
 import React from 'react';
-import IonIcon from '../app/components/IonIcon';
+import IonIcon from '@/app/components/IonIcon';
 
 interface ConfirmTransferModalProps {
     isOpen: boolean;

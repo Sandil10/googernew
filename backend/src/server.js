@@ -28,8 +28,11 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
+const marketRoutes = require('./routes/market');
+
 app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
+app.use('/api/market', marketRoutes);
 
 // Health check route
 app.get('/api/health', async (req, res) => {
@@ -76,12 +79,12 @@ app.get('/api/debug-env', (req, res) => {
     });
 });
 
-// Temporary route to SETUP DATABASE
+// Temporary route to SETUP DATABASE - EXPANDED for Market
 app.get('/api/setup-db', async (req, res) => {
     try {
         const pool = require('./config/database');
 
-        // Create users table
+        // 1. Create users table
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -99,13 +102,11 @@ app.get('/api/setup-db', async (req, res) => {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
-
-        // Fix for existing tables that might have VARCHAR(4) from older versions
         await pool.query(`ALTER TABLE users ALTER COLUMN user_id TYPE VARCHAR(6);`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_id ON users(user_id);`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_email ON users(email);`);
 
-        // Create wallet table
+        // 2. Create wallet table
         await pool.query(`
             CREATE TABLE IF NOT EXISTS wallet (
                 id SERIAL PRIMARY KEY,
@@ -121,7 +122,55 @@ app.get('/api/setup-db', async (req, res) => {
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_wallet_referrer ON wallet(referrer_id);`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_wallet_referred ON wallet(referred_user_id);`);
 
-        res.status(200).json({ success: true, message: 'Database tables created successfully!' });
+        // 3. Create market table (The one likely causing 500 on market routes)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS market (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                owner_user_id VARCHAR(10),
+                username VARCHAR(100),
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                price DECIMAL(15, 2) NOT NULL,
+                category VARCHAR(50),
+                image_url TEXT,
+                status VARCHAR(20) DEFAULT 'reviewing',
+                variants JSONB DEFAULT '[]',
+                shipping_info JSONB DEFAULT '{}',
+                payment_methods JSONB DEFAULT '[]',
+                warranty_info JSONB DEFAULT '{}',
+                return_policy JSONB DEFAULT '{}',
+                delivery_info JSONB DEFAULT '{}',
+                commission_info JSONB DEFAULT '{}',
+                links_data JSONB DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_market_user ON market(user_id);`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_market_status ON market(status);`);
+
+        // 4. Create market interactions (likes, comments)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS market_likes (
+                id SERIAL PRIMARY KEY,
+                market_id INTEGER NOT NULL REFERENCES market(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(market_id, user_id)
+            );
+        `);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS market_comments (
+                id SERIAL PRIMARY KEY,
+                market_id INTEGER NOT NULL REFERENCES market(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                text TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        res.status(200).json({ success: true, message: 'Database schema setup successfully!' });
     } catch (error) {
         console.error("Setup DB Error:", error);
         res.status(500).json({ success: false, message: 'Failed to setup database.', error: error.message });

@@ -8,7 +8,7 @@ import IonIcon from '@/app/components/IonIcon';
 export default function BankTransferPage() {
     const router = useRouter();
     const searchParams = useSearchParams();
-    const amount = searchParams.get('amount') || '1000';
+    const amount = searchParams?.get('amount') || '1000';
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
     const copyToClipboard = (text: string) => {
@@ -97,8 +97,8 @@ export default function BankTransferPage() {
                             </button>
                             <button
                                 className={`flex-1 py-3 font-bold rounded-full transition-all active:scale-95 text-xs uppercase shadow-lg ${selectedFile
-                                        ? 'bg-[#0d1421] text-white border border-gray-700'
-                                        : 'bg-gray-900 text-gray-600 cursor-not-allowed border border-gray-800/50'
+                                    ? 'bg-[#0d1421] text-white border border-gray-700'
+                                    : 'bg-gray-900 text-gray-600 cursor-not-allowed border border-gray-800/50'
                                     }`}
                                 disabled={!selectedFile}
                             >

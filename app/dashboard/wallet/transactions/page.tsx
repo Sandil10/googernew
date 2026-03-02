@@ -6,6 +6,7 @@ import { authService } from '@/services/authService';
 import { walletService } from '@/services/walletService';
 import IonIcon from '@/app/components/IonIcon';
 import Image from 'next/image';
+import { generateTransactionReceipt } from '@/utils/pdfGenerator';
 
 export default function TransactionsPage() {
     const router = useRouter();
@@ -86,11 +87,20 @@ export default function TransactionsPage() {
                                                 <div className="flex justify-between items-center">
                                                     <p className="text-[10px] text-gray-500 italic pr-2 truncate">
                                                         {tx.note || (isSent ? 'Direct coin transfer' : 'Coins received')}
-                                                        {tx.commission_percentage > 0 && ` (${tx.commission_percentage}% commission)`}
+                                                        {tx.commission_percentage > 0 && ` (${tx.commission_percentage}% discount)`}
                                                     </p>
-                                                    <span className={`text-[9px] uppercase font-bold text-gray-500`}>
-                                                        {tx.status}
-                                                    </span>
+                                                    <div className="flex items-center gap-3">
+                                                        <span className={`text-[9px] uppercase font-bold text-gray-500`}>
+                                                            {tx.status}
+                                                        </span>
+                                                        <button
+                                                            onClick={() => generateTransactionReceipt(tx, user)}
+                                                            className="p-1.5 bg-white/5 border border-white/10 rounded-lg text-gray-400 hover:text-white hover:bg-blue-600 transition-all active:scale-90"
+                                                            title="Download Receipt"
+                                                        >
+                                                            <IonIcon name="download-outline" className="text-sm" />
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>

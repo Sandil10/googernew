@@ -9,7 +9,7 @@ import { authService } from '../../../../services/authService';
 export default function Topup() {
     const router = useRouter();
     const [activeTab, setActiveTab] = useState<'topup' | 'pending' | 'complete'>('topup');
-    const [amount, setAmount] = useState('1000');
+    const [amount, setAmount] = useState('0');
     const [paymentMethod, setPaymentMethod] = useState('bank');
     const [balance, setBalance] = useState(0);
 
@@ -79,12 +79,9 @@ export default function Topup() {
                             <h4 className="text-lg font-bold text-white mb-6 text-center">Topup Coins</h4>
 
                             {/* Total Coins Card */}
-                            <div className="bg-[#162033] border border-gray-700 rounded-xl p-5 mb-6 relative overflow-hidden">
-                                <p className="text-gray-400 text-[10px] uppercase tracking-widest font-bold mb-3">Available Balance</p>
-                                <div className="flex flex-row items-center gap-2 flex-nowrap">
-                                    <div className="relative w-10 h-5 shrink-0">
-                                        <Image src="/assets/images/rupee.png" alt="Rupee" fill className="object-contain" priority />
-                                    </div>
+                            <div className="bg-[#162033] border border-gray-700 rounded-xl p-5 mb-6 relative overflow-hidden flex flex-col items-center justify-center">
+                                <p className="text-gray-400 text-[10px] uppercase tracking-widest font-bold mb-3 text-center">My total Ruppier coins</p>
+                                <div className="flex flex-row items-center gap-2 flex-nowrap justify-center">
                                     <h2 className="text-3xl font-bold text-white whitespace-nowrap leading-none">
                                         {balance.toFixed(2)}
                                     </h2>
@@ -104,7 +101,7 @@ export default function Topup() {
                                             placeholder="1000"
                                         />
                                         <div className="text-center mt-2">
-                                            <p className="text-gray-500 text-xs font-medium">{amount || '0'} Coins = $3.1</p>
+                                            {/* Conversion text removed */}
                                         </div>
                                     </div>
                                 </div>

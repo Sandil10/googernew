@@ -1,9 +1,10 @@
 "use client";
+export const dynamic = 'force-dynamic';
 
 import Image from "next/image";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { authService } from "../../../services/authService";
+import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
 
 export default function ProfilePage() {

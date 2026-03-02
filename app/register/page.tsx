@@ -18,8 +18,8 @@ function RegisterContent() {
     const [acceptedTerms, setAcceptedTerms] = useState(false);
 
     // Get Referral Code
-    const searchParams = useSearchParams();
-    const referralCode = searchParams ? searchParams.get('ref') : null;
+    const sp = useSearchParams();
+    const referralCode = sp ? sp.get('ref') : null;
 
     // Seller specific fields
     const [shopName, setShopName] = useState("");

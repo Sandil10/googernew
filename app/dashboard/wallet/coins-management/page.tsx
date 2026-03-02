@@ -6,6 +6,7 @@ import { walletService } from "@/services/walletService";
 import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
 import { useRouter } from "next/navigation";
+import SecurityVerificationModal from "@/app/components/SecurityVerificationModal";
 
 export default function CoinsManagementPage() {
     const router = useRouter();
@@ -18,6 +19,8 @@ export default function CoinsManagementPage() {
     const [pendingRequests, setPendingRequests] = useState<any[]>([]);
     const [isSearching, setIsSearching] = useState(false);
     const [balance, setBalance] = useState<number>(0);
+    const [showSecurityModal, setShowSecurityModal] = useState(false);
+    const [securityAction, setSecurityAction] = useState<any>(null);
 
     useEffect(() => {
         fetchData();
@@ -57,42 +60,87 @@ export default function CoinsManagementPage() {
 
     const [transferType, setTransferType] = useState<'transfer' | 'request'>('transfer');
 
-    const handleAction = async () => {
+    const handleAction = () => {
         if (!selectedUser || !amount || parseFloat(amount) <= 0) {
             alert("Please select a user and enter a valid amount");
             return;
         }
+        setSecurityAction({
+            type: 'initiate',
+            transferType: transferType,
+            transaction: {
+                type: transferType === 'transfer' ? 'Send' : 'Request',
+                amount: amount,
+                discount: 0,
+                recipient: `@${selectedUser.username} (${selectedUser.user_id})`
+            }
+        });
+        setShowSecurityModal(true);
+    };
 
+    const executeVerifiedAction = async (password: string) => {
         setLoading(true);
         try {
-            if (transferType === 'transfer') {
-                if (parseFloat(amount) > balance) {
-                    alert("Insufficient balance for direct transfer");
-                    setLoading(false);
-                    return;
+            // 1. Verify Password
+            await authService.verifyPassword(password);
+
+            // 2. Execute Action
+            if (securityAction.type === 'initiate') {
+                if (securityAction.transferType === 'transfer') {
+                    if (parseFloat(amount) > balance) {
+                        alert("Insufficient balance for direct transfer");
+                        setLoading(false);
+                        setShowSecurityModal(false);
+                        return;
+                    }
+                    await walletService.directTransfer(selectedUser.id, parseFloat(amount), note);
+                    alert("Transfer successful!");
+                } else {
+                    await walletService.requestMoney(selectedUser.id, parseFloat(amount), note);
+                    alert("Money request sent successfully!");
                 }
-                await walletService.directTransfer(selectedUser.id, parseFloat(amount), note);
-                alert("Transfer successful!");
-            } else {
-                await walletService.requestMoney(selectedUser.id, parseFloat(amount), note);
-                alert("Money request sent successfully!");
+
+                setAmount("");
+                setSearchQuery("");
+                setSelectedUser(null);
+                setNote("");
+                fetchData();
+            } else if (securityAction.type === 'respond') {
+                await walletService.respondToRequest(securityAction.requestId, securityAction.action);
+                alert(`Request ${securityAction.action}ed successfully`);
+                fetchData();
             }
 
-            setAmount("");
-            setSearchQuery("");
-            setSelectedUser(null);
-            setNote("");
-            fetchData();
+            setShowSecurityModal(false);
+            setSecurityAction(null);
         } catch (error: any) {
-            alert(error.message || "Operation failed");
+            throw error; // Re-throw for modal
         } finally {
             setLoading(false);
         }
     };
 
-    // ... existing handleRespond ...
+    const handleRespond = (requestId: number, action: 'accept' | 'reject') => {
+        if (action === 'reject') {
+            handleRespondInternal(requestId, action);
+            return;
+        }
+        const request = pendingRequests.find(r => r.id === requestId);
+        setSecurityAction({
+            type: 'respond',
+            requestId,
+            action,
+            transaction: {
+                type: 'Pay',
+                amount: parseFloat(request?.amount || 0).toFixed(2),
+                discount: request?.commission_percentage || 0,
+                recipient: `@${request?.sender_username || 'User'}`
+            }
+        });
+        setShowSecurityModal(true);
+    };
 
-    const handleRespond = async (requestId: number, action: 'accept' | 'reject') => {
+    const handleRespondInternal = async (requestId: number, action: 'accept' | 'reject') => {
         try {
             await walletService.respondToRequest(requestId, action);
             alert(`Request ${action}ed successfully`);
@@ -312,6 +360,17 @@ export default function CoinsManagementPage() {
                     )}
                 </div>
             </div>
+
+            <SecurityVerificationModal
+                isOpen={showSecurityModal}
+                onClose={() => {
+                    setShowSecurityModal(false);
+                    setSecurityAction(null);
+                }}
+                onVerify={executeVerifiedAction}
+                isProcessing={loading}
+                transaction={securityAction?.transaction}
+            />
         </div>
     );
 }

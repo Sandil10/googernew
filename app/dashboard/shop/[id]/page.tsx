@@ -7,12 +7,12 @@ import IonIcon from "@/app/components/IonIcon";
 
 export default function ProductDetailsPage() {
     const router = useRouter();
-    const params = useParams();
+    const params = useParams<{ id: string }>();
     const [quantity, setQuantity] = useState(1);
 
     // Mock product data
     const product = {
-        id: params.id,
+        id: params?.id,
         title: "Facial Cleanser",
         subtitle: "Size: 7.60 fl oz / 225ml",
         price: 49.95,

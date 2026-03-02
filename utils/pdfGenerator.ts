@@ -22,9 +22,6 @@ export const generateTransactionReceipt = (transaction: any, currentUser: any) =
     doc.setFontSize(16);
     doc.text('Receipt Details', 14, 55);
 
-    let yPos = 65;
-    const lineHeight = 10;
-
     const details = [
         ['Transaction ID', `#TXN-${transaction.id}`],
         ['Date', date],

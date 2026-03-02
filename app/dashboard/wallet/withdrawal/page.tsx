@@ -9,7 +9,7 @@ import { authService } from '../../../../services/authService';
 export default function Withdrawal() {
     const router = useRouter();
     const [activeTab, setActiveTab] = useState<'withdrawal' | 'recent'>('withdrawal');
-    const [amount, setAmount] = useState('1000');
+    const [amount, setAmount] = useState('0');
     const [balance, setBalance] = useState(0);
 
     useEffect(() => {
@@ -69,13 +69,10 @@ export default function Withdrawal() {
                             <h4 className="text-lg font-bold text-white mb-6 text-center">Withdrawal Money</h4>
 
                             {/* Balance Indicator */}
-                            <div className="bg-[#162033] border border-gray-700 rounded-xl p-5 mb-8 relative overflow-hidden">
-                                <p className="text-gray-400 text-xs mb-1 font-medium uppercase tracking-wider">Available Balance</p>
-                                <div className="flex items-center justify-between">
-                                    <h2 className="text-3xl font-bold text-white">{balance.toFixed(2)}</h2>
-                                    <div className="relative w-8 h-8">
-                                        <Image src="/assets/images/rupee.png" alt="Rupee" fill className="object-contain" />
-                                    </div>
+                            <div className="bg-[#162033] border border-gray-700 rounded-xl p-5 mb-8 relative overflow-hidden flex flex-col items-center justify-center">
+                                <p className="text-gray-400 text-xs mb-3 font-medium uppercase tracking-wider text-center">My total Ruppier coins</p>
+                                <div className="flex items-center justify-center">
+                                    <h2 className="text-3xl font-bold text-white tracking-wide">{balance.toFixed(2)}</h2>
                                 </div>
                             </div>
 
@@ -90,7 +87,7 @@ export default function Withdrawal() {
                                         placeholder="0.00"
                                     />
                                     <div className="text-center mt-2">
-                                        <p className="text-gray-500 text-xs font-medium">{amount || '0'} Coins = R {(parseFloat(amount || '0') * 0.0056).toFixed(2)}</p>
+                                        {/* Conversion text removed */}
                                     </div>
                                 </div>
 

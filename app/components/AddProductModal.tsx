@@ -11,21 +11,9 @@ interface AddProductModalProps {
     initialData?: any;
 }
 
-const CATEGORIES: Record<string, string[]> = {
-    "Cakes": ["Birthday Cakes", "Wedding Cakes", "Custom Cakes", "Other"],
-    "Gamings": ["Consoles", "PC", "Accessories", "Other"],
-    "Headphones": ["Wireless", "Wired", "Earbuds", "Other"],
-    "Parfums": ["Men", "Women", "Unisex", "Other"],
-    "Fruits": ["Fresh", "Dried", "Other"],
-    "Mobiles": ["Smartphones", "Tablets", "Accessories", "Other"],
-    "Laptops": ["Gaming", "Business", "Ultrabooks", "Other"],
-    "Accessories": ["Bags", "Watches", "Jewelry", "Other"],
-    "Shoes": ["Sneakers", "Formal", "Other"],
-    "Clothing": ["Men", "Women", "Kids", "Other"],
-    "Electronics": ["TV", "Appliances", "Cameras", "Other"],
-    "Fashion": ["Bags", "Eyewear", "Other"],
-    "Custom": ["Other"]
-};
+const CATEGORIES = [
+    "Gamings", "Headphones", "Parfums", "Fruits", "Mobiles", "Laptops", "Accessories", "Shoes", "Clothing", "Electronics", "Fashion", "Custom"
+];
 
 const SIZES = ["S", "M", "L", "XL", "XXL", "3XL", "4XL", "5XL"];
 const UOMS = [
@@ -40,11 +28,9 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 const DAYS = Array.from({ length: 31 }, (_, i) => (i + 1).toString());
 
 const PAYMENT_METHODS = [
-    { id: 'cash', name: 'Cash', icon: 'cash-outline' },
-    { id: 'card', name: 'Card', icon: 'card-outline' },
-    { id: 'bank', name: 'Bank Transfer', icon: 'business-outline' },
-    { id: 'cod', name: 'COD', icon: 'cash-outline' },
-    { id: 'wallet', name: 'Rupeir Payments', icon: 'wallet-outline' }
+    { id: 'wallet', name: 'Rupeir Payments', icon: 'wallet-outline' },
+    { id: 'cod', name: 'Cash on Delivery', icon: 'cash-outline' },
+    { id: 'card', name: 'Credit/Debit Card', icon: 'card-outline' }
 ];
 
 const COUNTRIES = [
@@ -101,8 +87,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const [formData, setFormData] = useState({
-        title: "",
         description: "",
+        title: "",
         category: "",
         subCategory: "",
         manualCategory: "",
@@ -118,7 +104,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         resellCommission: "",
         resellCommissionPercentage: "",
         productDiscount: "0",
-        paymentMethods: [] as string[],
+        paymentMethods: ['wallet'] as string[],
         shipping: [{ country: "Sri Lanka", charge: "0", date: "" }] as { country: string, charge: string, date: string }[],
         unifiedShipping: false,
         unifiedCharge: "",
@@ -149,11 +135,11 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             const paymentData = safeParse(initialData.payment_methods, []);
 
             setFormData({
-                title: initialData.title || (initialData.description ? initialData.description.split('\n')[0].substring(0, 60) : ""),
                 description: initialData.description || "",
+                title: initialData.title || "",
                 category: initialData.category || "",
                 subCategory: initialData.sub_category || "",
-                manualCategory: "",
+                manualCategory: initialData.manual_category || "",
                 price: initialData.price || "",
                 promoPrice: initialData.promoPrice || "",
                 warranty: initialData.warranty || "No Warranty",
@@ -225,26 +211,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
         const oldMainPromo = formData.promoPrice;
-
-        setFormData(prev => {
-            const next = { ...prev, [name]: value };
-
-            // Auto-calculate commission based on promoPrice if exists, else main price
-            if (name === 'price' || name === 'promoPrice' || name === 'resellCommissionPercentage') {
-                const currentPrice = parseFloat(next.promoPrice || next.price) || 0;
-                if (next.resellCommissionPercentage) {
-                    next.resellCommission = ((currentPrice * parseFloat(next.resellCommissionPercentage)) / 100).toFixed(2);
-                }
-            }
-
-            return next;
-        });
+        setFormData(prev => ({ ...prev, [name]: value }));
 
         // Auto-populate all variant promo prices that were following the main price
         if (name === 'promoPrice') {
             setVariants(prev => {
                 const newVariants = [...prev];
                 newVariants.forEach(v => {
+                    // Sync if current variant price is empty or was exactly matching the old main price
                     if (!v.promo_price || v.promo_price === oldMainPromo) {
                         v.promo_price = value;
                     }
@@ -323,31 +297,40 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
     const handleAddImageLink = () => {
         if (!imageLink) return;
 
-        // Basic image URL validation
-        const isValidUrl = (url: string) => {
-            return url.match(/\.(jpeg|jpg|gif|png|webp|avif)$/) != null ||
-                url.includes('images.unsplash.com') ||
-                url.includes('fbcdn.net') ||
-                url.includes('ytimg.com');
-        };
-
-        if (!isValidUrl(imageLink)) {
-            alert("Invalid image URL. Please provide a direct link to an image file.");
+        try {
+            new URL(imageLink);
+        } catch (e) {
+            alert("Oops! That doesn't look like a valid link. Please check the URL.");
             return;
         }
 
-        const remainingSpace = 5 - previews.length;
-        if (remainingSpace <= 0) {
-            alert("Maximum 5 images allowed.");
-            return;
-        }
+        // Validate if it's an image
+        const img = new (window as any).Image();
+        img.onload = () => {
+            const remainingSpace = 5 - previews.length;
+            if (remainingSpace <= 0) {
+                alert("Maximum 5 images allowed.");
+                return;
+            }
 
-        const currentPreviewsCount = previews.length;
-        setPreviews(prev => [...prev, imageLink]);
-        setSelectedImages(prev => [...prev, null]);
+            const currentPreviewsCount = previews.length;
+            setPreviews(prev => [...prev, imageLink]);
+            setSelectedImages(prev => [...prev, null]);
 
-        if (uploadMode === 'single') {
-            if (currentPreviewsCount === 0) {
+            if (uploadMode === 'single') {
+                if (currentPreviewsCount === 0) {
+                    setImageColors(prev => [...prev, "None"]);
+                    setVariants(prev => [...prev, {
+                        promo_price: "",
+                        type: "Size",
+                        selections: [],
+                        quantity: "1"
+                    }]);
+                } else {
+                    setImageColors(prev => [...prev, imageColors[0] || "None"]);
+                    setVariants(prev => [...prev, { ...variants[0] }]);
+                }
+            } else {
                 setImageColors(prev => [...prev, "None"]);
                 setVariants(prev => [...prev, {
                     promo_price: "",
@@ -355,24 +338,18 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     selections: [],
                     quantity: "1"
                 }]);
-            } else {
-                setImageColors(prev => [...prev, imageColors[0] || "None"]);
-                setVariants(prev => [...prev, { ...variants[0] }]);
             }
-        } else {
-            setImageColors(prev => [...prev, "None"]);
-            setVariants(prev => [...prev, {
-                promo_price: "",
-                type: "Size",
-                selections: [],
-                quantity: "1"
-            }]);
-        }
 
-        setImageLink("");
-        if (currentPreviewsCount + 1 >= 5) {
-            setShowLinkInput(false);
-        }
+            setImageLink("");
+            setActiveImageIndex(currentPreviewsCount); // Auto preview inside big box
+            if (currentPreviewsCount + 1 >= 5) {
+                setShowLinkInput(false);
+            }
+        };
+        img.onerror = () => {
+            alert("Invalid image URL");
+        };
+        img.src = imageLink;
     };
 
     const removeImage = (index: number) => {
@@ -416,7 +393,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         setImageColors(newColors);
     };
 
-    const handleVariantChange = (index: number, field: string, value: any) => {
+    const handleVariantChange = (index: number, field: string, value: string) => {
         const currentVariants = Array.isArray(variants) ? variants : [];
         if (index < 0) return;
 
@@ -443,7 +420,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         setOpenPicker(null);
     };
 
-    const handleFormChange = (field: string, value: any) => {
+    const handleFormChange = (field: string, value: string) => {
         setFormData(prev => ({ ...prev, [field]: value }));
         setOpenPicker(null);
     };
@@ -465,38 +442,13 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-
-        let finalTitle = formData.title;
-        // Requirement 11: derive title from description if empty
-        if (!finalTitle && formData.description) {
-            finalTitle = formData.description.split('\n')[0].trim();
-        }
-
-        // Validation: Product Name
-        if (!finalTitle) {
-            alert("Product Name is required (or first line of Description).");
-            return;
-        }
-
-        // Validation: Category
-        if (!formData.category) {
-            alert("Category is required.");
-            return;
-        }
-
-        // Validation: Payment Methods
-        if (!formData.paymentMethods || formData.paymentMethods.length === 0) {
-            alert("Please select at least one accepted payment method.");
-            return;
-        }
-
         setLoading(true);
 
         try {
             const data = new FormData();
 
             // Basic fields
-            data.append('title', finalTitle);
+            data.append('title', formData.title || formData.description.split('\n')[0].substring(0, 60) || 'New Listing');
             data.append('description', formData.description);
             data.append('category', formData.category);
             data.append('sub_category', formData.subCategory);
@@ -504,9 +456,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
             // Prices
             data.append('price', formData.price);
-            // Use promoPrice if exists, otherwise fallback to main price (Requirement 3)
-            data.append('promo_price', formData.promoPrice || formData.price);
-
+            data.append('promo_price', formData.promoPrice);
             if (Array.isArray(variants) && variants.length > 0) {
                 data.append('stock', variants[0].stock || "0");
             }
@@ -548,9 +498,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                 color: imageColors[i] || "None",
                 index: i,
                 image_url: previews[i] || null,
-                ...v,
-                // Ensure variant promo price also falls back if empty
-                promo_price: v.promo_price || formData.promoPrice || formData.price
+                ...v
             }));
             data.append('variants_data', JSON.stringify(submissionVariants));
 
@@ -608,12 +556,12 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         </div>
                     </div>
 
-                    <div className="flex flex-col gap-4">
-                        {/* Main Preview Area (Now Above) */}
+                    <div className="flex flex-col gap-2 mt-4">
+                        {/* Main Preview Area (ABOVE) */}
                         <div
                             onClick={handleAddImagesClick}
-                            className={`relative w-full h-[220px] md:h-auto md:aspect-square rounded-[1.5rem] md:rounded-[2.5rem] overflow-hidden transition-all cursor-pointer group shadow-2xl
-                                ${previews.length > 0 ? 'border-0' : 'border-2 border-dashed border-white/10 hover:border-white/20 bg-white/5'}`}
+                            className={`relative w-full h-[220px] md:h-auto md:aspect-square rounded-[1.5rem] md:rounded-[2.5rem] overflow-hidden transition-all cursor-pointer group shrink-0
+                                ${previews.length > 0 ? 'border-0 shadow-2xl' : 'border-2 border-dashed border-white/10 hover:border-white/20 bg-white/5'}`}
                         >
                             {previews.length > 0 ? (
                                 <>
@@ -621,31 +569,40 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         src={previews[activeImageIndex] || previews[0]}
                                         alt="Preview"
                                         fill
-                                        className="object-cover"
+                                        className="object-cover transition-all duration-500 scale-100 group-hover:scale-105"
                                     />
-                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                        <div className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center">
-                                            <IonIcon name="camera" className="text-2xl text-white" />
-                                        </div>
-                                    </div>
 
-                                    {/* Slider Arrows (Requirement 6) */}
+                                    {/* Slider Navigation Arrows (Point 6) */}
                                     {previews.length > 1 && (
                                         <>
                                             <button
-                                                onClick={(e) => { e.stopPropagation(); setActiveImageIndex((prev) => (prev > 0 ? prev - 1 : previews.length - 1)); }}
-                                                className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/70"
+                                                type="button"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setActiveImageIndex(prev => (prev === 0 ? previews.length - 1 : prev - 1));
+                                                }}
+                                                className="absolute left-4 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/60 border border-white/20 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all hover:bg-black/90 active:scale-90 z-20"
                                             >
                                                 <IonIcon name="chevron-back" />
                                             </button>
                                             <button
-                                                onClick={(e) => { e.stopPropagation(); setActiveImageIndex((prev) => (prev < previews.length - 1 ? prev + 1 : 0)); }}
-                                                className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/70"
+                                                type="button"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setActiveImageIndex(prev => (prev === previews.length - 1 ? 0 : prev + 1));
+                                                }}
+                                                className="absolute right-4 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/60 border border-white/20 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all hover:bg-black/90 active:scale-90 z-20"
                                             >
                                                 <IonIcon name="chevron-forward" />
                                             </button>
                                         </>
                                     )}
+
+                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-80 transition-opacity flex items-center justify-center pointer-events-none group-hover:pointer-events-auto">
+                                        <div className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center">
+                                            <IonIcon name="camera" className="text-2xl text-white" />
+                                        </div>
+                                    </div>
                                 </>
                             ) : (
                                 <div className="absolute inset-0 flex items-center justify-center">
@@ -664,43 +621,66 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             />
                         </div>
 
-                        {/* Thumbnails Row (Now Below) */}
-                        <div className="flex items-center gap-2 overflow-x-auto py-1 custom-scrollbar no-scrollbar px-1 min-h-[60px]">
+                        {/* Thumbnails Row (BELOW) */}
+                        <div className="flex items-start gap-2 overflow-x-auto pt-4 pb-1 custom-scrollbar no-scrollbar px-1">
                             {variants.map((v, i) => (
-                                <div key={i} className="relative group shrink-0">
+                                <div key={i} className="flex flex-col items-center gap-1.5 shrink-0 group/unit">
                                     <div
                                         onClick={() => setActiveImageIndex(i)}
-                                        className={`relative w-12 h-12 rounded-[1rem] overflow-hidden transition-all cursor-pointer border-2 flex items-center justify-center bg-white/5
+                                        className={`relative w-12 h-12 md:w-14 md:h-14 rounded-[0.8rem] md:rounded-[1rem] overflow-hidden transition-all cursor-pointer border-2 flex items-center justify-center bg-white/5
                                                 ${activeImageIndex === i
-                                                ? 'border-blue-500 scale-105 shadow-lg'
+                                                ? 'border-blue-500 scale-105 shadow-xl'
                                                 : 'border-white/5 opacity-60 hover:opacity-100'}`}
                                     >
                                         {previews[i] ? (
-                                            <Image src={previews[i]} alt={`Thumb ${i}`} fill className="object-cover" />
+                                            <div className="relative w-full h-full">
+                                                <Image src={previews[i]} alt={`Thumb ${i}`} fill className="object-cover" />
+                                            </div>
                                         ) : (
-                                            <IonIcon name="color-palette-outline" className="text-white/40" />
+                                            <div className="flex flex-col items-center justify-center">
+                                                <IonIcon name="color-palette-outline" className="text-white/40" />
+                                                <span className="text-[7px] font-bold text-white/20 mt-1 uppercase">Variant {i + 1}</span>
+                                            </div>
                                         )}
+
+                                        {/* Small ❌ delete icon near the thumbnail - ALWAYS VISIBLE */}
+                                        <button
+                                            type="button"
+                                            onClick={(e) => { e.stopPropagation(); removeImage(i); }}
+                                            className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-600 text-white flex items-center justify-center border border-black shadow-lg transition-all active:scale-90 hover:bg-red-500 z-10"
+                                        >
+                                            <IonIcon name="close" className="text-[10px] font-black" />
+                                        </button>
                                     </div>
 
-                                    {/* Delete Button Near Thumbnail (Requirement 12) */}
-                                    <button
-                                        type="button"
-                                        onClick={(e) => { e.stopPropagation(); removeImage(i); }}
-                                        className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center shadow-lg hover:scale-110 transition-transform z-10"
-                                    >
-                                        <IonIcon name="close" className="text-[10px] font-bold" />
-                                    </button>
+                                    <div className="flex flex-col items-center gap-1">
+                                        <div
+                                            onClick={() => {
+                                                setActiveImageIndex(i);
+                                                setOpenPicker({ type: 'color', field: 'color', options: COLORS.map(c => c.name), title: 'Choose Color', value: imageColors[i] });
+                                            }}
+                                            className="px-1.5 py-0.5 rounded-full bg-white/[0.03] border border-white/5 flex items-center gap-1 cursor-pointer hover:bg-white/[0.08] transition-all group-hover/unit:border-white/20"
+                                        >
+                                            <div
+                                                className="w-1 h-1 rounded-full shadow-inner ring-1 ring-white/10"
+                                                style={{ backgroundColor: COLORS.find(c => c.name === imageColors[i])?.hex || (imageColors[i]?.startsWith('#') ? imageColors[i] : '#333') }}
+                                            />
+                                            <span className="text-[6px] font-black text-slate-500 uppercase tracking-tight group-hover/unit:text-white transition-colors">{imageColors[i] || "NONE"}</span>
+                                        </div>
+                                    </div>
                                 </div>
                             ))}
                             {previews.length < 5 && (
-                                <button
-                                    type="button"
-                                    onClick={handleAddImagesClick}
-                                    className="w-12 h-12 flex items-center justify-center transition-all transform hover:scale-110 shrink-0 border-2 border-dashed border-blue-500/50 rounded-[1rem] bg-blue-500/10 hover:border-blue-500/70"
-                                    title="Add Image"
-                                >
-                                    <IonIcon name="add" className="text-xl text-blue-500" />
-                                </button>
+                                <div className="flex flex-col items-center justify-center h-full">
+                                    <button
+                                        type="button"
+                                        onClick={handleAddImagesClick}
+                                        className="w-12 h-12 md:w-14 md:h-14 flex items-center justify-center transition-all transform hover:scale-110 shrink-0 border-2 border-dashed border-blue-500/50 rounded-[1.2rem] md:rounded-[1rem] bg-blue-500/20 hover:border-blue-500/70 shadow-lg shadow-blue-500/20"
+                                        title="Add Image"
+                                    >
+                                        <IonIcon name="add" className="text-2xl text-blue-500" />
+                                    </button>
+                                </div>
                             )}
                         </div>
                     </div>
@@ -726,244 +706,240 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             </button>
                         </div>
 
-                        <div className="flex flex-col gap-6">
-                            {/* Requirement 11: Order - Description first, then Title/Name */}
-                            <div>
-                                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 flex items-center gap-1">
-                                    Description (Optional)
-                                </label>
-                                <textarea
-                                    name="description"
-                                    value={formData.description}
-                                    onChange={handleInputChange}
-                                    rows={2}
-                                    className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 resize-none transition-all"
-                                    placeholder="Detailed product description..."
-                                />
-                            </div>
+                        <div className="flex flex-col gap-5">
 
-                            <div>
-                                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 flex items-center gap-1">
-                                    Product Name <span className="text-red-500">*</span>
-                                </label>
-                                <input
-                                    required
-                                    type="text"
-                                    name="title"
-                                    value={formData.title}
-                                    onChange={handleInputChange}
-                                    className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all"
-                                    placeholder="e.g. Birthday Cake, Designer Shoes..."
-                                />
-                            </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="flex flex-col gap-6">
+                                {/* Order: Description, Product Name, Category, Price */}
+
                                 <div>
-                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 flex items-center gap-1">
-                                        Category <span className="text-red-500">*</span>
-                                    </label>
-                                    <div
-                                        onClick={() => setOpenPicker({ type: 'form', field: 'category', options: Object.keys(CATEGORIES), title: 'Main Category', value: formData.category })}
-                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all"
-                                    >
-                                        <span className="truncate">{formData.category === 'Custom' && formData.manualCategory ? formData.manualCategory : (formData.category || "Select Category")}</span>
-                                        <IonIcon name="chevron-down" className="text-gray-500" />
-                                    </div>
-                                    {formData.category === 'Custom' && (
-                                        <input
-                                            type="text"
-                                            name="manualCategory"
-                                            value={formData.manualCategory}
-                                            onChange={handleInputChange}
-                                            className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-3 py-2 text-[10px] text-white mt-1"
-                                            placeholder="Enter your category..."
-                                        />
-                                    )}
+                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5">Description (Optional)</label>
+                                    <textarea
+                                        name="description"
+                                        value={formData.description}
+                                        onChange={handleInputChange}
+                                        rows={2}
+                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-1.5 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 resize-none transition-all"
+                                        placeholder="Detailed product description..."
+                                    />
                                 </div>
 
                                 <div>
-                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 flex items-center gap-1">
-                                        Sub Category
-                                    </label>
-                                    <div
-                                        onClick={() => {
-                                            if (!formData.category) return alert("Please select a main category first.");
-                                            const options = CATEGORIES[formData.category] || [];
-                                            setOpenPicker({ type: 'form', field: 'subCategory', options: options as string[], title: `Sub Category of ${formData.category}`, value: formData.subCategory });
-                                        }}
-                                        className={`w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all ${!formData.category ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                    >
-                                        <span className="truncate">{formData.subCategory || "Select Sub Category"}</span>
-                                        <IonIcon name="chevron-down" className="text-gray-500" />
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="flex gap-4">
-                                <div className="flex-1">
-                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 flex items-center gap-1">
-                                        Main Price (R) <span className="text-red-500">*</span>
+                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                        Product Name <span className="text-red-500">*</span>
                                     </label>
                                     <input
                                         required
-                                        type="number"
-                                        name="price"
-                                        value={formData.price}
+                                        type="text"
+                                        name="title"
+                                        value={formData.title}
                                         onChange={handleInputChange}
-                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
-                                        placeholder="0.00"
+                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
+                                        placeholder="e.g. Nike Air Max"
                                     />
                                 </div>
 
-                                <div className="flex-1">
-                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 flex items-center gap-1">
-                                        Promo Price (R) <span className="text-slate-500 opacity-50">(Optional)</span>
-                                    </label>
-                                    <input
-                                        type="number"
-                                        name="promoPrice"
-                                        value={formData.promoPrice}
-                                        onChange={handleInputChange}
-                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
-                                        placeholder="0.00"
-                                    />
+                                <div className="flex flex-col md:flex-row gap-4">
+                                    <div className="flex-1">
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                            Category <span className="text-red-500">*</span>
+                                        </label>
+                                        <div className="flex flex-col gap-2">
+                                            <div
+                                                onClick={() => setOpenPicker({ type: 'form', field: 'category', options: CATEGORIES, title: 'Category', value: formData.category })}
+                                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all"
+                                            >
+                                                <span className="truncate">{formData.category || "Select Category"}</span>
+                                                <IonIcon name="chevron-down" className="text-gray-500" />
+                                            </div>
+                                            {formData.category === 'Custom' && (
+                                                <input
+                                                    type="text"
+                                                    name="manualCategory"
+                                                    value={formData.manualCategory}
+                                                    onChange={handleInputChange}
+                                                    className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all"
+                                                    placeholder="Type your category here..."
+                                                />
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="flex-1">
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                            Sub Category
+                                        </label>
+                                        <input
+                                            type="text"
+                                            name="subCategory"
+                                            value={formData.subCategory}
+                                            onChange={handleInputChange}
+                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all"
+                                            placeholder="e.g. Birthday Cakes"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-4">
+                                    <div className="flex-1">
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                            Main Price (R) <span className="text-red-500">*</span>
+                                        </label>
+                                        <input
+                                            required
+                                            type="number"
+                                            name="price"
+                                            value={formData.price}
+                                            onChange={handleInputChange}
+                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
+                                            placeholder="0.00"
+                                            onKeyPress={(e) => {
+                                                if (!/[0-9.]/.test(e.key)) e.preventDefault();
+                                            }}
+                                        />
+                                    </div>
+
+                                    <div className="flex-1">
+                                        <input
+                                            type="number"
+                                            name="promoPrice"
+                                            value={formData.promoPrice}
+                                            onChange={handleInputChange}
+                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
+                                            placeholder="0.00"
+                                            onKeyPress={(e) => {
+                                                if (!/[0-9.]/.test(e.key)) e.preventDefault();
+                                            }}
+                                        />
+                                    </div>
                                 </div>
                             </div>
                         </div>
 
 
-                        {/* Variant Details & Configuration (Requirements 4, 5, 6) */}
+                        {/* Variant Details: Integrated Image Picker Workflow */}
                         {variants[activeImageIndex] && (
                             <div className="p-6 rounded-[2.5rem] bg-white/[0.03] border border-white/10 flex flex-col gap-6 shadow-2xl backdrop-blur-sm animate-in fade-in slide-in-from-top-4 duration-500">
-                                <div className="flex items-center justify-between">
-                                    <div className="flex flex-col">
-                                        <h3 className="text-sm font-black text-white italic uppercase tracking-wider">
-                                            {uploadMode === 'single' ? 'Product Configuration' : 'Variant Details'}
-                                        </h3>
-                                        <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-1">
-                                            {uploadMode === 'single' ? 'Settings apply to all views' : `Configuring ${imageColors[activeImageIndex] || "Selected"} Color`}
-                                        </p>
+                                <div className="">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <div className="flex flex-col">
+                                            <h3 className="text-sm font-black text-white italic uppercase tracking-wider">
+                                                {uploadMode === 'single' ? 'Product Configuration' : 'Variant Details'}
+                                            </h3>
+                                            <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-1">
+                                                {uploadMode === 'single' ? 'Settings apply to all views' : `Configuring ${imageColors[activeImageIndex] || "Selected"} Unit`}
+                                            </p>
+                                        </div>
+                                        <IonIcon name="options-outline" className="text-gray-500 text-lg" />
                                     </div>
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setUploadMode('variants');
-                                            handleAddImagesClick();
-                                        }}
-                                        className="px-3 py-1.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-bold uppercase tracking-widest hover:bg-blue-500/20 transition-all flex items-center gap-1.5 shadow-lg shadow-blue-500/5"
-                                    >
-                                        <IonIcon name="add-circle" className="text-sm" />
-                                        Additional Colors
-                                    </button>
                                 </div>
 
-                                {/* Selected Chips (Requirement 5) */}
-                                <div className="flex flex-wrap gap-2">
-                                    {(variants[activeImageIndex].selections || []).map((sel: any, sIdx: number) => (
-                                        <div
-                                            key={sIdx}
-                                            className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 flex items-center gap-2 group hover:border-red-500/50 hover:bg-red-500/5 transition-all cursor-pointer"
-                                            onClick={() => {
-                                                const newVariants = [...variants];
-                                                newVariants[activeImageIndex].selections = newVariants[activeImageIndex].selections.filter((_: any, i: number) => i !== sIdx);
-                                                setVariants(newVariants);
-                                            }}
-                                        >
-                                            <span className="text-[10px] font-bold text-white uppercase">{sel.value}</span>
-                                            <IonIcon name="close" className="text-[10px] text-slate-500 group-hover:text-red-500" />
-                                        </div>
-                                    ))}
-                                    {imageColors[activeImageIndex] !== 'None' && (
-                                        <div className="px-3 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center gap-2">
-                                            <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: COLORS.find(c => c.name === imageColors[activeImageIndex])?.hex || '#333' }} />
-                                            <span className="text-[10px] font-bold text-blue-400 uppercase">{imageColors[activeImageIndex]}</span>
-                                        </div>
-                                    )}
-                                </div>
-
-                                <div className="flex flex-col gap-6">
+                                <div className="flex flex-col gap-5">
                                     <div>
-                                        <div className="flex items-center justify-between mb-3">
-                                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                                                {variants[activeImageIndex].type === 'Size' ? 'Select Sizes' : 'Select UOM'}
-                                            </label>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    const newType = variants[activeImageIndex].type === 'Size' ? 'UOM' : 'Size';
-                                                    handleVariantChange(activeImageIndex, 'type', newType);
-                                                    handleVariantChange(activeImageIndex, 'selections', []);
-                                                }}
-                                                className="text-[9px] font-bold text-blue-400 uppercase tracking-widest hover:text-blue-300"
-                                            >
-                                                Switch to {variants[activeImageIndex].type === 'Size' ? 'UOM' : 'Size'}
-                                            </button>
-                                        </div>
+                                        <input
+                                            type="number"
+                                            value={variants[activeImageIndex].promo_price}
+                                            onChange={(e) => handleVariantChange(activeImageIndex, 'promo_price', e.target.value)}
+                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white mt-1 focus:ring-1 focus:ring-white outline-none transition-all"
+                                            placeholder="0.00 (Optional)"
+                                            onKeyPress={(e) => {
+                                                if (!/[0-9.]/.test(e.key)) e.preventDefault();
+                                            }}
+                                        />
+                                    </div>
 
-                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                                            {(variants[activeImageIndex].type === 'Size' ? SIZES : UOMS).map((item) => {
-                                                const isSelected = variants[activeImageIndex].selections?.some((s: any) => s.value === item);
-                                                return (
+                                    <div className="flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setOpenPicker({ type: 'variant', field: 'selections', options: SIZES, title: 'Add Sizes', value: '' })}
+                                            className="flex-1 bg-white/5 border border-white/10 rounded-xl py-3 text-[10px] font-black text-gray-300 uppercase tracking-widest hover:bg-white/10 transition-all"
+                                        >
+                                            + Add Sizes
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setOpenPicker({ type: 'variant', field: 'selections', options: UOMS, title: 'Add UOM', value: '' })}
+                                            className="flex-1 bg-white/5 border border-white/10 rounded-xl py-3 text-[10px] font-black text-gray-300 uppercase tracking-widest hover:bg-white/10 transition-all"
+                                        >
+                                            + Add UOM
+                                        </button>
+                                    </div>
+
+                                    {/* Selection List with Individual Stock (STOCK ALWAYS VISIBLE - Point 4) */}
+                                    <div className="flex flex-col gap-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                                        {(variants[activeImageIndex].selections || []).map((sel: any, sIdx: number) => (
+                                            <div key={sIdx} className="flex flex-col gap-2 bg-black/40 border border-white/5 p-4 rounded-2xl animate-in slide-in-from-right-4 duration-300">
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex flex-col">
+                                                        <span className="text-[8px] font-black text-slate-600 uppercase mb-0.5">Variant Selection</span>
+                                                        <span className="text-xs font-bold text-white">{sel.value}</span>
+                                                    </div>
                                                     <button
-                                                        key={item}
                                                         type="button"
                                                         onClick={() => {
-                                                            const currentSelections = [...(variants[activeImageIndex].selections || [])];
-                                                            if (isSelected) {
-                                                                const filtered = currentSelections.filter((s: any) => s.value !== item);
-                                                                handleVariantChange(activeImageIndex, 'selections', filtered);
-                                                            } else {
-                                                                handleVariantChange(activeImageIndex, 'selections', [...currentSelections, { value: item, stock: "10" }]);
-                                                            }
+                                                            const newVariants = [...variants];
+                                                            newVariants[activeImageIndex].selections = newVariants[activeImageIndex].selections.filter((_: any, i: number) => i !== sIdx);
+                                                            setVariants(newVariants);
                                                         }}
-                                                        className={`py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border
-                                                            ${isSelected
-                                                                ? 'bg-blue-600 text-white border-blue-500 shadow-lg shadow-blue-500/20'
-                                                                : 'bg-white/5 text-slate-400 border-white/5 hover:border-white/20'}`}
+                                                        className="w-7 h-7 rounded-full bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition-all shadow-sm"
                                                     >
-                                                        {item}
+                                                        <IonIcon name="trash-outline" className="text-xs" />
                                                     </button>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-
-                                    {/* Requirement 4: Inline Stock Inputs */}
-                                    <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 block">Stock Configuration (Always Visible)</label>
-                                        {(variants[activeImageIndex].selections || []).map((sel: any, sIdx: number) => (
-                                            <div key={sIdx} className="flex items-center gap-4 bg-black/40 border border-white/5 p-3 rounded-2xl animate-in slide-in-from-right-4 duration-300">
-                                                <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
-                                                    <span className="text-[10px] font-black text-white">{sel.value}</span>
                                                 </div>
-                                                <div className="flex-1 flex flex-col">
-                                                    <span className="text-[8px] font-black text-slate-600 uppercase mb-1">Quantity in Stock</span>
+
+                                                <div className="w-full">
+                                                    <span className="text-[8px] font-black text-slate-600 uppercase mb-1 block">Quantity in Stock</span>
                                                     <input
                                                         type="number"
                                                         value={sel.stock}
                                                         onChange={(e) => {
-                                                            const newVariants = [...variants];
-                                                            newVariants[activeImageIndex].selections[sIdx].stock = e.target.value;
+                                                            let newVariants = [...variants];
+                                                            if (uploadMode === 'single') {
+                                                                newVariants = newVariants.map(v => {
+                                                                    if (v.selections && v.selections[sIdx]) {
+                                                                        v.selections[sIdx].stock = e.target.value;
+                                                                    }
+                                                                    return v;
+                                                                });
+                                                            } else {
+                                                                newVariants[activeImageIndex].selections[sIdx].stock = e.target.value;
+                                                            }
                                                             setVariants(newVariants);
                                                         }}
-                                                        className="w-full bg-transparent border-0 p-0 text-xs font-bold text-white focus:ring-0 outline-none"
-                                                        placeholder="0"
+                                                        className="w-full bg-slate-800/10 border border-white/5 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder-white/10"
+                                                        placeholder="Enter stock amount..."
+                                                        onKeyPress={(e) => {
+                                                            if (!/[0-9]/.test(e.key)) e.preventDefault();
+                                                        }}
                                                     />
                                                 </div>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const newVariants = [...variants];
-                                                        newVariants[activeImageIndex].selections = newVariants[activeImageIndex].selections.filter((_: any, i: number) => i !== sIdx);
-                                                        setVariants(newVariants);
-                                                    }}
-                                                    className="w-8 h-8 rounded-full bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition-all"
-                                                >
-                                                    <IonIcon name="trash-outline" />
-                                                </button>
                                             </div>
                                         ))}
                                     </div>
+
+                                    {/* Point 5: Clickable summary chips for selected variants */}
+                                    {(variants[activeImageIndex].selections || []).length > 0 && (
+                                        <div className="mt-4 border-t border-white/5 pt-4">
+                                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-2">Applied Variants Summary</span>
+                                            <div className="flex flex-wrap gap-2">
+                                                {(variants[activeImageIndex].selections || []).map((sel: any, sIdx: number) => (
+                                                    <div
+                                                        key={sIdx}
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            const newVariants = [...variants];
+                                                            newVariants[activeImageIndex].selections = newVariants[activeImageIndex].selections.filter((_: any, idx: number) => idx !== sIdx);
+                                                            setVariants(newVariants);
+                                                        }}
+                                                        className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] font-bold text-white uppercase tracking-tight flex items-center gap-2 cursor-pointer hover:bg-red-500/20 hover:border-red-500/50 transition-all group/chip"
+                                                    >
+                                                        <span>{sel.value} ({sel.stock})</span>
+                                                        <IonIcon name="close" className="text-slate-500 group-hover/chip:text-red-500 transition-colors" />
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         )}
@@ -1006,50 +982,27 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                 <div className="bg-slate-800/20 p-5 rounded-[2rem] border border-white/5">
                                     <div className="flex items-center justify-between mb-4">
-                                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Shipping Rates (Requirement 10)</label>
-                                        <div className="flex items-center gap-1 bg-black/40 p-1 rounded-xl">
-                                            {[
-                                                { id: 'free', label: 'Free' },
-                                                { id: 'unified', label: 'Unified' },
-                                                { id: 'custom', label: 'Custom' }
-                                            ].map((opt) => {
-                                                const isActive = opt.id === 'free' ? (formData.unifiedShipping && formData.unifiedCharge === '0') :
-                                                    opt.id === 'unified' ? (formData.unifiedShipping && formData.unifiedCharge !== '0') :
-                                                        !formData.unifiedShipping;
-                                                return (
-                                                    <button
-                                                        key={opt.id}
-                                                        type="button"
-                                                        onClick={() => {
-                                                            if (opt.id === 'free') {
-                                                                setFormData(prev => ({ ...prev, unifiedShipping: true, unifiedCharge: '0' }));
-                                                            } else if (opt.id === 'unified') {
-                                                                setFormData(prev => ({ ...prev, unifiedShipping: true, unifiedCharge: prev.unifiedCharge === '0' ? '10' : prev.unifiedCharge }));
-                                                            } else {
-                                                                setFormData(prev => ({ ...prev, unifiedShipping: false }));
-                                                            }
-                                                        }}
-                                                        className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${isActive ? 'bg-white text-black shadow-lg' : 'text-slate-500 hover:text-white'}`}
-                                                    >
-                                                        {opt.label}
-                                                    </button>
-                                                );
-                                            })}
+                                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Shipping Rates</label>
+                                        <div
+                                            onClick={() => setFormData(prev => ({ ...prev, unifiedShipping: !prev.unifiedShipping }))}
+                                            className="flex items-center gap-2 cursor-pointer group"
+                                        >
+                                            <span className="text-[8px] font-black text-slate-500 uppercase group-hover:text-white transition-colors">Unified Fee</span>
+                                            <div className={`w-8 h-4 rounded-full relative transition-all ${formData.unifiedShipping ? 'bg-white' : 'bg-slate-700'}`}>
+                                                <div className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${formData.unifiedShipping ? 'right-0.5 bg-black' : 'left-0.5 bg-slate-400'}`} />
+                                            </div>
                                         </div>
                                     </div>
 
                                     {formData.unifiedShipping && (
                                         <div className="flex gap-2 mb-4 p-3 bg-white/5 rounded-2xl border border-white/10 animate-in fade-in slide-in-from-top-2 duration-300">
                                             <div className="flex-1">
-                                                <label className="text-[9px] text-white uppercase font-black tracking-wider mb-1 block">
-                                                    {formData.unifiedCharge === '0' ? 'Free Shipping Active' : 'Global Price (R)'}
-                                                </label>
+                                                <label className="text-[9px] text-white uppercase font-black tracking-wider mb-1 block">Global Price (R)</label>
                                                 <input
-                                                    disabled={formData.unifiedCharge === '0'}
                                                     type="number"
                                                     value={formData.unifiedCharge}
                                                     onChange={(e) => setFormData(prev => ({ ...prev, unifiedCharge: e.target.value }))}
-                                                    className={`w-full bg-slate-900/50 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:ring-1 focus:ring-white/30 outline-none ${formData.unifiedCharge === '0' ? 'opacity-50' : ''}`}
+                                                    className="w-full bg-slate-900/50 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:ring-1 focus:ring-white/30 outline-none"
                                                     placeholder="0.00"
                                                 />
                                             </div>
@@ -1066,87 +1019,105 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         </div>
                                     )}
 
-                                    {!formData.unifiedShipping && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setOpenPicker({ type: 'shipping', field: '', options: COUNTRIES.filter(c => !(formData.shipping || []).find(s => s.country === c)), title: 'Add Countries', value: '' })}
-                                            className="w-full bg-white/5 border border-white/10 rounded-xl py-2 text-[10px] font-black text-gray-300 uppercase tracking-widest mb-3 hover:bg-white/10 transition-all shadow-sm"
-                                        >
-                                            + Add Shipping Country
-                                        </button>
-                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setOpenPicker({ type: 'shipping', field: '', options: COUNTRIES.filter(c => !(formData.shipping || []).find(s => s.country === c)), title: 'Add Countries', value: '' })}
+                                        className="w-full bg-white/5 border border-white/10 rounded-xl py-2 text-[10px] font-black text-gray-300 uppercase tracking-widest mb-3 hover:bg-white/10 transition-all shadow-sm"
+                                    >
+                                        + Add Shipping Country
+                                    </button>
 
                                     <div className={`mt-2 overflow-y-auto custom-scrollbar pr-1 ${formData.unifiedShipping ? 'max-h-[120px]' : 'max-h-[380px] flex flex-col gap-2'}`}>
-                                        {(formData.shipping || []).map((s, i) => (
-                                            <div key={i} className="flex flex-col gap-2 p-3 bg-white/5 border border-white/10 rounded-2xl animate-in fade-in slide-in-from-left-2 duration-300">
-                                                <div className="flex items-center justify-between">
-                                                    <span className="text-[10px] font-black text-white uppercase truncate">{s.country}</span>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setFormData(prev => ({ ...prev, shipping: prev.shipping.filter((_, idx) => idx !== i) }))}
-                                                        className="w-6 h-6 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center hover:bg-red-500 hover:text-white transition-all shadow-sm"
-                                                    >
-                                                        <IonIcon name="close-circle" />
-                                                    </button>
-                                                </div>
-
-                                                <div className="flex flex-col gap-3">
-                                                    <div className="flex items-center gap-1 bg-black/20 p-1 rounded-xl w-fit">
+                                        {formData.unifiedShipping ? (
+                                            <div className="flex flex-wrap gap-1.5 p-2 bg-white/[0.02] rounded-xl border border-white/5">
+                                                {(formData.shipping || []).map((s, i) => (
+                                                    <div key={i} className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/10 border border-white/10 text-[9px] font-bold text-white group animate-in zoom-in-90 duration-200">
+                                                        <span>#{s.country}</span>
                                                         <button
                                                             type="button"
-                                                            onClick={() => {
-                                                                const updated = [...formData.shipping];
-                                                                updated[i] = { ...updated[i], charge: '0' };
-                                                                setFormData(prev => ({ ...prev, shipping: updated }));
-                                                            }}
-                                                            className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${s.charge === '0' ? 'bg-white text-black shadow-lg' : 'text-slate-500 hover:text-white'}`}
+                                                            onClick={() => setFormData(prev => ({ ...prev, shipping: prev.shipping.filter((_, idx) => idx !== i) }))}
+                                                            className="w-3.5 h-3.5 rounded-full bg-red-500/20 text-red-500 flex items-center justify-center hover:bg-red-500 hover:text-white transition-all"
                                                         >
-                                                            Free
+                                                            <IonIcon name="close" className="text-[8px]" />
                                                         </button>
+                                                    </div>
+                                                ))}
+                                                {(formData.shipping || []).length === 0 && (
+                                                    <span className="text-[8px] text-slate-600 uppercase font-black px-2 py-1">No countries added</span>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            (formData.shipping || []).map((s, i) => (
+                                                <div key={i} className="flex flex-col gap-2 p-3 bg-white/5 border border-white/10 rounded-2xl animate-in fade-in slide-in-from-left-2 duration-300">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="text-[10px] font-black text-white uppercase truncate">{s.country}</span>
                                                         <button
                                                             type="button"
-                                                            onClick={() => {
-                                                                const updated = [...formData.shipping];
-                                                                if (s.charge === '0') updated[i].charge = '1';
-                                                                setFormData(prev => ({ ...prev, shipping: updated }));
-                                                            }}
-                                                            className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${s.charge !== '0' ? 'bg-white text-black shadow-lg' : 'text-slate-500 hover:text-white'}`}
+                                                            onClick={() => setFormData(prev => ({ ...prev, shipping: prev.shipping.filter((_, idx) => idx !== i) }))}
+                                                            className="w-6 h-6 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center hover:bg-red-500 hover:text-white transition-all shadow-sm"
                                                         >
-                                                            Manual
+                                                            <IonIcon name="close-circle" />
                                                         </button>
                                                     </div>
 
-                                                    <div className="flex gap-2">
-                                                        {s.charge !== '0' && (
-                                                            <div className="flex-1">
-                                                                <label className="text-[9px] text-white uppercase font-black tracking-wider block mb-1">Fee (R)</label>
-                                                                <input
-                                                                    type="number"
-                                                                    value={s.charge}
-                                                                    onChange={(e) => {
-                                                                        const updated = [...formData.shipping];
-                                                                        updated[i] = { ...updated[i], charge: e.target.value };
-                                                                        setFormData(prev => ({ ...prev, shipping: updated }));
-                                                                    }}
-                                                                    className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-[10px] text-white font-bold outline-none focus:ring-1 focus:ring-white/30"
-                                                                    placeholder="0.00"
-                                                                />
-                                                            </div>
-                                                        )}
-                                                        <div className="flex-[1.5]">
-                                                            <label className="text-[9px] text-white uppercase font-black tracking-wider block mb-1">Date</label>
-                                                            <div
-                                                                onClick={() => setOpenPicker({ type: 'shipping_date', field: i.toString(), options: DELIVERY_OPTIONS, title: `Shipping Date: ${s.country}`, value: s.date })}
-                                                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-[10px] text-white flex justify-between items-center cursor-pointer hover:bg-slate-700/50 transition-all"
+                                                    <div className="flex flex-col gap-3">
+                                                        <div className="flex items-center gap-1 bg-black/20 p-1 rounded-xl w-fit">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    const updated = [...formData.shipping];
+                                                                    updated[i] = { ...updated[i], charge: '0' };
+                                                                    setFormData(prev => ({ ...prev, shipping: updated }));
+                                                                }}
+                                                                className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${s.charge === '0' ? 'bg-white text-black shadow-lg' : 'text-slate-500 hover:text-white'}`}
                                                             >
-                                                                <span>{s.date || "Select"}</span>
-                                                                <IonIcon name="calendar-outline" className="text-gray-500" />
+                                                                Free
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    const updated = [...formData.shipping];
+                                                                    if (s.charge === '0') updated[i].charge = '1';
+                                                                    setFormData(prev => ({ ...prev, shipping: updated }));
+                                                                }}
+                                                                className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${s.charge !== '0' ? 'bg-white text-black shadow-lg' : 'text-slate-500 hover:text-white'}`}
+                                                            >
+                                                                Manual
+                                                            </button>
+                                                        </div>
+
+                                                        <div className="flex gap-2">
+                                                            {s.charge !== '0' && (
+                                                                <div className="flex-1">
+                                                                    <label className="text-[9px] text-white uppercase font-black tracking-wider block mb-1">Fee (R)</label>
+                                                                    <input
+                                                                        type="number"
+                                                                        value={s.charge}
+                                                                        onChange={(e) => {
+                                                                            const updated = [...formData.shipping];
+                                                                            updated[i] = { ...updated[i], charge: e.target.value };
+                                                                            setFormData(prev => ({ ...prev, shipping: updated }));
+                                                                        }}
+                                                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-[10px] text-white font-bold outline-none focus:ring-1 focus:ring-white/30"
+                                                                        placeholder="0.00"
+                                                                    />
+                                                                </div>
+                                                            )}
+                                                            <div className="flex-[1.5]">
+                                                                <label className="text-[9px] text-white uppercase font-black tracking-wider block mb-1">Date</label>
+                                                                <div
+                                                                    onClick={() => setOpenPicker({ type: 'shipping_date', field: i.toString(), options: DELIVERY_OPTIONS, title: `Shipping Date: ${s.country}`, value: s.date })}
+                                                                    className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-[10px] text-white flex justify-between items-center cursor-pointer hover:bg-slate-700/50 transition-all"
+                                                                >
+                                                                    <span>{s.date || "Select"}</span>
+                                                                    <IonIcon name="calendar-outline" className="text-gray-500" />
+                                                                </div>
                                                             </div>
                                                         </div>
                                                     </div>
                                                 </div>
-                                            </div>
-                                        ))}
+                                            ))
+                                        )}
                                     </div>
                                 </div>
 
@@ -1305,246 +1276,251 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         </button>
                     </div>
                 </div>
-            )}
+            )
+            }
 
-            {showSourceSelection && (
-                <div className="fixed inset-0 z-[210] flex items-center justify-center p-6">
-                    <div className="absolute inset-0 bg-black/95 backdrop-blur-sm" onClick={() => setShowSourceSelection(false)} />
-                    <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-xs overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 p-8">
-                        <div className="text-center mb-8">
-                            <h3 className="text-lg font-black text-white italic uppercase tracking-[0.2em]">Add Images</h3>
-                            <p className="text-[9px] text-slate-500 font-black uppercase mt-2 tracking-widest">Select your source</p>
-                        </div>
-
-                        <div className="flex flex-col gap-3">
-                            <button
-                                onClick={() => {
-                                    setImageSource('file');
-                                    setShowSourceSelection(false);
-                                    setTimeout(() => fileInputRef.current?.click(), 100);
-                                }}
-                                className="w-full py-4 bg-white/[0.03] border border-white/10 rounded-2xl flex items-center justify-center gap-3 hover:bg-white/[0.08] hover:border-white/20 transition-all group"
-                            >
-                                <IonIcon name="cloud-upload-outline" className="text-blue-400 text-lg group-hover:scale-110 transition-transform" />
-                                <span className="text-[10px] font-black text-white uppercase tracking-widest">Upload Images</span>
-                            </button>
-
-                            <button
-                                onClick={() => {
-                                    setImageSource('link');
-                                    setShowSourceSelection(false);
-                                    setShowLinkInput(true);
-                                }}
-                                className="w-full py-4 bg-white/[0.03] border border-white/10 rounded-2xl flex items-center justify-center gap-3 hover:bg-white/[0.08] hover:border-white/20 transition-all group"
-                            >
-                                <IonIcon name="link-outline" className="text-purple-400 text-lg group-hover:scale-110 transition-transform" />
-                                <span className="text-[10px] font-black text-white uppercase tracking-widest">Add Image Link</span>
-                            </button>
-                        </div>
-
-                        <button
-                            onClick={() => setShowSourceSelection(false)}
-                            className="w-full mt-8 py-2 text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] hover:text-white transition-colors"
-                        >
-                            Back
-                        </button>
-                    </div>
-                </div>
-            )}
-
-            {showLinkInput && (
-                <div className="fixed inset-0 z-[220] flex items-center justify-center p-6">
-                    <div className="absolute inset-0 bg-black/95 backdrop-blur-sm" onClick={() => setShowLinkInput(false)} />
-                    <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 p-8">
-                        <div className="text-center mb-6">
-                            <h3 className="text-lg font-black text-white italic uppercase tracking-[0.2em]">Image Link</h3>
-                            <p className="text-[9px] text-slate-500 font-black uppercase mt-2 tracking-widest">Enter the direct image URL</p>
-                        </div>
-
-                        <div className="space-y-4">
-                            <input
-                                type="url"
-                                value={imageLink}
-                                onChange={(e) => setImageLink(e.target.value)}
-                                placeholder="https://example.com/image.jpg"
-                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-4 py-3.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all"
-                            />
-                            <button
-                                onClick={handleAddImageLink}
-                                className="w-full py-4 bg-white text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-lg hover:bg-gray-200 hover:scale-[1.02] transition-all"
-                            >
-                                {previews.length >= 1 ? 'Add Another' : 'Add Image'}
-                            </button>
-                        </div>
-
-                        <button
-                            onClick={() => setShowLinkInput(false)}
-                            className="w-full mt-6 py-2 text-[10px] font-black text-blue-500 uppercase tracking-[0.3em] hover:text-white transition-colors"
-                        >
-                            {previews.length >= 1 ? 'Done' : 'Cancel'}
-                        </button>
-                    </div>
-                </div>
-            )}
-
-            {openPicker && (
-                <div className="fixed inset-0 z-[150] flex items-center justify-center p-6">
-                    <div className="absolute inset-0 bg-black/90 backdrop-blur-md" onClick={() => { setOpenPicker(null); setTempSelections([]); }} />
-                    <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
-                        <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
-                            <div className="flex flex-col">
-                                <span className="text-[10px] font-black text-gray-300 uppercase tracking-[0.2em]">{openPicker.title}</span>
-                                <span className="text-[8px] text-gray-400 font-bold uppercase mt-1">Pick from list or enter manually</span>
+            {
+                showSourceSelection && (
+                    <div className="fixed inset-0 z-[210] flex items-center justify-center p-6">
+                        <div className="absolute inset-0 bg-black/95 backdrop-blur-sm" onClick={() => setShowSourceSelection(false)} />
+                        <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-xs overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 p-8">
+                            <div className="text-center mb-8">
+                                <h3 className="text-lg font-black text-white italic uppercase tracking-[0.2em]">Add Images</h3>
+                                <p className="text-[9px] text-slate-500 font-black uppercase mt-2 tracking-widest">Select your source</p>
                             </div>
-                            <button type="button" onClick={() => { setOpenPicker(null); setTempSelections([]); }} className="w-8 h-8 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center transition-all">
-                                <IonIcon name="close" />
+
+                            <div className="flex flex-col gap-3">
+                                <button
+                                    onClick={() => {
+                                        setImageSource('file');
+                                        setShowSourceSelection(false);
+                                        setTimeout(() => fileInputRef.current?.click(), 100);
+                                    }}
+                                    className="w-full py-4 bg-white/[0.03] border border-white/10 rounded-2xl flex items-center justify-center gap-3 hover:bg-white/[0.08] hover:border-white/20 transition-all group"
+                                >
+                                    <IonIcon name="cloud-upload-outline" className="text-blue-400 text-lg group-hover:scale-110 transition-transform" />
+                                    <span className="text-[10px] font-black text-white uppercase tracking-widest">Upload Images</span>
+                                </button>
+
+                                <button
+                                    onClick={() => {
+                                        setImageSource('link');
+                                        setShowSourceSelection(false);
+                                        setShowLinkInput(true);
+                                    }}
+                                    className="w-full py-4 bg-white/[0.03] border border-white/10 rounded-2xl flex items-center justify-center gap-3 hover:bg-white/[0.08] hover:border-white/20 transition-all group"
+                                >
+                                    <IonIcon name="link-outline" className="text-purple-400 text-lg group-hover:scale-110 transition-transform" />
+                                    <span className="text-[10px] font-black text-white uppercase tracking-widest">Add Image Link</span>
+                                </button>
+                            </div>
+
+                            <button
+                                onClick={() => setShowSourceSelection(false)}
+                                className="w-full mt-8 py-2 text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] hover:text-white transition-colors"
+                            >
+                                Back
                             </button>
                         </div>
+                    </div>
+                )
+            }
 
-                        {!openPicker?.title.includes('UOM') && (
-                            <div className="p-4 bg-black/40">
-                                <div className="relative group">
-                                    <input
-                                        type="text"
-                                        placeholder="Search..."
-                                        className="w-full bg-slate-800 rounded-2xl py-3.5 pl-11 pr-4 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-medium placeholder:text-slate-600"
-                                        onChange={(e) => {
-                                            const query = e.target.value.toLowerCase();
-                                            setOpenPicker(prev => prev ? { ...prev, manualQuery: query } : null);
-                                        }}
-                                    />
-                                    <IonIcon name="search-outline" className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-white transition-colors" />
+            {
+                showLinkInput && (
+                    <div className="fixed inset-0 z-[220] flex items-center justify-center p-6">
+                        <div className="absolute inset-0 bg-black/95 backdrop-blur-sm" onClick={() => setShowLinkInput(false)} />
+                        <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 p-8">
+                            <div className="text-center mb-6">
+                                <h3 className="text-lg font-black text-white italic uppercase tracking-[0.2em]">Image Link</h3>
+                                <p className="text-[9px] text-slate-500 font-black uppercase mt-2 tracking-widest">Enter the direct image URL</p>
+                            </div>
+
+                            <div className="space-y-4">
+                                <input
+                                    type="url"
+                                    value={imageLink}
+                                    onChange={(e) => setImageLink(e.target.value)}
+                                    placeholder="https://example.com/image.jpg"
+                                    className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-4 py-3.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all"
+                                />
+                                <button
+                                    onClick={handleAddImageLink}
+                                    className="w-full py-4 bg-white text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-lg hover:bg-gray-200 hover:scale-[1.02] transition-all"
+                                >
+                                    {previews.length >= 1 ? 'Add Another' : 'Add Image'}
+                                </button>
+                            </div>
+
+                            <button
+                                onClick={() => setShowLinkInput(false)}
+                                className="w-full mt-6 py-2 text-[10px] font-black text-blue-500 uppercase tracking-[0.3em] hover:text-white transition-colors"
+                            >
+                                {previews.length >= 1 ? 'Done' : 'Cancel'}
+                            </button>
+                        </div>
+                    </div>
+                )
+            }
+
+            {
+                openPicker && (
+                    <div className="fixed inset-0 z-[150] flex items-center justify-center p-6">
+                        <div className="absolute inset-0 bg-black/90 backdrop-blur-md" onClick={() => { setOpenPicker(null); setTempSelections([]); }} />
+                        <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+                            <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] font-black text-gray-300 uppercase tracking-[0.2em]">{openPicker.title}</span>
+                                    <span className="text-[8px] text-gray-400 font-bold uppercase mt-1">Pick from list or enter manually</span>
                                 </div>
+                                <button type="button" onClick={() => { setOpenPicker(null); setTempSelections([]); }} className="w-8 h-8 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center transition-all">
+                                    <IonIcon name="close" />
+                                </button>
                             </div>
-                        )}
 
-                        <div className="max-h-[350px] overflow-y-auto py-2 px-3 custom-scrollbar flex flex-col gap-1.5">
-                            {(openPicker?.type === 'color' || openPicker?.field === 'category' || openPicker?.type === 'variant') && (
-                                <div className="p-3 mb-2 bg-white/[0.03] rounded-2xl border border-white/5 flex gap-2 items-center">
-                                    <input
-                                        type="text"
-                                        placeholder={`Manual ${openPicker?.field === 'category' ? 'category' : openPicker?.title.includes('UOM') ? 'UOM' : 'value'}...`}
-                                        className="flex-1 bg-transparent border-none text-xs text-white font-black px-2 outline-none"
-                                        id="manualEntryInput"
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter') {
-                                                const val = (e.target as HTMLInputElement).value;
-                                                if (openPicker?.type === 'color') assignColorToActiveImage(val);
-                                                else if (openPicker?.type === 'form') handleFormChange(openPicker.field, val);
-                                                else if (openPicker?.type === 'variant') setTempSelections(prev => [...prev, val]);
-                                                setOpenPicker(null);
-                                            }
-                                        }}
-                                    />
+                            {!openPicker?.title.includes('UOM') && (
+                                <div className="p-4 bg-black/40">
+                                    <div className="relative group">
+                                        <input
+                                            type="text"
+                                            placeholder="Search..."
+                                            className="w-full bg-slate-800 rounded-2xl py-3.5 pl-11 pr-4 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-medium placeholder:text-slate-600"
+                                            onChange={(e) => {
+                                                const query = e.target.value.toLowerCase();
+                                                setOpenPicker(prev => prev ? { ...prev, manualQuery: query } : null);
+                                            }}
+                                        />
+                                        <IonIcon name="search-outline" className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-white transition-colors" />
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="max-h-[350px] overflow-y-auto py-2 px-3 custom-scrollbar flex flex-col gap-1.5">
+                                {(openPicker?.type === 'color' || openPicker?.field === 'category' || openPicker?.type === 'variant') && (
+                                    <div className="p-3 mb-2 bg-white/[0.03] rounded-2xl border border-white/5 flex gap-2 items-center">
+                                        <input
+                                            type="text"
+                                            placeholder={`Manual ${openPicker?.field === 'category' ? 'category' : openPicker?.title.includes('UOM') ? 'UOM' : 'value'}...`}
+                                            className="flex-1 bg-transparent border-none text-xs text-white font-black px-2 outline-none"
+                                            id="manualEntryInput"
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    const val = (e.target as HTMLInputElement).value;
+                                                    if (openPicker?.type === 'color') assignColorToActiveImage(val);
+                                                    else if (openPicker?.type === 'form') handleFormChange(openPicker.field, val);
+                                                    else if (openPicker?.type === 'variant') setTempSelections(prev => [...prev, val]);
+                                                    setOpenPicker(null);
+                                                }
+                                            }}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                const input = document.getElementById('manualEntryInput') as HTMLInputElement;
+                                                const val = input?.value;
+                                                if (val) {
+                                                    if (openPicker?.type === 'color') assignColorToActiveImage(val);
+                                                    else if (openPicker?.type === 'form') handleFormChange(openPicker.field, val);
+                                                    else if (openPicker?.type === 'variant') {
+                                                        setTempSelections(prev => [...prev, val]);
+                                                        return; // Don't close yet for multi-select
+                                                    }
+                                                    setOpenPicker(null);
+                                                }
+                                            }}
+                                            className="bg-white text-black text-[9px] font-black px-3 py-1.5 rounded-lg uppercase"
+                                        >
+                                            Confirm
+                                        </button>
+                                    </div>
+                                )}
+
+                                {(openPicker?.type === 'color'
+                                    ? COLORS.filter(c => !openPicker?.manualQuery || c.name.toLowerCase().includes(openPicker?.manualQuery as string) || c.hex.toLowerCase().includes(openPicker?.manualQuery as string))
+                                    : (openPicker?.options || []).filter(o => !openPicker?.manualQuery || o.toLowerCase().includes(openPicker?.manualQuery as string))
+                                ).map((o: any) => {
+                                    const isColor = openPicker?.type === 'color';
+                                    const label = isColor ? o.name : o;
+                                    const isMulti = openPicker?.type === 'variant' || openPicker?.type === 'shipping';
+                                    const isSelected = isMulti ? tempSelections.includes(label) : openPicker?.value === label;
+
+                                    return (
+                                        <button
+                                            key={label}
+                                            type="button"
+                                            onClick={() => {
+                                                if (openPicker?.type === 'form') {
+                                                    handleFormChange(openPicker.field, label);
+                                                } else if (isMulti) {
+                                                    setTempSelections(prev => prev.includes(label) ? prev.filter(s => s !== label) : [...prev, label]);
+                                                } else if (openPicker?.type === 'color') {
+                                                    assignColorToActiveImage(label);
+                                                    setOpenPicker(null);
+                                                } else if (openPicker?.type === 'shipping_date') {
+                                                    const updated = [...formData.shipping];
+                                                    const idx = parseInt(openPicker.field);
+                                                    if (!isNaN(idx)) {
+                                                        updated[idx] = { ...updated[idx], date: label };
+                                                        setFormData(prev => ({ ...prev, shipping: updated }));
+                                                    }
+                                                    setOpenPicker(null);
+                                                }
+                                            }}
+                                            className={`w-full p-3.5 rounded-2xl text-xs font-bold transition-all flex items-center justify-between group
+                                                            ${isSelected ? 'bg-white text-black' : 'text-slate-400 hover:bg-white/[0.05] hover:text-white'}`}
+                                        >
+                                            <div className="flex items-center gap-3">
+                                                {isColor && (
+                                                    <div
+                                                        className="w-5 h-5 rounded-full border border-white/10 shadow-sm"
+                                                        style={{ backgroundColor: o.hex }}
+                                                    />
+                                                )}
+                                                <span className="tracking-tight">{label}</span>
+                                            </div>
+                                            {isColor && <span className={`text-[8px] font-black uppercase opacity-40 group-hover:opacity-100 ${isSelected ? 'text-black' : 'text-slate-600'}`}>{o.hex}</span>}
+                                            {isSelected && <IonIcon name="checkmark-circle" className="text-lg" />}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            <div className="p-6 bg-white/[0.02] border-t border-white/5 flex gap-3">
+                                <button type="button" onClick={() => { setOpenPicker(null); setTempSelections([]); }} className="flex-1 py-4 rounded-[1.5rem] bg-slate-800 text-white text-[10px] font-black uppercase tracking-widest hover:bg-slate-700 transition-all">Cancel</button>
+                                {(openPicker?.type === 'variant' || openPicker?.type === 'shipping') && (
                                     <button
                                         type="button"
                                         onClick={() => {
-                                            const input = document.getElementById('manualEntryInput') as HTMLInputElement;
-                                            const val = input?.value;
-                                            if (val) {
-                                                if (openPicker?.type === 'color') assignColorToActiveImage(val);
-                                                else if (openPicker?.type === 'form') handleFormChange(openPicker.field, val);
-                                                else if (openPicker?.type === 'variant') {
-                                                    setTempSelections(prev => [...prev, val]);
-                                                    return; // Don't close yet for multi-select
-                                                }
-                                                setOpenPicker(null);
+                                            if (openPicker?.type === 'shipping') {
+                                                const current = formData.shipping || [];
+                                                const newShipping = tempSelections.map(country => ({ country, charge: "0", date: "" }));
+                                                setFormData(prev => ({ ...prev, shipping: [...current, ...newShipping] }));
+                                            } else if (openPicker?.type === 'variant') {
+                                                const isUOM = openPicker.title.includes('UOM');
+                                                const newVariants = [...variants];
+                                                const currentSelections = newVariants[activeImageIndex].selections || [];
+                                                const newSelections = tempSelections.map(val => ({
+                                                    value: val,
+                                                    stock: "0"
+                                                }));
+                                                newVariants[activeImageIndex] = {
+                                                    ...newVariants[activeImageIndex],
+                                                    selections: [...currentSelections, ...newSelections],
+                                                    type: isUOM ? 'UOM' : 'Size'
+                                                };
+                                                setVariants(newVariants);
                                             }
+                                            setOpenPicker(null);
+                                            setTempSelections([]);
                                         }}
-                                        className="bg-white text-black text-[9px] font-black px-3 py-1.5 rounded-lg uppercase"
+                                        className="flex-[2] py-4 rounded-[1.5rem] bg-white text-black text-[10px] font-black uppercase tracking-widest hover:bg-gray-200 transition-all"
                                     >
                                         Confirm
                                     </button>
-                                </div>
-                            )}
-
-                            {(openPicker?.type === 'color'
-                                ? COLORS.filter(c => !openPicker?.manualQuery || c.name.toLowerCase().includes(openPicker?.manualQuery as string) || c.hex.toLowerCase().includes(openPicker?.manualQuery as string))
-                                : openPicker?.options.filter(o => !openPicker?.manualQuery || o.toLowerCase().includes(openPicker?.manualQuery as string))
-                            )?.map((o: any) => {
-                                const isColor = openPicker?.type === 'color';
-                                const label = isColor ? o.name : o;
-                                const isMulti = openPicker?.type === 'variant' || openPicker?.type === 'shipping';
-                                const isSelected = isMulti ? tempSelections.includes(label) : openPicker?.value === label;
-
-                                return (
-                                    <button
-                                        key={label}
-                                        type="button"
-                                        onClick={() => {
-                                            if (openPicker?.type === 'form') {
-                                                handleFormChange(openPicker.field, label);
-                                            } else if (isMulti) {
-                                                setTempSelections(prev => prev.includes(label) ? prev.filter(s => s !== label) : [...prev, label]);
-                                            } else if (openPicker?.type === 'color') {
-                                                assignColorToActiveImage(label);
-                                                setOpenPicker(null);
-                                            } else if (openPicker?.type === 'shipping_date') {
-                                                const updated = [...formData.shipping];
-                                                const idx = parseInt(openPicker.field);
-                                                if (!isNaN(idx)) {
-                                                    updated[idx] = { ...updated[idx], date: label };
-                                                    setFormData(prev => ({ ...prev, shipping: updated }));
-                                                }
-                                                setOpenPicker(null);
-                                            }
-                                        }}
-                                        className={`w-full p-3.5 rounded-2xl text-xs font-bold transition-all flex items-center justify-between group
-                                                            ${isSelected ? 'bg-white text-black' : 'text-slate-400 hover:bg-white/[0.05] hover:text-white'}`}
-                                    >
-                                        <div className="flex items-center gap-3">
-                                            {isColor && (
-                                                <div
-                                                    className="w-5 h-5 rounded-full border border-white/10 shadow-sm"
-                                                    style={{ backgroundColor: o.hex }}
-                                                />
-                                            )}
-                                            <span className="tracking-tight">{label}</span>
-                                        </div>
-                                        {isColor && <span className={`text-[8px] font-black uppercase opacity-40 group-hover:opacity-100 ${isSelected ? 'text-black' : 'text-slate-600'}`}>{o.hex}</span>}
-                                        {isSelected && <IonIcon name="checkmark-circle" className="text-lg" />}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                        <div className="p-6 bg-white/[0.02] border-t border-white/5 flex gap-3">
-                            <button type="button" onClick={() => { setOpenPicker(null); setTempSelections([]); }} className="flex-1 py-4 rounded-[1.5rem] bg-slate-800 text-white text-[10px] font-black uppercase tracking-widest hover:bg-slate-700 transition-all">Cancel</button>
-                            {(openPicker?.type === 'variant' || openPicker?.type === 'shipping') && (
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        if (openPicker?.type === 'shipping') {
-                                            const current = formData.shipping || [];
-                                            const newShipping = tempSelections.map(country => ({ country, charge: "0", date: "" }));
-                                            setFormData(prev => ({ ...prev, shipping: [...current, ...newShipping] }));
-                                        } else if (openPicker?.type === 'variant') {
-                                            const isUOM = openPicker.title.includes('UOM');
-                                            const newVariants = [...variants];
-                                            const currentSelections = newVariants[activeImageIndex].selections || [];
-                                            const newSelections = tempSelections.map(val => ({
-                                                value: val,
-                                                stock: "0"
-                                            }));
-                                            newVariants[activeImageIndex] = {
-                                                ...newVariants[activeImageIndex],
-                                                selections: [...currentSelections, ...newSelections],
-                                                type: isUOM ? 'UOM' : 'Size'
-                                            };
-                                            setVariants(newVariants);
-                                        }
-                                        setOpenPicker(null);
-                                        setTempSelections([]);
-                                    }}
-                                    className="flex-[2] py-4 rounded-[1.5rem] bg-white text-black text-[10px] font-black uppercase tracking-widest hover:bg-gray-200 transition-all"
-                                >
-                                    Confirm
-                                </button>
-                            )}
+                                )}
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
-
+                )}
             {showSuccessPopup && (
                 <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
                     <div className="absolute inset-0 bg-black/80 backdrop-blur-md" />
