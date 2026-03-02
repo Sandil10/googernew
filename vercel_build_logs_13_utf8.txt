@@ -1,0 +1,113 @@
+﻿node.exe : Vercel CLI 48.4.0
+At 
+C:\nvm4w\nodejs\npx.ps1:29 
+char:3
++   & $NODE_EXE $NPX_CLI_JS 
+$args
++   
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: (Vercel   
+  CLI 48.4.0:String) [], R   
+ emoteException
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 
+> [debug] 
+[2026-03-02T05:28:18.361Z] 
+user supplied known 
+subcommand: "build"
+> [debug] 
+[2026-03-02T05:28:18.586Z] 
+Found ".git\config" - 
+detected "F:\googer 
+new\googer-next" as repo root
+WARN! Build not running on 
+Vercel. System environment 
+variables will not be 
+available.
+> [debug] 
+[2026-03-02T05:28:18.599Z] 
+Loaded environment variables 
+from "F:\googer new\googer-ne
+xt\.vercel\.env.preview.local
+"
+> [debug] 
+[2026-03-02T05:28:18.622Z] 
+Locating files F:\googer 
+new\googer-next
+> [debug] 
+[2026-03-02T05:28:18.625Z] 
+Ignoring F:\googer 
+new\googer-next\.git
+> [debug] 
+[2026-03-02T05:28:18.625Z] 
+Ignoring F:\googer 
+new\googer-next\.gitignore
+> [debug] 
+[2026-03-02T05:28:18.625Z] 
+Ignoring F:\googer 
+new\googer-next\.next
+> [debug] 
+[2026-03-02T05:28:18.625Z] 
+Ignoring F:\googer 
+new\googer-next\.vercel
+> [debug] 
+[2026-03-02T05:28:18.626Z] 
+Ignoring F:\googer 
+new\googer-next\node_modules
+> [debug] 
+[2026-03-02T05:28:18.628Z] 
+Ignoring F:\googer new\googer
+-next\backend\node_modules
+> [debug] 
+[2026-03-02T05:28:18.634Z] 
+Locating files F:\googer 
+new\googer-next [12ms]
+> [debug] 
+[2026-03-02T05:28:18.998Z] 
+Imported Builder 
+"@vercel/node" from 
+"C:\Users\Bhagya Ranawake\App
+Data\Roaming\npm\node_modules
+\vercel\node_modules\@vercel\
+node"
+> [debug] 
+[2026-03-02T05:28:19.014Z] 
+Imported Builder 
+"@vercel/next" from 
+"C:\Users\Bhagya Ranawake\App
+Data\Roaming\npm\node_modules
+\vercel\node_modules\@vercel\
+next"
+> [debug] 
+[2026-03-02T05:28:19.039Z] 
+Setting env VERCEL_PROJECT_SE
+TTINGS_NODE_VERSION to "24.x"
+> [debug] 
+[2026-03-02T05:28:19.039Z] 
+Building entrypoint 
+"package.json" with 
+"@vercel/next"
+Error: Found invalid Node.js 
+Version: "24.x". Please set 
+Node.js Version to 22.x in 
+your Project Settings to use 
+Node.js 22.
+Learn More: http://vercel.lin
+k/node-version
+> [debug] 
+[2026-03-02T05:28:19.433Z] 
+Vercel CLI 48.4.0
+
+> [debug] 
+[2026-03-02T05:28:20.149Z] 
+Telemetry event tracked
+> [debug] 
+[2026-03-02T05:28:21.104Z] 
+Telemetry subprocess killed 
+due to timeout
+> [debug] 
+[2026-03-02T05:28:21.117Z] 
+Telemetry subprocess exited 
+with code null
