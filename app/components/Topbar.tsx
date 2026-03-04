@@ -93,10 +93,10 @@ export default function Topbar() {
                         console.log("Dispatching open-add-product-modal");
                         window.dispatchEvent(new CustomEvent('open-add-product-modal'));
                     }}
-                    className="flex items-center justify-center w-10 h-10 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all duration-300 group mx-1"
+                    className="flex items-center justify-center w-12 h-10 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all duration-300 group mx-2 z-10"
                     title="Add Product"
                 >
-                    <div className="text-2xl flex items-center group-hover:scale-110 transition-transform">
+                    <div className="text-3xl flex items-center group-hover:scale-110 transition-transform">
                         <IonIcon name="add-circle" />
                     </div>
                 </button>
@@ -128,7 +128,7 @@ export default function Topbar() {
                     onClick={() => {
                         window.dispatchEvent(new CustomEvent('open-add-product-modal'));
                     }}
-                    className="hidden md:flex w-9 h-9 items-center justify-center text-gray-400 hover:text-white transition-all duration-300 rounded-full hover:bg-white/10 relative mr-1 group"
+                    className="flex w-9 h-9 items-center justify-center text-gray-400 hover:text-white transition-all duration-300 rounded-full hover:bg-white/10 relative mr-1 group"
                     title="Sell Product"
                 >
                     <IonIcon name="cart-outline" className="text-xl group-hover:scale-110 transition-transform" />
