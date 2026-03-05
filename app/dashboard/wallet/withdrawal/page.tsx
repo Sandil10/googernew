@@ -10,6 +10,9 @@ export default function Withdrawal() {
     const router = useRouter();
     const [activeTab, setActiveTab] = useState<'withdrawal' | 'recent'>('withdrawal');
     const [amount, setAmount] = useState('0');
+    const [idVerificationName, setIdVerificationName] = useState('');
+    const [subscriptionType, setSubscriptionType] = useState('Monthly Subscription');
+    const [center, setCenter] = useState('');
     const [balance, setBalance] = useState(0);
 
     useEffect(() => {
@@ -77,17 +80,53 @@ export default function Withdrawal() {
                             </div>
 
                             <div className="space-y-6">
-                                <div>
-                                    <label className="block text-center text-gray-400 text-xs font-semibold mb-3">Enter Withdrawal Amount</label>
-                                    <input
-                                        type="text"
-                                        value={amount}
-                                        onChange={(e) => setAmount(e.target.value)}
-                                        className="w-full bg-[#0d1421] border border-gray-700 rounded-xl px-4 py-3 text-white text-center text-lg font-bold focus:outline-none focus:ring-1 focus:ring-blue-500 shadow-inner"
-                                        placeholder="0.00"
-                                    />
-                                    <div className="text-center mt-2">
-                                        {/* Conversion text removed */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-center text-gray-400 text-xs font-semibold mb-3 tracking-wider uppercase">ID Verification Name</label>
+                                        <input
+                                            type="text"
+                                            value={idVerificationName}
+                                            onChange={(e) => setIdVerificationName(e.target.value)}
+                                            className="w-full bg-[#0d1421] border border-gray-700/50 rounded-xl px-4 py-3 text-white text-center text-lg font-bold focus:outline-none focus:ring-1 focus:ring-blue-500/50 shadow-inner transition-all hover:bg-[#111a2b]"
+                                            placeholder="Enter Name"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-center text-gray-400 text-xs font-semibold mb-3 tracking-wider uppercase">Subscription Type</label>
+                                        <div className="relative">
+                                            <select
+                                                value={subscriptionType}
+                                                onChange={(e) => setSubscriptionType(e.target.value)}
+                                                className="w-full bg-[#0d1421] border border-gray-700/50 rounded-xl px-4 py-3 text-white text-center text-sm font-bold focus:outline-none focus:ring-1 focus:ring-blue-500/50 shadow-inner appearance-none transition-all hover:bg-[#111a2b] cursor-pointer"
+                                            >
+                                                <option value="Monthly Subscription">Monthly Subscription</option>
+                                                <option value="Yearly Subscription">Yearly Subscription</option>
+                                                <option value="Quarterly Subscription">Quarterly Subscription</option>
+                                            </select>
+                                            <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
+                                                <IonIcon name="chevron-down-outline" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-center text-gray-400 text-xs font-semibold mb-3 tracking-wider uppercase">Center Box</label>
+                                        <input
+                                            type="text"
+                                            value={center}
+                                            onChange={(e) => setCenter(e.target.value)}
+                                            className="w-full bg-[#0d1421] border border-gray-700/50 rounded-xl px-4 py-3 text-white text-center text-lg font-bold focus:outline-none focus:ring-1 focus:ring-blue-500/50 shadow-inner transition-all hover:bg-[#111a2b]"
+                                            placeholder="Enter Center"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-center text-gray-400 text-xs font-semibold mb-3 tracking-wider uppercase">Withdrawal Amount</label>
+                                        <input
+                                            type="text"
+                                            value={amount}
+                                            onChange={(e) => setAmount(e.target.value)}
+                                            className="w-full bg-[#0d1421] border border-gray-700/50 rounded-xl px-4 py-3 text-white text-center text-lg font-bold focus:outline-none focus:ring-1 focus:ring-blue-500/50 shadow-inner transition-all hover:bg-[#111a2b]"
+                                            placeholder="0.00"
+                                        />
                                     </div>
                                 </div>
 
