@@ -1498,7 +1498,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
                                         <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Warranty</label>
                                         <div
-                                            onClick={() => setOpenPicker({ type: 'form', field: 'warranty', options: ["No Warranty", "1 Year", "2 Years", "Custom"], title: 'Warranty', value: formData.warranty })}
+                                            onClick={() => setOpenPicker({ type: 'form', field: 'warranty', options: ["No Warranty", "1 Month", "3 Months", "6 Months", "1 Year", "2 Years", "3 Years", "5 Years", "10 Years", "Lifetime Warranty", "Custom"], title: 'Warranty', value: formData.warranty })}
                                             className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer"
                                         >
                                             <span>{formData.warranty}</span>
