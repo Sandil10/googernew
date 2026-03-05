@@ -50,10 +50,10 @@ const CATEGORIES_HIERARCHY: any = {
 
 const CATEGORIES = Object.keys(CATEGORIES_HIERARCHY);
 
-const SIZES = ["S", "M", "L", "XL", "XXL", "3XL", "4XL", "5XL"];
+const SIZES = ["S", "M", "L", "XL", "XXL", "3XL", "4XL", "5XL", "mm", "cm"];
 const UOMS = [
     "Piece", "Pair", "Set", "Kg", "Gram", "Litre", "ML", "Pack", "Box", "Dozon",
-    "Metre", "Yard", "Foot", "Inch", "Sq Ft", "Roll", "Bundle", "Bag", "Bottle", "Can",
+    "Metre", "Yard", "Foot", "Inch", "mm", "cm", "Sq Ft", "Roll", "Bundle", "Bag", "Bottle", "Can",
     "Carton", "Pallet", "Unit", "Service", "Hour", "Day", "Month"
 ];
 
@@ -1312,7 +1312,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                                 setVariants(newVariants);
                                                             }}
                                                             className="w-full bg-slate-800/10 border border-white/5 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder-white/10"
-                                                            placeholder="Amount"
+                                                            placeholder={sel.value ? `Amount (${sel.value})` : "Amount"}
                                                             onKeyPress={(e) => {
                                                                 if (!/[0-9]/.test(e.key)) e.preventDefault();
                                                             }}

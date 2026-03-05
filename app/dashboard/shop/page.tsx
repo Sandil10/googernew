@@ -198,26 +198,34 @@ export default function ShopPage() {
 
             {/* Sub-tabs for My Listings */}
             {activeTab === 'my-products' && (
-                <div className="flex items-center gap-1.5 mb-8 p-1 bg-white/5 rounded-2xl w-fit overflow-x-auto no-scrollbar border border-white/5">
-                    {[
-                        { id: 'active', label: 'Active Products', icon: 'checkmark-circle' },
-                        { id: 'all', label: 'My Products', icon: 'grid' },
-                        { id: 'reviewing', label: 'Review Products', icon: 'time' },
-                        { id: 'deleted', label: 'Deleted Products', icon: 'trash' }
-                    ].map((tab) => (
-                        <button
-                            key={tab.id}
-                            onClick={() => setMyListingsTab(tab.id)}
-                            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
-                                ${myListingsTab === tab.id
-                                    ? 'bg-white text-black shadow-lg shadow-white/5 scale-[1.02]'
-                                    : 'text-slate-500 hover:text-white hover:bg-white/5'
-                                }`}
-                        >
-                            <IonIcon name={tab.icon + (myListingsTab === tab.id ? "" : "-outline")} className="text-sm" />
-                            {tab.label}
-                        </button>
-                    ))}
+                <div className="flex items-center gap-2 mb-8 select-none animate-in slide-in-from-left-4 duration-500">
+                    <button className="flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('mylisting-scroll')?.scrollBy({ left: -150, behavior: 'smooth' })}>
+                        <IonIcon name="chevron-back" className="text-lg" />
+                    </button>
+                    <div id="mylisting-scroll" className="flex-1 flex items-center gap-1.5 p-1 bg-white/5 rounded-2xl overflow-x-auto no-scrollbar border border-white/5 scroll-smooth">
+                        {[
+                            { id: 'active', label: 'Active Products', icon: 'checkmark-circle' },
+                            { id: 'all', label: 'My Products', icon: 'grid' },
+                            { id: 'reviewing', label: 'Review Products', icon: 'time' },
+                            { id: 'deleted', label: 'Deleted Products', icon: 'trash' }
+                        ].map((tab) => (
+                            <button
+                                key={tab.id}
+                                onClick={() => setMyListingsTab(tab.id)}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
+                                    ${myListingsTab === tab.id
+                                        ? 'bg-white text-black shadow-lg shadow-white/5 scale-[1.02]'
+                                        : 'text-slate-500 hover:text-white hover:bg-white/5'
+                                    }`}
+                            >
+                                <IonIcon name={tab.icon + (myListingsTab === tab.id ? "" : "-outline")} className="text-sm" />
+                                {tab.label}
+                            </button>
+                        ))}
+                    </div>
+                    <button className="flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('mylisting-scroll')?.scrollBy({ left: 150, behavior: 'smooth' })}>
+                        <IonIcon name="chevron-forward" className="text-lg" />
+                    </button>
                 </div>
             )}
 
