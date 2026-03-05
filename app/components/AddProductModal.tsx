@@ -1173,21 +1173,23 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 </div>
 
                                 <div className="flex flex-col gap-5">
-                                    <div>
-                                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">
-                                            Promo Price
-                                        </label>
-                                        <input
-                                            type="number"
-                                            value={variants[uploadMode === 'single' ? 0 : activeImageIndex].promo_price}
-                                            onChange={(e) => handleVariantChange(uploadMode === 'single' ? 0 : activeImageIndex, 'promo_price', e.target.value)}
-                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white mt-1 focus:ring-1 focus:ring-white outline-none transition-all placeholder:text-white/10"
-                                            placeholder="Example: 599.00 (Promo Price Box)"
-                                            onKeyPress={(e) => {
-                                                if (!/[0-9.]/.test(e.key)) e.preventDefault();
-                                            }}
-                                        />
-                                    </div>
+                                    {uploadMode !== 'single' && (
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">
+                                                Promo Price
+                                            </label>
+                                            <input
+                                                type="number"
+                                                value={variants[activeImageIndex]?.promo_price || ""}
+                                                onChange={(e) => handleVariantChange(activeImageIndex, 'promo_price', e.target.value)}
+                                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white mt-1 focus:ring-1 focus:ring-white outline-none transition-all placeholder:text-white/10"
+                                                placeholder="Example: 599.00 (Promo Price Box)"
+                                                onKeyPress={(e) => {
+                                                    if (!/[0-9.]/.test(e.key)) e.preventDefault();
+                                                }}
+                                            />
+                                        </div>
+                                    )}
 
                                     <div className="flex flex-col gap-4">
                                         <div className="grid grid-cols-2 gap-3">
