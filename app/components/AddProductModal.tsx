@@ -1144,28 +1144,54 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
 
                                     {/* Thumbnail row inside Variant Details */}
-                                    <div className="flex gap-2 mb-2 overflow-x-auto pb-2 no-scrollbar">
+                                    <div className="flex gap-3 overflow-x-auto pb-4 no-scrollbar items-start">
                                         {(uploadMode === 'variants' ? variants : previews).map((_, idx) => (
-                                            <div
-                                                key={idx}
-                                                onClick={() => setActiveImageIndex(idx)}
-                                                className={`relative w-12 h-12 rounded-xl flex-shrink-0 cursor-pointer overflow-hidden border-2 transition-all ${activeImageIndex === idx ? 'border-blue-500 scale-105 shadow-lg shadow-blue-500/20' : 'border-white/5 opacity-40 hover:opacity-100'}`}
-                                            >
-                                                {previews[idx] ? (
-                                                    <Image src={previews[idx]} alt="Mini preview" fill className="object-cover" />
-                                                ) : (
+                                            <div key={idx} className="flex flex-col items-center gap-1.5 shrink-0">
+                                                <div
+                                                    onClick={() => setActiveImageIndex(idx)}
+                                                    className={`relative w-12 h-12 rounded-xl flex-shrink-0 cursor-pointer overflow-hidden border-2 transition-all ${activeImageIndex === idx ? 'border-blue-500 scale-105 shadow-lg shadow-blue-500/20' : 'border-white/5 opacity-60 hover:opacity-100'}`}
+                                                >
+                                                    {previews[idx] ? (
+                                                        <Image src={previews[idx]} alt="Mini preview" fill className="object-cover" />
+                                                    ) : (
+                                                        <div
+                                                            className="w-full h-full"
+                                                            style={{ backgroundColor: COLORS.find(c => c.name === imageColors[idx])?.hex || (imageColors[idx]?.startsWith('#') ? imageColors[idx] : 'transparent') }}
+                                                        />
+                                                    )}
+                                                </div>
+
+                                                {/* Color Picker for Variant Detail Boxes */}
+                                                <div
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setActiveImageIndex(idx);
+                                                        setOpenPicker({
+                                                            type: 'color',
+                                                            field: 'color',
+                                                            options: COLORS.map(c => c.name),
+                                                            title: 'Pick Variant Color',
+                                                            value: imageColors[idx]
+                                                        });
+                                                    }}
+                                                    className={`px-1.5 py-0.5 rounded-full border flex items-center gap-1 cursor-pointer transition-all hover:border-blue-500/50
+                                                        ${activeImageIndex === idx ? 'bg-blue-600 border-blue-400' : 'bg-white/5 border-white/10'}`}
+                                                >
                                                     <div
-                                                        className="w-full h-full"
-                                                        style={{ backgroundColor: COLORS.find(c => c.name === imageColors[idx])?.hex || (imageColors[idx]?.startsWith('#') ? imageColors[idx] : 'transparent') }}
+                                                        className="w-1.5 h-1.5 rounded-full shadow-inner ring-1 ring-white/10"
+                                                        style={{ backgroundColor: COLORS.find(c => c.name === imageColors[idx])?.hex || (imageColors[idx]?.startsWith('#') ? imageColors[idx] : '#333') }}
                                                     />
-                                                )}
+                                                    <span className={`text-[5px] font-black uppercase tracking-tight ${activeImageIndex === idx ? 'text-white' : 'text-slate-500'}`}>
+                                                        {imageColors[idx] || "NONE"}
+                                                    </span>
+                                                </div>
                                             </div>
                                         ))}
                                         {previews.length < 5 && (
                                             <button
                                                 type="button"
                                                 onClick={handleAddImagesClick}
-                                                className="w-12 h-12 rounded-xl bg-blue-600/10 border-2 border-dashed border-blue-500/30 flex items-center justify-center text-blue-400 hover:bg-blue-600/20 hover:border-blue-500/50 transition-all flex-shrink-0 shadow-lg shadow-blue-500/5"
+                                                className="w-12 h-12 rounded-xl bg-blue-600/10 border-2 border-dashed border-blue-500/30 flex items-center justify-center text-blue-400 hover:bg-blue-600/20 hover:border-blue-500/50 transition-all flex-shrink-0 shadow-lg shadow-blue-500/5 mt-0"
                                             >
                                                 <IonIcon name="add" className="text-lg" />
                                             </button>
