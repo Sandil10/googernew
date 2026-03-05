@@ -1268,55 +1268,69 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 <div className="grid grid-cols-2 gap-3">
                                                     <div className="flex flex-col gap-1">
                                                         <span className="text-[8px] font-black text-slate-600 uppercase mb-1 block">Specific Details</span>
-                                                        <input
-                                                            type="text"
-                                                            value={sel.detail || ""}
-                                                            onChange={(e) => {
-                                                                let newVariants = [...variants];
-                                                                const targetIdx = uploadMode === 'single' ? 0 : activeImageIndex;
-                                                                if (uploadMode === 'single') {
-                                                                    newVariants = newVariants.map(v => {
-                                                                        if (v.selections && v.selections[sIdx]) {
-                                                                            v.selections[sIdx].detail = e.target.value;
-                                                                        }
-                                                                        return v;
-                                                                    });
-                                                                } else {
-                                                                    newVariants[targetIdx].selections[sIdx].detail = e.target.value;
-                                                                }
-                                                                setVariants(newVariants);
-                                                            }}
-                                                            className="w-full bg-slate-800/10 border border-white/5 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder:text-white/10"
-                                                            placeholder="e.g. 20 to 22"
-                                                        />
+                                                        <div className="relative">
+                                                            <input
+                                                                type="text"
+                                                                value={sel.detail || ""}
+                                                                onChange={(e) => {
+                                                                    let newVariants = [...variants];
+                                                                    const targetIdx = uploadMode === 'single' ? 0 : activeImageIndex;
+                                                                    if (uploadMode === 'single') {
+                                                                        newVariants = newVariants.map(v => {
+                                                                            if (v.selections && v.selections[sIdx]) {
+                                                                                v.selections[sIdx].detail = e.target.value;
+                                                                            }
+                                                                            return v;
+                                                                        });
+                                                                    } else {
+                                                                        newVariants[targetIdx].selections[sIdx].detail = e.target.value;
+                                                                    }
+                                                                    setVariants(newVariants);
+                                                                }}
+                                                                className="w-full bg-slate-800/10 border border-white/5 rounded-xl px-3 py-2 md:py-2.5 pr-10 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder:text-white/20 transition-all"
+                                                                placeholder={sel.value ? `e.g. 5${sel.value} to 10${sel.value}` : "e.g. 20 to 22"}
+                                                            />
+                                                            {sel.value && (
+                                                                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+                                                                    <span className="text-[8px] font-black text-white/10 uppercase tracking-widest">{sel.value}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     </div>
 
                                                     <div className="flex flex-col gap-1">
                                                         <span className="text-[8px] font-black text-slate-600 uppercase mb-1 block">In Stock</span>
-                                                        <input
-                                                            type="number"
-                                                            value={sel.stock}
-                                                            onChange={(e) => {
-                                                                let newVariants = [...variants];
-                                                                const targetIdx = uploadMode === 'single' ? 0 : activeImageIndex;
-                                                                if (uploadMode === 'single') {
-                                                                    newVariants = newVariants.map(v => {
-                                                                        if (v.selections && v.selections[sIdx]) {
-                                                                            v.selections[sIdx].stock = e.target.value;
-                                                                        }
-                                                                        return v;
-                                                                    });
-                                                                } else {
-                                                                    newVariants[targetIdx].selections[sIdx].stock = e.target.value;
-                                                                }
-                                                                setVariants(newVariants);
-                                                            }}
-                                                            className="w-full bg-slate-800/10 border border-white/5 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder-white/10"
-                                                            placeholder={sel.value ? `Amount (${sel.value})` : "Amount"}
-                                                            onKeyPress={(e) => {
-                                                                if (!/[0-9]/.test(e.key)) e.preventDefault();
-                                                            }}
-                                                        />
+                                                        <div className="relative">
+                                                            <input
+                                                                type="number"
+                                                                value={sel.stock}
+                                                                onChange={(e) => {
+                                                                    let newVariants = [...variants];
+                                                                    const targetIdx = uploadMode === 'single' ? 0 : activeImageIndex;
+                                                                    if (uploadMode === 'single') {
+                                                                        newVariants = newVariants.map(v => {
+                                                                            if (v.selections && v.selections[sIdx]) {
+                                                                                v.selections[sIdx].stock = e.target.value;
+                                                                            }
+                                                                            return v;
+                                                                        });
+                                                                    } else {
+                                                                        newVariants[targetIdx].selections[sIdx].stock = e.target.value;
+                                                                    }
+                                                                    setVariants(newVariants);
+                                                                }}
+                                                                className="w-full bg-slate-800/10 border border-white/5 rounded-xl px-3 py-2 md:py-2.5 pr-10 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder:text-white/20 transition-all"
+                                                                placeholder="Qty"
+                                                                onKeyPress={(e) => {
+                                                                    if (!/[0-9]/.test(e.key)) e.preventDefault();
+                                                                }}
+                                                            />
+                                                            {sel.value && (
+                                                                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+                                                                    <span className="text-[8px] font-black text-white/10 uppercase tracking-widest">{sel.value}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
