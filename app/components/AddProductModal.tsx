@@ -677,6 +677,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             <h2 className="text-lg md:text-xl font-bold text-white tracking-tight">Add Listing</h2>
                             <p className="text-[9px] md:text-[10px] text-slate-500 uppercase tracking-widest font-black">{previews.length}/5 Images • {variants.length} Variants</p>
                         </div>
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-white/10 transition-all group shrink-0"
+                            title="Clear Form / Close"
+                        >
+                            <IonIcon name="trash-outline" className="text-lg md:text-xl group-hover:scale-110 transition-transform" />
+                        </button>
                     </div>
 
                     <div className="flex flex-col gap-2 mt-4">
@@ -872,13 +880,6 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 <h2 className="text-lg md:text-xl font-bold text-white tracking-tight italic">Product Information</h2>
                                 <p className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black">Fill all fields to publish</p>
                             </div>
-                            <button
-                                type="button"
-                                onClick={onClose}
-                                className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center"
-                            >
-                                <IonIcon name="close" className="text-xl" />
-                            </button>
                         </div>
 
                         <div className="flex flex-col gap-5">
@@ -1641,14 +1642,6 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         </div>
                     </div>
                     <div className="mt-8 mb-4 flex items-center gap-3">
-                        <button
-                            type="button"
-                            onClick={onClose}
-                            className="w-12 h-[52px] rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-white/10 transition-all group shrink-0"
-                            title="Cancel / Close"
-                        >
-                            <IonIcon name="cut" className="text-xl group-hover:scale-110 transition-transform" />
-                        </button>
                         <button
                             type="submit"
                             disabled={loading}
