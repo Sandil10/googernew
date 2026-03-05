@@ -1640,9 +1640,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         name="googerCommission"
                                         value={formData.googerCommission || ""}
                                         onChange={handleInputChange}
-                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
+                                        className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 transition-all font-bold ${parseFloat(formData.googerCommission) < 5 ? 'border-red-500/50 focus:ring-red-500/30' : 'border-white/10 focus:ring-white/30'}`}
                                         placeholder="0"
                                     />
+                                    {parseFloat(formData.googerCommission) < 5 && (
+                                        <p className="text-[7px] text-red-500 font-bold uppercase mt-2 leading-tight animate-pulse">
+                                            Warning: Commissions below 5% may result in rejection during review.
+                                        </p>
+                                    )}
                                 </div>
                                 <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
                                     <div className="flex items-center justify-between mb-2">
