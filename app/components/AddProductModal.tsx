@@ -1199,7 +1199,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 className="w-full bg-blue-500/5 border border-blue-500/20 rounded-xl py-3 text-[10px] font-black text-blue-400 uppercase tracking-widest hover:bg-blue-500/10 transition-all flex items-center justify-center gap-2"
                                             >
                                                 <IonIcon name="resize-outline" />
-                                                + Add Sizes
+                                                + Add Sizes <span className="text-red-500">*</span>
                                             </button>
 
                                             <button
@@ -1208,7 +1208,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 className="w-full bg-blue-500/5 border border-blue-500/20 rounded-xl py-3 text-[10px] font-black text-blue-400 uppercase tracking-widest hover:bg-blue-500/10 transition-all flex items-center justify-center gap-2"
                                             >
                                                 <IonIcon name="cube-outline" />
-                                                + Add UOM
+                                                + Add UOM <span className="text-red-500">*</span>
                                             </button>
                                         </div>
 
@@ -1642,19 +1642,19 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     </div>
                     <div className="mt-8 mb-4 flex items-center gap-3">
                         <button
-                            type="submit"
-                            disabled={loading}
-                            className={`flex-1 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${loading ? 'bg-slate-800 text-slate-500' : 'bg-white text-black shadow-lg hover:bg-gray-200 hover:scale-[1.01]'}`}
-                        >
-                            {loading ? 'Processing...' : (initialData ? 'Update Product' : 'Publish Product')}
-                        </button>
-                        <button
                             type="button"
                             onClick={onClose}
                             className="w-12 h-[52px] rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-white/10 transition-all group shrink-0"
                             title="Cancel / Close"
                         >
                             <IonIcon name="cut" className="text-xl group-hover:scale-110 transition-transform" />
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={loading}
+                            className={`flex-1 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${loading ? 'bg-slate-800 text-slate-500' : 'bg-white text-black shadow-lg hover:bg-gray-200 hover:scale-[1.01]'}`}
+                        >
+                            {loading ? 'Processing...' : (initialData ? 'Update Product' : 'Publish Product')}
                         </button>
                     </div>
                 </form>
