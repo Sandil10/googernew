@@ -136,8 +136,8 @@ export default function ShopPage() {
                 <div className="w-full relative">
                     <input
                         type="text"
-                        placeholder="Search..."
-                        className="w-full bg-[#1a1a1a] text-white text-xs rounded-full pl-8 pr-3 py-1.5 outline-none focus:ring-1 focus:ring-white/30 border border-white/10"
+                        placeholder="Product Search"
+                        className="w-full bg-[#1a1a1a] text-white text-xs rounded-full pl-8 pr-3 py-1.5 outline-none focus:ring-1 focus:ring-white/30 border border-white/10 placeholder:text-white"
                     />
                     <div className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm flex items-center">
                         <IonIcon name="search-outline" />
@@ -197,8 +197,8 @@ export default function ShopPage() {
                     <div className="flex-1 relative">
                         <input
                             type="text"
-                            placeholder="Search..."
-                            className="w-full bg-[#1a1a1a] text-white text-sm rounded-lg pl-10 pr-4 py-2.5 outline-none focus:ring-1 focus:ring-white/30 border border-white/10"
+                            placeholder="Product Search"
+                            className="w-full bg-[#1a1a1a] text-white text-sm rounded-lg pl-10 pr-4 py-2.5 outline-none focus:ring-1 focus:ring-white/30 border border-white/10 placeholder:text-white"
                         />
                         <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-lg flex items-center">
                             <IonIcon name="search-outline" />
