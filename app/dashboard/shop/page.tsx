@@ -12,8 +12,8 @@ import { authService } from "@/services/authService";
 export default function ShopPage() {
     const router = useRouter();
     const [showFilters, setShowFilters] = useState(false);
-    const [activeTab, setActiveTab] = useState("market"); // market, my-products, reviewing
-    // const [isModalOpen, setIsModalOpen] = useState(false); // Global
+    const [activeTab, setActiveTab] = useState("market"); // market, my-products
+    const [myListingsTab, setMyListingsTab] = useState("active"); // active, all, reviewing, deleted
     const [isCategoriesDrawerOpen, setIsCategoriesDrawerOpen] = useState(false);
     const [selectedCategory, setSelectedCategory] = useState(""); // Filter state
     const [products, setProducts] = useState<any[]>([]);
@@ -34,7 +34,7 @@ export default function ShopPage() {
 
     useEffect(() => {
         loadProducts();
-    }, [activeTab, currentUser, selectedCategory]);
+    }, [activeTab, myListingsTab, currentUser, selectedCategory]);
 
     useEffect(() => {
         const handleRefresh = () => {
@@ -63,12 +63,10 @@ export default function ShopPage() {
             } else if (activeTab === "my-products") {
                 if (currentUser?.id) {
                     filters.user_id = currentUser.id;
-                    filters.status = 'approved';
-                }
-            } else if (activeTab === "reviewing") {
-                if (currentUser?.id) {
-                    filters.user_id = currentUser.id;
-                    filters.status = 'reviewing';
+                    if (myListingsTab === "active") filters.status = 'approved';
+                    else if (myListingsTab === "reviewing") filters.status = 'reviewing';
+                    else if (myListingsTab === "deleted") filters.status = 'deleted';
+                    // 'all' doesn't set a status filter
                 }
             }
 
@@ -104,8 +102,10 @@ export default function ShopPage() {
 
     const refresh = () => {
         loadProducts();
-        if (activeTab !== 'market') setActiveTab("reviewing"); // Keep typical behavior? Or assume refresh stays on tab
-        // setIsModalOpen(false);
+        if (activeTab !== 'market') {
+            setActiveTab("my-products");
+            setMyListingsTab("reviewing");
+        }
         setEditingProduct(null);
         setIsCategoriesDrawerOpen(false);
     };
@@ -176,18 +176,7 @@ export default function ShopPage() {
                                 <IonIcon name="pricetags-outline" />
                                 My Listings
                             </div>
-                            {activeTab === "my-products" && <div className="absolute bottom-0 left-0 right-0 h-px bg-white/50"></div>}
-                        </button>
-
-                        <button
-                            onClick={() => setActiveTab("reviewing")}
-                            className={`pb-3 text-sm font-medium transition-colors relative whitespace-nowrap ${activeTab === "reviewing" ? "text-yellow-400" : "text-gray-400 hover:text-gray-300"}`}
-                        >
-                            <div className="flex items-center gap-2">
-                                <IonIcon name="time-outline" />
-                                Reviewing
-                            </div>
-                            {activeTab === "reviewing" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-yellow-400 shadow-[0_0_10px_rgba(250,204,21,0.5)]"></div>}
+                            {activeTab === "my-products" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>}
                         </button>
                     </div>
                 </div>
@@ -207,33 +196,59 @@ export default function ShopPage() {
                 </div>
             </div>
 
-            {/* Categories */}
-            {/* Categories Unified (Scrollable with Arrows) */}
-            <div className="flex items-center gap-2 mb-8 select-none">
-                <button className="flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('category-scroll')?.scrollBy({ left: -150, behavior: 'smooth' })}>
-                    <IonIcon name="chevron-back" className="text-lg" />
-                </button>
-                <div id="category-scroll" className="flex-1 flex gap-2 overflow-x-auto scroll-smooth py-1 no-scrollbar overflow-y-hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-                    <button
-                        onClick={() => setSelectedCategory("")}
-                        className={`px-4 py-2 text-xs font-bold rounded-xl whitespace-nowrap transition-all border active:scale-95 shadow-sm shrink-0 ${selectedCategory === "" ? "bg-white text-black border-white" : "bg-[#1a1a1a] border-white/5 hover:border-white/20 text-gray-400 hover:text-white"}`}
-                    >
-                        All
-                    </button>
-                    {categories.map((cat, i) => (
+            {/* Sub-tabs for My Listings */}
+            {activeTab === 'my-products' && (
+                <div className="flex items-center gap-1.5 mb-8 p-1 bg-white/5 rounded-2xl w-fit overflow-x-auto no-scrollbar border border-white/5">
+                    {[
+                        { id: 'active', label: 'Active Products', icon: 'checkmark-circle' },
+                        { id: 'all', label: 'My Products', icon: 'grid' },
+                        { id: 'reviewing', label: 'Review Products', icon: 'time' },
+                        { id: 'deleted', label: 'Deleted Products', icon: 'trash' }
+                    ].map((tab) => (
                         <button
-                            key={i}
-                            onClick={() => setSelectedCategory(cat)}
-                            className={`px-4 py-2 text-xs font-bold rounded-xl whitespace-nowrap transition-all border active:scale-95 shadow-sm shrink-0 ${selectedCategory === cat ? "bg-white text-black border-white" : "bg-[#1a1a1a] border-white/5 hover:border-white/20 text-gray-400 hover:text-white"}`}
+                            key={tab.id}
+                            onClick={() => setMyListingsTab(tab.id)}
+                            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
+                                ${myListingsTab === tab.id
+                                    ? 'bg-white text-black shadow-lg shadow-white/5 scale-[1.02]'
+                                    : 'text-slate-500 hover:text-white hover:bg-white/5'
+                                }`}
                         >
-                            {cat}
+                            <IonIcon name={tab.icon + (myListingsTab === tab.id ? "" : "-outline")} className="text-sm" />
+                            {tab.label}
                         </button>
                     ))}
                 </div>
-                <button className="flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('category-scroll')?.scrollBy({ left: 150, behavior: 'smooth' })}>
-                    <IonIcon name="chevron-forward" className="text-lg" />
-                </button>
-            </div>
+            )}
+
+            {/* Categories - Only visible in Market */}
+            {activeTab === 'market' && (
+                <div className="flex items-center gap-2 mb-8 select-none">
+                    <button className="flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('category-scroll')?.scrollBy({ left: -150, behavior: 'smooth' })}>
+                        <IonIcon name="chevron-back" className="text-lg" />
+                    </button>
+                    <div id="category-scroll" className="flex-1 flex gap-2 overflow-x-auto scroll-smooth py-1 no-scrollbar overflow-y-hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                        <button
+                            onClick={() => setSelectedCategory("")}
+                            className={`px-4 py-2 text-xs font-bold rounded-xl whitespace-nowrap transition-all border active:scale-95 shadow-sm shrink-0 ${selectedCategory === "" ? "bg-white text-black border-white" : "bg-[#1a1a1a] border-white/5 hover:border-white/20 text-gray-400 hover:text-white"}`}
+                        >
+                            All
+                        </button>
+                        {categories.map((cat, i) => (
+                            <button
+                                key={i}
+                                onClick={() => setSelectedCategory(cat)}
+                                className={`px-4 py-2 text-xs font-bold rounded-xl whitespace-nowrap transition-all border active:scale-95 shadow-sm shrink-0 ${selectedCategory === cat ? "bg-white text-black border-white" : "bg-[#1a1a1a] border-white/5 hover:border-white/20 text-gray-400 hover:text-white"}`}
+                            >
+                                {cat}
+                            </button>
+                        ))}
+                    </div>
+                    <button className="flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('category-scroll')?.scrollBy({ left: 150, behavior: 'smooth' })}>
+                        <IonIcon name="chevron-forward" className="text-lg" />
+                    </button>
+                </div>
+            )}
 
             {/* Product Grid */}
             {loading ? (
@@ -241,9 +256,9 @@ export default function ShopPage() {
                     <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-white"></div>
                 </div>
             ) : products.length === 0 ? (
-                <div className="text-center py-20 text-gray-500">
-                    <IonIcon name={activeTab === 'reviewing' ? 'time-outline' : 'basket-outline'} className="text-4xl mb-3 opacity-50" />
-                    <p>No products found in {activeTab === 'market' ? 'Marketplace' : activeTab === 'reviewing' ? 'Reviewing' : 'My Listings'}.</p>
+                <div className="text-center py-20 text-gray-500 bg-white/[0.02] rounded-[3rem] border border-white/5 border-dashed">
+                    <IonIcon name={(activeTab === 'my-products' && myListingsTab === 'reviewing') ? 'time-outline' : 'basket-outline'} className="text-4xl mb-3 opacity-20" />
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">No products found here</p>
                 </div>
             ) : (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6 mb-10">
@@ -273,7 +288,7 @@ export default function ShopPage() {
                                     sizes="(max-width: 768px) 50vw, 25vw"
                                     className="object-cover group-hover:scale-105 transition-transform duration-500"
                                 />
-                                {activeTab === 'reviewing' && (
+                                {product.status === 'reviewing' && (
                                     <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center">
                                         <div className="flex flex-col items-center gap-2 text-white">
                                             <div className="w-10 h-10 md:w-12 md:h-12 rounded-full border-2 border-white flex items-center justify-center bg-black/50">
