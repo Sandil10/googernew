@@ -63,7 +63,7 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 const DAYS = Array.from({ length: 31 }, (_, i) => (i + 1).toString());
 
 const PAYMENT_METHODS = [
-    { id: 'wallet', name: 'Rupeir Payments', icon: 'wallet-outline' },
+    { id: 'wallet', name: 'Rupieer Payments', icon: 'wallet-outline' },
     { id: 'cod', name: 'Cash on Delivery', icon: 'cash-outline' },
     { id: 'card', name: 'Credit/Debit Card', icon: 'card-outline' }
 ];
@@ -1638,13 +1638,21 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                         </div>
                     </div>
-                    <div className="mt-8 mb-4">
+                    <div className="mt-8 mb-4 flex items-center gap-3">
                         <button
                             type="submit"
                             disabled={loading}
-                            className={`w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${loading ? 'bg-slate-800 text-slate-500' : 'bg-white text-black shadow-lg hover:bg-gray-200 hover:scale-[1.01]'}`}
+                            className={`flex-1 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${loading ? 'bg-slate-800 text-slate-500' : 'bg-white text-black shadow-lg hover:bg-gray-200 hover:scale-[1.01]'}`}
                         >
                             {loading ? 'Processing...' : (initialData ? 'Update Product' : 'Publish Product')}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="w-12 h-[52px] rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-white/10 transition-all group shrink-0"
+                            title="Cancel / Close"
+                        >
+                            <IonIcon name="cut" className="text-xl group-hover:scale-110 transition-transform" />
                         </button>
                     </div>
                 </form>
