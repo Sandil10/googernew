@@ -139,6 +139,9 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
     const [selectedImages, setSelectedImages] = useState<(File | null)[]>([]);
     const [previews, setPreviews] = useState<string[]>([]);
     const [imageColors, setImageColors] = useState<string[]>([]);
+    const [mediaTypes, setMediaTypes] = useState<('image' | 'video')[]>([]);
+    const [videoUrls, setVideoUrls] = useState<(string | null)[]>([]);
+    const [activeVideo, setActiveVideo] = useState<string | null>(null);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
     const [showSuccessPopup, setShowSuccessPopup] = useState(false);
     const [openPicker, setOpenPicker] = useState<{ type: string, field: string, options: string[], title: string, value: string, manualQuery?: string } | null>(null);
@@ -247,6 +250,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         }
 
                         setImageColors(variantsData.map((v: any) => v.color || "None"));
+                        setMediaTypes(variantsData.map((v: any) => v.media_type || "image"));
+                        setVideoUrls(variantsData.map((v: any) => v.video_url || null));
                         setVariants(variantsData.map((v: any) => ({
                             promo_price: v.promo_price || "",
                             type: v.type || "Size",
@@ -255,6 +260,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         })));
                     } else {
                         setImageColors(["None"]);
+                        setMediaTypes(["image"]);
+                        setVideoUrls([null]);
                         setVariants([{
                             promo_price: "",
                             type: "Size",
@@ -263,7 +270,9 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         }]);
                     }
                 } catch {
-                    setImageColors([""]);
+                    setImageColors(["None"]);
+                    setMediaTypes(["image"]);
+                    setVideoUrls([null]);
                     setVariants([{
                         price: "",
                         promo_price: "",
@@ -356,6 +365,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         if (previews.length === 0 && index === 0) {
                             // Only add one variant if it's the very first image
                             setImageColors(prev => [...prev, "None"]);
+                            setMediaTypes(prev => [...prev, "image"]);
+                            setVideoUrls(prev => [...prev, null]);
                             setVariants(prev => [...prev, {
                                 promo_price: "",
                                 type: "Size",
@@ -365,10 +376,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         } else {
                             // Subsequent images in Single Post don't get new variants, they share the first one.
                             setImageColors(prev => [...prev, "None"]);
+                            setMediaTypes(prev => [...prev, "image"]);
+                            setVideoUrls(prev => [...prev, null]);
                             // Don't add a new variant object for extra views in single mode
                         }
                     } else {
                         setImageColors(prev => [...prev, "None"]);
+                        setMediaTypes(prev => [...prev, "image"]);
+                        setVideoUrls(prev => [...prev, null]);
                         setVariants(prev => [...prev, {
                             promo_price: "",
                             type: "Size",
@@ -386,15 +401,38 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         if (!imageLink) return;
 
         let finalUrl = imageLink;
+        let isVideo = false;
+        let videoUrl = null;
 
         // YouTube Thumbnail extraction
         if (imageLink.includes('youtube.com') || imageLink.includes('youtu.be')) {
-            const videoId = imageLink.includes('v=') ? imageLink.split('v=')[1]?.split('&')[0] : imageLink.split('/').pop();
+            const videoId = imageLink.includes('v=') ? imageLink.split('v=')[1]?.split('&')[0] : imageLink.split('/').pop()?.split('?')[0];
             if (videoId) {
                 finalUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+                videoUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1`;
+                isVideo = true;
             }
         }
-
+        // TikTok
+        else if (imageLink.includes('tiktok.com')) {
+            finalUrl = 'https://cdn-icons-png.flaticon.com/512/3046/3046121.png'; // TikTok placeholder
+            videoUrl = imageLink;
+            isVideo = true;
+        }
+        // Instagram/FB
+        else if (imageLink.includes('instagram.com') || imageLink.includes('facebook.com')) {
+            finalUrl = imageLink.includes('instagram')
+                ? 'https://cdn-icons-png.flaticon.com/512/174/174855.png'
+                : 'https://cdn-icons-png.flaticon.com/512/124/124010.png';
+            videoUrl = imageLink;
+            isVideo = true;
+        }
+        // Direct video files
+        else if (imageLink.toLowerCase().match(/\.(mp4|webm|ogg)/)) {
+            finalUrl = 'https://cdn-icons-png.flaticon.com/512/3221/3221897.png'; // Generic video icon
+            videoUrl = imageLink;
+            isVideo = true;
+        }
         // Google Image Search extraction
         else if (imageLink.includes('google.com/imgres')) {
             try {
@@ -408,7 +446,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             }
         }
 
-        const addImage = (url: string) => {
+        const addImage = (url: string, isVid: boolean = false, vidUrl: string | null = null) => {
             const remainingSpace = 5 - previews.length;
             if (remainingSpace <= 0) {
                 alert("Maximum 5 images allowed.");
@@ -418,6 +456,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             const currentPreviewsCount = previews.length;
             setPreviews(prev => [...prev, url]);
             setSelectedImages(prev => [...prev, null]);
+            setMediaTypes(prev => [...prev, isVid ? 'video' : 'image']);
+            setVideoUrls(prev => [...prev, vidUrl]);
 
             if (uploadMode === 'single') {
                 if (currentPreviewsCount === 0) {
@@ -430,7 +470,6 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     }]);
                 } else {
                     setImageColors(prev => [...prev, "None"]);
-                    // Single mode duplicates are handled by indices now
                 }
             } else {
                 setImageColors(prev => [...prev, "None"]);
@@ -443,23 +482,29 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             }
 
             setImageLink("");
-            setActiveImageIndex(currentPreviewsCount); // Auto preview inside big box
-            setShowLinkInput(false); // Close link input after adding so user can choose source for next image
-            setShowSourceSelection(false); // Also ensure source selection is gone
+            setActiveImageIndex(currentPreviewsCount);
+            setShowLinkInput(false);
+            setShowSourceSelection(false);
         };
 
-        // Try to validate as image
-        const img = new (window as any).Image();
-        img.onload = () => addImage(finalUrl);
-        img.onerror = () => {
-            // If it's not a direct image but we handled it (like YT), add it anyway
-            if (finalUrl !== imageLink) {
-                addImage(finalUrl);
-            } else {
-                alert("Invalid image URL. Please ensure it's a direct link to an image.");
-            }
-        };
-        img.src = finalUrl;
+        if (isVideo) {
+            addImage(finalUrl, true, videoUrl);
+        } else {
+            const img = new (window as any).Image();
+            img.onload = () => addImage(finalUrl);
+            img.onerror = () => {
+                if (finalUrl !== imageLink) {
+                    addImage(finalUrl);
+                } else {
+                    if (imageLink.toLowerCase().startsWith('http')) {
+                        addImage(finalUrl); // Add anyway if it looks like a URL
+                    } else {
+                        alert("Invalid image URL. Please ensure it's a direct link to an image.");
+                    }
+                }
+            };
+            img.src = finalUrl;
+        }
     };
 
     const removeImage = (index: number) => {
@@ -470,6 +515,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         // Actually, let's just null out the image index in the variant.
         setVariants(prev => prev.filter((_, i) => i !== index));
         setImageColors(prev => prev.filter((_, i) => i !== index));
+        setMediaTypes(prev => prev.filter((_, i) => i !== index));
+        setVideoUrls(prev => prev.filter((_, i) => i !== index));
 
         if (activeImageIndex >= index && activeImageIndex > 0) {
             setActiveImageIndex(activeImageIndex - 1);
@@ -486,6 +533,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             isManual: true
         }]);
         setImageColors(prev => [...prev, colorName]);
+        setMediaTypes(prev => [...prev, "image"]);
+        setVideoUrls(prev => [...prev, null]);
         setActiveImageIndex(newCount - 1);
     };
 
@@ -621,6 +670,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                 color: imageColors[i] || "None",
                 index: i,
                 image_url: previews[i] || null,
+                media_type: mediaTypes[i] || "image",
+                video_url: videoUrls[i] || null,
                 ...v
             }));
             data.append('variants_data', JSON.stringify(submissionVariants));
@@ -702,6 +753,20 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         fill
                                         className="object-cover transition-all duration-500 scale-100 group-hover:scale-105"
                                     />
+
+                                    {mediaTypes[activeImageIndex] === 'video' && (
+                                        <div
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setActiveVideo(videoUrls[activeImageIndex]);
+                                            }}
+                                            className="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/40 transition-all z-[35]"
+                                        >
+                                            <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-md border border-white/40 flex items-center justify-center text-white scale-100 hover:scale-110 transition-transform">
+                                                <IonIcon name="play-circle" className="text-4xl" />
+                                            </div>
+                                        </div>
+                                    )}
 
                                     {/* Slider Navigation Arrows - Always Visible & Enhanced (Point 6) */}
                                     {previews.length > 1 && (
@@ -801,6 +866,11 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             {previews[i] ? (
                                                 <div className="relative w-full h-full">
                                                     <Image src={previews[i]} alt={`Thumb ${i}`} fill className="object-cover" />
+                                                    {mediaTypes[i] === 'video' && (
+                                                        <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                                                            <IonIcon name="play" className="text-white text-[10px]" />
+                                                        </div>
+                                                    )}
                                                 </div>
                                             ) : (
                                                 <div
@@ -1152,7 +1222,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                     className={`relative w-12 h-12 rounded-xl flex-shrink-0 cursor-pointer overflow-hidden border-2 transition-all ${activeImageIndex === idx ? 'border-blue-500 scale-105 shadow-lg shadow-blue-500/20' : 'border-white/5 opacity-60 hover:opacity-100'}`}
                                                 >
                                                     {previews[idx] ? (
-                                                        <Image src={previews[idx]} alt="Mini preview" fill className="object-cover" />
+                                                        <div className="relative w-full h-full">
+                                                            <Image src={previews[idx]} alt="Mini preview" fill className="object-cover" />
+                                                            {mediaTypes[idx] === 'video' && (
+                                                                <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                                                                    <IonIcon name="play" className="text-white text-[10px]" />
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     ) : (
                                                         <div
                                                             className="w-full h-full"
@@ -1244,7 +1321,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                     {/* Selection List with Individual Stock (STOCK ALWAYS VISIBLE - Point 4) */}
                                     <div className="flex flex-col gap-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                                        {(variants[activeImageIndex].selections || []).map((sel: any, sIdx: number) => (
+                                        {(variants[uploadMode === 'single' ? 0 : activeImageIndex]?.selections || []).map((sel: any, sIdx: number) => (
                                             <div key={sIdx} className="flex flex-col gap-2 bg-black/40 border border-white/5 p-4 rounded-2xl animate-in slide-in-from-right-4 duration-300">
                                                 <div className="flex items-center justify-between">
                                                     <div className="flex flex-col">
@@ -1791,7 +1868,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     className="w-full py-4 bg-white/[0.03] border border-white/10 rounded-2xl flex items-center justify-center gap-3 hover:bg-white/[0.08] hover:border-white/20 transition-all group"
                                 >
                                     <IonIcon name="link-outline" className="text-purple-400 text-lg group-hover:scale-110 transition-transform" />
-                                    <span className="text-[10px] font-black text-white uppercase tracking-widest">Add Image Link</span>
+                                    <span className="text-[10px] font-black text-white uppercase tracking-widest">Add Media Link</span>
                                 </button>
                             </div>
 
@@ -1812,8 +1889,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         <div className="absolute inset-0 bg-black/95 backdrop-blur-sm" onClick={() => setShowLinkInput(false)} />
                         <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 p-8">
                             <div className="text-center mb-6">
-                                <h3 className="text-lg font-black text-white italic uppercase tracking-[0.2em]">Image Link</h3>
-                                <p className="text-[9px] text-slate-500 font-black uppercase mt-2 tracking-widest">Enter the direct image URL</p>
+                                <h3 className="text-lg font-black text-white italic uppercase tracking-[0.2em]">Media Link</h3>
+                                <p className="text-[9px] text-slate-500 font-black uppercase mt-2 tracking-widest italic leading-relaxed">Enter image URL or video link<br />(YouTube, TikTok, Instagram, etc)</p>
                             </div>
 
                             <div className="space-y-4">
@@ -1821,14 +1898,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     type="url"
                                     value={imageLink}
                                     onChange={(e) => setImageLink(e.target.value)}
-                                    placeholder="https://example.com/image.jpg"
+                                    placeholder="https://youtube.com/watch?v=..."
                                     className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-4 py-3.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all"
                                 />
                                 <button
                                     onClick={handleAddImageLink}
                                     className="w-full py-4 bg-white text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-lg hover:bg-gray-200 hover:scale-[1.02] transition-all"
                                 >
-                                    Add Image
+                                    Add Media
                                 </button>
                             </div>
 
@@ -1980,14 +2057,15 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             } else if (openPicker?.type === 'variant') {
                                                 const isUOM = openPicker.title.includes('UOM');
                                                 const newVariants = [...variants];
-                                                const currentSelections = newVariants[activeImageIndex].selections || [];
+                                                const targetIdx = uploadMode === 'single' ? 0 : activeImageIndex;
+                                                const currentSelections = newVariants[targetIdx]?.selections || [];
                                                 const newSelections = tempSelections.map(val => ({
                                                     value: val,
                                                     stock: "0",
                                                     detail: ""
                                                 }));
-                                                newVariants[activeImageIndex] = {
-                                                    ...newVariants[activeImageIndex],
+                                                newVariants[targetIdx] = {
+                                                    ...newVariants[targetIdx],
                                                     selections: [...currentSelections, ...newSelections],
                                                     type: isUOM ? 'UOM' : 'Size'
                                                 };
@@ -2020,6 +2098,44 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     </div>
                 )
             }
+
+            {activeVideo && (
+                <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300">
+                    <div className="absolute inset-0" onClick={() => setActiveVideo(null)} />
+                    <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2rem] w-full max-w-4xl aspect-video overflow-hidden shadow-2xl">
+                        <button
+                            onClick={() => setActiveVideo(null)}
+                            className="absolute top-4 right-4 w-10 h-10 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-white hover:text-black transition-all z-10"
+                        >
+                            <IonIcon name="close" className="text-xl" />
+                        </button>
+                        {activeVideo.includes('embed') ? (
+                            <iframe
+                                src={activeVideo}
+                                className="w-full h-full"
+                                allow="autoplay; encrypted-media"
+                                allowFullScreen
+                            />
+                        ) : (
+                            <div className="w-full h-full flex flex-col items-center justify-center gap-6 p-8">
+                                <IonIcon name="videocam-outline" className="text-6xl text-blue-400" />
+                                <div className="text-center">
+                                    <h3 className="text-xl font-black text-white uppercase tracking-widest italic mb-2">Video Preview</h3>
+                                    <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-6">External video links may need to be viewed on the source platform</p>
+                                    <a
+                                        href={activeVideo}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="px-8 py-4 bg-white text-black text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-blue-400 hover:text-white transition-all inline-block"
+                                    >
+                                        Open Original Link
+                                    </a>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
         </div >
     );
 }
