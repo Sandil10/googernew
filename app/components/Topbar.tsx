@@ -121,18 +121,19 @@ export default function Topbar() {
                 })}
             </nav>
 
+            {/* Search Portal Container (Mobile) */}
+            <div id="shop-search-portal" className="flex-1 mx-2 md:hidden"></div>
+
             {/* Actions & Profile Menu */}
-            <div className="flex items-center gap-2">
-                {/* Cart Icon (Add Product) - Desktop Only */}
-                <button
-                    onClick={() => {
-                        window.dispatchEvent(new CustomEvent('open-add-product-modal'));
-                    }}
-                    className="flex w-9 h-9 items-center justify-center text-gray-400 hover:text-white transition-all duration-300 rounded-full hover:bg-white/10 relative mr-1 group"
-                    title="Sell Product"
+            <div className="flex items-center gap-1 sm:gap-2">
+                {/* Cart Icon */}
+                <Link
+                    href="/dashboard/cart"
+                    className="flex w-9 h-9 items-center justify-center text-gray-400 hover:text-white transition-all duration-300 rounded-full hover:bg-white/10 relative group"
+                    title="Cart"
                 >
                     <IonIcon name="cart-outline" className="text-xl group-hover:scale-110 transition-transform" />
-                </button>
+                </Link>
 
                 {/* Notification Button */}
                 <div className="relative">
