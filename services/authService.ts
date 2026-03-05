@@ -162,6 +162,30 @@ export const authService = {
         }
     },
 
+    updateProfile: async (data: any) => {
+        try {
+            const token = storage.get('token');
+            if (!token) throw new Error('No session found');
+
+            const response = await fetch(`${API_URL}/auth/update-profile`, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(data),
+            });
+
+            const result = await safeJson(response);
+            if (!response.ok) throw new Error(result?.message || 'Failed to update profile');
+
+            if (result?.user) storage.set('user', JSON.stringify(result.user));
+            return result;
+        } catch (error: any) {
+            throw error;
+        }
+    },
+
     logout: () => {
         storage.remove('token');
         storage.remove('user');

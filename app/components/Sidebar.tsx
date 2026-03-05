@@ -40,6 +40,10 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
         };
 
         fetchUser();
+
+        // Listen for profile updates from other components
+        window.addEventListener('userProfileUpdated', fetchUser);
+        return () => window.removeEventListener('userProfileUpdated', fetchUser);
     }, []);
 
     const handleLogout = () => {

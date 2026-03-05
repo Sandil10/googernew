@@ -317,6 +317,37 @@ exports.getProfile = async (req, res) => {
     }
 };
 
+// Update user profile
+exports.updateProfile = async (req, res) => {
+    try {
+        const { fullName, bio, profilePicture } = req.body;
+
+        // Update user in database
+        const result = await pool.query(
+            `UPDATE users 
+             SET full_name = COALESCE($1, full_name), 
+                 bio = COALESCE($2, bio), 
+                 profile_picture = COALESCE($3, profile_picture) 
+             WHERE id = $4
+             RETURNING id, user_id, username, full_name, email, profile_picture, bio`,
+            [fullName, bio, profilePicture, req.user.id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Profile updated successfully',
+            user: result.rows[0]
+        });
+    } catch (error) {
+        console.error('Update profile error:', error);
+        res.status(500).json({ success: false, message: 'Server error updating profile' });
+    }
+};
+
 // Get Wallet Data (Referrals)
 exports.getWallet = async (req, res) => {
     try {

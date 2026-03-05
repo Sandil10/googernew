@@ -538,6 +538,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                 updated.level3Category = "";
             } else if (field === 'subCategory') {
                 updated.level3Category = "";
+                // Automatic 5% Googer Commission when a Level 2 subcategory is chosen
+                updated.googerCommission = "5";
             }
             return updated;
         });
@@ -886,18 +888,6 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 {/* Order: Description, Product Name, Category, Price */}
 
                                 <div>
-                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5">Description (Optional)</label>
-                                    <textarea
-                                        name="description"
-                                        value={formData.description}
-                                        onChange={handleInputChange}
-                                        rows={2}
-                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-1.5 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 resize-none transition-all"
-                                        placeholder="Detailed product description..."
-                                    />
-                                </div>
-
-                                <div>
                                     <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                         Product Name <span className="text-red-500">*</span>
                                     </label>
@@ -912,45 +902,100 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     />
                                 </div>
 
+                                <div>
+                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5">Description (Optional)</label>
+                                    <textarea
+                                        name="description"
+                                        value={formData.description}
+                                        onChange={handleInputChange}
+                                        rows={2}
+                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-1.5 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 resize-none transition-all"
+                                        placeholder="Detailed product description..."
+                                    />
+                                </div>
+
                                 <div className="flex flex-col md:flex-row gap-4">
                                     <div className="flex-1">
                                         <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Category <span className="text-red-500">*</span>
                                         </label>
                                         <div className="flex flex-col gap-2">
-                                            <div
-                                                onClick={() => setOpenPicker({ type: 'form', field: 'category', options: CATEGORIES, title: 'Category', value: formData.category })}
-                                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all"
-                                            >
-                                                <span className="truncate">{formData.category || "Select Category"}</span>
-                                                <IonIcon name="chevron-down" className="text-gray-500" />
-                                            </div>
-                                            {formData.category === 'Custom' && (
-                                                <input
-                                                    type="text"
-                                                    name="manualCategory"
-                                                    value={formData.manualCategory}
-                                                    onChange={handleInputChange}
-                                                    className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all"
-                                                    placeholder="Type your category here..."
-                                                />
+                                            {formData.category === 'Custom' || (formData.category && !CATEGORIES.includes(formData.category)) ? (
+                                                <div className="relative">
+                                                    <input
+                                                        type="text"
+                                                        value={formData.category === 'Custom' ? '' : formData.category}
+                                                        onChange={(e) => handleFormChange('category', e.target.value)}
+                                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all pr-10"
+                                                        placeholder="Type category..."
+                                                        autoFocus
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleFormChange('category', '')}
+                                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                                                    >
+                                                        <IonIcon name="close-circle" />
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <div
+                                                    onClick={() => setOpenPicker({ type: 'form', field: 'category', options: CATEGORIES, title: 'Category', value: formData.category })}
+                                                    className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all"
+                                                >
+                                                    <span className="truncate">{formData.category || "Select Category"}</span>
+                                                    <IonIcon name="chevron-down" className="text-gray-500" />
+                                                </div>
                                             )}
                                         </div>
                                     </div>
 
                                     <div className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5">
-                                            Sub Category (Level 2)
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                            Sub Category (Level 2) <span className="text-red-500">*</span>
                                         </label>
-                                        <div
-                                            onClick={() => {
-                                                const options = formData.category ? Object.keys(CATEGORIES_HIERARCHY[formData.category] || {}) : [];
-                                                setOpenPicker({ type: 'form', field: 'subCategory', options, title: 'Sub Category (Level 2)', value: formData.subCategory });
-                                            }}
-                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all"
-                                        >
-                                            <span className="truncate">{formData.subCategory || "Select Sub Category"}</span>
-                                            <IonIcon name="chevron-down" className="text-gray-500" />
+                                        <div className="flex flex-col gap-2">
+                                            {(() => {
+                                                const subCatOptions = formData.category ? Object.keys(CATEGORIES_HIERARCHY[formData.category] || {}) : [];
+                                                const isCustom = formData.subCategory === 'Custom' || (formData.subCategory && !subCatOptions.includes(formData.subCategory));
+
+                                                if (isCustom) {
+                                                    return (
+                                                        <div className="relative">
+                                                            <input
+                                                                type="text"
+                                                                value={formData.subCategory === 'Custom' ? '' : formData.subCategory}
+                                                                onChange={(e) => handleFormChange('subCategory', e.target.value)}
+                                                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all pr-10"
+                                                                placeholder="Type sub category..."
+                                                                autoFocus
+                                                            />
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleFormChange('subCategory', '')}
+                                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                                                            >
+                                                                <IonIcon name="close-circle" />
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                }
+                                                return (
+                                                    <div
+                                                        onClick={() => setOpenPicker({
+                                                            type: 'form',
+                                                            field: 'subCategory',
+                                                            options: subCatOptions.includes('Custom') ? subCatOptions : [...subCatOptions, 'Custom'],
+                                                            title: 'Sub Category (Level 2)',
+                                                            value: formData.subCategory
+                                                        })}
+                                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all"
+                                                    >
+                                                        <span className="truncate">{formData.subCategory || "Select Sub Category"}</span>
+                                                        <IonIcon name="chevron-down" className="text-gray-500" />
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
                                     </div>
 
@@ -958,32 +1003,53 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5">
                                             Sub Category (Level 3)
                                         </label>
-                                        <div
-                                            onClick={() => {
-                                                const options = (formData.category && formData.subCategory) ? (CATEGORIES_HIERARCHY[formData.category]?.[formData.subCategory] || []) : [];
-                                                setOpenPicker({ type: 'form', field: 'level3Category', options, title: 'Sub Category (Level 3)', value: formData.level3Category });
-                                            }}
-                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all"
-                                        >
-                                            <span className="truncate">{formData.level3Category || "Select Level 3 Category"}</span>
-                                            <IonIcon name="chevron-down" className="text-gray-500" />
+                                        <div className="flex flex-col gap-2">
+                                            {(() => {
+                                                const level3CatOptions = (formData.category && formData.subCategory) ? (CATEGORIES_HIERARCHY[formData.category]?.[formData.subCategory] || []) : [];
+                                                const isCustom = formData.level3Category === 'Custom' || (formData.level3Category && !level3CatOptions.includes(formData.level3Category));
+
+                                                if (isCustom) {
+                                                    return (
+                                                        <div className="relative">
+                                                            <input
+                                                                type="text"
+                                                                value={formData.level3Category === 'Custom' ? '' : formData.level3Category}
+                                                                onChange={(e) => handleFormChange('level3Category', e.target.value)}
+                                                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all pr-10"
+                                                                placeholder="Type level 3 category..."
+                                                                autoFocus
+                                                            />
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleFormChange('level3Category', '')}
+                                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                                                            >
+                                                                <IonIcon name="close-circle" />
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                }
+                                                return (
+                                                    <div
+                                                        onClick={() => setOpenPicker({
+                                                            type: 'form',
+                                                            field: 'level3Category',
+                                                            options: level3CatOptions.includes('Custom') ? level3CatOptions : [...level3CatOptions, 'Custom'],
+                                                            title: 'Sub Category (Level 3)',
+                                                            value: formData.level3Category
+                                                        })}
+                                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all"
+                                                    >
+                                                        <span className="truncate">{formData.level3Category || "Select Level 3 Category"}</span>
+                                                        <IonIcon name="chevron-down" className="text-gray-500" />
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
                                     </div>
                                 </div>
 
-                                <div>
-                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
-                                        Manual / Custom Category (Optional)
-                                    </label>
-                                    <input
-                                        type="text"
-                                        name="manualCategory"
-                                        value={formData.manualCategory}
-                                        onChange={handleInputChange}
-                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all"
-                                        placeholder="Type custom category name..."
-                                    />
-                                </div>
+
 
                                 <div className="flex gap-4">
                                     <div className="flex-1">
@@ -996,7 +1062,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             name="price"
                                             value={formData.price}
                                             onChange={handleInputChange}
-                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
+                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold line-through decoration-red-500/50"
                                             placeholder="0.00"
                                             onKeyPress={(e) => {
                                                 if (!/[0-9.]/.test(e.key)) e.preventDefault();
@@ -1005,16 +1071,17 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
 
                                     <div className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5">
-                                            Promo Price (R)
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                            Promo Price (R) <span className="text-red-500">*</span>
                                         </label>
                                         <input
+                                            required
                                             type="number"
                                             name="promoPrice"
                                             value={formData.promoPrice}
                                             onChange={handleInputChange}
-                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold line-through decoration-red-500/50"
-                                            placeholder="0.00 (Optional)"
+                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
+                                            placeholder="0.00"
                                             onKeyPress={(e) => {
                                                 if (!/[0-9.]/.test(e.key)) e.preventDefault();
                                             }}
@@ -1034,9 +1101,32 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             <h3 className="text-sm font-black text-white italic uppercase tracking-wider">
                                                 {uploadMode === 'single' ? 'Product Configuration' : 'Variant Details'}
                                             </h3>
-                                            <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-1">
-                                                {uploadMode === 'single' ? 'Settings apply to all views' : `Configuring ${imageColors[activeImageIndex] || "Selected"} Unit`}
-                                            </p>
+                                            <div className="flex items-center gap-2 mt-1">
+                                                <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest">
+                                                    {uploadMode === 'single' ? 'Settings apply to all views' : `Configuring ${imageColors[activeImageIndex] || "Selected"} Unit`}
+                                                </p>
+                                                {uploadMode === 'variants' && (
+                                                    <div
+                                                        className="flex items-center gap-1.5 ml-2 pl-2 border-l border-white/10 cursor-pointer group"
+                                                        onClick={() => setOpenPicker({
+                                                            type: 'add_variant_color',
+                                                            field: 'color',
+                                                            options: COLORS.map(c => c.name),
+                                                            title: 'Pick Variant Color',
+                                                            value: ''
+                                                        })}
+                                                    >
+                                                        <button
+                                                            type="button"
+                                                            className="w-4 h-4 rounded bg-blue-500/20 border border-blue-500/30 text-blue-400 flex items-center justify-center group-hover:bg-blue-500 group-hover:text-white transition-all shadow-sm pointer-events-none"
+                                                            title="Add Additional Color"
+                                                        >
+                                                            <IonIcon name="add" className="text-[10px] font-black" />
+                                                        </button>
+                                                        <span className="text-[8px] text-blue-400/80 font-bold uppercase tracking-widest group-hover:text-blue-300 transition-colors">Add Additional Colors</span>
+                                                    </div>
+                                                )}
+                                            </div>
                                         </div>
                                         <div className="flex gap-1">
                                             {(variants[uploadMode === 'single' ? 0 : activeImageIndex]?.selections || []).slice(0, 3).map((s: any, idx: number) => (
@@ -1120,24 +1210,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             </button>
                                         </div>
 
-                                        {uploadMode === 'variants' && (
-                                            <button
-                                                type="button"
-                                                onClick={() => setOpenPicker({
-                                                    type: 'add_variant_color',
-                                                    field: 'color',
-                                                    options: COLORS.map(c => c.name),
-                                                    title: 'Pick Variant Color',
-                                                    value: ''
-                                                })}
-                                                className="w-full bg-white/5 border border-white/10 rounded-xl py-3 text-[10px] font-black text-gray-300 uppercase tracking-widest hover:bg-white/10 transition-all flex items-center justify-center gap-2 group/add"
-                                            >
-                                                <div className="w-5 h-5 rounded-full bg-white/10 flex items-center justify-center group-hover/add:bg-white text-xs group-hover/add:text-black transition-all">
-                                                    <IonIcon name="color-palette-outline" />
-                                                </div>
-                                                Additional Colors
-                                            </button>
-                                        )}
+
                                     </div>
 
                                     {/* Selection List with Individual Stock (STOCK ALWAYS VISIBLE - Point 4) */}
@@ -1453,123 +1526,126 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
                                 </div>
 
-                                <div className="bg-slate-800/50 p-4 rounded-2xl border border-white/5">
-                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Resell Commission</label>
-                                    <div className="flex flex-col gap-2">
-                                        <div className="flex gap-2">
-                                            <div className="flex-[0.6]">
-                                                <label className="text-[7px] text-slate-500 uppercase block mb-1">%</label>
-                                                <input
-                                                    type="number"
-                                                    name="resellCommissionPercentage"
-                                                    value={formData.resellCommissionPercentage || ""}
-                                                    onChange={(e) => {
-                                                        const percent = e.target.value;
-                                                        const price = parseFloat(formData.promoPrice) || 0;
-                                                        const amount = price ? ((price * (parseFloat(percent) || 0)) / 100).toFixed(2) : "";
-                                                        setFormData(prev => ({ ...prev, resellCommissionPercentage: percent, resellCommission: amount }));
-                                                    }}
-                                                    className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-2 py-2 text-xs text-white outline-none"
-                                                    placeholder="%"
-                                                />
-                                            </div>
-                                            <div className="flex-1">
-                                                <label className="text-[7px] text-slate-500 uppercase block mb-1">Fixed Amount (R)</label>
-                                                <input
-                                                    type="number"
-                                                    name="resellCommission"
-                                                    value={formData.resellCommission || ""}
-                                                    onChange={handleInputChange}
-                                                    className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white outline-none focus:ring-1 focus:ring-white/30"
-                                                    placeholder="0.00"
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+                            </div>
 
-                                <div className="flex gap-4">
-                                    <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
-                                        <div className="flex items-center justify-between mb-2">
-                                            <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest">Googer Comm. (%) *</label>
-                                            {(parseFloat(formData.googerCommission) > 0) && (
-                                                <span className="text-[10px] font-bold text-blue-400">
-                                                    -R {((parseFloat(formData.promoPrice) || 0) * parseFloat(formData.googerCommission) / 100).toFixed(2)}
-                                                </span>
-                                            )}
-                                        </div>
-                                        <input
-                                            required
-                                            type="number"
-                                            name="googerCommission"
-                                            value={formData.googerCommission || ""}
-                                            onChange={handleInputChange}
-                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
-                                            placeholder="0"
-                                        />
-                                    </div>
-                                    <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
-                                        <div className="flex items-center justify-between mb-2">
-                                            <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest">Prod. Discount (%) *</label>
-                                            {(parseFloat(formData.productDiscount) > 0) && (
-                                                <span className="text-[10px] font-bold text-blue-400">
-                                                    -R {((parseFloat(formData.promoPrice) || 0) * parseFloat(formData.productDiscount) / 100).toFixed(2)}
-                                                </span>
-                                            )}
-                                        </div>
-                                        <input
-                                            required
-                                            type="number"
-                                            name="productDiscount"
-                                            value={formData.productDiscount || ""}
-                                            onChange={handleInputChange}
-                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
-                                            placeholder="0"
-                                        />
-                                    </div>
-                                </div>
-                                <div className="bg-slate-800/50 p-4 rounded-[2rem] border border-white/5">
-                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Payment Methods</label>
-                                    <div className="grid grid-cols-1 gap-2">
-                                        {PAYMENT_METHODS.map(method => {
-                                            const isSelected = formData.paymentMethods.includes(method.id);
-                                            return (
-                                                <div
-                                                    key={method.id}
-                                                    onClick={() => {
-                                                        if (method.id === 'wallet') return; // Always keep Rupier (wallet) selected
-                                                        const newMethods = isSelected
-                                                            ? formData.paymentMethods.filter(id => id !== method.id)
-                                                            : [...formData.paymentMethods, method.id];
-                                                        setFormData(prev => ({ ...prev, paymentMethods: newMethods }));
-                                                    }}
-                                                    className={`flex items-center justify-between p-3 rounded-2xl border transition-all cursor-pointer ${isSelected ? 'bg-white/10 border-white/20' : 'bg-black/20 border-white/5 hover:border-white/10'}`}
-                                                >
-                                                    <div className="flex items-center gap-3">
-                                                        <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${isSelected ? 'bg-white text-black' : 'bg-white/5 text-slate-500'}`}>
-                                                            <IonIcon name={method.icon as any} />
-                                                        </div>
-                                                        <span className={`text-[11px] font-bold ${isSelected ? 'text-white' : 'text-slate-500'}`}>{method.name}</span>
+                            <div className="bg-slate-800/50 p-4 rounded-[2rem] border border-white/5">
+                                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Payment Methods</label>
+                                <div className="grid grid-cols-1 gap-2">
+                                    {PAYMENT_METHODS.map(method => {
+                                        const isSelected = formData.paymentMethods.includes(method.id);
+                                        return (
+                                            <div
+                                                key={method.id}
+                                                onClick={() => {
+                                                    if (method.id === 'wallet') return; // Always keep Rupier (wallet) selected
+                                                    const newMethods = isSelected
+                                                        ? formData.paymentMethods.filter(id => id !== method.id)
+                                                        : [...formData.paymentMethods, method.id];
+                                                    setFormData(prev => ({ ...prev, paymentMethods: newMethods }));
+                                                }}
+                                                className={`flex items-center justify-between p-3 rounded-2xl border transition-all cursor-pointer ${isSelected ? 'bg-white/10 border-white/20' : 'bg-black/20 border-white/5 hover:border-white/10'}`}
+                                            >
+                                                <div className="flex items-center gap-3">
+                                                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${isSelected ? 'bg-white text-black' : 'bg-white/5 text-slate-500'}`}>
+                                                        <IonIcon name={method.icon as any} />
                                                     </div>
-                                                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-blue-500 border-blue-500' : 'border-slate-700'}`}>
-                                                        {isSelected && <IonIcon name="checkmark" className="text-white text-xs font-black" />}
-                                                    </div>
+                                                    <span className={`text-[11px] font-bold ${isSelected ? 'text-white' : 'text-slate-500'}`}>{method.name}</span>
                                                 </div>
-                                            );
-                                        })}
+                                                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-blue-500 border-blue-500' : 'border-slate-700'}`}>
+                                                    {isSelected && <IonIcon name="checkmark" className="text-white text-xs font-black" />}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="bg-slate-800/50 p-4 rounded-2xl border border-white/5">
+                                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Resell Commission</label>
+                                <div className="flex flex-col gap-2">
+                                    <div className="flex gap-2">
+                                        <div className="flex-[0.6]">
+                                            <label className="text-[7px] text-slate-500 uppercase block mb-1">%</label>
+                                            <input
+                                                type="number"
+                                                name="resellCommissionPercentage"
+                                                value={formData.resellCommissionPercentage || ""}
+                                                onChange={(e) => {
+                                                    const percent = e.target.value;
+                                                    const price = parseFloat(formData.promoPrice) || 0;
+                                                    const amount = price ? ((price * (parseFloat(percent) || 0)) / 100).toFixed(2) : "";
+                                                    setFormData(prev => ({ ...prev, resellCommissionPercentage: percent, resellCommission: amount }));
+                                                }}
+                                                className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-2 py-2 text-xs text-white outline-none"
+                                                placeholder="%"
+                                            />
+                                        </div>
+                                        <div className="flex-1">
+                                            <label className="text-[7px] text-slate-500 uppercase block mb-1">Fixed Amount (R)</label>
+                                            <input
+                                                type="number"
+                                                name="resellCommission"
+                                                value={formData.resellCommission || ""}
+                                                onChange={handleInputChange}
+                                                className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white outline-none focus:ring-1 focus:ring-white/30"
+                                                placeholder="0.00"
+                                            />
+                                        </div>
                                     </div>
                                 </div>
                             </div>
+
+                            <div className="flex gap-4">
+                                <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest">Googer Comm. (%) *</label>
+                                        {(parseFloat(formData.googerCommission) > 0) && (
+                                            <span className="text-[10px] font-bold text-blue-400">
+                                                -R {((parseFloat(formData.promoPrice) || 0) * parseFloat(formData.googerCommission) / 100).toFixed(2)}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <input
+                                        required
+                                        type="number"
+                                        name="googerCommission"
+                                        value={formData.googerCommission || ""}
+                                        onChange={handleInputChange}
+                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
+                                        placeholder="0"
+                                    />
+                                </div>
+                                <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest">Prod. Discount (%) *</label>
+                                        {(parseFloat(formData.productDiscount) > 0) && (
+                                            <span className="text-[10px] font-bold text-blue-400">
+                                                -R {((parseFloat(formData.promoPrice) || 0) * parseFloat(formData.productDiscount) / 100).toFixed(2)}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <input
+                                        required
+                                        type="number"
+                                        name="productDiscount"
+                                        value={formData.productDiscount || ""}
+                                        onChange={handleInputChange}
+                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
+                                        placeholder="0"
+                                    />
+                                </div>
+                            </div>
+
                         </div>
-                        <div className="mt-8 mb-4">
-                            <button
-                                type="submit"
-                                disabled={loading}
-                                className={`w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${loading ? 'bg-slate-800 text-slate-500' : 'bg-white text-black shadow-lg hover:bg-gray-200 hover:scale-[1.01]'}`}
-                            >
-                                {loading ? 'Processing...' : (initialData ? 'Update Product' : 'Publish Product')}
-                            </button>
-                        </div>
+                    </div>
+                    <div className="mt-8 mb-4">
+                        <button
+                            type="submit"
+                            disabled={loading}
+                            className={`w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${loading ? 'bg-slate-800 text-slate-500' : 'bg-white text-black shadow-lg hover:bg-gray-200 hover:scale-[1.01]'}`}
+                        >
+                            {loading ? 'Processing...' : (initialData ? 'Update Product' : 'Publish Product')}
+                        </button>
                     </div>
                 </form>
             </div>

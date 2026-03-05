@@ -5,31 +5,33 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
+import EditProfileModal from "@/app/components/EditProfileModal";
 
 export default function ProfilePage() {
     const router = useRouter();
     const [activeTab, setActiveTab] = useState("posts");
     const [showMenu, setShowMenu] = useState(false);
+    const [showEditModal, setShowEditModal] = useState(false);
     const [loading, setLoading] = useState(true);
     const [user, setUser] = useState<any>(null);
 
-    useEffect(() => {
-        const fetchProfile = async () => {
-            try {
-                if (!authService.isAuthenticated()) {
-                    router.push('/');
-                    return;
-                }
-                const profile = await authService.getProfile();
-                setUser(profile);
-            } catch (error) {
-                console.error("Error fetching profile:", error);
+    const fetchProfile = async () => {
+        try {
+            if (!authService.isAuthenticated()) {
                 router.push('/');
-            } finally {
-                setLoading(false);
+                return;
             }
-        };
+            const profile = await authService.getProfile();
+            setUser(profile);
+        } catch (error) {
+            console.error("Error fetching profile:", error);
+            router.push('/');
+        } finally {
+            setLoading(false);
+        }
+    };
 
+    useEffect(() => {
         fetchProfile();
     }, [router]);
 
@@ -104,7 +106,10 @@ export default function ProfilePage() {
 
                     {/* Action Buttons */}
                     <div className="flex justify-center md:justify-start gap-3 relative">
-                        <button className="px-6 py-2 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600 transition-colors text-sm">
+                        <button
+                            onClick={() => setShowEditModal(true)}
+                            className="px-6 py-2 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600 transition-colors text-sm"
+                        >
                             Edit Profile
                         </button>
                         <div className="relative">
@@ -216,6 +221,14 @@ export default function ProfilePage() {
                     <p className="text-gray-400">No posts yet</p>
                 </div>
             )}
+
+            {/* Edit Profile Modal */}
+            <EditProfileModal
+                isOpen={showEditModal}
+                onClose={() => setShowEditModal(false)}
+                user={user}
+                onUpdate={fetchProfile}
+            />
         </div>
     );
 }
