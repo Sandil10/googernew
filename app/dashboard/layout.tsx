@@ -87,17 +87,31 @@ export default function DashboardLayout({
                 {menuItems.slice(2).map((item) => {
                     const isActive = pathname === item.href;
                     return (
-                        <Link
-                            key={item.name}
-                            href={item.href}
-                            className={`flex flex-col items-center justify-center p-2 rounded-lg transition-colors ${isActive ? "text-white" : "text-gray-500 hover:text-gray-300"
-                                }`}
-                        >
-                            <div className="text-2xl flex items-center justify-center">
-                                <IonIcon name={isActive ? item.icon : item.icon + "-outline"} />
-                            </div>
-                            <span className="text-[10px] mt-1 font-medium">{item.name}</span>
-                        </Link>
+                        <div key={item.name} className="relative flex flex-col items-center">
+                            {/* Floating Cart Icon above Chat only on mobile */}
+                            {item.name === "Chats" && (
+                                <Link
+                                    href="/dashboard/cart"
+                                    className="absolute -top-14 w-12 h-12 bg-white text-black rounded-full flex items-center justify-center shadow-2xl border border-white/10 active:scale-90 transition-all z-[60]"
+                                >
+                                    <IonIcon name="cart" className="text-xl" />
+                                    {/* Optional: Cart Count Badge */}
+                                    <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-600 rounded-full border-2 border-zinc-900 flex items-center justify-center">
+                                        <span className="text-[10px] font-black text-white">0</span>
+                                    </div>
+                                </Link>
+                            )}
+                            <Link
+                                href={item.href}
+                                className={`flex flex-col items-center justify-center p-2 rounded-lg transition-colors ${isActive ? "text-white" : "text-gray-500 hover:text-gray-300"
+                                    }`}
+                            >
+                                <div className="text-2xl flex items-center justify-center">
+                                    <IonIcon name={isActive ? item.icon : item.icon + "-outline"} />
+                                </div>
+                                <span className="text-[10px] mt-1 font-medium">{item.name}</span>
+                            </Link>
+                        </div>
                     );
                 })}
             </div>
