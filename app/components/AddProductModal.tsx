@@ -1292,7 +1292,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             />
                                                             {sel.value && (
                                                                 <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
-                                                                    <span className="text-[8px] font-black text-white/10 uppercase tracking-widest">{sel.value}</span>
+                                                                    <span className="text-[8px] font-black text-white uppercase tracking-widest">{sel.value}</span>
                                                                 </div>
                                                             )}
                                                         </div>
@@ -1327,7 +1327,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             />
                                                             {sel.value && (
                                                                 <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
-                                                                    <span className="text-[8px] font-black text-white/10 uppercase tracking-widest">{sel.value}</span>
+                                                                    <span className="text-[8px] font-black text-white uppercase tracking-widest">{sel.value}</span>
                                                                 </div>
                                                             )}
                                                         </div>
