@@ -212,7 +212,7 @@ export default function ShopPage() {
                             <button
                                 key={tab.id}
                                 onClick={() => setMyListingsTab(tab.id)}
-                                className={`flex items-center justify-center gap-2 px-4 py-2 md:w-44 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
+                                className={`flex items-center justify-center gap-2 px-4 py-2 w-44 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
                                     ${myListingsTab === tab.id
                                         ? 'bg-white text-black shadow-lg shadow-white/5 scale-[1.02]'
                                         : 'text-slate-500 hover:text-white hover:bg-white/5'
