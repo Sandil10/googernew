@@ -638,6 +638,65 @@ export default function MyWallet() {
                         </div>
                     )}
                 </div>
+
+                {/* Permanent Recent Transactions Section (Visible on all tabs EXCEPT History) */}
+                {activeTab !== 'transactions' && (
+                    <div className="border-t border-gray-800 p-6 md:p-8 bg-black/10">
+                        <div className="flex items-center justify-between mb-4">
+                            <h4 className="text-[10px] font-black text-white uppercase tracking-[0.2em] flex items-center gap-2">
+                                <IonIcon name="time" className="text-blue-400" />
+                                Recent Transactions
+                            </h4>
+                            <button
+                                onClick={() => setActiveTab('transactions')}
+                                className="text-[9px] text-blue-400 font-bold uppercase tracking-widest hover:underline"
+                            >
+                                View All History
+                            </button>
+                        </div>
+
+                        <div className="space-y-2">
+                            {transactions.slice(0, 3).length > 0 ? (
+                                transactions.slice(0, 3).map((tx) => {
+                                    const isSent = tx.sender_id === user?.id;
+                                    return (
+                                        <div key={tx.id} className="flex items-center justify-between p-3 bg-[#0d1421] rounded-xl border border-gray-800/50 hover:border-gray-700 transition-all">
+                                            <div className="flex items-center gap-3">
+                                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm ${isSent ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
+                                                    <IonIcon name={isSent ? 'arrow-up-outline' : 'arrow-down-outline'} />
+                                                </div>
+                                                <div className="text-left">
+                                                    <p className="text-[10px] font-bold text-white truncate max-w-[120px]">
+                                                        @{isSent ? tx.receiver_username : tx.sender_username}
+                                                    </p>
+                                                    <p className="text-[8px] text-gray-500 font-medium">{new Date(tx.created_at).toLocaleDateString()}</p>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-4">
+                                                <p className={`text-[10px] font-black tracking-tight ${isSent ? 'text-red-400' : 'text-green-400'}`}>
+                                                    {isSent ? '-' : '+'} R {parseFloat(tx.amount).toFixed(2)}
+                                                </p>
+                                                <button
+                                                    onClick={() => {
+                                                        setReceiptTransaction(tx);
+                                                        setShowReceiptModal(true);
+                                                    }}
+                                                    className="p-1 hover:text-blue-400 transition-colors"
+                                                >
+                                                    <IonIcon name="receipt-outline" className="text-xs" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })
+                            ) : (
+                                <div className="flex flex-col items-center justify-center py-4 opacity-30">
+                                    <p className="text-[8px] font-black uppercase tracking-widest text-gray-500">No Recent Activity</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Spacer for mobile bottom bar */}
