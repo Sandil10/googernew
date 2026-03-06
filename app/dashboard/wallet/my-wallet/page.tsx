@@ -9,6 +9,7 @@ import Image from 'next/image';
 import IonIcon from '@/app/components/IonIcon';
 import ConfirmTransferModal from '@/app/components/ConfirmTransferModal';
 import SecurityVerificationModal from '@/app/components/SecurityVerificationModal';
+import ReceiptModal from '@/app/components/ReceiptModal';
 import { generateTransactionReceipt } from '../../../../utils/pdfGenerator';
 
 export default function MyWallet() {
@@ -31,6 +32,9 @@ export default function MyWallet() {
     const [confirmAction, setConfirmAction] = useState<{ type: 'sell' | 'buy', user: any } | null>(null);
     const [showSecurityModal, setShowSecurityModal] = useState(false);
     const [securityAction, setSecurityAction] = useState<any>(null);
+    const [showReceiptModal, setShowReceiptModal] = useState(false);
+    const [receiptTransaction, setReceiptTransaction] = useState<any>(null);
+    const [hasShownAutoReceipt, setHasShownAutoReceipt] = useState<{ history: boolean, request: boolean }>({ history: false, request: false });
 
     const fetchAllData = async () => {
         try {
@@ -66,6 +70,36 @@ export default function MyWallet() {
     useEffect(() => {
         fetchAllData();
     }, [router]);
+
+    // Handle Auto-show Receipt
+    useEffect(() => {
+        if (activeTab === 'transactions' && !hasShownAutoReceipt.history && transactions.length > 0) {
+            setReceiptTransaction(transactions[0]);
+            setShowReceiptModal(true);
+            setHasShownAutoReceipt(prev => ({ ...prev, history: true }));
+        } else if (activeTab === 'request' && !hasShownAutoReceipt.request && pendingRequests.length > 0) {
+            // Check if user has any pending requests sent by them (optional interpretation)
+            // For now, just show the most recent completed or pending one? 
+            // The requirement says "When a user opens History or Requests, the receipt popup must appear first."
+            setReceiptTransaction(transactions[0]);
+            setShowReceiptModal(true);
+            setHasShownAutoReceipt(prev => ({ ...prev, request: true }));
+        }
+    }, [activeTab, transactions, pendingRequests]);
+
+    const handleCancelTransaction = async (txId: number) => {
+        if (!confirm("Are you sure you want to cancel this transaction?")) return;
+        setIsProcessing(true);
+        try {
+            await walletService.cancelTransaction(txId);
+            alert("Transaction cancelled successfully");
+            await fetchAllData();
+        } catch (error: any) {
+            alert(error.message || "Failed to cancel transaction");
+        } finally {
+            setIsProcessing(false);
+        }
+    };
 
     const handleRespond = (requestId: number, action: 'accept' | 'reject') => {
         if (action === 'reject') {
@@ -181,6 +215,19 @@ export default function MyWallet() {
                     setCommission("");
                     setTargetQuery("");
                     setSelectedUser(null);
+
+                    // Show receipt immediately after transaction
+                    if (res.transaction) {
+                        setReceiptTransaction(res.transaction);
+                        setShowReceiptModal(true);
+                    } else {
+                        // If backend doesn't return the tx object, try to find it in refreshed data
+                        const updatedData = await walletService.getTransactionHistory();
+                        if (updatedData && updatedData.length > 0) {
+                            setReceiptTransaction(updatedData[0]);
+                            setShowReceiptModal(true);
+                        }
+                    }
                 }
             } else if (securityAction.type === 'respond') {
                 const res = await walletService.respondToRequest(securityAction.requestId, securityAction.action);
@@ -383,47 +430,61 @@ export default function MyWallet() {
                                 transactions.map((tx) => {
                                     const isSent = tx.sender_id === user?.id;
                                     const otherUser = isSent ? tx.receiver_username : tx.sender_username;
+                                    const isCancellable = isSent && tx.status === 'pending';
 
                                     return (
                                         <div key={tx.id} className="bg-gray-800/20 border border-gray-800 rounded-xl p-4 hover:bg-gray-800/40 transition-all group">
                                             <div className="flex items-center gap-4">
                                                 <div className={`w-12 h-12 ${isSent ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'} rounded-xl flex items-center justify-center text-xl shrink-0`}>
-                                                    <IonIcon name={isSent ? 'arrow-up-outline' : 'arrow-down-outline'} />
+                                                    <IonIcon name={tx.type === 'request' ? 'paper-plane-outline' : (isSent ? 'arrow-up-outline' : 'arrow-down-outline')} />
                                                 </div>
                                                 <div className="flex-1 min-w-0">
                                                     <div className="flex justify-between items-center mb-0.5">
                                                         <h5 className="font-bold text-white text-sm">
-                                                            {isSent ? 'Sent To: ' : 'Received From: '}
+                                                            {tx.type === 'request' ? (isSent ? 'Requested From: ' : 'Requested By: ') : (isSent ? 'Sent To: ' : 'Received From: ')}
                                                             <span className="text-blue-400">@{otherUser}</span>
                                                         </h5>
                                                         <span className={`text-sm font-bold tracking-tight ${isSent ? 'text-red-400' : 'text-green-400'}`}>
-                                                            {isSent ? '-' : '+'} R {parseFloat(tx.amount).toFixed(2)}
+                                                            {isSent ? (tx.type === 'request' ? '' : '-') : '+'} R {parseFloat(tx.amount).toFixed(2)}
                                                         </span>
                                                     </div>
                                                     <div className="flex justify-between items-center">
                                                         <p className="text-[10px] text-gray-400 font-semibold mb-1">
                                                             {new Date(tx.created_at).toLocaleDateString('en-GB')} • {new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                                         </p>
-                                                        <span className={`text-[9px] uppercase font-black px-2 py-1 rounded-md bg-gray-900/50 ${tx.type === 'transfer' ? 'text-blue-400' : 'text-amber-400'}`}>
-                                                            {tx.type === 'transfer' ? 'Transferred' : tx.type}
+                                                        <span className={`text-[9px] uppercase font-black px-2 py-1 rounded-md bg-gray-900/50 ${tx.type === 'transfer' ? 'text-blue-400' : tx.type === 'request' ? 'text-purple-400' : 'text-amber-400'}`}>
+                                                            {tx.type === 'transfer' ? 'Transferred' : tx.type === 'request' ? 'Requested' : tx.type}
                                                         </span>
                                                     </div>
                                                     <div className="flex justify-between items-center">
                                                         <p className="text-[10px] text-gray-500 font-medium italic">
-                                                            {tx.note || (isSent ? 'Direct coin transfer' : 'Coins received')}
+                                                            {tx.note || (isSent ? (tx.type === 'request' ? 'Coin Request Sent' : 'Direct coin transfer') : 'Coins received')}
                                                             {tx.commission_percentage > 0 && ` (Incl. ${tx.commission_percentage}% discount)`}
                                                         </p>
-                                                        <span className={`text-[9px] uppercase font-bold text-gray-500`}>
-                                                            Status: {tx.status}
-                                                        </span>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`text-[9px] uppercase font-bold ${tx.status === 'completed' ? 'text-green-500' : 'text-amber-500'}`}>
+                                                                {tx.status}
+                                                            </span>
+                                                            {isCancellable && (
+                                                                <button
+                                                                    onClick={() => handleCancelTransaction(tx.id)}
+                                                                    className="text-[9px] font-black text-red-500 uppercase tracking-widest bg-red-500/10 px-2 py-0.5 rounded border border-red-500/20 hover:bg-red-500 hover:text-white transition-all"
+                                                                >
+                                                                    Cancel
+                                                                </button>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 </div>
                                                 <button
-                                                    onClick={() => generateTransactionReceipt(tx, user)}
+                                                    onClick={() => {
+                                                        setReceiptTransaction(tx);
+                                                        setShowReceiptModal(true);
+                                                    }}
                                                     className="w-10 h-10 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center text-gray-400 hover:text-white hover:bg-blue-600 transition-all active:scale-90"
-                                                    title="Download Receipt"
+                                                    title="View Receipt"
                                                 >
-                                                    <IonIcon name="download-outline" className="text-xl" />
+                                                    <IonIcon name="receipt-outline" className="text-xl" />
                                                 </button>
                                             </div>
                                         </div>
@@ -549,7 +610,7 @@ export default function MyWallet() {
                     )}
 
                     {activeTab === 'rewards' && (
-                        <div className="flex flex-col items-center justify-center py-20 text-center">
+                        <div className="flex flex-col items-center justify-center py-10 text-center">
                             <div className="w-20 h-20 bg-purple-500/10 rounded-full flex items-center justify-center mb-6 animate-pulse">
                                 <IonIcon name="gift-outline" className="text-4xl text-purple-400" />
                             </div>
@@ -557,12 +618,23 @@ export default function MyWallet() {
                             <p className="text-gray-400 text-sm max-w-xs mb-8">
                                 Check back soon for exclusive rewards and bonuses!
                             </p>
-                            <button
-                                onClick={() => router.push('/dashboard/rewards')}
-                                className="px-8 py-3 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-xl transition-all active:scale-95 shadow-md border border-white/5 text-xs uppercase tracking-widest"
-                            >
-                                Go to Rewards Page
-                            </button>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-sm px-4">
+                                <button
+                                    onClick={() => router.push('/dashboard/rewards')}
+                                    className="px-4 py-4 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-xl transition-all active:scale-95 shadow-md border border-white/5 text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"
+                                >
+                                    <IonIcon name="ribbon-outline" className="text-lg text-amber-500" />
+                                    Rewards Page
+                                </button>
+                                <button
+                                    onClick={() => router.push('/dashboard/wallet/affiliate')}
+                                    className="px-4 py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-all active:scale-95 shadow-md shadow-blue-600/20 text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"
+                                >
+                                    <IonIcon name="people-outline" className="text-lg" />
+                                    Affiliate
+                                </button>
+                            </div>
                         </div>
                     )}
                 </div>
@@ -581,6 +653,13 @@ export default function MyWallet() {
                 onVerify={executeVerifiedTransfer}
                 isProcessing={isProcessing}
                 transaction={securityAction?.transaction}
+            />
+            {/* Receipt Modal */}
+            <ReceiptModal
+                isOpen={showReceiptModal}
+                onClose={() => setShowReceiptModal(false)}
+                transaction={receiptTransaction}
+                currentUser={user}
             />
         </div>
     );

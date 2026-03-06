@@ -13,6 +13,8 @@ export default function WalletPage() {
     const [googerId, setGoogerId] = useState("");
     const [loading, setLoading] = useState(true);
     const [copied, setCopied] = useState(false);
+    const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
+    const [user, setUser] = useState<any>(null);
     const [idVerificationName, setIdVerificationName] = useState("");
     const [subscriptionType, setSubscriptionType] = useState("Monthly Subscription");
     const [center, setCenter] = useState("");
@@ -51,6 +53,7 @@ export default function WalletPage() {
         const fetchData = async () => {
             try {
                 const profile = await authService.getProfile();
+                setUser(profile);
                 setBalance(parseFloat(profile.wallet_balance) || 0);
 
                 // Use the numeric user_id if available, fallback to username
@@ -59,6 +62,7 @@ export default function WalletPage() {
 
                 const txData = await walletService.getTransactionHistory();
                 setTxCount(txData.length || 0);
+                setRecentTransactions(txData.slice(0, 3));
             } catch (error) {
                 console.error("Error fetching wallet summary:", error);
             } finally {
@@ -299,6 +303,49 @@ export default function WalletPage() {
                                     className="w-full bg-[#0d1421] border border-gray-700/50 rounded-xl px-4 py-3 text-white text-center text-sm font-bold focus:outline-none focus:ring-1 focus:ring-blue-500/50 shadow-inner transition-all hover:bg-[#111a2b]"
                                     placeholder="Enter Center Details"
                                 />
+                            </div>
+                        </div>
+                    </div>
+                    {/* Recent Transactions Section */}
+                    <div className="bg-[#162033] border border-gray-800 rounded-2xl p-5 md:p-6 transition-all hover:shadow-lg relative overflow-hidden h-full min-h-[180px]">
+                        <div className="flex flex-col h-full relative z-10 w-full">
+                            <div className="flex items-center justify-between mb-4">
+                                <h4 className="text-base font-bold text-white flex items-center gap-2">
+                                    <IonIcon name="time-outline" className="text-blue-400" />
+                                    Recent Transactions
+                                </h4>
+                                <Link href="/dashboard/wallet/transactions" className="text-[10px] text-blue-400 font-bold uppercase tracking-widest hover:underline">See All</Link>
+                            </div>
+
+                            <div className="flex flex-col gap-2">
+                                {recentTransactions.length > 0 ? (
+                                    recentTransactions.map((tx, idx) => {
+                                        const isSent = tx.sender_id === user?.id;
+                                        return (
+                                            <div key={tx.id} className="flex items-center justify-between p-3 bg-[#0d1421] rounded-xl border border-gray-800/50 hover:border-gray-700 transition-all">
+                                                <div className="flex items-center gap-3">
+                                                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm ${isSent ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
+                                                        <IonIcon name={isSent ? 'arrow-up-outline' : 'arrow-down-outline'} />
+                                                    </div>
+                                                    <div className="text-left">
+                                                        <p className="text-[10px] font-bold text-white truncate max-w-[80px]">@{isSent ? tx.receiver_username : tx.sender_username}</p>
+                                                        <p className="text-[8px] text-gray-500 font-medium">{new Date(tx.created_at).toLocaleDateString()}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="text-right">
+                                                    <p className={`text-[10px] font-black tracking-tight ${isSent ? 'text-red-400' : 'text-green-400'}`}>
+                                                        {isSent ? '-' : '+'} R {parseFloat(tx.amount).toFixed(2)}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        );
+                                    })
+                                ) : (
+                                    <div className="flex flex-col items-center justify-center py-4 opacity-30">
+                                        <IonIcon name="receipt-outline" className="text-2xl mb-1" />
+                                        <p className="text-[8px] font-black uppercase tracking-widest">No Recent Activity</p>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>

@@ -84,5 +84,16 @@ export const walletService = {
         const result = await safeJson(response);
         if (!response.ok) throw new Error(result?.message || 'Failed to fetch history');
         return result.transactions;
+    },
+
+    cancelTransaction: async (transactionId: number) => {
+        const response = await fetch(`${API_URL}/wallet/cancel`, {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify({ transactionId })
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(result?.message || 'Cancellation failed');
+        return result;
     }
 };

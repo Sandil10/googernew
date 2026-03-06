@@ -7,6 +7,7 @@ import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
 import { useRouter } from "next/navigation";
 import SecurityVerificationModal from "@/app/components/SecurityVerificationModal";
+import ReceiptModal from "@/app/components/ReceiptModal";
 
 export default function CoinsManagementPage() {
     const router = useRouter();
@@ -21,6 +22,9 @@ export default function CoinsManagementPage() {
     const [balance, setBalance] = useState<number>(0);
     const [showSecurityModal, setShowSecurityModal] = useState(false);
     const [securityAction, setSecurityAction] = useState<any>(null);
+    const [showReceiptModal, setShowReceiptModal] = useState(false);
+    const [receiptTransaction, setReceiptTransaction] = useState<any>(null);
+    const [user, setUser] = useState<any>(null);
 
     useEffect(() => {
         fetchData();
@@ -29,6 +33,7 @@ export default function CoinsManagementPage() {
     const fetchData = async () => {
         try {
             const profile = await authService.getProfile();
+            setUser(profile);
             setBalance(parseFloat(profile.wallet_balance) || 0);
 
             const requests = await walletService.getPendingRequests();
@@ -93,11 +98,19 @@ export default function CoinsManagementPage() {
                         setShowSecurityModal(false);
                         return;
                     }
-                    await walletService.directTransfer(selectedUser.id, parseFloat(amount), note);
+                    const res = await walletService.directTransfer(selectedUser.id, parseFloat(amount), note);
                     alert("Transfer successful!");
+                    if (res.transaction) {
+                        setReceiptTransaction(res.transaction);
+                        setShowReceiptModal(true);
+                    }
                 } else {
-                    await walletService.requestMoney(selectedUser.id, parseFloat(amount), note);
+                    const res = await walletService.requestMoney(selectedUser.id, parseFloat(amount), note);
                     alert("Money request sent successfully!");
+                    if (res.transaction) {
+                        setReceiptTransaction(res.transaction);
+                        setShowReceiptModal(true);
+                    }
                 }
 
                 setAmount("");
@@ -370,6 +383,12 @@ export default function CoinsManagementPage() {
                 onVerify={executeVerifiedAction}
                 isProcessing={loading}
                 transaction={securityAction?.transaction}
+            />
+            <ReceiptModal
+                isOpen={showReceiptModal}
+                onClose={() => setShowReceiptModal(false)}
+                transaction={receiptTransaction}
+                currentUser={user}
             />
         </div>
     );

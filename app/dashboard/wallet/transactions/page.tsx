@@ -7,12 +7,16 @@ import { walletService } from '@/services/walletService';
 import IonIcon from '@/app/components/IonIcon';
 import Image from 'next/image';
 import { generateTransactionReceipt } from '@/utils/pdfGenerator';
+import ReceiptModal from '@/app/components/ReceiptModal';
 
 export default function TransactionsPage() {
     const router = useRouter();
     const [loading, setLoading] = useState(true);
     const [transactions, setTransactions] = useState<any[]>([]);
     const [user, setUser] = useState<any>(null);
+    const [showReceiptModal, setShowReceiptModal] = useState(false);
+    const [receiptTransaction, setReceiptTransaction] = useState<any>(null);
+    const [hasShownAutoReceipt, setHasShownAutoReceipt] = useState(false);
 
     useEffect(() => {
         const fetchData = async () => {
@@ -29,6 +33,30 @@ export default function TransactionsPage() {
         };
         fetchData();
     }, []);
+
+    // Auto-show receipt
+    useEffect(() => {
+        if (!loading && transactions.length > 0 && !hasShownAutoReceipt) {
+            setReceiptTransaction(transactions[0]);
+            setShowReceiptModal(true);
+            setHasShownAutoReceipt(true);
+        }
+    }, [loading, transactions, hasShownAutoReceipt]);
+
+    const handleCancelTransaction = async (txId: number) => {
+        if (!confirm("Are you sure you want to cancel this transaction?")) return;
+        setLoading(true);
+        try {
+            await walletService.cancelTransaction(txId);
+            alert("Transaction cancelled successfully");
+            const txData = await walletService.getTransactionHistory();
+            setTransactions(txData);
+        } catch (error: any) {
+            alert(error.message || "Failed to cancel transaction");
+        } finally {
+            setLoading(false);
+        }
+    };
 
     if (loading) {
         return (
@@ -59,46 +87,60 @@ export default function TransactionsPage() {
                             transactions.map((tx) => {
                                 const isSent = tx.sender_id === user?.id;
                                 const otherUser = isSent ? tx.receiver_username : tx.sender_username;
+                                const isCancellable = isSent && tx.status === 'pending';
 
                                 return (
                                     <div key={tx.id} className="bg-gray-800/20 border border-gray-800 rounded-xl p-4 hover:bg-gray-800/40 transition-all group">
                                         <div className="flex items-center gap-4">
                                             <div className={`w-12 h-12 ${isSent ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'} rounded-xl flex items-center justify-center text-xl shrink-0`}>
-                                                <IonIcon name={isSent ? 'arrow-up-outline' : 'arrow-down-outline'} />
+                                                <IonIcon name={tx.type === 'request' ? 'paper-plane-outline' : (isSent ? 'arrow-up-outline' : 'arrow-down-outline')} />
                                             </div>
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex justify-between items-center mb-1">
                                                     <h5 className="font-bold text-white text-sm">
-                                                        {isSent ? 'Sent To: ' : 'Received From: '}
+                                                        {tx.type === 'request' ? (isSent ? 'Requested From: ' : 'Requested By: ') : (isSent ? 'Sent To: ' : 'Received From: ')}
                                                         <span className="text-blue-400">@{otherUser}</span>
                                                     </h5>
                                                     <span className={`text-sm font-bold tracking-tight ${isSent ? 'text-red-400' : 'text-green-400'}`}>
-                                                        {isSent ? '-' : '+'} R {parseFloat(tx.amount).toFixed(2)}
+                                                        {isSent ? (tx.type === 'request' ? '' : '-') : '+'} R {parseFloat(tx.amount).toFixed(2)}
                                                     </span>
                                                 </div>
                                                 <div className="flex justify-between items-center mb-1">
                                                     <p className="text-[10px] text-gray-400 font-semibold">
                                                         {new Date(tx.created_at).toLocaleDateString('en-GB')} • {new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                                     </p>
-                                                    <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded bg-gray-900/50 ${tx.type === 'transfer' ? 'text-blue-400' : 'text-amber-400'}`}>
-                                                        {tx.type === 'transfer' ? 'Transferred' : tx.type}
+                                                    <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded bg-gray-900/50 ${tx.type === 'transfer' ? 'text-blue-400' : tx.type === 'request' ? 'text-purple-400' : 'text-amber-400'}`}>
+                                                        {tx.type === 'transfer' ? 'Transferred' : tx.type === 'request' ? 'Requested' : tx.type}
                                                     </span>
                                                 </div>
                                                 <div className="flex justify-between items-center">
                                                     <p className="text-[10px] text-gray-500 italic pr-2 truncate">
-                                                        {tx.note || (isSent ? 'Direct coin transfer' : 'Coins received')}
+                                                        {tx.note || (isSent ? (tx.type === 'request' ? 'Coin Request Sent' : 'Direct coin transfer') : 'Coins received')}
                                                         {tx.commission_percentage > 0 && ` (${tx.commission_percentage}% discount)`}
                                                     </p>
                                                     <div className="flex items-center gap-3">
-                                                        <span className={`text-[9px] uppercase font-bold text-gray-500`}>
-                                                            {tx.status}
-                                                        </span>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`text-[9px] uppercase font-bold ${tx.status === 'completed' ? 'text-green-500' : 'text-amber-500'}`}>
+                                                                {tx.status}
+                                                            </span>
+                                                            {isCancellable && (
+                                                                <button
+                                                                    onClick={() => handleCancelTransaction(tx.id)}
+                                                                    className="text-[9px] font-black text-red-500 uppercase tracking-widest bg-red-500/10 px-2 py-0.5 rounded border border-red-500/20 hover:bg-red-500 hover:text-white transition-all"
+                                                                >
+                                                                    Cancel
+                                                                </button>
+                                                            )}
+                                                        </div>
                                                         <button
-                                                            onClick={() => generateTransactionReceipt(tx, user)}
+                                                            onClick={() => {
+                                                                setReceiptTransaction(tx);
+                                                                setShowReceiptModal(true);
+                                                            }}
                                                             className="p-1.5 bg-white/5 border border-white/10 rounded-lg text-gray-400 hover:text-white hover:bg-blue-600 transition-all active:scale-90"
-                                                            title="Download Receipt"
+                                                            title="View Receipt"
                                                         >
-                                                            <IonIcon name="download-outline" className="text-sm" />
+                                                            <IonIcon name="receipt-outline" className="text-sm" />
                                                         </button>
                                                     </div>
                                                 </div>
@@ -118,6 +160,12 @@ export default function TransactionsPage() {
             </div>
             {/* Spacer for mobile bottom bar */}
             <div className="h-20 md:hidden"></div>
+            <ReceiptModal
+                isOpen={showReceiptModal}
+                onClose={() => setShowReceiptModal(false)}
+                transaction={receiptTransaction}
+                currentUser={user}
+            />
         </div>
     );
 }
