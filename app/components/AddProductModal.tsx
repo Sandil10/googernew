@@ -152,6 +152,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
     const [imageLink, setImageLink] = useState("");
     const [uploadMode, setUploadMode] = useState<'single' | 'variants' | null>(null);
     const [imageSource, setImageSource] = useState<'file' | 'link' | null>(null);
+    const [formErrors, setFormErrors] = useState<string[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const [formData, setFormData] = useState({
@@ -252,12 +253,18 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         setImageColors(variantsData.map((v: any) => v.color || "None"));
                         setMediaTypes(variantsData.map((v: any) => v.media_type || "image"));
                         setVideoUrls(variantsData.map((v: any) => v.video_url || null));
-                        setVariants(variantsData.map((v: any) => ({
-                            promo_price: v.promo_price || "",
-                            type: v.type || "Size",
-                            selections: v.selections || (v.selection ? [{ value: v.selection, stock: v.stock || "0" }] : []),
-                            quantity: v.quantity || "1"
-                        })));
+                        setVariants(variantsData.map((v: any) => {
+                            const raw = v.selections || (v.selection ? [{ value: v.selection, stock: v.stock || "" }] : []);
+                            return {
+                                promo_price: v.promo_price || "",
+                                type: v.type || "Size",
+                                selections: raw.map((s: any) => ({
+                                    ...s,
+                                    isUOM: s.isUOM ?? UOMS.includes(s.value)
+                                })),
+                                quantity: v.quantity || "1"
+                            };
+                        }));
                     } else {
                         setImageColors(["None"]);
                         setMediaTypes(["image"]);
@@ -427,6 +434,18 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             videoUrl = imageLink;
             isVideo = true;
         }
+        // X (Twitter)
+        else if (imageLink.includes('twitter.com') || imageLink.includes('x.com')) {
+            finalUrl = 'https://abs.twimg.com/favicons/twitter.2.ico';
+            videoUrl = imageLink;
+            isVideo = true;
+        }
+        // Google Maps / Shared Address
+        else if (imageLink.includes('maps.app.goo.gl') || imageLink.includes('google.com/maps')) {
+            finalUrl = 'https://cdn-icons-png.flaticon.com/512/854/854878.png'; // Location pin icon
+            videoUrl = imageLink;
+            isVideo = true; // Use video mode for link display
+        }
         // Direct video files
         else if (imageLink.toLowerCase().match(/\.(mp4|webm|ogg)/)) {
             finalUrl = 'https://cdn-icons-png.flaticon.com/512/3221/3221897.png'; // Generic video icon
@@ -444,6 +463,12 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             } catch (e) {
                 console.error("Error parsing Google Image URL:", e);
             }
+        }
+        // Generic Web Page Preview (Fallback)
+        else if (imageLink.startsWith('http')) {
+            // Use a public metadata API for general links (Microlink)
+            // Note: This is a best-effort fallback for generic URLs
+            finalUrl = `https://api.microlink.io?url=${encodeURIComponent(imageLink)}&screenshot=true&embed=screenshot.url`;
         }
 
         const addImage = (url: string, isVid: boolean = false, vidUrl: string | null = null) => {
@@ -612,6 +637,46 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+
+        // Validation
+        const errors: string[] = [];
+        if (!formData.title) errors.push("title");
+        if (!formData.category) errors.push("category");
+        if (!formData.subCategory) errors.push("subCategory");
+        if (!formData.price) errors.push("price");
+        if (!formData.promoPrice) errors.push("promoPrice");
+        if (previews.length === 0) errors.push("images");
+        if (!formData.deliveryTime) errors.push("deliveryTime");
+        if (formData.shipping.length === 0 && !formData.unifiedShipping) errors.push("shipping");
+        if (formData.unifiedShipping && !formData.unifiedCharge && formData.unifiedCharge !== '0') errors.push("unifiedCharge");
+
+        // Variant validation
+        const currentVariants = Array.isArray(variants) ? variants : [];
+        const mainIdx = uploadMode === 'single' ? 0 : activeImageIndex;
+        const currentSelections = currentVariants[mainIdx]?.selections || [];
+
+        const hasVariants = currentSelections.some((s: any) => s.value && s.stock && s.detail);
+
+        if (!hasVariants) {
+            errors.push("variants_missing");
+        }
+
+        // Check if all existing selections are fully filled
+        const isSelectionsIncomplete = currentSelections.some((s: any) => !s.stock || !s.detail);
+        if (isSelectionsIncomplete) {
+            errors.push("variants_incomplete");
+        }
+
+        if (errors.length > 0) {
+            setFormErrors(errors);
+            const msg = errors.includes("variants_missing")
+                ? "⚠️ At least one Size or UOM is required with full details and stock."
+                : "⚠️ Please complete all required fields.";
+            alert(msg);
+            return;
+        }
+
+        setFormErrors([]);
         setLoading(true);
 
         try {
@@ -726,15 +791,17 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     <div className="flex items-center justify-between px-1 md:px-2">
                         <div className="text-left">
                             <h2 className="text-lg md:text-xl font-bold text-white tracking-tight">Add Listing</h2>
-                            <p className="text-[9px] md:text-[10px] text-slate-500 uppercase tracking-widest font-black">{previews.length}/5 Images • {variants.length} Variants</p>
+                            <p className="text-[9px] md:text-[10px] text-slate-500 uppercase tracking-widest font-black">
+                                {previews.length}/5 Images <span className="text-red-500">*</span> • {variants.length} Variants
+                            </p>
                         </div>
                         <button
                             type="button"
                             onClick={onClose}
-                            className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-white/10 transition-all group shrink-0"
+                            className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-white flex items-center justify-center text-black shadow-lg hover:bg-gray-200 transition-all group shrink-0"
                             title="Clear Form / Close"
                         >
-                            <IonIcon name="trash-outline" className="text-lg md:text-xl group-hover:scale-110 transition-transform" />
+                            <IonIcon name="cut-outline" className="text-lg md:text-xl group-hover:scale-110 transition-transform" />
                         </button>
                     </div>
 
@@ -743,7 +810,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         <div
                             onClick={handleAddImagesClick}
                             className={`relative w-full h-[140px] md:h-auto md:aspect-square rounded-[1.2rem] md:rounded-[2.5rem] overflow-hidden transition-all cursor-pointer group shrink-0
-                                ${previews.length > 0 ? 'border-0 shadow-2xl' : 'border-2 border-dashed border-blue-500/30 hover:border-blue-500/50 bg-blue-500/5'}`}
+                                ${previews.length > 0 ? 'border-0 shadow-2xl' : `border-2 border-dashed ${formErrors.includes('images') ? 'border-red-500 bg-red-500/5' : 'border-blue-500/30 hover:border-blue-500/50 bg-blue-500/5'}`}`}
                         >
                             {previews.length > 0 ? (
                                 <>
@@ -968,7 +1035,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         name="title"
                                         value={formData.title}
                                         onChange={handleInputChange}
-                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
+                                        className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 transition-all font-bold ${formErrors.includes('title') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 focus:ring-white/30'}`}
                                         placeholder="e.g. Nike Air Max"
                                     />
                                 </div>
@@ -997,7 +1064,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                         type="text"
                                                         value={formData.category === 'Custom' ? '' : formData.category}
                                                         onChange={(e) => handleFormChange('category', e.target.value)}
-                                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all pr-10"
+                                                        className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 transition-all pr-10 ${formErrors.includes('category') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 focus:ring-white/30'}`}
                                                         placeholder="Type category..."
                                                         autoFocus
                                                     />
@@ -1012,7 +1079,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             ) : (
                                                 <div
                                                     onClick={() => setOpenPicker({ type: 'form', field: 'category', options: CATEGORIES, title: 'Category', value: formData.category })}
-                                                    className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all"
+                                                    className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer transition-all ${formErrors.includes('category') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 focus:ring-white/30'}`}
                                                 >
                                                     <span className="truncate">{formData.category || "Select Category"}</span>
                                                     <IonIcon name="chevron-down" className="text-gray-500" />
@@ -1037,7 +1104,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                                 type="text"
                                                                 value={formData.subCategory === 'Custom' ? '' : formData.subCategory}
                                                                 onChange={(e) => handleFormChange('subCategory', e.target.value)}
-                                                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all pr-10"
+                                                                className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 transition-all pr-10 ${formErrors.includes('subCategory') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 focus:ring-white/30'}`}
                                                                 placeholder="Type sub category..."
                                                                 autoFocus
                                                             />
@@ -1060,7 +1127,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             title: 'Sub Category (Level 2)',
                                                             value: formData.subCategory
                                                         })}
-                                                        className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer focus:ring-1 focus:ring-white/30 transition-all"
+                                                        className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer transition-all ${formErrors.includes('subCategory') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 focus:ring-white/30'}`}
                                                     >
                                                         <span className="truncate">{formData.subCategory || "Select Sub Category"}</span>
                                                         <IonIcon name="chevron-down" className="text-gray-500" />
@@ -1133,7 +1200,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             name="price"
                                             value={formData.price}
                                             onChange={handleInputChange}
-                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold line-through decoration-red-500/50"
+                                            className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 transition-all font-bold line-through decoration-red-500/50 ${formErrors.includes('price') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 focus:ring-white/30'}`}
                                             placeholder="0.00"
                                             onKeyPress={(e) => {
                                                 if (!/[0-9.]/.test(e.key)) e.preventDefault();
@@ -1151,7 +1218,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             name="promoPrice"
                                             value={formData.promoPrice}
                                             onChange={handleInputChange}
-                                            className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all font-bold"
+                                            className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2 md:py-2.5 text-xs text-white focus:outline-none focus:ring-1 transition-all font-bold ${formErrors.includes('promoPrice') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 focus:ring-white/30'}`}
                                             placeholder="0.00"
                                             onKeyPress={(e) => {
                                                 if (!/[0-9.]/.test(e.key)) e.preventDefault();
@@ -1300,7 +1367,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             <button
                                                 type="button"
                                                 onClick={() => setOpenPicker({ type: 'variant', field: 'selections', options: SIZES, title: 'Add Sizes', value: '' })}
-                                                className="w-full bg-blue-500/5 border border-blue-500/20 rounded-xl py-3 text-[10px] font-black text-blue-400 uppercase tracking-widest hover:bg-blue-500/10 transition-all flex items-center justify-center gap-2"
+                                                className={`w-full bg-blue-500/5 border rounded-xl py-3 text-[10px] font-black uppercase tracking-widest hover:bg-blue-500/10 transition-all flex items-center justify-center gap-2 ${formErrors.includes('variants_missing') ? 'border-red-500 text-red-500 bg-red-500/5 ring-1 ring-red-500/50' : 'border-blue-500/20 text-blue-400'}`}
                                             >
                                                 <IonIcon name="resize-outline" />
                                                 + Add Sizes <span className="text-red-500">*</span>
@@ -1309,7 +1376,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             <button
                                                 type="button"
                                                 onClick={() => setOpenPicker({ type: 'variant', field: 'selections', options: UOMS, title: 'Add UOM', value: '' })}
-                                                className="w-full bg-blue-500/5 border border-blue-500/20 rounded-xl py-3 text-[10px] font-black text-blue-400 uppercase tracking-widest hover:bg-blue-500/10 transition-all flex items-center justify-center gap-2"
+                                                className={`w-full bg-blue-500/5 border rounded-xl py-3 text-[10px] font-black uppercase tracking-widest hover:bg-blue-500/10 transition-all flex items-center justify-center gap-2 ${formErrors.includes('variants_missing') ? 'border-red-500 text-red-500 bg-red-500/5 ring-1 ring-red-500/50' : 'border-blue-500/20 text-blue-400'}`}
                                             >
                                                 <IonIcon name="cube-outline" />
                                                 + Add UOM <span className="text-red-500">*</span>
@@ -1364,7 +1431,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                                     }
                                                                     setVariants(newVariants);
                                                                 }}
-                                                                className="w-full bg-slate-800/10 border border-white/5 rounded-xl px-3 py-2 md:py-2.5 pr-10 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder:text-white/20 transition-all"
+                                                                className={`w-full bg-slate-800/10 border rounded-xl px-3 py-2 md:py-2.5 pr-10 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder:text-white/20 transition-all ${(!sel.detail && formErrors.includes('variants_incomplete')) ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/5'}`}
                                                                 placeholder={sel.value ? `e.g. 5${sel.value} to 10${sel.value}` : "e.g. 20 to 22"}
                                                             />
                                                             {sel.value && (
@@ -1396,7 +1463,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                                     }
                                                                     setVariants(newVariants);
                                                                 }}
-                                                                className="w-full bg-slate-800/10 border border-white/5 rounded-xl px-3 py-2 md:py-2.5 pr-10 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder:text-white/20 transition-all"
+                                                                className={`w-full bg-slate-800/10 border rounded-xl px-3 py-2 md:py-2.5 pr-10 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder:text-white/20 transition-all ${(!sel.stock && formErrors.includes('variants_incomplete')) ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/5'}`}
                                                                 placeholder="Qty"
                                                                 onKeyPress={(e) => {
                                                                     if (!/[0-9]/.test(e.key)) e.preventDefault();
@@ -1447,6 +1514,22 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         <div className="flex flex-col gap-6">
                             <h3 className="text-lg font-bold text-white italic">Logistics</h3>
 
+                            <div className="bg-slate-800/20 p-5 rounded-[2rem] border border-white/5">
+                                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-1">
+                                    Processing Time <span className="text-red-500">*</span>
+                                </label>
+                                <div
+                                    onClick={() => setOpenPicker({ type: 'form', field: 'deliveryTime', options: DELIVERY_OPTIONS, title: 'Processing Time', value: formData.deliveryTime })}
+                                    className={`w-full bg-slate-800/50 border rounded-xl px-4 py-3 text-xs text-white flex items-center justify-between cursor-pointer transition-all ${formErrors.includes('deliveryTime') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 hover:border-white/20'}`}
+                                >
+                                    <span className={formData.deliveryTime ? "text-white font-bold" : "text-slate-500"}>
+                                        {formData.deliveryTime || "Select processing time..."}
+                                    </span>
+                                    <IonIcon name="chevron-down" className="text-slate-500" />
+                                </div>
+                                <p className="text-[8px] text-slate-600 font-bold uppercase mt-2 italic tracking-tighter">How long before the order is shipped?</p>
+                            </div>
+
 
                             <div className="bg-slate-800/20 p-5 rounded-[2rem] border border-white/5">
                                 <div className="flex items-center justify-between mb-4">
@@ -1491,7 +1574,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                     value={formData.unifiedCharge}
                                                     onChange={(e) => setFormData(prev => ({ ...prev, unifiedCharge: e.target.value }))}
                                                     disabled={formData.unifiedCharge === '0'}
-                                                    className="w-full bg-slate-900/50 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:ring-1 focus:ring-white/30 outline-none disabled:opacity-50"
+                                                    className={`w-full bg-slate-900/50 border rounded-lg px-3 py-2 text-xs text-white focus:ring-1 outline-none disabled:opacity-50 transition-all ${formErrors.includes('unifiedCharge') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 focus:ring-white/30'}`}
                                                     placeholder="0.00"
                                                 />
                                             </div>
@@ -1512,9 +1595,9 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 <button
                                     type="button"
                                     onClick={() => setOpenPicker({ type: 'shipping', field: '', options: COUNTRIES.filter(c => !(formData.shipping || []).find(s => s.country === c)), title: 'Add Countries', value: '' })}
-                                    className="w-full bg-white/5 border border-white/10 rounded-xl py-2 text-[10px] font-black text-gray-300 uppercase tracking-widest mb-3 hover:bg-white/10 transition-all shadow-sm"
+                                    className={`w-full border rounded-xl py-2 text-[10px] font-black uppercase tracking-widest mb-3 transition-all shadow-sm ${formErrors.includes('shipping') ? 'bg-red-500/10 border-red-500 text-red-500' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}
                                 >
-                                    + Add Shipping Country
+                                    + Add Shipping Country {formData.shipping.length === 0 && !formData.unifiedShipping && <span className="text-red-500 ml-1">*</span>}
                                 </button>
 
                                 <div className={`mt-2 overflow-y-auto custom-scrollbar pr-1 ${formData.unifiedShipping ? 'max-h-[120px]' : 'max-h-[380px] flex flex-col gap-2'}`}>
@@ -1894,6 +1977,25 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             </div>
 
                             <div className="space-y-4">
+                                <div className="flex gap-2 mb-2">
+                                    <button
+                                        type="button"
+                                        onClick={async () => {
+                                            try {
+                                                const text = await navigator.clipboard.readText();
+                                                if (text) {
+                                                    setImageLink(text);
+                                                }
+                                            } catch (err) {
+                                                alert("Please paste the link manually.");
+                                            }
+                                        }}
+                                        className="flex-1 py-3 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center justify-center gap-2 text-[10px] font-black text-blue-400 uppercase tracking-widest hover:bg-blue-500/20 transition-all"
+                                    >
+                                        <IonIcon name="clipboard-outline" />
+                                        Paste from Clipboard
+                                    </button>
+                                </div>
                                 <input
                                     type="url"
                                     value={imageLink}
@@ -2061,13 +2163,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 const currentSelections = newVariants[targetIdx]?.selections || [];
                                                 const newSelections = tempSelections.map(val => ({
                                                     value: val,
-                                                    stock: "0",
-                                                    detail: ""
+                                                    stock: "",
+                                                    detail: "",
+                                                    isUOM: isUOM
                                                 }));
                                                 newVariants[targetIdx] = {
                                                     ...newVariants[targetIdx],
                                                     selections: [...currentSelections, ...newSelections],
-                                                    type: isUOM ? 'UOM' : 'Size'
+                                                    type: isUOM ? 'UOM' : 'Size' // Fallback for legacy support
                                                 };
                                                 setVariants(newVariants);
                                             }

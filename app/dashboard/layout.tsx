@@ -89,7 +89,7 @@ export default function DashboardLayout({
                     return (
                         <div key={item.name} className="relative flex flex-col items-center">
                             {/* Floating Cart Icon above Chat only on mobile */}
-                            {item.name === "Chats" && (
+                            {item.name === "Chats" && pathname === "/dashboard/shop" && (
                                 <Link
                                     href="/dashboard/cart"
                                     className="absolute -top-14 w-12 h-12 bg-white text-black rounded-full flex items-center justify-center shadow-2xl border border-white/10 active:scale-90 transition-all z-[60]"

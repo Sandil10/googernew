@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import IonIcon from '../components/IonIcon';
 import Image from "next/image";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 // Mock Data
 const STORIES = [
@@ -46,6 +46,47 @@ const POSTS = [
 
 export default function DashboardPage() {
     const [activeStory, setActiveStory] = useState<number | null>(null);
+    const [postText, setPostText] = useState("");
+    const [linkPreview, setLinkPreview] = useState<{ url: string; image: string; title?: string } | null>(null);
+    const [isFetchingLink, setIsFetchingLink] = useState(false);
+
+    useEffect(() => {
+        const urlRegex = /(https?:\/\/[^\s]+)/g;
+        const match = postText.match(urlRegex);
+        if (match && match[0] !== linkPreview?.url) {
+            const url = match[0];
+            fetchLinkPreview(url);
+        } else if (!match) {
+            setLinkPreview(null);
+        }
+    }, [postText]);
+
+    const fetchLinkPreview = async (url: string) => {
+        setIsFetchingLink(true);
+        try {
+            let previewImage = "";
+            let title = "";
+
+            if (url.includes("youtube.com") || url.includes("youtu.be")) {
+                const vid = url.includes("v=") ? url.split("v=")[1].split("&")[0] : url.split("/").pop();
+                previewImage = `https://img.youtube.com/vi/${vid}/maxresdefault.jpg`;
+                title = "YouTube Video";
+            } else if (url.match(/\.(jpeg|jpg|gif|png)$/) != null) {
+                previewImage = url;
+                title = "Image Link";
+            } else {
+                // Fallback to Microlink screenshot
+                previewImage = `https://api.microlink.io?url=${encodeURIComponent(url)}&screenshot=true&embed=screenshot.url`;
+                title = new URL(url).hostname;
+            }
+
+            setLinkPreview({ url, image: previewImage, title });
+        } catch (e) {
+            console.error("Link preview error:", e);
+        } finally {
+            setIsFetchingLink(false);
+        }
+    };
 
     return (
         <div className="flex gap-8 max-w-7xl mx-auto pt-6">
@@ -74,24 +115,56 @@ export default function DashboardPage() {
                     ))}
                 </div>
 
-                {/* Create Post Input */}
-                <div className="bg-[#162033] rounded-2xl p-4 flex items-center gap-4 shadow-lg border border-gray-800">
-                    <div className="relative w-10 h-10 rounded-full overflow-hidden shrink-0">
-                        <Image src="https://i.pravatar.cc/150?u=monroe" alt="Me" fill className="object-cover" />
+                {/* Create Post Input and Preview */}
+                <div className="flex flex-col gap-4">
+                    <div className="bg-[#162033] rounded-2xl p-4 flex items-center gap-4 shadow-lg border border-gray-800">
+                        <div className="relative w-10 h-10 rounded-full overflow-hidden shrink-0">
+                            <Image src="https://i.pravatar.cc/150?u=monroe" alt="Me" fill className="object-cover" />
+                        </div>
+                        <input
+                            type="text"
+                            value={postText}
+                            onChange={(e) => setPostText(e.target.value)}
+                            placeholder="What do you have in mind?"
+                            className="flex-1 bg-gray-800/50 text-white placeholder-gray-500 text-sm rounded-xl px-4 py-3 focus:outline-none focus:ring-1 focus:ring-gray-600 transition-all"
+                        />
+                        <div className="flex gap-2">
+                            <button className="p-2 bg-blue-500/10 text-blue-400 rounded-lg hover:bg-blue-500/20 transition-colors flex items-center justify-center w-10 h-10">
+                                <IonIcon name="image" size="large" />
+                            </button>
+                            <button className="p-2 bg-pink-500/10 text-pink-400 rounded-lg hover:bg-pink-500/20 transition-colors flex items-center justify-center w-10 h-10">
+                                <IonIcon name="videocam" size="large" />
+                            </button>
+                        </div>
                     </div>
-                    <input
-                        type="text"
-                        placeholder="What do you have in mind?"
-                        className="flex-1 bg-gray-800/50 text-white placeholder-gray-500 text-sm rounded-xl px-4 py-3 focus:outline-none focus:ring-1 focus:ring-gray-600 transition-all"
-                    />
-                    <div className="flex gap-2">
-                        <button className="p-2 bg-blue-500/10 text-blue-400 rounded-lg hover:bg-blue-500/20 transition-colors flex items-center justify-center w-10 h-10">
-                            <IonIcon name="image" size="large" />
-                        </button>
-                        <button className="p-2 bg-pink-500/10 text-pink-400 rounded-lg hover:bg-pink-500/20 transition-colors flex items-center justify-center w-10 h-10">
-                            <IonIcon name="videocam" size="large" />
-                        </button>
-                    </div>
+
+                    {/* Link Preview Card */}
+                    {linkPreview && (
+                        <div className="bg-[#162033] border border-white/10 rounded-2xl overflow-hidden animate-in fade-in slide-in-from-top-4 duration-300 shadow-2xl">
+                            <div className="relative aspect-video w-full bg-black/40">
+                                {isFetchingLink ? (
+                                    <div className="absolute inset-0 flex items-center justify-center">
+                                        <div className="w-8 h-8 border-2 border-white/10 border-t-white animate-spin rounded-full" />
+                                    </div>
+                                ) : (
+                                    <Image src={linkPreview.image} alt="Preview" fill className="object-cover" />
+                                )}
+                                <button
+                                    onClick={() => setLinkPreview(null)}
+                                    className="absolute top-3 right-3 w-8 h-8 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black transition-all"
+                                >
+                                    <IonIcon name="close" />
+                                </button>
+                            </div>
+                            <div className="p-4 flex items-center justify-between">
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest">{linkPreview.title || "Link Preview"}</span>
+                                    <span className="text-xs text-white/60 truncate max-w-[200px] md:max-w-xs">{linkPreview.url}</span>
+                                </div>
+                                <button className="px-5 py-2.5 bg-white text-black text-[10px] font-black uppercase tracking-widest rounded-xl hover:scale-105 transition-transform active:scale-95">Post Now</button>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Feed Posts */}

@@ -6,6 +6,7 @@ import { useState, useEffect } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import { authService } from "@/services/authService";
 import { walletService } from "@/services/walletService";
+import ShareModal from "@/app/components/ShareModal";
 
 export default function WalletPage() {
     const [balance, setBalance] = useState(0);
@@ -18,6 +19,7 @@ export default function WalletPage() {
     const [idVerificationName, setIdVerificationName] = useState("");
     const [subscriptionType, setSubscriptionType] = useState("Monthly Subscription");
     const [center, setCenter] = useState("");
+    const [showShareModal, setShowShareModal] = useState(false);
 
     const referralLink = typeof window !== 'undefined' ? `${window.location.origin}/register?ref=${googerId}` : '';
 
@@ -34,19 +36,7 @@ export default function WalletPage() {
     };
 
     const handleShare = async () => {
-        if (navigator.share && referralLink) {
-            try {
-                await navigator.share({
-                    title: 'Join Googer',
-                    text: 'Join me on Googer and start earning!',
-                    url: referralLink,
-                });
-            } catch (err) {
-                console.log('Error sharing:', err);
-            }
-        } else {
-            handleCopy();
-        }
+        setShowShareModal(true);
     };
 
     useEffect(() => {
@@ -354,6 +344,15 @@ export default function WalletPage() {
 
             {/* Spacer for mobile bottom bar */}
             <div className="h-20 md:hidden"></div>
+
+            {/* Share Modal */}
+            <ShareModal
+                isOpen={showShareModal}
+                onClose={() => setShowShareModal(false)}
+                title="Join Googer"
+                url={referralLink}
+                description="Join me on Googer and start earning!"
+            />
         </div>
     );
 }

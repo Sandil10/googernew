@@ -8,6 +8,7 @@ import IonIcon from "@/app/components/IonIcon";
 // import AddProductModal from "@/app/components/AddProductModal"; // Global now
 import { marketService } from "@/services/marketService";
 import { authService } from "@/services/authService";
+import ShareModal from "@/app/components/ShareModal";
 
 export default function ShopPage() {
     const router = useRouter();
@@ -22,6 +23,8 @@ export default function ShopPage() {
     const [selectedProduct, setSelectedProduct] = useState<any>(null);
     const [editingProduct, setEditingProduct] = useState<any>(null);
     const [mounted, setMounted] = useState(false);
+    const [showShareModal, setShowShareModal] = useState(false);
+    const [shareProduct, setShareProduct] = useState<any>(null);
 
     const categories = [
         "Gamings", "Headphones", "Parfums", "Fruits", "Mobiles", "Laptops", "Accessories", "Shoes", "Clothing", "Electronics", "Fashion", "Other"
@@ -336,7 +339,14 @@ export default function ShopPage() {
                                         <button className="text-white/60 hover:text-white transition-colors active:scale-90">
                                             <IonIcon name="chatbubble-outline" className="text-lg" />
                                         </button>
-                                        <button className="text-white/60 hover:text-white transition-colors active:scale-90">
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setShareProduct(product);
+                                                setShowShareModal(true);
+                                            }}
+                                            className="text-white/60 hover:text-white transition-colors active:scale-90"
+                                        >
                                             <IonIcon name="share-social-outline" className="text-lg" />
                                         </button>
                                     </div>
@@ -442,6 +452,19 @@ export default function ShopPage() {
                                 </div>
                             </div>
 
+                            <div className="flex items-center gap-3 mb-6">
+                                <button
+                                    onClick={() => {
+                                        setShareProduct(selectedProduct);
+                                        setShowShareModal(true);
+                                    }}
+                                    className="flex-1 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 active:scale-95"
+                                >
+                                    <IonIcon name="share-social-outline" className="text-lg" />
+                                    Share This Listing
+                                </button>
+                            </div>
+
                             <div className="mt-auto">
                                 {(selectedProduct.status === 'reviewing' || selectedProduct.status === 'rejected' || activeTab === 'my-products') && currentUser?.id === selectedProduct.user_id && (
                                     <div className="grid grid-cols-2 gap-4 mt-4">
@@ -454,6 +477,14 @@ export default function ShopPage() {
                     </div>
                 </div>
             )}
+            {/* Share Modal */}
+            <ShareModal
+                isOpen={showShareModal}
+                onClose={() => setShowShareModal(false)}
+                title={shareProduct?.title || "Check out this product"}
+                url={shareProduct ? `${window.location.origin}/dashboard/shop?id=${shareProduct.id}` : ""}
+                description={shareProduct?.description}
+            />
         </div>
     );
 }
