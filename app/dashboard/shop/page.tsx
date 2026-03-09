@@ -13,8 +13,9 @@ import ShareModal from "@/app/components/ShareModal";
 export default function ShopPage() {
     const router = useRouter();
     const [showFilters, setShowFilters] = useState(false);
-    const [activeTab, setActiveTab] = useState("market"); // market, my-products
-    const [myListingsTab, setMyListingsTab] = useState("active"); // active, all, reviewing, deleted
+    const [activeTab, setActiveTab] = useState("market"); // market, my-products, orders
+    const [myListingsTab, setMyListingsTab] = useState("reviewing"); // reviewing, rejected, deleted
+    const [myOrdersTab, setMyOrdersTab] = useState("all"); // all, processing, shipped, delivered, returns
     const [isCategoriesDrawerOpen, setIsCategoriesDrawerOpen] = useState(false);
     const [selectedCategory, setSelectedCategory] = useState(""); // Filter state
     const [products, setProducts] = useState<any[]>([]);
@@ -37,7 +38,7 @@ export default function ShopPage() {
 
     useEffect(() => {
         loadProducts();
-    }, [activeTab, myListingsTab, currentUser, selectedCategory]);
+    }, [activeTab, myListingsTab, myOrdersTab, currentUser, selectedCategory]);
 
     useEffect(() => {
         const handleRefresh = () => {
@@ -66,10 +67,19 @@ export default function ShopPage() {
             } else if (activeTab === "my-products") {
                 if (currentUser?.id) {
                     filters.user_id = currentUser.id;
-                    if (myListingsTab === "active") filters.status = 'approved';
-                    else if (myListingsTab === "reviewing") filters.status = 'reviewing';
+                    if (myListingsTab === "reviewing") filters.status = 'reviewing';
+                    else if (myListingsTab === "rejected") filters.status = 'rejected';
                     else if (myListingsTab === "deleted") filters.status = 'deleted';
-                    // 'all' doesn't set a status filter
+                }
+            } else if (activeTab === "orders") {
+                if (currentUser?.id) {
+                    filters.user_id = currentUser.id;
+                    if (myOrdersTab === "all") {
+                        // Workaround: show both approved and reviewing items in My Orders as requested
+                        filters.status = 'approved,reviewing';
+                    } else {
+                        filters.order_status = myOrdersTab;
+                    }
                 }
             }
 
@@ -181,6 +191,17 @@ export default function ShopPage() {
                             </div>
                             {activeTab === "my-products" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>}
                         </button>
+
+                        <button
+                            onClick={() => setActiveTab("orders")}
+                            className={`pb-3 text-sm font-medium transition-colors relative whitespace-nowrap ${activeTab === "orders" ? "text-white" : "text-gray-400 hover:text-gray-300"}`}
+                        >
+                            <div className="flex items-center gap-2">
+                                <IonIcon name="cart-outline" />
+                                My Orders
+                            </div>
+                            {activeTab === "orders" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>}
+                        </button>
                     </div>
                 </div>
 
@@ -207,14 +228,20 @@ export default function ShopPage() {
                     </button>
                     <div id="mylisting-scroll" className="flex-1 md:flex-none flex items-center gap-1.5 p-1 bg-white/5 rounded-2xl overflow-x-auto no-scrollbar border border-white/5 scroll-smooth">
                         {[
-                            { id: 'active', label: 'Active Products', icon: 'checkmark-circle' },
-                            { id: 'all', label: 'My Products', icon: 'grid' },
+                            { id: 'add', label: 'Add', icon: 'add-circle' },
                             { id: 'reviewing', label: 'Review Products', icon: 'time' },
+                            { id: 'rejected', label: 'Rejected Products', icon: 'close-circle' },
                             { id: 'deleted', label: 'Deleted Products', icon: 'trash' }
                         ].map((tab) => (
                             <button
                                 key={tab.id}
-                                onClick={() => setMyListingsTab(tab.id)}
+                                onClick={() => {
+                                    if (tab.id === 'add') {
+                                        window.dispatchEvent(new CustomEvent('open-add-product-modal'));
+                                    } else {
+                                        setMyListingsTab(tab.id);
+                                    }
+                                }}
                                 className={`flex items-center justify-center gap-2 px-4 py-2 w-44 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
                                     ${myListingsTab === tab.id
                                         ? 'bg-white text-black shadow-lg shadow-white/5 scale-[1.02]'
@@ -227,6 +254,47 @@ export default function ShopPage() {
                         ))}
                     </div>
                     <button className="md:hidden flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('mylisting-scroll')?.scrollBy({ left: 150, behavior: 'smooth' })}>
+                        <IonIcon name="chevron-forward" className="text-lg" />
+                    </button>
+                </div>
+            )}
+
+            {/* Sub-tabs for My Orders */}
+            {activeTab === 'orders' && (
+                <div className="flex items-center gap-2 mb-8 select-none animate-in slide-in-from-left-4 duration-500">
+                    <button className="md:hidden flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('myorders-scroll')?.scrollBy({ left: -150, behavior: 'smooth' })}>
+                        <IonIcon name="chevron-back" className="text-lg" />
+                    </button>
+                    <div id="myorders-scroll" className="flex-1 md:flex-none flex items-center gap-1.5 p-1 bg-white/5 rounded-2xl overflow-x-auto no-scrollbar border border-white/5 scroll-smooth">
+                        {[
+                            { id: 'add', label: 'Add', icon: 'add-circle' },
+                            { id: 'all', label: 'All Orders', icon: 'receipt' },
+                            { id: 'processing', label: 'Processing', icon: 'sync' },
+                            { id: 'shipped', label: 'Shipped', icon: 'airplane' },
+                            { id: 'delivered', label: 'Delivered', icon: 'cube' },
+                            { id: 'returns', label: 'Returns', icon: 'refresh-circle' }
+                        ].map((tab) => (
+                            <button
+                                key={tab.id}
+                                onClick={() => {
+                                    if (tab.id === 'add') {
+                                        window.dispatchEvent(new CustomEvent('open-add-product-modal'));
+                                    } else {
+                                        setMyOrdersTab(tab.id);
+                                    }
+                                }}
+                                className={`flex items-center justify-center gap-2 px-4 py-2 w-44 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
+                                    ${myOrdersTab === tab.id
+                                        ? 'bg-white text-black shadow-lg shadow-white/5 scale-[1.02]'
+                                        : 'text-slate-500 hover:text-white hover:bg-white/5'
+                                    }`}
+                            >
+                                <IonIcon name={tab.icon + (myOrdersTab === tab.id ? "" : "-outline")} className="text-sm" />
+                                {tab.label}
+                            </button>
+                        ))}
+                    </div>
+                    <button className="md:hidden flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('myorders-scroll')?.scrollBy({ left: 150, behavior: 'smooth' })}>
                         <IonIcon name="chevron-forward" className="text-lg" />
                     </button>
                 </div>
@@ -299,13 +367,23 @@ export default function ShopPage() {
                                     sizes="(max-width: 768px) 50vw, 25vw"
                                     className="object-cover group-hover:scale-105 transition-transform duration-500"
                                 />
-                                {product.status === 'reviewing' && (
+                                {product.status === 'reviewing' && activeTab !== 'orders' && (
                                     <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center">
                                         <div className="flex flex-col items-center gap-2 text-white">
                                             <div className="w-10 h-10 md:w-12 md:h-12 rounded-full border-2 border-white flex items-center justify-center bg-black/50">
                                                 <IonIcon name="time" className="text-xl md:text-2xl" />
                                             </div>
                                             <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider bg-black/60 px-2 py-1 rounded-full border border-white/30">Reviewing</span>
+                                        </div>
+                                    </div>
+                                )}
+                                {product.status === 'rejected' && (
+                                    <div className="absolute inset-0 bg-red-900/40 backdrop-blur-[2px] flex items-center justify-center">
+                                        <div className="flex flex-col items-center gap-2 text-white">
+                                            <div className="w-10 h-10 md:w-12 md:h-12 rounded-full border-2 border-red-500 flex items-center justify-center bg-red-600/30">
+                                                <IonIcon name="close" className="text-xl md:text-2xl text-red-100" />
+                                            </div>
+                                            <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider bg-red-600/80 px-2 py-1 rounded-full border border-red-400">Rejected</span>
                                         </div>
                                     </div>
                                 )}
@@ -324,10 +402,6 @@ export default function ShopPage() {
                                     <div className="flex items-center gap-1 text-white">
                                         <span className="text-gray-500 font-normal">Sri Lanka:</span>
                                         {product.shipping_info?.rates?.[0]?.charge || '0'}
-                                    </div>
-                                    <div className="h-2 w-px bg-white/10"></div>
-                                    <div className="text-white">
-                                        {product.delivery_info?.time || '7 Days'}
                                     </div>
                                 </div>
 
@@ -411,10 +485,7 @@ export default function ShopPage() {
                             {/* Logistics & Payment Details */}
                             <div className="space-y-6 mb-8">
                                 <div className="grid grid-cols-2 gap-4">
-                                    <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
-                                        <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Delivery Time</label>
-                                        <p className="text-xs font-bold text-white">{selectedProduct.delivery_info?.time || 'Not specified'}</p>
-                                    </div>
+
                                     <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
                                         <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Return Policy</label>
                                         <p className="text-xs font-bold text-white">{selectedProduct.return_policy?.text || 'Standard Policy'}</p>

@@ -32,7 +32,7 @@ exports.createMarketItem = async (req, res) => {
             if (payment_data) payment_methods = JSON.parse(payment_data);
             if (warranty_data) warranty_info = JSON.parse(warranty_data);
             if (return_data) return_policy = JSON.parse(return_data);
-            if (delivery_data) delivery_info = JSON.parse(delivery_data);
+            if (delivery_info) delivery_info = JSON.parse(delivery_data);
             if (commission_data) commission_info = JSON.parse(commission_data);
             if (links_data) links_info = JSON.parse(links_data);
         } catch (parseErr) {
@@ -163,7 +163,8 @@ exports.updateMarketItem = async (req, res) => {
                  return_policy = COALESCE($10, return_policy),
                  delivery_info = COALESCE($11, delivery_info),
                  commission_info = COALESCE($12, commission_info),
-                  links_data = COALESCE($13, links_data),
+                 links_data = COALESCE($13, links_data),
+                 status = 'reviewing',
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $14 RETURNING *`,
             [
@@ -222,8 +223,9 @@ exports.getMarketItems = async (req, res) => {
             query += ` AND m.user_id = $${params.length}`;
         }
         if (status) {
-            params.push(status);
-            query += ` AND m.status = $${params.length}`;
+            const statusArray = status.split(',');
+            params.push(statusArray);
+            query += ` AND m.status = ANY($${params.length})`;
         }
 
         query += ` ORDER BY m.created_at DESC`;

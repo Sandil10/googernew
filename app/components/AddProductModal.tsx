@@ -167,9 +167,6 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         customWarranty: "",
         returnPolicy: "",
         returnDate: "",
-        deliveryTime: "",
-        deliveryMonth: "",
-        deliveryDay: "",
         resellCommission: "",
         resellCommissionPercentage: "",
         googerCommission: "0",
@@ -217,9 +214,6 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                 customWarranty: initialData.customWarranty || "",
                 returnPolicy: returnData?.text || "",
                 returnDate: returnData?.date || "",
-                deliveryTime: deliveryData?.time || "",
-                deliveryMonth: deliveryData?.month || "",
-                deliveryDay: deliveryData?.day || "",
                 resellCommission: commissionData?.resell_amount || "",
                 resellCommissionPercentage: commissionData?.resell_percentage || "",
                 googerCommission: commissionData?.googer_commission || "0",
@@ -646,9 +640,16 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         if (!formData.price) errors.push("price");
         if (!formData.promoPrice) errors.push("promoPrice");
         if (previews.length === 0) errors.push("images");
-        if (!formData.deliveryTime) errors.push("deliveryTime");
+
         if (formData.shipping.length === 0 && !formData.unifiedShipping) errors.push("shipping");
         if (formData.unifiedShipping && !formData.unifiedCharge && formData.unifiedCharge !== '0') errors.push("unifiedCharge");
+        if (formData.unifiedShipping && !formData.unifiedDate) errors.push("unifiedDate");
+
+        if (!formData.unifiedShipping) {
+            (formData.shipping || []).forEach((s, i) => {
+                if (!s.date) errors.push(`shipping_date_${i}`);
+            });
+        }
 
         // Variant validation
         const currentVariants = Array.isArray(variants) ? variants : [];
@@ -669,9 +670,34 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
         if (errors.length > 0) {
             setFormErrors(errors);
-            const msg = errors.includes("variants_missing")
-                ? "⚠️ At least one Size or UOM is required with full details and stock."
-                : "⚠️ Please complete all required fields.";
+
+            // Auto-scroll to first error
+            setTimeout(() => {
+                const firstError = errors[0];
+                let elementId = "";
+
+                if (firstError === "title") elementId = "field-title";
+                else if (firstError === "category" || firstError === "subCategory") elementId = "field-category";
+                else if (firstError === "price" || firstError === "promoPrice") elementId = "field-price";
+                else if (firstError === "variants_missing" || firstError === "variants_incomplete") elementId = "field-variants";
+                else if (firstError === "shipping") elementId = "field-shipping";
+                else if (firstError === "unifiedCharge") elementId = "field-unifiedCharge";
+                else if (firstError === "unifiedDate") elementId = "field-unifiedDate";
+                else if (firstError === "images") elementId = "field-images";
+                else if (firstError.startsWith("shipping_date_")) elementId = "field-shipping";
+
+                if (elementId) {
+                    const el = document.getElementById(elementId);
+                    if (el) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                }
+            }, 100);
+
+            let msg = "⚠️ Please complete all required fields.";
+            if (errors.includes("variants_missing") || errors.includes("variants_incomplete")) {
+                msg = "⚠️ At least one Size/UOM is required with full details and stock.";
+            }
             alert(msg);
             return;
         }
@@ -717,11 +743,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                 date: formData.returnDate
             }));
 
-            data.append('delivery_data', JSON.stringify({
-                time: formData.deliveryTime,
-                month: formData.deliveryMonth,
-                day: formData.deliveryDay
-            }));
+
 
             data.append('commission_data', JSON.stringify({
                 resell_amount: formData.resellCommission,
@@ -769,11 +791,11 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
             setShowSuccessPopup(true);
 
-            // Wait a bit before closing so user can see the message
+            // Wait a bit before closing so user can see the message (extended to 6s for long text)
             setTimeout(() => {
                 onSuccess();
                 onClose();
-            }, 3000);
+            }, 6000);
         } catch (error: any) {
             console.error("Error saving product:", error);
             alert(error.message || "Failed to save product");
@@ -798,16 +820,17 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         <button
                             type="button"
                             onClick={onClose}
-                            className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-white flex items-center justify-center text-black shadow-lg hover:bg-gray-200 transition-all group shrink-0"
+                            className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-white border-2 border-red-600/30 flex items-center justify-center text-red-600 shadow-xl hover:bg-red-50 transition-all group shrink-0"
                             title="Clear Form / Close"
                         >
-                            <IonIcon name="cut-outline" className="text-lg md:text-xl group-hover:scale-110 transition-transform" />
+                            <IonIcon name="close" className="text-xl md:text-2xl font-black group-hover:scale-110 transition-transform" />
                         </button>
                     </div>
 
                     <div className="flex flex-col gap-2 mt-4">
                         {/* Main Preview Area (ABOVE) */}
                         <div
+                            id="field-images"
                             onClick={handleAddImagesClick}
                             className={`relative w-full h-[140px] md:h-auto md:aspect-square rounded-[1.2rem] md:rounded-[2.5rem] overflow-hidden transition-all cursor-pointer group shrink-0
                                 ${previews.length > 0 ? 'border-0 shadow-2xl' : `border-2 border-dashed ${formErrors.includes('images') ? 'border-red-500 bg-red-500/5' : 'border-blue-500/30 hover:border-blue-500/50 bg-blue-500/5'}`}`}
@@ -1025,7 +1048,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             <div className="flex flex-col gap-6">
                                 {/* Order: Description, Product Name, Category, Price */}
 
-                                <div>
+                                <div id="field-title">
                                     <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                         Product Name <span className="text-red-500">*</span>
                                     </label>
@@ -1053,7 +1076,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 </div>
 
                                 <div className="flex flex-col md:flex-row gap-4">
-                                    <div className="flex-1">
+                                    <div id="field-category" className="flex-1">
                                         <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Category <span className="text-red-500">*</span>
                                         </label>
@@ -1189,7 +1212,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
 
 
-                                <div className="flex gap-4">
+                                <div id="field-price" className="flex gap-4">
                                     <div className="flex-1">
                                         <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Main Price (R) <span className="text-red-500">*</span>
@@ -1232,7 +1255,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                         {/* Variant Details: Integrated Image Picker Workflow */}
                         {variants[uploadMode === 'single' ? 0 : activeImageIndex] && (
-                            <div className="p-6 rounded-[2.5rem] bg-white/[0.03] border border-white/10 flex flex-col gap-6 shadow-2xl backdrop-blur-sm animate-in fade-in slide-in-from-top-4 duration-500">
+                            <div id="field-variants" className="p-6 rounded-[2.5rem] bg-white/[0.03] border border-white/10 flex flex-col gap-6 shadow-2xl backdrop-blur-sm animate-in fade-in slide-in-from-top-4 duration-500">
                                 <div className="flex flex-col gap-3">
                                     <div className="flex items-center justify-between mb-2">
                                         <div className="flex flex-col">
@@ -1411,7 +1434,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                                 <div className="grid grid-cols-2 gap-3">
                                                     <div className="flex flex-col gap-1">
-                                                        <span className="text-[8px] font-black text-slate-600 uppercase mb-1 block">Specific Details</span>
+                                                        <span className="text-[8px] font-black text-slate-600 uppercase mb-1 block">Specific Details <span className="text-red-500">*</span></span>
                                                         <div className="relative">
                                                             <input
                                                                 type="text"
@@ -1431,19 +1454,21 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                                     }
                                                                     setVariants(newVariants);
                                                                 }}
-                                                                className={`w-full bg-slate-800/10 border rounded-xl px-3 py-2 md:py-2.5 pr-10 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder:text-white/20 transition-all ${(!sel.detail && formErrors.includes('variants_incomplete')) ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/5'}`}
-                                                                placeholder={sel.value ? `e.g. 5${sel.value} to 10${sel.value}` : "e.g. 20 to 22"}
+                                                                className={`w-full bg-slate-800/10 border rounded-xl px-3 py-2 md:py-2.5 text-xs text-white text-center outline-none focus:ring-1 focus:ring-white/30 transition-all ${(!sel.detail && formErrors.includes('variants_incomplete')) ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/5'}`}
+                                                                placeholder=""
                                                             />
-                                                            {sel.value && (
-                                                                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
-                                                                    <span className="text-[8px] font-black text-white uppercase tracking-widest">{sel.value}</span>
+                                                            {!sel.detail && sel.value && (
+                                                                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                                                    <span className="text-[9px] font-black text-white/20 uppercase tracking-[0.2em]">
+                                                                        {SIZES.includes(sel.value) ? `${sel.value} 20 to 21` : `10 ${sel.value}`}
+                                                                    </span>
                                                                 </div>
                                                             )}
                                                         </div>
                                                     </div>
 
                                                     <div className="flex flex-col gap-1">
-                                                        <span className="text-[8px] font-black text-slate-600 uppercase mb-1 block">In Stock</span>
+                                                        <span className="text-[8px] font-black text-slate-600 uppercase mb-1 block">In Stock <span className="text-red-500">*</span></span>
                                                         <div className="relative">
                                                             <input
                                                                 type="number"
@@ -1463,15 +1488,17 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                                     }
                                                                     setVariants(newVariants);
                                                                 }}
-                                                                className={`w-full bg-slate-800/10 border rounded-xl px-3 py-2 md:py-2.5 pr-10 text-xs text-white outline-none focus:ring-1 focus:ring-white/30 placeholder:text-white/20 transition-all ${(!sel.stock && formErrors.includes('variants_incomplete')) ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/5'}`}
-                                                                placeholder="Qty"
+                                                                className={`w-full bg-slate-800/10 border rounded-xl px-3 py-2 md:py-2.5 text-xs text-white text-center outline-none focus:ring-1 focus:ring-white/30 transition-all ${(!sel.stock && formErrors.includes('variants_incomplete')) ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/5'}`}
+                                                                placeholder=""
                                                                 onKeyPress={(e) => {
                                                                     if (!/[0-9]/.test(e.key)) e.preventDefault();
                                                                 }}
                                                             />
-                                                            {sel.value && (
-                                                                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
-                                                                    <span className="text-[8px] font-black text-white uppercase tracking-widest">{sel.value}</span>
+                                                            {!sel.stock && sel.value && (
+                                                                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                                                    <span className="text-[9px] font-black text-white/20 uppercase tracking-[0.2em]">
+                                                                        {SIZES.includes(sel.value) ? "Qty" : `Qty (${sel.value})`}
+                                                                    </span>
                                                                 </div>
                                                             )}
                                                         </div>
@@ -1514,24 +1541,9 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         <div className="flex flex-col gap-6">
                             <h3 className="text-lg font-bold text-white italic">Logistics</h3>
 
-                            <div className="bg-slate-800/20 p-5 rounded-[2rem] border border-white/5">
-                                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-1">
-                                    Processing Time <span className="text-red-500">*</span>
-                                </label>
-                                <div
-                                    onClick={() => setOpenPicker({ type: 'form', field: 'deliveryTime', options: DELIVERY_OPTIONS, title: 'Processing Time', value: formData.deliveryTime })}
-                                    className={`w-full bg-slate-800/50 border rounded-xl px-4 py-3 text-xs text-white flex items-center justify-between cursor-pointer transition-all ${formErrors.includes('deliveryTime') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 hover:border-white/20'}`}
-                                >
-                                    <span className={formData.deliveryTime ? "text-white font-bold" : "text-slate-500"}>
-                                        {formData.deliveryTime || "Select processing time..."}
-                                    </span>
-                                    <IonIcon name="chevron-down" className="text-slate-500" />
-                                </div>
-                                <p className="text-[8px] text-slate-600 font-bold uppercase mt-2 italic tracking-tighter">How long before the order is shipped?</p>
-                            </div>
 
 
-                            <div className="bg-slate-800/20 p-5 rounded-[2rem] border border-white/5">
+                            <div id="field-shipping" className="bg-slate-800/20 p-5 rounded-[2rem] border border-white/5">
                                 <div className="flex items-center justify-between mb-4">
                                     <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Shipping Rates</label>
                                     <div
@@ -1567,7 +1579,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         </div>
 
                                         <div className="flex gap-2">
-                                            <div className="flex-1">
+                                            <div id="field-unifiedCharge" className="flex-1">
                                                 <label className="text-[9px] text-white uppercase font-black tracking-wider mb-1 block">Global Price (R)</label>
                                                 <input
                                                     type="number"
@@ -1578,11 +1590,11 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                     placeholder="0.00"
                                                 />
                                             </div>
-                                            <div className="flex-[1.5]">
-                                                <label className="text-[9px] text-white uppercase font-black tracking-wider mb-1 block">Global Shipping Date</label>
+                                            <div id="field-unifiedDate" className="flex-[1.5]">
+                                                <label className="text-[9px] text-white uppercase font-black tracking-wider mb-1 block">Global Shipping Date <span className="text-red-500">*</span></label>
                                                 <div
                                                     onClick={() => setOpenPicker({ type: 'form', field: 'unifiedDate', options: DELIVERY_OPTIONS, title: 'Shipping Date', value: formData.unifiedDate })}
-                                                    className="w-full bg-slate-900/50 border border-white/10 rounded-lg px-3 py-2 text-xs text-white flex justify-between items-center cursor-pointer"
+                                                    className={`w-full bg-slate-900/50 border rounded-lg px-3 py-2 text-xs text-white flex justify-between items-center cursor-pointer transition-all ${formErrors.includes('unifiedDate') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10'}`}
                                                 >
                                                     <span>{formData.unifiedDate || "Select"}</span>
                                                     <IonIcon name="chevron-down" />
@@ -1677,10 +1689,10 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             </div>
                                                         )}
                                                         <div className="flex-[1.5]">
-                                                            <label className="text-[9px] text-white uppercase font-black tracking-wider block mb-1">Date</label>
+                                                            <label className="text-[9px] text-white uppercase font-black tracking-wider block mb-1">Shipping Date <span className="text-red-500">*</span></label>
                                                             <div
                                                                 onClick={() => setOpenPicker({ type: 'shipping_date', field: i.toString(), options: DELIVERY_OPTIONS, title: `Shipping Date: ${s.country}`, value: s.date })}
-                                                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-[10px] text-white flex justify-between items-center cursor-pointer hover:bg-slate-700/50 transition-all"
+                                                                className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2 text-[10px] text-white flex justify-between items-center cursor-pointer hover:bg-slate-700/50 transition-all ${formErrors.includes(`shipping_date_${i}`) ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10'}`}
                                                             >
                                                                 <span>{s.date || "Select"}</span>
                                                                 <IonIcon name="calendar-outline" className="text-gray-500" />
@@ -2195,8 +2207,10 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             <div className="w-20 h-20 bg-green-500/20 border border-green-500/50 rounded-full flex items-center justify-center mx-auto mb-6">
                                 <IonIcon name="checkmark" className="text-4xl text-green-500" />
                             </div>
-                            <h3 className="text-xl font-black text-white italic uppercase tracking-[0.2em] mb-2">{initialData ? 'Product Updated' : 'Product Published'}</h3>
-                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{initialData ? 'Your changes have been saved.' : 'Your product is now live on the market.'}</p>
+                            <h3 className="text-xl font-black text-white italic uppercase tracking-[0.2em] mb-2">{initialData ? 'Resubmitted' : 'Submission Received'}</h3>
+                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest leading-relaxed px-4">
+                                Product submitted for review. Please wait for admin approval within 5 business days. If you have any inquiries, please contact the admin.
+                            </p>
                         </div>
                     </div>
                 )
