@@ -149,6 +149,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
     const [showModeSelection, setShowModeSelection] = useState(false);
     const [showSourceSelection, setShowSourceSelection] = useState(false);
     const [showLinkInput, setShowLinkInput] = useState(false);
+    const [isAddingLink, setIsAddingLink] = useState(false);
     const [imageLink, setImageLink] = useState("");
     const [uploadMode, setUploadMode] = useState<'single' | 'variants' | null>(null);
     const [imageSource, setImageSource] = useState<'file' | 'link' | null>(null);
@@ -295,11 +296,21 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             const updated = { ...prev, [name]: value };
 
             // Recalculate commissions when prices or percentages change
+            const basePrice = parseFloat(updated.promoPrice) || 0;
+
             if (name === 'promoPrice' || name === 'resellCommissionPercentage') {
-                const basePrice = parseFloat(updated.promoPrice) || 0;
                 const percent = parseFloat(updated.resellCommissionPercentage) || 0;
-                if (percent > 0) {
+                if (basePrice > 0 && percent > 0) {
                     updated.resellCommission = ((basePrice * percent) / 100).toFixed(2);
+                } else if (name === 'resellCommissionPercentage' && !value) {
+                    updated.resellCommission = "";
+                }
+            } else if (name === 'resellCommission') {
+                const amount = parseFloat(value) || 0;
+                if (basePrice > 0 && amount > 0) {
+                    updated.resellCommissionPercentage = ((amount / basePrice) * 100).toFixed(1);
+                } else if (name === 'resellCommission' && !value) {
+                    updated.resellCommissionPercentage = "";
                 }
             }
 
@@ -400,10 +411,19 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
     const handleAddImageLink = () => {
         if (!imageLink) return;
+        setIsAddingLink(true);
 
         let finalUrl = imageLink;
         let isVideo = false;
         let videoUrl = null;
+
+        // Clean link (remove tracking if possible)
+        try {
+            const url = new URL(imageLink);
+            if (url.hostname.includes('google.com') && url.searchParams.has('imgurl')) {
+                finalUrl = decodeURIComponent(url.searchParams.get('imgurl') || '');
+            }
+        } catch (e) { }
 
         // YouTube Thumbnail extraction
         if (imageLink.includes('youtube.com') || imageLink.includes('youtu.be')) {
@@ -446,7 +466,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             videoUrl = imageLink;
             isVideo = true;
         }
-        // Google Image Search extraction
+        // Google Image Search extraction (Legacy fallback)
         else if (imageLink.includes('google.com/imgres')) {
             try {
                 const urlObj = new URL(imageLink);
@@ -459,7 +479,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             }
         }
         // Generic Web Page Preview (Fallback)
-        else if (imageLink.startsWith('http')) {
+        else if (imageLink.startsWith('http') && !imageLink.match(/\.(jpg|jpeg|png|gif|webp|avif)/i)) {
             // Use a public metadata API for general links (Microlink)
             // Note: This is a best-effort fallback for generic URLs
             finalUrl = `https://api.microlink.io?url=${encodeURIComponent(imageLink)}&screenshot=true&embed=screenshot.url`;
@@ -469,6 +489,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             const remainingSpace = 5 - previews.length;
             if (remainingSpace <= 0) {
                 alert("Maximum 5 images allowed.");
+                setIsAddingLink(false);
                 return;
             }
 
@@ -504,6 +525,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             setActiveImageIndex(currentPreviewsCount);
             setShowLinkInput(false);
             setShowSourceSelection(false);
+            setIsAddingLink(false);
         };
 
         if (isVideo) {
@@ -512,11 +534,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             const img = new (window as any).Image();
             img.onload = () => addImage(finalUrl);
             img.onerror = () => {
-                if (finalUrl !== imageLink) {
-                    addImage(finalUrl);
+                // If it's a known failing direct link, try Microlink one last time
+                if (finalUrl === imageLink && !finalUrl.includes('microlink.io')) {
+                    const fallbackUrl = `https://api.microlink.io?url=${encodeURIComponent(finalUrl)}&screenshot=true&embed=screenshot.url`;
+                    addImage(fallbackUrl);
                 } else {
+                    setIsAddingLink(false);
                     if (imageLink.toLowerCase().startsWith('http')) {
-                        addImage(finalUrl); // Add anyway if it looks like a URL
+                        addImage(finalUrl); // Add anyway but it might show broken thumbnail
                     } else {
                         alert("Invalid image URL. Please ensure it's a direct link to an image.");
                     }
@@ -525,6 +550,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             img.src = finalUrl;
         }
     };
+
+
 
     const removeImage = (index: number) => {
         setSelectedImages(prev => prev.filter((_, i) => i !== index));
@@ -813,17 +840,17 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     <div className="flex items-center justify-between px-1 md:px-2">
                         <div className="text-left">
                             <h2 className="text-lg md:text-xl font-bold text-white tracking-tight">Add Listing</h2>
-                            <p className="text-[9px] md:text-[10px] text-slate-500 uppercase tracking-widest font-black">
+                            <p className="text-[9px] md:text-[10px] text-slate-400/80 uppercase tracking-widest font-black">
                                 {previews.length}/5 Images <span className="text-red-500">*</span> • {variants.length} Variants
                             </p>
                         </div>
                         <button
                             type="button"
                             onClick={onClose}
-                            className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-white border-2 border-red-600/30 flex items-center justify-center text-red-600 shadow-xl hover:bg-red-50 transition-all group shrink-0"
+                            className="w-10 h-10 md:w-11 md:h-11 rounded-full bg-white border-2 border-red-500 flex items-center justify-center text-red-600 shadow-2xl hover:bg-red-50 transition-all group shrink-0 z-[101]"
                             title="Clear Form / Close"
                         >
-                            <IonIcon name="close" className="text-xl md:text-2xl font-black group-hover:scale-110 transition-transform" />
+                            <IonIcon name="close" className="text-2xl md:text-3xl font-black group-hover:scale-110 transition-transform" />
                         </button>
                     </div>
 
@@ -1037,8 +1064,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     <div className="flex flex-col gap-5 md:gap-8">
                         <div className="flex items-center justify-between">
                             <div>
-                                <h2 className="text-lg md:text-xl font-bold text-white tracking-tight italic">Product Information</h2>
-                                <p className="text-[10px] text-slate-500 uppercase tracking-[0.2em] font-black">Fill all fields to publish</p>
+                                <h2 className="text-lg md:text-xl font-bold text-white/90 tracking-tight italic">Product Information</h2>
+                                <p className="text-[10px] text-slate-400/80 uppercase tracking-[0.2em] font-black">Fill all fields to publish</p>
                             </div>
                         </div>
 
@@ -1049,7 +1076,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 {/* Order: Description, Product Name, Category, Price */}
 
                                 <div id="field-title">
-                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                    <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                         Product Name <span className="text-red-500">*</span>
                                     </label>
                                     <input
@@ -1064,7 +1091,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 </div>
 
                                 <div>
-                                    <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5">Description (Optional)</label>
+                                    <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5">Description (Optional)</label>
                                     <textarea
                                         name="description"
                                         value={formData.description}
@@ -1077,7 +1104,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                 <div className="flex flex-col md:flex-row gap-4">
                                     <div id="field-category" className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Category <span className="text-red-500">*</span>
                                         </label>
                                         <div className="flex flex-col gap-2">
@@ -1094,7 +1121,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                     <button
                                                         type="button"
                                                         onClick={() => handleFormChange('category', '')}
-                                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400/80 hover:text-white"
                                                     >
                                                         <IonIcon name="close-circle" />
                                                     </button>
@@ -1112,7 +1139,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
 
                                     <div className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Sub Category (Level 2) <span className="text-red-500">*</span>
                                         </label>
                                         <div className="flex flex-col gap-2">
@@ -1134,7 +1161,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             <button
                                                                 type="button"
                                                                 onClick={() => handleFormChange('subCategory', '')}
-                                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400/80 hover:text-white"
                                                             >
                                                                 <IonIcon name="close-circle" />
                                                             </button>
@@ -1161,7 +1188,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
 
                                     <div className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5">
+                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5">
                                             Sub Category (Level 3)
                                         </label>
                                         <div className="flex flex-col gap-2">
@@ -1183,7 +1210,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             <button
                                                                 type="button"
                                                                 onClick={() => handleFormChange('level3Category', '')}
-                                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400/80 hover:text-white"
                                                             >
                                                                 <IonIcon name="close-circle" />
                                                             </button>
@@ -1214,7 +1241,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                 <div id="field-price" className="flex gap-4">
                                     <div className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Main Price (R) <span className="text-red-500">*</span>
                                         </label>
                                         <input
@@ -1232,7 +1259,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
 
                                     <div className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Promo Price (R) <span className="text-red-500">*</span>
                                         </label>
                                         <input
@@ -1259,11 +1286,11 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 <div className="flex flex-col gap-3">
                                     <div className="flex items-center justify-between mb-2">
                                         <div className="flex flex-col">
-                                            <h3 className="text-sm font-black text-white italic uppercase tracking-wider">
+                                            <h3 className="text-sm font-black text-white/90 italic uppercase tracking-wider">
                                                 {uploadMode === 'single' ? 'Product Configuration' : 'Variant Details'}
                                             </h3>
                                             <div className="flex items-center gap-2 mt-1">
-                                                <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest">
+                                                <p className="text-[8px] text-slate-400/80 font-bold uppercase tracking-widest">
                                                     {uploadMode === 'single' ? 'Settings apply to all views' : `Configuring ${imageColors[activeImageIndex] || "Selected"} Unit`}
                                                 </p>
                                                 {uploadMode === 'variants' && (
@@ -1296,7 +1323,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 </div>
                                             ))}
                                             {(variants[uploadMode === 'single' ? 0 : activeImageIndex]?.selections || []).length > 3 && (
-                                                <div className="w-6 h-6 rounded-lg bg-slate-800 border border-white/10 flex items-center justify-center text-[8px] font-bold text-slate-500">
+                                                <div className="w-6 h-6 rounded-lg bg-slate-800 border border-white/10 flex items-center justify-center text-[8px] font-bold text-slate-400/80">
                                                     +{(variants[uploadMode === 'single' ? 0 : activeImageIndex]?.selections || []).length - 3}
                                                 </div>
                                             )}
@@ -1348,7 +1375,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                         className="w-1.5 h-1.5 rounded-full shadow-inner ring-1 ring-white/10"
                                                         style={{ backgroundColor: COLORS.find(c => c.name === imageColors[idx])?.hex || (imageColors[idx]?.startsWith('#') ? imageColors[idx] : '#333') }}
                                                     />
-                                                    <span className={`text-[5px] font-black uppercase tracking-tight ${activeImageIndex === idx ? 'text-white' : 'text-slate-500'}`}>
+                                                    <span className={`text-[5px] font-black uppercase tracking-tight ${activeImageIndex === idx ? 'text-white' : 'text-slate-400/80'}`}>
                                                         {imageColors[idx] || "NONE"}
                                                     </span>
                                                 </div>
@@ -1369,7 +1396,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 <div className="flex flex-col gap-5">
                                     {uploadMode !== 'single' && (
                                         <div>
-                                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 block">
+                                            <label className="text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1.5 block">
                                                 Promo Price
                                             </label>
                                             <input
@@ -1415,7 +1442,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             <div key={sIdx} className="flex flex-col gap-2 bg-black/40 border border-white/5 p-4 rounded-2xl animate-in slide-in-from-right-4 duration-300">
                                                 <div className="flex items-center justify-between">
                                                     <div className="flex flex-col">
-                                                        <span className="text-[8px] font-black text-slate-600 uppercase mb-0.5">Variant Selection</span>
+                                                        <span className="text-[8px] font-black text-slate-600/50 uppercase mb-0.5">Variant Selection</span>
                                                         <span className="text-xs font-bold text-white">{sel.value}</span>
                                                     </div>
                                                     <button
@@ -1434,7 +1461,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                                 <div className="grid grid-cols-2 gap-3">
                                                     <div className="flex flex-col gap-1">
-                                                        <span className="text-[8px] font-black text-slate-600 uppercase mb-1 block">Specific Details <span className="text-red-500">*</span></span>
+                                                        <span className="text-[8px] font-black text-slate-600/50 uppercase mb-1 block">Specific Details <span className="text-red-500/50">*</span></span>
                                                         <div className="relative">
                                                             <input
                                                                 type="text"
@@ -1459,7 +1486,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             />
                                                             {!sel.detail && sel.value && (
                                                                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                                                    <span className="text-[9px] font-black text-white/20 uppercase tracking-[0.2em]">
+                                                                    <span className="text-[9px] font-black text-white/[0.1] uppercase tracking-[0.2em]">
                                                                         {SIZES.includes(sel.value) ? `${sel.value} 20 to 21` : `10 ${sel.value}`}
                                                                     </span>
                                                                 </div>
@@ -1468,7 +1495,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                     </div>
 
                                                     <div className="flex flex-col gap-1">
-                                                        <span className="text-[8px] font-black text-slate-600 uppercase mb-1 block">In Stock <span className="text-red-500">*</span></span>
+                                                        <span className="text-[8px] font-black text-slate-600/50 uppercase mb-1 block">In Stock <span className="text-red-500/50">*</span></span>
                                                         <div className="relative">
                                                             <input
                                                                 type="number"
@@ -1496,7 +1523,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             />
                                                             {!sel.stock && sel.value && (
                                                                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                                                    <span className="text-[9px] font-black text-white/20 uppercase tracking-[0.2em]">
+                                                                    <span className="text-[9px] font-black text-white/[0.1] uppercase tracking-[0.2em]">
                                                                         {SIZES.includes(sel.value) ? "Qty" : `Qty (${sel.value})`}
                                                                     </span>
                                                                 </div>
@@ -1511,7 +1538,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     {/* Point 5: Clickable summary chips for selected variants */}
                                     {(variants[uploadMode === 'single' ? 0 : activeImageIndex]?.selections || []).length > 0 && (
                                         <div className="mt-4 border-t border-white/5 pt-4">
-                                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-2">Applied Variants Summary</span>
+                                            <span className="text-[8px] font-black text-slate-400/80 uppercase tracking-widest block mb-2">Applied Variants Summary</span>
                                             <div className="flex flex-wrap gap-2">
                                                 {(variants[uploadMode === 'single' ? 0 : activeImageIndex]?.selections || []).map((sel: any, sIdx: number) => (
                                                     <div
@@ -1526,7 +1553,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                         className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] font-bold text-white uppercase tracking-tight flex items-center gap-2 cursor-pointer hover:bg-red-500/20 hover:border-red-500/50 transition-all group/chip"
                                                     >
                                                         <span>{sel.value} ({sel.stock})</span>
-                                                        <IonIcon name="close" className="text-slate-500 group-hover/chip:text-red-500 transition-colors" />
+                                                        <IonIcon name="close" className="text-slate-400/80 group-hover/chip:text-red-500 transition-colors" />
                                                     </div>
                                                 ))}
                                             </div>
@@ -1539,18 +1566,18 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         <div className="h-px w-full bg-white/5" />
 
                         <div className="flex flex-col gap-6">
-                            <h3 className="text-lg font-bold text-white italic">Logistics</h3>
+                            <h3 className="text-lg font-bold text-white/90 italic">Logistics</h3>
 
 
 
                             <div id="field-shipping" className="bg-slate-800/20 p-5 rounded-[2rem] border border-white/5">
                                 <div className="flex items-center justify-between mb-4">
-                                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Shipping Rates</label>
+                                    <label className="text-[10px] font-black text-slate-400/80 uppercase tracking-widest">Shipping Rates</label>
                                     <div
                                         onClick={() => setFormData(prev => ({ ...prev, unifiedShipping: !prev.unifiedShipping }))}
                                         className="flex items-center gap-2 cursor-pointer group"
                                     >
-                                        <span className="text-[8px] font-black text-slate-500 uppercase group-hover:text-white transition-colors">Unified Fee</span>
+                                        <span className="text-[8px] font-black text-slate-400/80 uppercase group-hover:text-white transition-colors">Unified Fee</span>
                                         <div className={`w-8 h-4 rounded-full relative transition-all ${formData.unifiedShipping ? 'bg-white' : 'bg-slate-700'}`}>
                                             <div className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${formData.unifiedShipping ? 'right-0.5 bg-black' : 'left-0.5 bg-slate-400'}`} />
                                         </div>
@@ -1563,7 +1590,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             <button
                                                 type="button"
                                                 onClick={() => setFormData(prev => ({ ...prev, unifiedCharge: '0' }))}
-                                                className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${formData.unifiedCharge === '0' ? 'bg-white text-black shadow-lg' : 'text-slate-500 hover:text-white'}`}
+                                                className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${formData.unifiedCharge === '0' ? 'bg-white text-black shadow-lg' : 'text-slate-400/80 hover:text-white'}`}
                                             >
                                                 Free Shipping
                                             </button>
@@ -1572,7 +1599,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 onClick={() => {
                                                     if (formData.unifiedCharge === '0') setFormData(prev => ({ ...prev, unifiedCharge: '1' }));
                                                 }}
-                                                className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${formData.unifiedCharge !== '0' ? 'bg-white text-black shadow-lg' : 'text-slate-500 hover:text-white'}`}
+                                                className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${formData.unifiedCharge !== '0' ? 'bg-white text-black shadow-lg' : 'text-slate-400/80 hover:text-white'}`}
                                             >
                                                 Manual
                                             </button>
@@ -1654,7 +1681,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                                 updated[i] = { ...updated[i], charge: '0' };
                                                                 setFormData(prev => ({ ...prev, shipping: updated }));
                                                             }}
-                                                            className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${s.charge === '0' ? 'bg-white text-black shadow-lg' : 'text-slate-500 hover:text-white'}`}
+                                                            className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${s.charge === '0' ? 'bg-white text-black shadow-lg' : 'text-slate-400/80 hover:text-white'}`}
                                                         >
                                                             Free
                                                         </button>
@@ -1665,7 +1692,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                                 if (s.charge === '0') updated[i].charge = '1';
                                                                 setFormData(prev => ({ ...prev, shipping: updated }));
                                                             }}
-                                                            className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${s.charge !== '0' ? 'bg-white text-black shadow-lg' : 'text-slate-500 hover:text-white'}`}
+                                                            className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${s.charge !== '0' ? 'bg-white text-black shadow-lg' : 'text-slate-400/80 hover:text-white'}`}
                                                         >
                                                             Manual
                                                         </button>
@@ -1709,7 +1736,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             <div className="flex flex-col gap-4">
                                 <div className="flex gap-4">
                                     <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Warranty</label>
+                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-2">Warranty</label>
                                         <div
                                             onClick={() => setOpenPicker({ type: 'form', field: 'warranty', options: ["No Warranty", "1 Month", "3 Months", "6 Months", "1 Year", "2 Years", "3 Years", "5 Years", "10 Years", "Lifetime Warranty", "Custom"], title: 'Warranty', value: formData.warranty })}
                                             className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer"
@@ -1728,7 +1755,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         )}
                                     </div>
                                     <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Return Days</label>
+                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-2">Return Days</label>
                                         <div className="flex flex-col gap-3">
                                             <div
                                                 onClick={() => setOpenPicker({ type: 'form', field: 'returnPolicy', options: RETURN_OPTIONS, title: 'Return Days', value: formData.returnPolicy })}
@@ -1744,7 +1771,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             </div>
 
                             <div className="bg-slate-800/50 p-4 rounded-[2rem] border border-white/5">
-                                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Payment Methods</label>
+                                <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-3">Payment Methods</label>
                                 <div className="grid grid-cols-1 gap-2">
                                     {PAYMENT_METHODS.map(method => {
                                         const isSelected = formData.paymentMethods.includes(method.id);
@@ -1761,10 +1788,10 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 className={`flex items-center justify-between p-3 rounded-2xl border transition-all cursor-pointer ${isSelected ? 'bg-white/10 border-white/20' : 'bg-black/20 border-white/5 hover:border-white/10'}`}
                                             >
                                                 <div className="flex items-center gap-3">
-                                                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${isSelected ? 'bg-white text-black' : 'bg-white/5 text-slate-500'}`}>
+                                                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${isSelected ? 'bg-white text-black' : 'bg-white/5 text-slate-400/80'}`}>
                                                         <IonIcon name={method.icon as any} />
                                                     </div>
-                                                    <span className={`text-[11px] font-bold ${isSelected ? 'text-white' : 'text-slate-500'}`}>{method.name}</span>
+                                                    <span className={`text-[11px] font-bold ${isSelected ? 'text-white' : 'text-slate-400/80'}`}>{method.name}</span>
                                                 </div>
                                                 <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-blue-500 border-blue-500' : 'border-slate-700'}`}>
                                                     {isSelected && <IonIcon name="checkmark" className="text-white text-xs font-black" />}
@@ -1776,27 +1803,22 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             </div>
 
                             <div className="bg-slate-800/50 p-4 rounded-2xl border border-white/5">
-                                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Resell Commission</label>
+                                <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-2">Resell Commission</label>
                                 <div className="flex flex-col gap-2">
                                     <div className="flex gap-2">
                                         <div className="flex-[0.6]">
-                                            <label className="text-[7px] text-slate-500 uppercase block mb-1">%</label>
+                                            <label className="text-[7px] text-slate-400/80 uppercase block mb-1">%</label>
                                             <input
                                                 type="number"
                                                 name="resellCommissionPercentage"
                                                 value={formData.resellCommissionPercentage || ""}
-                                                onChange={(e) => {
-                                                    const percent = e.target.value;
-                                                    const price = parseFloat(formData.promoPrice) || 0;
-                                                    const amount = price ? ((price * (parseFloat(percent) || 0)) / 100).toFixed(2) : "";
-                                                    setFormData(prev => ({ ...prev, resellCommissionPercentage: percent, resellCommission: amount }));
-                                                }}
+                                                onChange={handleInputChange}
                                                 className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-2 py-2 text-xs text-white outline-none"
                                                 placeholder="%"
                                             />
                                         </div>
                                         <div className="flex-1">
-                                            <label className="text-[7px] text-slate-500 uppercase block mb-1">Fixed Amount (R)</label>
+                                            <label className="text-[7px] text-slate-400/80 uppercase block mb-1">Fixed Amount (R)</label>
                                             <input
                                                 type="number"
                                                 name="resellCommission"
@@ -1813,7 +1835,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             <div className="flex gap-4">
                                 <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
                                     <div className="flex items-center justify-between mb-2">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest">Googer Comm. (%) *</label>
+                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest">Googer Comm. (%) *</label>
                                         {(parseFloat(formData.googerCommission) > 0) && (
                                             <span className="text-[10px] font-bold text-blue-400">
                                                 -R {((parseFloat(formData.promoPrice) || 0) * parseFloat(formData.googerCommission) / 100).toFixed(2)}
@@ -1837,7 +1859,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 </div>
                                 <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
                                     <div className="flex items-center justify-between mb-2">
-                                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest">Prod. Discount (%) *</label>
+                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest">Prod. Discount (%) *</label>
                                         {(parseFloat(formData.productDiscount) > 0) && (
                                             <span className="text-[10px] font-bold text-blue-400">
                                                 -R {((parseFloat(formData.promoPrice) || 0) * parseFloat(formData.productDiscount) / 100).toFixed(2)}
@@ -1862,7 +1884,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         <button
                             type="submit"
                             disabled={loading}
-                            className={`flex-1 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${loading ? 'bg-slate-800 text-slate-500' : 'bg-white text-black shadow-lg hover:bg-gray-200 hover:scale-[1.01]'}`}
+                            className={`flex-1 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${loading ? 'bg-slate-800 text-slate-400/80' : 'bg-white text-black shadow-lg hover:bg-gray-200 hover:scale-[1.01]'}`}
                         >
                             {loading ? 'Processing...' : (initialData ? 'Update Product' : 'Publish Product')}
                         </button>
@@ -1877,7 +1899,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 p-8">
                         <div className="text-center mb-10">
                             <h3 className="text-xl font-black text-white italic uppercase tracking-[0.2em]">Product</h3>
-                            <p className="text-[10px] text-slate-500 font-black uppercase mt-3 tracking-widest leading-relaxed">Choose how you want to present<br />your product listing</p>
+                            <p className="text-[10px] text-slate-400/80 font-black uppercase mt-3 tracking-widest leading-relaxed">Choose how you want to present<br />your product listing</p>
                         </div>
 
                         <div className="flex flex-col gap-4">
@@ -1895,7 +1917,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
                                     <div>
                                         <div className="text-sm font-black text-white uppercase tracking-tight">Single Post</div>
-                                        <div className="text-[9px] text-slate-500 font-bold uppercase mt-1 leading-relaxed">One product with multiple views<br />(Front, Back, Side, etc)</div>
+                                        <div className="text-[9px] text-slate-400/80 font-bold uppercase mt-1 leading-relaxed">One product with multiple views<br />(Front, Back, Side, etc)</div>
                                     </div>
                                 </div>
                             </div>
@@ -1914,15 +1936,16 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
                                     <div>
                                         <div className="text-sm font-black text-white uppercase tracking-tight">Variants</div>
-                                        <div className="text-[9px] text-slate-500 font-bold uppercase mt-1 leading-relaxed">Multiple colors, sizes, or<br />different types in one listing</div>
+                                        <div className="text-[9px] text-slate-400/80 font-bold uppercase mt-1 leading-relaxed">Multiple colors, sizes, or<br />different types in one listing</div>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
                         <button
+                            type="button"
                             onClick={() => setShowModeSelection(false)}
-                            className="w-full mt-10 py-4 text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] hover:text-white transition-colors"
+                            className="w-full mt-10 py-4 text-[10px] font-black text-slate-400/80 uppercase tracking-[0.3em] hover:text-white transition-colors"
                         >
                             Cancel
                         </button>
@@ -1938,11 +1961,12 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-xs overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 p-8">
                             <div className="text-center mb-8">
                                 <h3 className="text-lg font-black text-white italic uppercase tracking-[0.2em]">Add Images</h3>
-                                <p className="text-[9px] text-slate-500 font-black uppercase mt-2 tracking-widest">Select your source</p>
+                                <p className="text-[9px] text-slate-400/80 font-black uppercase mt-2 tracking-widest">Select your source</p>
                             </div>
 
                             <div className="flex flex-col gap-3">
                                 <button
+                                    type="button"
                                     onClick={() => {
                                         setImageSource('file');
                                         setShowSourceSelection(false);
@@ -1955,6 +1979,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 </button>
 
                                 <button
+                                    type="button"
                                     onClick={() => {
                                         setImageSource('link');
                                         setShowSourceSelection(false);
@@ -1968,8 +1993,9 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             </div>
 
                             <button
+                                type="button"
                                 onClick={() => setShowSourceSelection(false)}
-                                className="w-full mt-8 py-2 text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] hover:text-white transition-colors"
+                                className="w-full mt-8 py-2 text-[10px] font-black text-slate-400/80 uppercase tracking-[0.3em] hover:text-white transition-colors"
                             >
                                 Back
                             </button>
@@ -1985,7 +2011,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 p-8">
                             <div className="text-center mb-6">
                                 <h3 className="text-lg font-black text-white italic uppercase tracking-[0.2em]">Media Link</h3>
-                                <p className="text-[9px] text-slate-500 font-black uppercase mt-2 tracking-widest italic leading-relaxed">Enter image URL or video link<br />(YouTube, TikTok, Instagram, etc)</p>
+                                <p className="text-[9px] text-slate-400/80 font-black uppercase mt-2 tracking-widest italic leading-relaxed">Enter image URL or video link<br />(YouTube, TikTok, Instagram, etc)</p>
                             </div>
 
                             <div className="space-y-4">
@@ -2016,14 +2042,22 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-4 py-3.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-white/30 transition-all"
                                 />
                                 <button
+                                    type="button"
                                     onClick={handleAddImageLink}
-                                    className="w-full py-4 bg-white text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-lg hover:bg-gray-200 hover:scale-[1.02] transition-all"
+                                    disabled={isAddingLink}
+                                    className={`w-full py-4 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-lg transition-all ${isAddingLink ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-white text-black hover:bg-gray-200 hover:scale-[1.02]'}`}
                                 >
-                                    Add Media
+                                    {isAddingLink ? (
+                                        <div className="flex items-center justify-center gap-2">
+                                            <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                            Processing...
+                                        </div>
+                                    ) : 'Add Media'}
                                 </button>
                             </div>
 
                             <button
+                                type="button"
                                 onClick={() => setShowLinkInput(false)}
                                 className="w-full mt-6 py-2 text-[10px] font-black text-blue-500 uppercase tracking-[0.3em] hover:text-white transition-colors"
                             >
@@ -2061,7 +2095,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 setOpenPicker(prev => prev ? { ...prev, manualQuery: query } : null);
                                             }}
                                         />
-                                        <IonIcon name="search-outline" className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-white transition-colors" />
+                                        <IonIcon name="search-outline" className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400/80 group-focus-within:text-white transition-colors" />
                                     </div>
                                 </div>
                             )}
@@ -2204,11 +2238,18 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
                         <div className="absolute inset-0 bg-black/80 backdrop-blur-md" />
                         <div className="relative bg-black border border-white/20 rounded-[3rem] p-10 w-full max-w-sm text-center shadow-2xl animate-in zoom-in-95 duration-300">
+                            <button
+                                type="button"
+                                onClick={() => { setShowSuccessPopup(false); onClose(); onSuccess(); }}
+                                className="absolute top-6 right-6 w-8 h-8 rounded-full bg-white/5 text-slate-400/80 hover:text-red-500 transition-colors flex items-center justify-center"
+                            >
+                                <IonIcon name="close" />
+                            </button>
                             <div className="w-20 h-20 bg-green-500/20 border border-green-500/50 rounded-full flex items-center justify-center mx-auto mb-6">
                                 <IonIcon name="checkmark" className="text-4xl text-green-500" />
                             </div>
                             <h3 className="text-xl font-black text-white italic uppercase tracking-[0.2em] mb-2">{initialData ? 'Resubmitted' : 'Submission Received'}</h3>
-                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest leading-relaxed px-4">
+                            <p className="text-[10px] text-slate-400/80 font-bold uppercase tracking-widest leading-relaxed px-4">
                                 Product submitted for review. Please wait for admin approval within 5 business days. If you have any inquiries, please contact the admin.
                             </p>
                         </div>
@@ -2220,13 +2261,17 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                 <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300">
                     <div className="absolute inset-0" onClick={() => setActiveVideo(null)} />
                     <div className="relative bg-[#0a0a0a] border border-white/10 rounded-[2rem] w-full max-w-4xl aspect-video overflow-hidden shadow-2xl">
-                        <button
-                            onClick={() => setActiveVideo(null)}
-                            className="absolute top-4 right-4 w-10 h-10 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-white hover:text-black transition-all z-10"
-                        >
-                            <IonIcon name="close" className="text-xl" />
-                        </button>
-                        {activeVideo.includes('embed') ? (
+                        {activeVideo.includes('youtube.com/embed') ? (
+                            <div className="w-full h-full overflow-hidden relative bg-black">
+                                <iframe
+                                    src={`${activeVideo}${activeVideo.includes('?') ? '&' : '?'}controls=0&modestbranding=1&rel=0&iv_load_policy=3&showinfo=0&disablekb=1&fs=0`}
+                                    className="absolute w-full h-[120%] -top-[10%] left-0 pointer-events-none"
+                                    allow="autoplay; encrypted-media"
+                                />
+                                {/* Overlay to prevent interaction with YouTube UI while allowing clicking the close button */}
+                                <div className="absolute inset-0 z-10 bg-transparent" />
+                            </div>
+                        ) : activeVideo.includes('player.vimeo.com') ? (
                             <iframe
                                 src={activeVideo}
                                 className="w-full h-full"
@@ -2238,7 +2283,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 <IonIcon name="videocam-outline" className="text-6xl text-blue-400" />
                                 <div className="text-center">
                                     <h3 className="text-xl font-black text-white uppercase tracking-widest italic mb-2">Video Preview</h3>
-                                    <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-6">External video links may need to be viewed on the source platform</p>
+                                    <p className="text-xs text-slate-400/80 font-bold uppercase tracking-wider mb-6">External video links may need to be viewed on the source platform</p>
                                     <a
                                         href={activeVideo}
                                         target="_blank"
@@ -2250,6 +2295,13 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 </div>
                             </div>
                         )}
+                        <button
+                            type="button"
+                            onClick={() => setActiveVideo(null)}
+                            className="absolute top-4 right-4 w-12 h-12 rounded-full bg-black/70 text-red-500 border border-red-500 flex items-center justify-center hover:bg-white hover:text-red-600 transition-all z-[100]"
+                        >
+                            <IonIcon name="close" className="text-2xl" />
+                        </button>
                     </div>
                 </div>
             )}

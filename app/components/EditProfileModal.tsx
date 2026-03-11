@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import IonIcon from "./IonIcon";
 import { authService } from "@/services/authService";
@@ -20,6 +20,8 @@ export default function EditProfileModal({ isOpen, onClose, user, onUpdate }: Ed
     });
     const [loading, setLoading] = useState(false);
     const [previewError, setPreviewError] = useState(false);
+    const [selectedFile, setSelectedFile] = useState<File | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Update form data if user changes
     useEffect(() => {
@@ -38,7 +40,16 @@ export default function EditProfileModal({ isOpen, onClose, user, onUpdate }: Ed
         e.preventDefault();
         setLoading(true);
         try {
-            await authService.updateProfile(formData);
+            const data = new FormData();
+            data.append('fullName', formData.fullName);
+            data.append('bio', formData.bio);
+            data.append('profilePicture', formData.profilePicture);
+
+            if (selectedFile) {
+                data.append('profile_picture_file', selectedFile);
+            }
+
+            await authService.updateProfile(data);
 
             // Trigger sync across components
             window.dispatchEvent(new Event('userProfileUpdated'));
@@ -57,14 +68,43 @@ export default function EditProfileModal({ isOpen, onClose, user, onUpdate }: Ed
         setPreviewError(true);
     };
 
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files[0]) {
+            const file = e.target.files[0];
+            setSelectedFile(file);
+
+            // Create a preview for the local file
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                setFormData({ ...formData, profilePicture: reader.result as string });
+                setPreviewError(false);
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+
     const handleImageUrlChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const val = e.target.value;
+        let val = e.target.value;
+        setSelectedFile(null); // Clear file if link is being typed
+
+        // Intelligent cleaning for social media links
+        if (val.includes('instagram.com') || val.includes('facebook.com') || val.includes('fb.watch')) {
+            // Use Microlink screenshot for social media links that aren't direct images
+            if (!val.match(/\.(jpg|jpeg|png|gif|webp|avif)/i)) {
+                val = `https://api.microlink.io?url=${encodeURIComponent(val)}&screenshot=true&embed=screenshot.url`;
+            }
+        }
+
         setFormData({ ...formData, profilePicture: val });
         setPreviewError(false);
     };
 
     // Calculate preview image
-    const previewImage = formData.profilePicture || "https://ui-avatars.com/api/?name=" + encodeURIComponent(formData.fullName || user.username) + "&size=200&background=random";
+    const previewImage = formData.profilePicture
+        ? (formData.profilePicture.startsWith('data:') || formData.profilePicture.startsWith('http')
+            ? formData.profilePicture
+            : `/uploads/${formData.profilePicture}`)
+        : "https://ui-avatars.com/api/?name=" + encodeURIComponent(formData.fullName || user?.username || "User") + "&size=200&background=random";
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 pb-20 sm:pb-6">
@@ -106,32 +146,51 @@ export default function EditProfileModal({ isOpen, onClose, user, onUpdate }: Ed
                                         )}
                                     </div>
                                 </div>
+                                <button
+                                    type="button"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity rounded-full"
+                                >
+                                    <IonIcon name="camera" className="text-white text-3xl" />
+                                </button>
                                 {formData.profilePicture && (
                                     <div className="absolute -top-1 -right-1 bg-green-500 text-white p-1 rounded-full text-[10px] animate-bounce">
                                         <IonIcon name="checkmark" />
                                     </div>
                                 )}
                             </div>
-                            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest italic">Live Preview</span>
+                            <input
+                                type="file"
+                                ref={fileInputRef}
+                                onChange={handleFileChange}
+                                className="hidden"
+                                accept="image/*"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => fileInputRef.current?.click()}
+                                className="text-[10px] font-black text-blue-500 uppercase tracking-widest hover:text-blue-400 transition-colors"
+                            >
+                                Upload Photo
+                            </button>
                         </div>
 
                         {/* Fields Section */}
                         <div className="flex-1 space-y-4">
                             <div>
-                                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-2 ml-1">Profile Photo Link (Paste from Social Media)</label>
+                                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-2 ml-1">Profile Photo Link (Social Media)</label>
                                 <div className="relative">
                                     <input
                                         type="text"
-                                        value={formData.profilePicture}
+                                        value={formData.profilePicture.startsWith('data:') ? "" : formData.profilePicture}
                                         onChange={handleImageUrlChange}
-                                        placeholder="https://facebook.com/images/..."
+                                        placeholder="Paste Instagram or Facebook link..."
                                         className="w-full bg-[#1c1c1c] border border-white/5 rounded-2xl px-5 py-4 text-white text-xs font-bold focus:outline-none focus:border-blue-500/50 transition-all placeholder:text-gray-700"
                                     />
                                     <div className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-600">
                                         <IonIcon name="link-outline" />
                                     </div>
                                 </div>
-                                <p className="mt-2 text-[9px] text-gray-500 italic px-2">Copy your profile photo link from Facebook or Instagram and paste it here.</p>
                             </div>
 
                             <div>

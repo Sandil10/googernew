@@ -29,15 +29,20 @@ app.use(express.urlencoded({ extended: true }));
 const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
 const marketRoutes = require('./routes/market');
+const orderRoutes = require('./routes/order');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/market', marketRoutes);
+console.log('📦 Mounting Order Routes...');
+app.use('/api/orders', orderRoutes);
+console.log('✅ Order Routes Mounted');
 
 // Fallback mounting for Vercel/Next.js bridge where /api might be stripped
 app.use('/auth', authRoutes);
 app.use('/wallet', walletRoutes);
 app.use('/market', marketRoutes);
+app.use('/orders', orderRoutes);
 
 // Health check route
 app.get('/api/health', async (req, res) => {
@@ -127,7 +132,7 @@ app.get('/api/setup-db', async (req, res) => {
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_wallet_referrer ON wallet(referrer_id);`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_wallet_referred ON wallet(referred_user_id);`);
 
-        // 3. Create market table (The one likely causing 500 on market routes)
+        // 3. Create market table
         await pool.query(`
             CREATE TABLE IF NOT EXISTS market (
                 id SERIAL PRIMARY KEY,
@@ -137,6 +142,7 @@ app.get('/api/setup-db', async (req, res) => {
                 title VARCHAR(255) NOT NULL,
                 description TEXT,
                 price DECIMAL(15, 2) NOT NULL,
+                promo_price DECIMAL(15, 2),
                 category VARCHAR(50),
                 image_url TEXT,
                 status VARCHAR(20) DEFAULT 'reviewing',
@@ -152,6 +158,8 @@ app.get('/api/setup-db', async (req, res) => {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
+        // Ensure promo_price exists if table was already created
+        await pool.query(`ALTER TABLE market ADD COLUMN IF NOT EXISTS promo_price DECIMAL(15, 2);`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_market_user ON market(user_id);`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_market_status ON market(status);`);
 
@@ -174,6 +182,22 @@ app.get('/api/setup-db', async (req, res) => {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
+
+        // 5. Create orders table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS orders (
+                id SERIAL PRIMARY KEY,
+                item_id INTEGER NOT NULL REFERENCES market(id) ON DELETE CASCADE,
+                buyer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                status VARCHAR(20) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_order_buyer ON orders(buyer_id);`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_order_seller ON orders(seller_id);`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_order_status ON orders(status);`);
 
         res.status(200).json({ success: true, message: 'Database schema setup successfully!' });
     } catch (error) {

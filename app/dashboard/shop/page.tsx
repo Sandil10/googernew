@@ -8,13 +8,15 @@ import IonIcon from "@/app/components/IonIcon";
 // import AddProductModal from "@/app/components/AddProductModal"; // Global now
 import { marketService } from "@/services/marketService";
 import { authService } from "@/services/authService";
+import { orderService } from "@/services/orderService";
 import ShareModal from "@/app/components/ShareModal";
 
 export default function ShopPage() {
     const router = useRouter();
     const [showFilters, setShowFilters] = useState(false);
     const [activeTab, setActiveTab] = useState("market"); // market, my-products, orders
-    const [myListingsTab, setMyListingsTab] = useState("reviewing"); // reviewing, rejected, deleted
+    const [myListingsTab, setMyListingsTab] = useState("active");
+    const [myListingsSubTab, setMyListingsSubTab] = useState("all"); // for Your Products sub-filter
     const [myOrdersTab, setMyOrdersTab] = useState("all"); // all, processing, shipped, delivered, returns
     const [isCategoriesDrawerOpen, setIsCategoriesDrawerOpen] = useState(false);
     const [selectedCategory, setSelectedCategory] = useState(""); // Filter state
@@ -38,7 +40,7 @@ export default function ShopPage() {
 
     useEffect(() => {
         loadProducts();
-    }, [activeTab, myListingsTab, myOrdersTab, currentUser, selectedCategory]);
+    }, [activeTab, myListingsTab, myListingsSubTab, myOrdersTab, currentUser, selectedCategory]);
 
     useEffect(() => {
         const handleRefresh = () => {
@@ -64,31 +66,37 @@ export default function ShopPage() {
             const filters: any = {};
             if (activeTab === "market") {
                 filters.status = 'approved';
+                data = await marketService.getItems(filters);
             } else if (activeTab === "my-products") {
                 if (currentUser?.id) {
-                    filters.user_id = currentUser.id;
-                    if (myListingsTab === "reviewing") filters.status = 'reviewing';
-                    else if (myListingsTab === "rejected") filters.status = 'rejected';
-                    else if (myListingsTab === "deleted") filters.status = 'deleted';
+                    if (myListingsTab === "all") {
+                        // "Your Orders" (Seller Side)
+                        // If sub-tab is 'all', we might want to show everything or just pending?
+                        // User says 'All Orders' shows admin-approved products. 
+                        // For demo, I'll fetch orders. If 'all', I'll show all including pending.
+                        let statusFilter = myListingsSubTab === 'all' ? '' : myListingsSubTab;
+                        if (myListingsSubTab === 'completed') statusFilter = 'received';
+                        data = await orderService.getSellerOrders({ status: statusFilter });
+                    } else if (myListingsTab === "active") {
+                        data = await marketService.getItems({ user_id: currentUser.id, status: 'approved' });
+                    } else if (myListingsTab === "reviewing") {
+                        data = await marketService.getItems({ user_id: currentUser.id, status: 'reviewing,rejected' });
+                    } else if (myListingsTab === "deleted") {
+                        data = await marketService.getItems({ user_id: currentUser.id, status: 'deleted' });
+                    }
                 }
             } else if (activeTab === "orders") {
                 if (currentUser?.id) {
-                    filters.user_id = currentUser.id;
-                    if (myOrdersTab === "all") {
-                        // Workaround: show both approved and reviewing items in My Orders as requested
-                        filters.status = 'approved,reviewing';
-                    } else {
-                        filters.order_status = myOrdersTab;
-                    }
+                    let statusFilter = myOrdersTab === 'all' ? '' : myOrdersTab;
+                    if (myOrdersTab === 'completed') statusFilter = 'received';
+                    data = await orderService.getBuyerOrders({ status: statusFilter });
                 }
             }
 
-            if (selectedCategory) {
-                filters.category = selectedCategory;
-            }
-
-            if (currentUser || activeTab === 'market') {
-                data = await marketService.getItems(filters);
+            if (selectedCategory && activeTab === 'market') {
+                // Already handled by filters if passed to marketService.getItems
+                // But for orders, maybe category doesn't apply the same way? 
+                // Mostly user wants categories for the public marketplace.
             }
             // data = await marketService.getItems(filters); // original logic was slightly different branching
             // Let's stick to original structure but add category
@@ -140,6 +148,31 @@ export default function ShopPage() {
         setSelectedProduct(null);
         // setIsModalOpen(true);
         window.dispatchEvent(new CustomEvent('open-add-product-modal', { detail: product }));
+    };
+
+    const handleBuyItem = async (itemId: number) => {
+        if (!currentUser) return alert("Please login to buy items");
+        setLoading(true);
+        try {
+            await orderService.createOrder(itemId);
+            alert("Order placed successfully! Check 'My Orders' for status.");
+            setSelectedProduct(null);
+            setActiveTab("orders");
+        } catch (e: any) {
+            console.error(e);
+            alert(e.message || "Failed to place order");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleUpdateOrderStatus = async (orderId: number, status: string) => {
+        try {
+            await orderService.updateStatus(orderId, status);
+            loadProducts(); // Fresh results
+        } catch (e: any) {
+            alert(e.message || "Failed to update status");
+        }
     };
 
     return (
@@ -222,40 +255,66 @@ export default function ShopPage() {
 
             {/* Sub-tabs for My Listings */}
             {activeTab === 'my-products' && (
-                <div className="flex items-center gap-2 mb-8 select-none animate-in slide-in-from-left-4 duration-500">
-                    <button className="md:hidden flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('mylisting-scroll')?.scrollBy({ left: -150, behavior: 'smooth' })}>
-                        <IonIcon name="chevron-back" className="text-lg" />
-                    </button>
-                    <div id="mylisting-scroll" className="flex-1 md:flex-none flex items-center gap-1.5 p-1 bg-white/5 rounded-2xl overflow-x-auto no-scrollbar border border-white/5 scroll-smooth">
-                        {[
-                            { id: 'add', label: 'Add', icon: 'add-circle' },
-                            { id: 'reviewing', label: 'Review Products', icon: 'time' },
-                            { id: 'rejected', label: 'Rejected Products', icon: 'close-circle' },
-                            { id: 'deleted', label: 'Deleted Products', icon: 'trash' }
-                        ].map((tab) => (
-                            <button
-                                key={tab.id}
-                                onClick={() => {
-                                    if (tab.id === 'add') {
-                                        window.dispatchEvent(new CustomEvent('open-add-product-modal'));
-                                    } else {
-                                        setMyListingsTab(tab.id);
-                                    }
-                                }}
-                                className={`flex items-center justify-center gap-2 px-4 py-2 w-44 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
-                                    ${myListingsTab === tab.id
-                                        ? 'bg-white text-black shadow-lg shadow-white/5 scale-[1.02]'
-                                        : 'text-slate-500 hover:text-white hover:bg-white/5'
-                                    }`}
-                            >
-                                <IonIcon name={tab.icon + (myListingsTab === tab.id ? "" : "-outline")} className="text-sm" />
-                                {tab.label}
-                            </button>
-                        ))}
+                <div className="flex flex-col gap-4 mb-8">
+                    <div className="flex items-center gap-2 select-none">
+                        <button className="md:hidden flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('mylisting-scroll')?.scrollBy({ left: -150, behavior: 'smooth' })}>
+                            <IonIcon name="chevron-back" className="text-lg" />
+                        </button>
+                        <div id="mylisting-scroll" className="flex-1 md:flex-none flex items-center gap-1.5 p-1 bg-white/5 rounded-2xl overflow-x-auto no-scrollbar border border-white/5 scroll-smooth">
+                            {[
+                                { id: 'active', label: 'Active Products', icon: 'checkmark-circle' },
+                                { id: 'all', label: 'Your Orders', icon: 'receipt' },
+                                {
+                                    id: 'reviewing',
+                                    label: products.some(p => p.status === 'rejected') ? 'Rejected Products' : 'Review Products',
+                                    icon: products.some(p => p.status === 'rejected') ? 'close-circle' : 'time'
+                                },
+                                { id: 'deleted', label: 'Inactive Products', icon: 'trash' }
+                            ].map((tab) => (
+                                <button
+                                    key={tab.id}
+                                    onClick={() => setMyListingsTab(tab.id)}
+                                    className={`flex items-center justify-center gap-2 px-4 py-2 w-44 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
+                                        ${myListingsTab === tab.id
+                                            ? 'bg-white text-black shadow-lg shadow-white/5 scale-[1.02]'
+                                            : 'text-slate-500 hover:text-white hover:bg-white/5'
+                                        }`}
+                                >
+                                    <IonIcon name={tab.icon + (myListingsTab === tab.id ? "" : "-outline")} className="text-sm" />
+                                    {tab.label}
+                                </button>
+                            ))}
+                        </div>
+                        <button className="md:hidden flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('mylisting-scroll')?.scrollBy({ left: 150, behavior: 'smooth' })}>
+                            <IonIcon name="chevron-forward" className="text-lg" />
+                        </button>
                     </div>
-                    <button className="md:hidden flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg" onClick={() => document.getElementById('mylisting-scroll')?.scrollBy({ left: 150, behavior: 'smooth' })}>
-                        <IonIcon name="chevron-forward" className="text-lg" />
-                    </button>
+
+                    {/* Category Sub-tabs for "Your Products" */}
+                    {myListingsTab === 'all' && (
+                        <div className="flex items-center gap-1.5 p-1 bg-white/[0.02] rounded-2xl w-full md:w-fit overflow-x-auto no-scrollbar border border-white/5">
+                            {[
+                                { id: 'all', label: 'All Orders', icon: 'list' },
+                                { id: 'processing', label: 'Processing', icon: 'sync' },
+                                { id: 'shipped', label: 'Shipped', icon: 'airplane' },
+                                { id: 'delivered', label: 'Delivered', icon: 'cube' },
+                                { id: 'completed', label: 'Completed', icon: 'checkmark-done-circle' },
+                                { id: 'returns', label: 'Returns', icon: 'refresh-circle' }
+                            ].map((sub) => (
+                                <button
+                                    key={sub.id}
+                                    onClick={() => setMyListingsSubTab(sub.id)}
+                                    className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all whitespace-nowrap
+                                        ${myListingsSubTab === sub.id
+                                            ? 'bg-white/10 text-white'
+                                            : 'text-slate-600 hover:text-slate-400'
+                                        }`}
+                                >
+                                    {sub.label}
+                                </button>
+                            ))}
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -267,22 +326,16 @@ export default function ShopPage() {
                     </button>
                     <div id="myorders-scroll" className="flex-1 md:flex-none flex items-center gap-1.5 p-1 bg-white/5 rounded-2xl overflow-x-auto no-scrollbar border border-white/5 scroll-smooth">
                         {[
-                            { id: 'add', label: 'Add', icon: 'add-circle' },
                             { id: 'all', label: 'All Orders', icon: 'receipt' },
                             { id: 'processing', label: 'Processing', icon: 'sync' },
                             { id: 'shipped', label: 'Shipped', icon: 'airplane' },
                             { id: 'delivered', label: 'Delivered', icon: 'cube' },
+                            { id: 'completed', label: 'Completed', icon: 'checkmark-done-circle' },
                             { id: 'returns', label: 'Returns', icon: 'refresh-circle' }
                         ].map((tab) => (
                             <button
                                 key={tab.id}
-                                onClick={() => {
-                                    if (tab.id === 'add') {
-                                        window.dispatchEvent(new CustomEvent('open-add-product-modal'));
-                                    } else {
-                                        setMyOrdersTab(tab.id);
-                                    }
-                                }}
+                                onClick={() => setMyOrdersTab(tab.id)}
                                 className={`flex items-center justify-center gap-2 px-4 py-2 w-44 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
                                     ${myOrdersTab === tab.id
                                         ? 'bg-white text-black shadow-lg shadow-white/5 scale-[1.02]'
@@ -344,20 +397,36 @@ export default function ShopPage() {
                     {products.map((product) => (
                         <div
                             key={product.id}
-                            className="group cursor-pointer bg-[#1a1a1a] rounded-[2.5rem] p-3 pb-6 border border-white/5 hover:border-white/20 transition-all hover:shadow-2xl relative flex flex-col"
+                            className="group cursor-pointer bg-[#1a1a1a] rounded-[2.5rem] pb-8 border border-white/5 hover:border-white/20 transition-all hover:shadow-2xl relative flex flex-col"
                             onClick={() => setSelectedProduct(product)}
                         >
-                            {/* Profile Header */}
-                            <div className="flex items-center gap-2 mb-3 px-2">
-                                <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-white overflow-hidden border border-white/5">
-                                    <IonIcon name="person" className="text-gray-400" />
+                            {/* Profile Header with Subscribe */}
+                            <div className="flex items-center justify-between gap-2 p-4 px-5">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center text-[10px] text-white overflow-hidden border border-white/10 shadow-lg relative">
+                                        {product.profile_picture ? (
+                                            <Image src={product.profile_picture} alt="Profile" fill className="object-cover" />
+                                        ) : (
+                                            <IonIcon name="person" className="text-white" />
+                                        )}
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <span className="text-[10px] text-white font-black uppercase tracking-tight truncate leading-none">
+                                            {product.username || product.owner_username || 'Anonymous'}
+                                        </span>
+                                        <span className="text-[7px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Seller</span>
+                                    </div>
                                 </div>
-                                <span className="text-[10px] text-white font-black uppercase tracking-tight truncate">
-                                    {product.username || product.owner_username || 'Anonymous'}
-                                </span>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); alert('Subscribed!'); }}
+                                    className="px-3 py-1.5 bg-white text-black text-[9px] font-black uppercase rounded-full shadow-lg active:scale-95 transition-all hover:bg-slate-200"
+                                >
+                                    Subscribe
+                                </button>
                             </div>
 
-                            <div className="relative aspect-square rounded-[2rem] overflow-hidden mb-4 bg-black border border-white/5 shadow-inner">
+                            {/* Image Section */}
+                            <div className="relative aspect-square mx-3 rounded-[2rem] overflow-hidden mb-5 bg-black border border-white/5 shadow-inner">
                                 <Image
                                     src={(product.image_url && (product.image_url.includes('uploads') || product.image_url.includes('\\')))
                                         ? `/uploads/${product.image_url.split(/[\\/]/).pop()}`
@@ -387,46 +456,110 @@ export default function ShopPage() {
                                         </div>
                                     </div>
                                 )}
+                                {(activeTab === 'orders' || (activeTab === 'my-products' && myListingsTab === 'all')) && product.status && (
+                                    <div className="absolute top-4 right-4 px-2 py-1 bg-black/60 backdrop-blur-md rounded-lg border border-white/10">
+                                        <span className="text-[8px] font-black uppercase text-white tracking-widest">{product.status}</span>
+                                    </div>
+                                )}
                             </div>
 
-                            <div className="px-2">
-                                <h3 className="text-white text-[11px] md:text-xs font-black truncate mb-2 uppercase tracking-tight group-hover:text-white/80 transition-colors">{product.title}</h3>
+                            {/* Content Section */}
+                            <div className="px-6 pb-2">
+                                <h3 className="text-white text-[12px] font-black truncate mb-3 uppercase tracking-tight group-hover:text-blue-400 transition-colors">{product.title}</h3>
 
-                                {/* Info Row: Price, Country Price, Date */}
-                                <div className="flex items-center gap-2 text-[9px] font-bold mb-4 bg-white/[0.03] p-2 rounded-xl border border-white/5">
-                                    <div className="flex items-center gap-1 text-white">
-                                        <span className="text-gray-500 font-normal">R</span>
-                                        {product.price}
-                                    </div>
-                                    <div className="h-2 w-px bg-white/10"></div>
-                                    <div className="flex items-center gap-1 text-white">
-                                        <span className="text-gray-500 font-normal">Sri Lanka:</span>
-                                        {product.shipping_info?.rates?.[0]?.charge || '0'}
+                                <div className="flex flex-col mb-6">
+                                    {product.promo_price && (
+                                        <span className="text-[10px] text-slate-500 line-through font-bold opacity-60">R {product.price}</span>
+                                    )}
+                                    <div className="flex items-baseline gap-1">
+                                        <span className="text-xs font-black text-white/40">R</span>
+                                        <span className="text-2xl font-black text-white tracking-tighter">{product.promo_price || product.price}</span>
                                     </div>
                                 </div>
 
-                                <div className="flex items-center justify-between border-t border-white/5 pt-3">
-                                    <div className="flex items-center gap-3">
-                                        <button className="text-white/60 hover:text-red-500 transition-colors active:scale-90">
-                                            <IonIcon name="heart-outline" className="text-lg" />
-                                        </button>
-                                        <button className="text-white/60 hover:text-white transition-colors active:scale-90">
-                                            <IonIcon name="chatbubble-outline" className="text-lg" />
-                                        </button>
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                setShareProduct(product);
-                                                setShowShareModal(true);
-                                            }}
-                                            className="text-white/60 hover:text-white transition-colors active:scale-90"
-                                        >
-                                            <IonIcon name="share-social-outline" className="text-lg" />
-                                        </button>
-                                    </div>
-                                    <div className="flex items-center gap-1 text-[9px] text-gray-500 font-bold">
-                                        <IonIcon name="eye-outline" className="text-xs" />
-                                        <span>782</span>
+                                <div className="flex items-center justify-between border-t border-white/5 pt-4">
+                                    <div className="flex items-center gap-5 w-full">
+                                        {/* Icons Row */}
+                                        <div className="flex items-center gap-5">
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); /* handleLike */ }}
+                                                className="text-white/40 hover:text-red-500 transition-all active:scale-75"
+                                            >
+                                                <IonIcon name="heart-outline" className="text-xl" />
+                                            </button>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
+                                                className="text-white/40 hover:text-blue-500 transition-all active:scale-75"
+                                            >
+                                                <IonIcon name="cart-outline" className="text-xl" />
+                                            </button>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
+                                                className="text-white/40 hover:text-white transition-all active:scale-75"
+                                            >
+                                                <IonIcon name="chatbubble-outline" className="text-xl" />
+                                            </button>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); /* handleShare */ }}
+                                                className="text-white/40 hover:text-green-500 transition-all active:scale-75"
+                                            >
+                                                <IonIcon name="share-social-outline" className="text-xl" />
+                                            </button>
+                                        </div>
+
+                                        {/* Actions Row */}
+                                        <div className="ml-auto">
+                                            {product.status === 'rejected' ? (
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); handleEditProduct(product); }}
+                                                    className="px-3 py-1 bg-white/10 hover:bg-white text-black text-[9px] font-black uppercase rounded-lg transition-all"
+                                                >
+                                                    Edit
+                                                </button>
+                                            ) : (activeTab === 'my-products' && myListingsTab === 'all') ? (
+                                                <div className="flex flex-wrap gap-1.5 justify-end">
+                                                    {(product.status === 'pending' || product.status === 'approved' || product.status === 'all') ? (
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'processing'); }}
+                                                            className="px-2 py-1 bg-white text-black text-[8px] font-black uppercase rounded-lg border border-white"
+                                                        >
+                                                            Process
+                                                        </button>
+                                                    ) : product.status === 'processing' ? (
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'shipped'); }}
+                                                            className="px-2 py-1 bg-blue-600 text-white rounded-lg"
+                                                        >
+                                                            Ship
+                                                        </button>
+                                                    ) : product.status === 'shipped' ? (
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'delivered'); }}
+                                                            className="px-2 py-1 bg-green-600 text-white rounded-lg"
+                                                        >
+                                                            Deliver
+                                                        </button>
+                                                    ) : product.status === 'delivered' ? (
+                                                        <span className="text-[8px] text-blue-400 font-black uppercase">Wait Buyer</span>
+                                                    ) : product.status === 'received' ? (
+                                                        <span className="text-[8px] text-green-500 font-black uppercase">Done</span>
+                                                    ) : null}
+                                                </div>
+                                            ) : activeTab === 'orders' ? (
+                                                <div className="flex items-center gap-2">
+                                                    {product.status === 'delivered' ? (
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'received'); }}
+                                                            className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg"
+                                                        >
+                                                            Received?
+                                                        </button>
+                                                    ) : product.status === 'received' ? (
+                                                        <span className="text-[8px] text-green-500 font-black uppercase">Received</span>
+                                                    ) : null}
+                                                </div>
+                                            ) : null}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -436,118 +569,201 @@ export default function ShopPage() {
             )}
 
             {/* Pagination */}
-            {products.length > 0 && (
-                <div className="flex justify-center items-center gap-2 mb-20 fade-in">
-                    <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-white/10 text-gray-400 hover:bg-white/5 hover:text-white transition-colors"> <IonIcon name="chevron-back-outline" /> </button>
-                    <button className="w-8 h-8 flex items-center justify-center rounded-lg bg-white text-black font-black text-xs">1</button>
-                    <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-white/10 text-gray-400 hover:bg-white/5 hover:text-white transition-colors"> <IonIcon name="chevron-forward-outline" /> </button>
-                </div>
-            )}
+            {
+                products.length > 0 && (
+                    <div className="flex justify-center items-center gap-2 mb-20 fade-in">
+                        <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-white/10 text-gray-400 hover:bg-white/5 hover:text-white transition-colors"> <IonIcon name="chevron-back-outline" /> </button>
+                        <button className="w-8 h-8 flex items-center justify-center rounded-lg bg-white text-black font-black text-xs">1</button>
+                        <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-white/10 text-gray-400 hover:bg-white/5 hover:text-white transition-colors"> <IonIcon name="chevron-forward-outline" /> </button>
+                    </div>
+                )
+            }
 
 
 
 
 
             {/* Product Details Modal (Assuming existing code is mostly fine used selectedProduct state) */}
-            {selectedProduct && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300" onClick={() => setSelectedProduct(null)}>
-                    <div
-                        className="bg-[#121212] border border-white/10 rounded-[2.5rem] w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col md:flex-row max-h-[85vh] md:max-h-[90vh] animate-in zoom-in-95 duration-300"
-                        onClick={(e) => e.stopPropagation()}
-                    >
-                        {/* Image Section */}
-                        <div className="w-full md:w-1/2 bg-black relative h-64 md:h-auto shrink-0">
-                            <Image
-                                src={(selectedProduct.image_url && (selectedProduct.image_url.includes('uploads') || selectedProduct.image_url.includes('\\')))
-                                    ? `/uploads/${selectedProduct.image_url.split(/[\\/]/).pop()}`
-                                    : (selectedProduct.image_url || "https://picsum.photos/400/400")}
-                                alt={selectedProduct.title}
-                                fill
-                                className="object-cover"
-                            />
-                            <button
-                                onClick={() => setSelectedProduct(null)}
-                                className="absolute top-4 left-4 md:hidden w-8 h-8 rounded-full bg-black/50 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition-colors"
-                            >
-                                <IonIcon name="arrow-back" className="text-lg" />
-                            </button>
-                        </div>
-                        {/* Details */}
-                        <div className="w-full md:w-1/2 p-5 md:p-10 flex flex-col overflow-y-auto custom-scrollbar bg-black">
-                            <h2 className="text-2xl font-bold text-white mb-2">{selectedProduct.title}</h2>
-                            <div className="flex flex-wrap gap-2 mb-6">
-                                <span className="px-3 py-1 bg-white/5 text-gray-300 text-[10px] font-black rounded-full border border-white/10 uppercase tracking-widest">{selectedProduct.category}</span>
-                                <span className="px-3 py-1 bg-white/10 text-white text-[10px] font-black rounded-full border border-white/20 uppercase tracking-widest">{selectedProduct.status}</span>
-                            </div>
-
-                            <p className="text-gray-400 text-xs mb-8 leading-relaxed">{selectedProduct.description}</p>
-
-                            {/* Logistics & Payment Details */}
-                            <div className="space-y-6 mb-8">
-                                <div className="grid grid-cols-2 gap-4">
-
-                                    <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
-                                        <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Return Policy</label>
-                                        <p className="text-xs font-bold text-white">{selectedProduct.return_policy?.text || 'Standard Policy'}</p>
-                                    </div>
-                                </div>
-
-                                <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
-                                    <label className="text-[10px] font-black text-slate-500 uppercase block mb-2">Available in Countries</label>
-                                    <div className="flex flex-wrap gap-2">
-                                        {selectedProduct.shipping_info?.rates?.length > 0 ? (
-                                            selectedProduct.shipping_info.rates.map((r: any, i: number) => (
-                                                <span key={i} className="px-2 py-1 bg-slate-800 rounded text-[10px] text-slate-300 font-bold border border-white/5">
-                                                    {r.country} (R{r.charge})
-                                                </span>
-                                            ))
-                                        ) : (
-                                            <span className="text-xs text-slate-500 font-bold italic">No specific shipping rates set</span>
-                                        )}
-                                    </div>
-                                </div>
-
-                                <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
-                                    <label className="text-[10px] font-black text-slate-500 uppercase block mb-2">Accepted Payments</label>
-                                    <div className="flex flex-wrap gap-2">
-                                        {selectedProduct.payment_methods?.length > 0 ? (
-                                            selectedProduct.payment_methods.map((p: string, i: number) => (
-                                                <span key={i} className="px-3 py-1 bg-white/5 text-white text-[10px] font-black rounded-lg border border-white/10 uppercase">
-                                                    {p.toUpperCase()}
-                                                </span>
-                                            ))
-                                        ) : (
-                                            <span className="text-xs text-slate-500 font-bold italic">Contact seller for payment</span>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="flex items-center gap-3 mb-6">
+            {
+                selectedProduct && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300" onClick={() => setSelectedProduct(null)}>
+                        <div
+                            className="bg-[#121212] border border-white/10 rounded-[2.5rem] w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col md:flex-row max-h-[85vh] md:max-h-[90vh] animate-in zoom-in-95 duration-300"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            {/* Image Section */}
+                            <div className="w-full md:w-1/2 bg-black relative h-64 md:h-auto shrink-0">
+                                <Image
+                                    src={(selectedProduct.image_url && (selectedProduct.image_url.includes('uploads') || selectedProduct.image_url.includes('\\')))
+                                        ? `/uploads/${selectedProduct.image_url.split(/[\\/]/).pop()}`
+                                        : (selectedProduct.image_url || "https://picsum.photos/400/400")}
+                                    alt={selectedProduct.title}
+                                    fill
+                                    className="object-cover"
+                                />
                                 <button
-                                    onClick={() => {
-                                        setShareProduct(selectedProduct);
-                                        setShowShareModal(true);
-                                    }}
-                                    className="flex-1 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 active:scale-95"
+                                    onClick={() => setSelectedProduct(null)}
+                                    className="absolute top-4 left-4 md:hidden w-8 h-8 rounded-full bg-black/50 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition-colors"
                                 >
-                                    <IonIcon name="share-social-outline" className="text-lg" />
-                                    Share This Listing
+                                    <IonIcon name="arrow-back" className="text-lg" />
                                 </button>
                             </div>
+                            {/* Details */}
+                            <div className="w-full md:w-1/2 p-5 md:p-10 flex flex-col overflow-y-auto custom-scrollbar bg-black">
+                                <h2 className="text-2xl font-bold text-white mb-2">{selectedProduct.title}</h2>
+                                <div className="flex flex-wrap gap-2 mb-6">
+                                    <span className="px-3 py-1 bg-white/5 text-gray-300 text-[10px] font-black rounded-full border border-white/10 uppercase tracking-widest">{selectedProduct.category}</span>
+                                    <span className="px-3 py-1 bg-white/10 text-white text-[10px] font-black rounded-full border border-white/20 uppercase tracking-widest">{selectedProduct.status}</span>
+                                </div>
 
-                            <div className="mt-auto">
-                                {(selectedProduct.status === 'reviewing' || selectedProduct.status === 'rejected' || activeTab === 'my-products') && currentUser?.id === selectedProduct.user_id && (
-                                    <div className="grid grid-cols-2 gap-4 mt-4">
-                                        <button onClick={() => { handleEditProduct(selectedProduct); setSelectedProduct(null); }} className="py-3 bg-white/5 hover:bg-white/10 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest border border-white/10 transition-all">Edit</button>
-                                        <button onClick={() => handleDeleteProduct(selectedProduct.id)} className="py-3 bg-red-600/10 hover:bg-red-600/20 text-red-500 rounded-2xl font-black text-[10px] uppercase tracking-widest border border-red-500/20 transition-all">Delete</button>
+                                <p className="text-gray-400 text-xs mb-8 leading-relaxed">{selectedProduct.description}</p>
+
+                                {/* Logistics & Payment Details */}
+                                <div className="space-y-6 mb-8">
+                                    <div className="grid grid-cols-2 gap-4">
+
+                                        <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                                            <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Return Policy</label>
+                                            <p className="text-xs font-bold text-white">{selectedProduct.return_policy?.text || 'Standard Policy'}</p>
+                                        </div>
                                     </div>
-                                )}
+
+                                    <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                                        <label className="text-[10px] font-black text-slate-500 uppercase block mb-2">Available in Countries</label>
+                                        <div className="flex flex-wrap gap-2">
+                                            {selectedProduct.shipping_info?.rates?.length > 0 ? (
+                                                selectedProduct.shipping_info.rates.map((r: any, i: number) => (
+                                                    <span key={i} className="px-2 py-1 bg-slate-800 rounded text-[10px] text-slate-300 font-bold border border-white/5">
+                                                        {r.country} (R{r.charge})
+                                                    </span>
+                                                ))
+                                            ) : (
+                                                <span className="text-xs text-slate-500 font-bold italic">No specific shipping rates set</span>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                                        <label className="text-[10px] font-black text-slate-500 uppercase block mb-2">Accepted Payments</label>
+                                        <div className="flex flex-wrap gap-2">
+                                            {selectedProduct.payment_methods?.length > 0 ? (
+                                                selectedProduct.payment_methods.map((p: string, i: number) => (
+                                                    <span key={i} className="px-3 py-1 bg-white/5 text-white text-[10px] font-black rounded-lg border border-white/10 uppercase">
+                                                        {p.toUpperCase()}
+                                                    </span>
+                                                ))
+                                            ) : (
+                                                <span className="text-xs text-slate-500 font-bold italic">Contact seller for payment</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center gap-3 mb-6">
+                                    {activeTab === 'market' && currentUser?.id !== selectedProduct.user_id ? (
+                                        <button
+                                            onClick={() => handleBuyItem(selectedProduct.id)}
+                                            className="flex-1 py-4 bg-white hover:bg-white/90 text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-lg active:scale-95"
+                                        >
+                                            <IonIcon name="bag-handle-outline" className="text-lg" />
+                                            Buy Now (R{selectedProduct.price})
+                                        </button>
+                                    ) : (
+                                        <button
+                                            onClick={() => {
+                                                setShareProduct(selectedProduct);
+                                                setShowShareModal(true);
+                                            }}
+                                            className="flex-1 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 active:scale-95"
+                                        >
+                                            <IonIcon name="share-social-outline" className="text-lg" />
+                                            Share This Listing
+                                        </button>
+                                    )}
+                                </div>
+
+                                <div className="mt-auto">
+                                    {(selectedProduct.status === 'reviewing' || selectedProduct.status === 'rejected' || (activeTab === 'my-products' && myListingsTab !== 'all')) && currentUser?.id === selectedProduct.user_id && (
+                                        <div className="grid grid-cols-2 gap-4 mt-4">
+                                            <button onClick={() => { handleEditProduct(selectedProduct); setSelectedProduct(null); }} className="py-3 bg-white/5 hover:bg-white/10 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest border border-white/10 transition-all">Edit</button>
+                                            <button onClick={() => handleDeleteProduct(selectedProduct.id)} className="py-3 bg-red-600/10 hover:bg-red-600/20 text-red-500 rounded-2xl font-black text-[10px] uppercase tracking-widest border border-red-500/20 transition-all">Delete</button>
+                                        </div>
+                                    )}
+                                    {activeTab === 'orders' && selectedProduct.status === 'delivered' && (
+                                        <div className="mt-4">
+                                            <button
+                                                onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'received'); setSelectedProduct(null); }}
+                                                className="w-full py-4 bg-green-600 hover:bg-green-500 text-white rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-lg shadow-green-600/20 active:scale-95"
+                                            >
+                                                <IonIcon name="checkmark-done" className="text-lg" />
+                                                Mark as Received
+                                            </button>
+                                        </div>
+                                    )}
+                                    {activeTab === 'orders' && selectedProduct.status === 'received' && (
+                                        <div className="mt-4 py-4 bg-green-600/10 text-green-500 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 border border-green-500/20">
+                                            <IonIcon name="checkmark-circle" className="text-xl" />
+                                            Order Completed & Received
+                                        </div>
+                                    )}
+                                    {activeTab === 'my-products' && myListingsTab === 'all' && (
+                                        <div className="grid grid-cols-2 gap-4 mt-4">
+                                            {selectedProduct.status === 'processing' ? (
+                                                <>
+                                                    <button
+                                                        onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'shipped'); setSelectedProduct(null); }}
+                                                        className="py-3 bg-blue-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-lg active:scale-95"
+                                                    >
+                                                        Pass to Shipping
+                                                    </button>
+                                                    <button
+                                                        onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'pending'); setSelectedProduct(null); }}
+                                                        className="py-3 bg-red-600/10 text-red-500 rounded-2xl font-black text-[10px] uppercase tracking-widest border border-red-500/20 active:scale-95"
+                                                    >
+                                                        Cancel / Revert
+                                                    </button>
+                                                </>
+                                            ) : (selectedProduct.status === 'approved' || selectedProduct.status === 'all' || selectedProduct.status === 'pending') ? (
+                                                <>
+                                                    <button
+                                                        onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'processing'); setSelectedProduct(null); }}
+                                                        className="py-3 bg-white text-black rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-lg active:scale-95"
+                                                    >
+                                                        Approval / Pass to Proc.
+                                                    </button>
+                                                    <button
+                                                        onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'cancelled'); setSelectedProduct(null); }}
+                                                        className="py-3 bg-red-600/10 text-red-500 rounded-2xl font-black text-[10px] uppercase tracking-widest border border-red-500/20 transition-all active:scale-95"
+                                                    >
+                                                        Cancel
+                                                    </button>
+                                                </>
+                                            ) : selectedProduct.status === 'shipped' ? (
+                                                <button
+                                                    onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'delivered'); setSelectedProduct(null); }}
+                                                    className="py-3 bg-green-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-lg active:scale-95 w-full col-span-2"
+                                                >
+                                                    Pass to Delivered
+                                                </button>
+                                            ) : selectedProduct.status === 'delivered' ? (
+                                                <div className="w-full col-span-2 py-4 bg-blue-600/10 text-blue-400 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 border border-blue-400/20">
+                                                    <IonIcon name="time-outline" className="text-lg" />
+                                                    Waiting for Buyer Confirmation
+                                                </div>
+                                            ) : selectedProduct.status === 'received' ? (
+                                                <div className="w-full col-span-2 py-4 bg-green-600/10 text-green-500 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 border border-green-500/20">
+                                                    <IonIcon name="checkmark-circle" className="text-lg" />
+                                                    Transaction Completed (Received)
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
-            )}
+                )
+            }
             {/* Share Modal */}
             <ShareModal
                 isOpen={showShareModal}
@@ -556,6 +772,6 @@ export default function ShopPage() {
                 url={shareProduct ? `${window.location.origin}/dashboard/shop?id=${shareProduct.id}` : ""}
                 description={shareProduct?.description}
             />
-        </div>
+        </div >
     );
 }

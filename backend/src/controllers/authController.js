@@ -321,16 +321,22 @@ exports.getProfile = async (req, res) => {
 exports.updateProfile = async (req, res) => {
     try {
         const { fullName, bio, profilePicture } = req.body;
+        let finalProfilePicture = profilePicture;
+
+        // If a file was uploaded, use it
+        if (req.file) {
+            finalProfilePicture = req.file.filename;
+        }
 
         // Update user in database
         const result = await pool.query(
             `UPDATE users 
              SET full_name = COALESCE($1, full_name), 
                  bio = COALESCE($2, bio), 
-                 profile_picture = COALESCE($3, profile_picture) 
+                 profile_picture = $3 
              WHERE id = $4
              RETURNING id, user_id, username, full_name, email, profile_picture, bio`,
-            [fullName, bio, profilePicture, req.user.id]
+            [fullName, bio, finalProfilePicture, req.user.id]
         );
 
         if (result.rows.length === 0) {

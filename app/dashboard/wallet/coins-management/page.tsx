@@ -263,7 +263,12 @@ export default function CoinsManagementPage() {
                                     >
                                         <div className="w-10 h-10 rounded-full overflow-hidden bg-gray-800 relative flex-shrink-0">
                                             {user.profile_picture ? (
-                                                <Image src={user.profile_picture} alt={user.username} fill className="object-cover" />
+                                                <Image
+                                                    src={user.profile_picture.startsWith('http') || user.profile_picture.startsWith('data:') ? user.profile_picture : `/uploads/${user.profile_picture.split(/[\\/]/).pop()}`}
+                                                    alt={user.username}
+                                                    fill
+                                                    className="object-cover"
+                                                />
                                             ) : (
                                                 <div className="w-full h-full flex items-center justify-center text-gray-500 bg-gray-700">
                                                     <IonIcon name="person-outline" />
@@ -329,7 +334,12 @@ export default function CoinsManagementPage() {
                                     <div className="flex items-center gap-3">
                                         <div className="w-10 h-10 rounded-full overflow-hidden bg-gray-800 relative">
                                             {req.sender_profile_picture ? (
-                                                <Image src={req.sender_profile_picture} alt={req.sender_username} fill className="object-cover" />
+                                                <Image
+                                                    src={req.sender_profile_picture.startsWith('http') || req.sender_profile_picture.startsWith('data:') ? req.sender_profile_picture : `/uploads/${req.sender_profile_picture.split(/[\\/]/).pop()}`}
+                                                    alt={req.sender_username}
+                                                    fill
+                                                    className="object-cover"
+                                                />
                                             ) : (
                                                 <div className="w-full h-full flex items-center justify-center text-gray-500">
                                                     <IonIcon name="person-outline" />

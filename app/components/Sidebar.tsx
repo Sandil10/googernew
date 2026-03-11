@@ -51,8 +51,9 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
     };
 
     // Generate profile image URL
-    const profileImage = user?.profile_picture ||
-        (user ? `https://ui-avatars.com/api/?name=${encodeURIComponent(user.full_name || user.username)}&size=200&background=random` : "");
+    const profileImage = user?.profile_picture
+        ? (user.profile_picture.startsWith('http') || user.profile_picture.startsWith('data:') ? user.profile_picture : `/uploads/${user.profile_picture.split(/[\\/]/).pop()}`)
+        : (user ? `https://ui-avatars.com/api/?name=${encodeURIComponent(user.full_name || user.username)}&size=200&background=random` : "");
 
     return (
         <aside

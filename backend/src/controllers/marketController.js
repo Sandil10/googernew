@@ -27,14 +27,14 @@ exports.createMarketItem = async (req, res) => {
         let links_info = [];
 
         try {
-            if (variants_data) variants = JSON.parse(variants_data);
-            if (shipping_data) shipping_info = JSON.parse(shipping_data);
-            if (payment_data) payment_methods = JSON.parse(payment_data);
-            if (warranty_data) warranty_info = JSON.parse(warranty_data);
-            if (return_data) return_policy = JSON.parse(return_data);
-            if (delivery_info) delivery_info = JSON.parse(delivery_data);
-            if (commission_data) commission_info = JSON.parse(commission_data);
-            if (links_data) links_info = JSON.parse(links_data);
+            if (variants_data && variants_data !== 'undefined') variants = JSON.parse(variants_data);
+            if (shipping_data && shipping_data !== 'undefined') shipping_info = JSON.parse(shipping_data);
+            if (payment_data && payment_data !== 'undefined') payment_methods = JSON.parse(payment_data);
+            if (warranty_data && warranty_data !== 'undefined') warranty_info = JSON.parse(warranty_data);
+            if (return_data && return_data !== 'undefined') return_policy = JSON.parse(return_data);
+            if (delivery_data && delivery_data !== 'undefined') delivery_info = JSON.parse(delivery_data);
+            if (commission_data && commission_data !== 'undefined') commission_info = JSON.parse(commission_data);
+            if (links_data && links_data !== 'undefined') links_info = JSON.parse(links_data);
         } catch (parseErr) {
             console.error('❌ JSON Parse Error:', parseErr);
             return res.status(400).json({ success: false, message: 'Invalid data format provided' });
@@ -62,19 +62,21 @@ exports.createMarketItem = async (req, res) => {
         }
 
         const numericPrice = parseFloat(price);
+        const numericPromoPrice = promo_price ? parseFloat(promo_price) : null;
+
         if (isNaN(numericPrice)) {
             return res.status(400).json({ success: false, message: 'Invalid price format' });
         }
 
         const newItem = await pool.query(
             `INSERT INTO market (
-                user_id, owner_user_id, username, title, description, price, category, image_url, status,
+                user_id, owner_user_id, username, title, description, price, promo_price, category, image_url, status,
                 variants, shipping_info, payment_methods, warranty_info, return_policy, delivery_info, commission_info, links_data
             )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'reviewing', $9, $10, $11, $12, $13, $14, $15, $16)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'reviewing', $10, $11, $12, $13, $14, $15, $16, $17)
              RETURNING *`,
             [
-                userId, owner_user_id, username, title, description, numericPrice, category, imageUrl,
+                userId, owner_user_id, username, title, description, numericPrice, numericPromoPrice, category, imageUrl,
                 JSON.stringify(variants), JSON.stringify(shipping_info),
                 JSON.stringify(payment_methods), JSON.stringify(warranty_info),
                 JSON.stringify(return_policy), JSON.stringify(delivery_info),
@@ -124,14 +126,14 @@ exports.updateMarketItem = async (req, res) => {
         let links_info = null;
 
         try {
-            if (variants_data) variants = JSON.parse(variants_data);
-            if (shipping_data) shipping_info = JSON.parse(shipping_data);
-            if (payment_data) payment_methods = JSON.parse(payment_data);
-            if (warranty_data) warranty_info = JSON.parse(warranty_data);
-            if (return_data) return_policy = JSON.parse(return_data);
-            if (delivery_data) delivery_info = JSON.parse(delivery_data);
-            if (commission_data) commission_info = JSON.parse(commission_data);
-            if (links_data) links_info = JSON.parse(links_data);
+            if (variants_data && variants_data !== 'undefined') variants = JSON.parse(variants_data);
+            if (shipping_data && shipping_data !== 'undefined') shipping_info = JSON.parse(shipping_data);
+            if (payment_data && payment_data !== 'undefined') payment_methods = JSON.parse(payment_data);
+            if (warranty_data && warranty_data !== 'undefined') warranty_info = JSON.parse(warranty_data);
+            if (return_data && return_data !== 'undefined') return_policy = JSON.parse(return_data);
+            if (delivery_data && delivery_data !== 'undefined') delivery_info = JSON.parse(delivery_data);
+            if (commission_data && commission_data !== 'undefined') commission_info = JSON.parse(commission_data);
+            if (links_data && links_data !== 'undefined') links_info = JSON.parse(links_data);
         } catch (parseErr) {
             return res.status(400).json({ success: false, message: 'Invalid data format' });
         }
@@ -148,27 +150,31 @@ exports.updateMarketItem = async (req, res) => {
 
         const imageUrl = newGalleryItems.length > 0 ? newGalleryItems[0].url : (variants?.[0]?.url || item.image_url);
         const numericPrice = price ? parseFloat(price) : item.price;
+        const numericPromoPrice = promo_price !== undefined ? (promo_price ? parseFloat(promo_price) : null) : item.promo_price;
 
         const updatedItem = await pool.query(
             `UPDATE market 
              SET title = COALESCE($1, title), 
                  description = COALESCE($2, description), 
                  price = COALESCE($3, price), 
-                 category = COALESCE($4, category), 
-                 image_url = COALESCE($5, image_url),
-                 variants = COALESCE($6, variants),
-                 shipping_info = COALESCE($7, shipping_info),
-                 payment_methods = COALESCE($8, payment_methods),
-                 warranty_info = COALESCE($9, warranty_info),
-                 return_policy = COALESCE($10, return_policy),
-                 delivery_info = COALESCE($11, delivery_info),
-                 commission_info = COALESCE($12, commission_info),
-                 links_data = COALESCE($13, links_data),
+                 promo_price = $4,
+                 category = COALESCE($5, category), 
+                 image_url = COALESCE($6, image_url),
+                 variants = COALESCE($7, variants),
+                 shipping_info = COALESCE($8, shipping_info),
+                 payment_methods = COALESCE($9, payment_methods),
+                 warranty_info = COALESCE($10, warranty_info),
+                 return_policy = COALESCE($11, return_policy),
+                 delivery_info = COALESCE($12, delivery_info),
+                 commission_info = COALESCE($13, commission_info),
+                 links_data = COALESCE($14, links_data),
                  status = 'reviewing',
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $14 RETURNING *`,
+             WHERE id = $15 RETURNING *`,
             [
-                title, description, isNaN(numericPrice) ? item.price : numericPrice, category, imageUrl,
+                title, description, isNaN(numericPrice) ? item.price : numericPrice,
+                numericPromoPrice,
+                category, imageUrl,
                 variants ? JSON.stringify(variants) : null,
                 shipping_info ? JSON.stringify(shipping_info) : null,
                 payment_methods ? JSON.stringify(payment_methods) : null,
@@ -188,7 +194,7 @@ exports.updateMarketItem = async (req, res) => {
     }
 };
 
-// Delete an item
+// Delete an item (Soft delete for 7 days)
 exports.deleteMarketItem = async (req, res) => {
     try {
         const { id } = req.params;
@@ -197,10 +203,14 @@ exports.deleteMarketItem = async (req, res) => {
         if (itemResult.rows.length === 0) return res.status(404).json({ success: false, message: 'Item not found' });
         const item = itemResult.rows[0];
         if (parseInt(item.user_id) !== userId) return res.status(403).json({ success: false, message: 'Not authorized' });
-        await pool.query('DELETE FROM market WHERE id = $1', [id]);
-        res.status(200).json({ success: true, message: 'Item deleted' });
+
+        // Soft delete: Change status and update updated_at for tracking
+        await pool.query("UPDATE market SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [id]);
+
+        res.status(200).json({ success: true, message: 'Item moved to Inactive Products' });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Server error' });
+        console.error('Delete error:', error);
+        res.status(500).json({ success: false, message: 'Server error while deleting item' });
     }
 };
 
@@ -208,7 +218,7 @@ exports.deleteMarketItem = async (req, res) => {
 exports.getMarketItems = async (req, res) => {
     try {
         const { category, user_id, status } = req.query;
-        let query = `SELECT m.*, u.username as owner_username 
+        let query = `SELECT m.*, u.username as owner_username, u.profile_picture 
                      FROM market m 
                      LEFT JOIN users u ON m.user_id = u.id 
                      WHERE 1=1`;
@@ -226,6 +236,15 @@ exports.getMarketItems = async (req, res) => {
             const statusArray = status.split(',');
             params.push(statusArray);
             query += ` AND m.status = ANY($${params.length})`;
+        } else {
+            // Default filter: hide deleted items from public market
+            // Hide items in 'deleted' status that are older than 7 days based on updated_at
+            query += " AND (m.status != 'deleted' OR m.updated_at > CURRENT_TIMESTAMP - INTERVAL '7 days')";
+        }
+
+        if (req.query.order_status) {
+            params.push(req.query.order_status);
+            query += ` AND m.order_status = $${params.length}`;
         }
 
         query += ` ORDER BY m.created_at DESC`;

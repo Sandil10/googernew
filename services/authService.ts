@@ -167,13 +167,15 @@ export const authService = {
             const token = storage.get('token');
             if (!token) throw new Error('No session found');
 
+            const isFormData = data instanceof FormData;
+
             const response = await fetch(`${API_URL}/auth/update-profile`, {
                 method: 'PUT',
                 headers: {
                     'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
+                    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
                 },
-                body: JSON.stringify(data),
+                body: isFormData ? data : JSON.stringify(data),
             });
 
             const result = await safeJson(response);

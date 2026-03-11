@@ -57,7 +57,9 @@ export default function ProfilePage() {
     if (!user) return null;
 
     // Use profile picture from database or show placeholder
-    const profileImage = user.profile_picture || "https://ui-avatars.com/api/?name=" + encodeURIComponent(user.full_name || user.username) + "&size=200&background=random";
+    const profileImage = user.profile_picture
+        ? (user.profile_picture.startsWith('http') || user.profile_picture.startsWith('data:') ? user.profile_picture : `/uploads/${user.profile_picture.split(/[\\/]/).pop()}`)
+        : "https://ui-avatars.com/api/?name=" + encodeURIComponent(user.full_name || user.username) + "&size=200&background=random";
 
     return (
         <div className="max-w-4xl mx-auto pb-10">
