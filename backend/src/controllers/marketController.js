@@ -4,7 +4,7 @@ const pool = require('../config/database');
 exports.createMarketItem = async (req, res) => {
     try {
         const {
-            title, description, price, category,
+            title, description, price, promo_price, category, sub_category, level3_category, manual_category, stock,
             variants_data, shipping_data, payment_data, warranty_data,
             return_data, delivery_data, commission_data, links_data
         } = req.body;
@@ -70,13 +70,15 @@ exports.createMarketItem = async (req, res) => {
 
         const newItem = await pool.query(
             `INSERT INTO market (
-                user_id, owner_user_id, username, title, description, price, promo_price, category, image_url, status,
+                user_id, owner_user_id, username, title, description, price, promo_price, category, 
+                sub_category, level3_category, manual_category, stock, image_url, status,
                 variants, shipping_info, payment_methods, warranty_info, return_policy, delivery_info, commission_info, links_data
             )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'reviewing', $10, $11, $12, $13, $14, $15, $16, $17)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'reviewing', $14, $15, $16, $17, $18, $19, $20, $21)
              RETURNING *`,
             [
-                userId, owner_user_id, username, title, description, numericPrice, numericPromoPrice, category, imageUrl,
+                userId, owner_user_id, username, title, description, numericPrice, numericPromoPrice, category,
+                sub_category, level3_category, manual_category, parseInt(stock) || 0, imageUrl,
                 JSON.stringify(variants), JSON.stringify(shipping_info),
                 JSON.stringify(payment_methods), JSON.stringify(warranty_info),
                 JSON.stringify(return_policy), JSON.stringify(delivery_info),
@@ -104,7 +106,7 @@ exports.updateMarketItem = async (req, res) => {
     try {
         const { id } = req.params;
         const {
-            title, description, price, category,
+            title, description, price, promo_price, category, sub_category, level3_category, manual_category, stock,
             variants_data, shipping_data, payment_data, warranty_data,
             return_data, delivery_data, commission_data, links_data
         } = req.body;
@@ -159,22 +161,28 @@ exports.updateMarketItem = async (req, res) => {
                  price = COALESCE($3, price), 
                  promo_price = $4,
                  category = COALESCE($5, category), 
-                 image_url = COALESCE($6, image_url),
-                 variants = COALESCE($7, variants),
-                 shipping_info = COALESCE($8, shipping_info),
-                 payment_methods = COALESCE($9, payment_methods),
-                 warranty_info = COALESCE($10, warranty_info),
-                 return_policy = COALESCE($11, return_policy),
-                 delivery_info = COALESCE($12, delivery_info),
-                 commission_info = COALESCE($13, commission_info),
-                 links_data = COALESCE($14, links_data),
+                 sub_category = COALESCE($6, sub_category),
+                 level3_category = COALESCE($7, level3_category),
+                 manual_category = COALESCE($8, manual_category),
+                 stock = COALESCE($9, stock),
+                 image_url = COALESCE($10, image_url),
+                 variants = COALESCE($11, variants),
+                 shipping_info = COALESCE($12, shipping_info),
+                 payment_methods = COALESCE($13, payment_methods),
+                 warranty_info = COALESCE($14, warranty_info),
+                 return_policy = COALESCE($15, return_policy),
+                 delivery_info = COALESCE($16, delivery_info),
+                 commission_info = COALESCE($17, commission_info),
+                 links_data = COALESCE($18, links_data),
                  status = 'reviewing',
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $15 RETURNING *`,
+             WHERE id = $19 RETURNING *`,
             [
                 title, description, isNaN(numericPrice) ? item.price : numericPrice,
                 numericPromoPrice,
-                category, imageUrl,
+                category, sub_category, level3_category, manual_category, 
+                isNaN(parseInt(stock)) ? item.stock : parseInt(stock),
+                imageUrl,
                 variants ? JSON.stringify(variants) : null,
                 shipping_info ? JSON.stringify(shipping_info) : null,
                 payment_methods ? JSON.stringify(payment_methods) : null,

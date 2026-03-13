@@ -859,7 +859,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                         <div
                             id="field-images"
                             onClick={handleAddImagesClick}
-                            className={`relative w-full h-[140px] md:h-auto md:aspect-square rounded-[1.2rem] md:rounded-[2.5rem] overflow-hidden transition-all cursor-pointer group shrink-0
+                            className={`relative w-full h-[110px] md:h-auto md:aspect-square rounded-[1.2rem] md:rounded-[2.5rem] overflow-hidden transition-all cursor-pointer group shrink-0
                                 ${previews.length > 0 ? 'border-0 shadow-2xl' : `border-2 border-dashed ${formErrors.includes('images') ? 'border-red-500 bg-red-500/5' : 'border-blue-500/30 hover:border-blue-500/50 bg-blue-500/5'}`}`}
                         >
                             {previews.length > 0 ? (
@@ -1076,7 +1076,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 {/* Order: Description, Product Name, Category, Price */}
 
                                 <div id="field-title">
-                                    <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                    <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                         Product Name <span className="text-red-500">*</span>
                                     </label>
                                     <input
@@ -1091,7 +1091,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 </div>
 
                                 <div>
-                                    <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5">Description (Optional)</label>
+                                    <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1 md:mb-1.5">Description (Optional)</label>
                                     <textarea
                                         name="description"
                                         value={formData.description}
@@ -1104,7 +1104,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                 <div className="flex flex-col md:flex-row gap-4">
                                     <div id="field-category" className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                        <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Category <span className="text-red-500">*</span>
                                         </label>
                                         <div className="flex flex-col gap-2">
@@ -1139,7 +1139,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
 
                                     <div className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                        <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Sub Category (Level 2) <span className="text-red-500">*</span>
                                         </label>
                                         <div className="flex flex-col gap-2">
@@ -1188,7 +1188,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
 
                                     <div className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5">
+                                        <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1 md:mb-1.5">
                                             Sub Category (Level 3)
                                         </label>
                                         <div className="flex flex-col gap-2">
@@ -1241,7 +1241,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                 <div id="field-price" className="flex gap-4">
                                     <div className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                        <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Main Price (R) <span className="text-red-500">*</span>
                                         </label>
                                         <input
@@ -1259,7 +1259,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
 
                                     <div className="flex-1">
-                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
+                                        <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Promo Price (R) <span className="text-red-500">*</span>
                                         </label>
                                         <input
@@ -1396,7 +1396,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 <div className="flex flex-col gap-5">
                                     {uploadMode !== 'single' && (
                                         <div>
-                                            <label className="text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-1.5 block">
+                                            <label className="text-[10px] font-black text-blue-500 uppercase tracking-widest mb-1.5 block">
                                                 Promo Price
                                             </label>
                                             <input
@@ -1442,7 +1442,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             <div key={sIdx} className="flex flex-col gap-2 bg-black/40 border border-white/5 p-4 rounded-2xl animate-in slide-in-from-right-4 duration-300">
                                                 <div className="flex items-center justify-between">
                                                     <div className="flex flex-col">
-                                                        <span className="text-[8px] font-black text-slate-600/50 uppercase mb-0.5">Variant Selection</span>
+                                                        <span className="text-[8px] font-black text-blue-400 uppercase mb-0.5">Variant Selection</span>
                                                         <span className="text-xs font-bold text-white">{sel.value}</span>
                                                     </div>
                                                     <button
@@ -1461,7 +1461,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                                 <div className="grid grid-cols-2 gap-3">
                                                     <div className="flex flex-col gap-1">
-                                                        <span className="text-[8px] font-black text-slate-600/50 uppercase mb-1 block">Specific Details <span className="text-red-500/50">*</span></span>
+                                                        <span className="text-[8px] font-black text-blue-400 uppercase mb-1 block">Specific Details <span className="text-red-500/50">*</span></span>
                                                         <div className="relative">
                                                             <input
                                                                 type="text"
@@ -1495,7 +1495,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                     </div>
 
                                                     <div className="flex flex-col gap-1">
-                                                        <span className="text-[8px] font-black text-slate-600/50 uppercase mb-1 block">In Stock <span className="text-red-500/50">*</span></span>
+                                                        <span className="text-[8px] font-black text-blue-400 uppercase mb-1 block">In Stock <span className="text-red-500/50">*</span></span>
                                                         <div className="relative">
                                                             <input
                                                                 type="number"
@@ -1572,7 +1572,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                             <div id="field-shipping" className="bg-slate-800/20 p-5 rounded-[2rem] border border-white/5">
                                 <div className="flex items-center justify-between mb-4">
-                                    <label className="text-[10px] font-black text-slate-400/80 uppercase tracking-widest">Shipping Rates</label>
+                                    <label className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Shipping Rates</label>
                                     <div
                                         onClick={() => setFormData(prev => ({ ...prev, unifiedShipping: !prev.unifiedShipping }))}
                                         className="flex items-center gap-2 cursor-pointer group"
@@ -1607,7 +1607,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                         <div className="flex gap-2">
                                             <div id="field-unifiedCharge" className="flex-1">
-                                                <label className="text-[9px] text-white uppercase font-black tracking-wider mb-1 block">Global Price (R)</label>
+                                                <label className="text-[9px] text-blue-500 uppercase font-black tracking-wider mb-1 block">Global Price (R)</label>
                                                 <input
                                                     type="number"
                                                     value={formData.unifiedCharge}
@@ -1618,7 +1618,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 />
                                             </div>
                                             <div id="field-unifiedDate" className="flex-[1.5]">
-                                                <label className="text-[9px] text-white uppercase font-black tracking-wider mb-1 block">Global Shipping Date <span className="text-red-500">*</span></label>
+                                                <label className="text-[9px] text-blue-500 uppercase font-black tracking-wider mb-1 block">Global Shipping Date <span className="text-red-500">*</span></label>
                                                 <div
                                                     onClick={() => setOpenPicker({ type: 'form', field: 'unifiedDate', options: DELIVERY_OPTIONS, title: 'Shipping Date', value: formData.unifiedDate })}
                                                     className={`w-full bg-slate-900/50 border rounded-lg px-3 py-2 text-xs text-white flex justify-between items-center cursor-pointer transition-all ${formErrors.includes('unifiedDate') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10'}`}
@@ -1701,7 +1701,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                     <div className="flex gap-2">
                                                         {s.charge !== '0' && (
                                                             <div className="flex-1">
-                                                                <label className="text-[9px] text-white uppercase font-black tracking-wider block mb-1">Fee (R)</label>
+                                                                <label className="text-[9px] text-blue-500 uppercase font-black tracking-wider block mb-1">Fee (R)</label>
                                                                 <input
                                                                     type="number"
                                                                     value={s.charge}
@@ -1716,7 +1716,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             </div>
                                                         )}
                                                         <div className="flex-[1.5]">
-                                                            <label className="text-[9px] text-white uppercase font-black tracking-wider block mb-1">Shipping Date <span className="text-red-500">*</span></label>
+                                                            <label className="text-[9px] text-blue-500 uppercase font-black tracking-wider block mb-1">Shipping Date <span className="text-red-500">*</span></label>
                                                             <div
                                                                 onClick={() => setOpenPicker({ type: 'shipping_date', field: i.toString(), options: DELIVERY_OPTIONS, title: `Shipping Date: ${s.country}`, value: s.date })}
                                                                 className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2 text-[10px] text-white flex justify-between items-center cursor-pointer hover:bg-slate-700/50 transition-all ${formErrors.includes(`shipping_date_${i}`) ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10'}`}
@@ -1736,7 +1736,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             <div className="flex flex-col gap-4">
                                 <div className="flex gap-4">
                                     <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
-                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-2">Warranty</label>
+                                        <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-2">Warranty</label>
                                         <div
                                             onClick={() => setOpenPicker({ type: 'form', field: 'warranty', options: ["No Warranty", "1 Month", "3 Months", "6 Months", "1 Year", "2 Years", "3 Years", "5 Years", "10 Years", "Lifetime Warranty", "Custom"], title: 'Warranty', value: formData.warranty })}
                                             className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer"
@@ -1755,7 +1755,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         )}
                                     </div>
                                     <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
-                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-2">Return Days</label>
+                                        <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-2">Return Days</label>
                                         <div className="flex flex-col gap-3">
                                             <div
                                                 onClick={() => setOpenPicker({ type: 'form', field: 'returnPolicy', options: RETURN_OPTIONS, title: 'Return Days', value: formData.returnPolicy })}
@@ -1771,7 +1771,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             </div>
 
                             <div className="bg-slate-800/50 p-4 rounded-[2rem] border border-white/5">
-                                <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-3">Payment Methods</label>
+                                <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-3">Payment Methods</label>
                                 <div className="grid grid-cols-1 gap-2">
                                     {PAYMENT_METHODS.map(method => {
                                         const isSelected = formData.paymentMethods.includes(method.id);
@@ -1803,11 +1803,11 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             </div>
 
                             <div className="bg-slate-800/50 p-4 rounded-2xl border border-white/5">
-                                <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest mb-2">Resell Commission</label>
+                                <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest mb-2">Resell Commission</label>
                                 <div className="flex flex-col gap-2">
                                     <div className="flex gap-2">
                                         <div className="flex-[0.6]">
-                                            <label className="text-[7px] text-slate-400/80 uppercase block mb-1">%</label>
+                                            <label className="text-[7px] text-blue-400 uppercase block mb-1">%</label>
                                             <input
                                                 type="number"
                                                 name="resellCommissionPercentage"
@@ -1818,7 +1818,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             />
                                         </div>
                                         <div className="flex-1">
-                                            <label className="text-[7px] text-slate-400/80 uppercase block mb-1">Fixed Amount (R)</label>
+                                            <label className="text-[7px] text-blue-400 uppercase block mb-1">Fixed Amount (R)</label>
                                             <input
                                                 type="number"
                                                 name="resellCommission"
@@ -1835,7 +1835,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             <div className="flex gap-4">
                                 <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
                                     <div className="flex items-center justify-between mb-2">
-                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest">Googer Comm. (%) *</label>
+                                        <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest">Googer Comm. (%) *</label>
                                         {(parseFloat(formData.googerCommission) > 0) && (
                                             <span className="text-[10px] font-bold text-blue-400">
                                                 -R {((parseFloat(formData.promoPrice) || 0) * parseFloat(formData.googerCommission) / 100).toFixed(2)}
@@ -1852,14 +1852,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         placeholder="0"
                                     />
                                     {parseFloat(formData.googerCommission) < 5 && (
-                                        <p className="text-[7px] text-red-500 font-bold uppercase mt-2 leading-tight animate-pulse">
-                                            Warning: Commissions below 5% may result in rejection during review.
+                                        <p className="text-[7px] text-blue-500 font-bold uppercase mt-2 leading-tight animate-pulse">
+                                            Recommended: Set the commission rate to 5% or higher.
                                         </p>
                                     )}
                                 </div>
                                 <div className="flex-1 bg-slate-800/50 p-4 rounded-2xl border border-white/5">
                                     <div className="flex items-center justify-between mb-2">
-                                        <label className="block text-[10px] font-black text-slate-400/80 uppercase tracking-widest">Prod. Discount (%) *</label>
+                                        <label className="block text-[10px] font-black text-blue-500 uppercase tracking-widest">Prod. Discount (%) *</label>
                                         {(parseFloat(formData.productDiscount) > 0) && (
                                             <span className="text-[10px] font-bold text-blue-400">
                                                 -R {((parseFloat(formData.promoPrice) || 0) * parseFloat(formData.productDiscount) / 100).toFixed(2)}

@@ -57,9 +57,13 @@ export default function SecurityVerificationModal({
                                 <IonIcon name="shield-checkmark-outline" className="text-xl" />
                             </div>
                             <h3 className="text-sm font-bold text-white tracking-tight uppercase">
-                                {transaction?.discount && Number(transaction.discount) > 0
-                                    ? "Send coins & Discount request"
-                                    : "Send Coins"}
+                                {transaction?.type === "Request"
+                                    ? (transaction?.discount && Number(transaction.discount) > 0 
+                                        ? "Request coins & Discount" 
+                                        : "Request Coins")
+                                    : (transaction?.discount && Number(transaction.discount) > 0
+                                        ? "Send coins & Discount request"
+                                        : "Send Coins")}
                             </h3>
                         </div>
                         <button
@@ -73,7 +77,9 @@ export default function SecurityVerificationModal({
                     {/* Multi-line Transaction Details */}
                     <div className="space-y-3 mb-8 bg-[#0d1421] p-5 rounded-2xl border border-gray-800/50">
                         <div className="flex items-center justify-between mb-4 border-b border-gray-800/50 pb-4">
-                            <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Send Coins</span>
+                            <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">
+                                {transaction?.type === "Request" ? "Request Coins" : "Send Coins"}
+                            </span>
                             <div className="flex items-center gap-2">
                                 <span className="text-sm font-bold text-gray-400 uppercase">-</span>
                                 <span className="text-lg font-black text-white">{transaction?.amount} Coins</span>
@@ -89,7 +95,9 @@ export default function SecurityVerificationModal({
                             </div>
                         )}
                         <div className="flex items-center justify-between">
-                            <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Send to</span>
+                            <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">
+                                {transaction?.type === "Request" ? "Request from" : "Send to"}
+                            </span>
                             <div className="flex items-center gap-2">
                                 <span className="text-sm font-bold text-gray-400 uppercase">-</span>
                                 <div className="flex items-center gap-2 bg-[#162033] px-3 py-1.5 rounded-lg border border-gray-800/50">

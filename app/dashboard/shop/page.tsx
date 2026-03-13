@@ -28,6 +28,7 @@ export default function ShopPage() {
     const [mounted, setMounted] = useState(false);
     const [showShareModal, setShowShareModal] = useState(false);
     const [shareProduct, setShareProduct] = useState<any>(null);
+    const [activePreviewIndex, setActivePreviewIndex] = useState(0);
 
     const categories = [
         "Gamings", "Headphones", "Parfums", "Fruits", "Mobiles", "Laptops", "Accessories", "Shoes", "Clothing", "Electronics", "Fashion", "Other"
@@ -75,7 +76,7 @@ export default function ShopPage() {
                         // User says 'All Orders' shows admin-approved products. 
                         // For demo, I'll fetch orders. If 'all', I'll show all including pending.
                         let statusFilter = myListingsSubTab === 'all' ? '' : myListingsSubTab;
-                        if (myListingsSubTab === 'completed') statusFilter = 'received';
+                        if (myListingsSubTab === 'delivered') statusFilter = 'delivered,received';
                         data = await orderService.getSellerOrders({ status: statusFilter });
                     } else if (myListingsTab === "active") {
                         data = await marketService.getItems({ user_id: currentUser.id, status: 'approved' });
@@ -88,7 +89,7 @@ export default function ShopPage() {
             } else if (activeTab === "orders") {
                 if (currentUser?.id) {
                     let statusFilter = myOrdersTab === 'all' ? '' : myOrdersTab;
-                    if (myOrdersTab === 'completed') statusFilter = 'received';
+                    if (myOrdersTab === 'delivered') statusFilter = 'delivered,received';
                     data = await orderService.getBuyerOrders({ status: statusFilter });
                 }
             }
@@ -157,6 +158,7 @@ export default function ShopPage() {
             await orderService.createOrder(itemId);
             alert("Order placed successfully! Check 'My Orders' for status.");
             setSelectedProduct(null);
+            setActivePreviewIndex(0);
             setActiveTab("orders");
         } catch (e: any) {
             console.error(e);
@@ -298,7 +300,6 @@ export default function ShopPage() {
                                 { id: 'processing', label: 'Processing', icon: 'sync' },
                                 { id: 'shipped', label: 'Shipped', icon: 'airplane' },
                                 { id: 'delivered', label: 'Delivered', icon: 'cube' },
-                                { id: 'completed', label: 'Completed', icon: 'checkmark-done-circle' },
                                 { id: 'returns', label: 'Returns', icon: 'refresh-circle' }
                             ].map((sub) => (
                                 <button
@@ -330,7 +331,6 @@ export default function ShopPage() {
                             { id: 'processing', label: 'Processing', icon: 'sync' },
                             { id: 'shipped', label: 'Shipped', icon: 'airplane' },
                             { id: 'delivered', label: 'Delivered', icon: 'cube' },
-                            { id: 'completed', label: 'Completed', icon: 'checkmark-done-circle' },
                             { id: 'returns', label: 'Returns', icon: 'refresh-circle' }
                         ].map((tab) => (
                             <button
@@ -397,31 +397,31 @@ export default function ShopPage() {
                     {products.map((product) => (
                         <div
                             key={product.id}
-                            className="group cursor-pointer bg-[#1a1a1a] rounded-[2.5rem] pb-8 border border-white/5 hover:border-white/20 transition-all hover:shadow-2xl relative flex flex-col"
+                            className="group cursor-pointer bg-[#1a1a1a] rounded-[1.5rem] md:rounded-[2.5rem] pb-4 md:pb-8 border border-white/5 hover:border-white/20 transition-all hover:shadow-2xl relative flex flex-col min-w-0"
                             onClick={() => setSelectedProduct(product)}
                         >
                             {/* Profile Header with Subscribe */}
-                            <div className="flex items-center justify-between gap-2 p-4 px-5">
-                                <div className="flex items-center gap-2">
-                                    <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center text-[10px] text-white overflow-hidden border border-white/10 shadow-lg relative">
+                            <div className="flex items-center justify-between gap-1.5 p-3 md:p-4 md:px-5">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                    <div className="w-6 h-6 md:w-8 md:h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center text-[8px] md:text-[10px] text-white overflow-hidden border border-white/10 shadow-lg relative flex-shrink-0">
                                         {product.profile_picture ? (
                                             <Image src={product.profile_picture} alt="Profile" fill className="object-cover" />
                                         ) : (
                                             <IonIcon name="person" className="text-white" />
                                         )}
                                     </div>
-                                    <div className="flex flex-col">
-                                        <span className="text-[10px] text-white font-black uppercase tracking-tight truncate leading-none">
+                                    <div className="flex flex-col min-w-0">
+                                        <span className="text-[8px] md:text-[10px] text-white font-black uppercase tracking-tight truncate leading-none">
                                             {product.username || product.owner_username || 'Anonymous'}
                                         </span>
-                                        <span className="text-[7px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Seller</span>
+                                        <span className="text-[6px] md:text-[7px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Seller</span>
                                     </div>
                                 </div>
                                 <button
                                     onClick={(e) => { e.stopPropagation(); alert('Subscribed!'); }}
-                                    className="px-3 py-1.5 bg-white text-black text-[9px] font-black uppercase rounded-full shadow-lg active:scale-95 transition-all hover:bg-slate-200"
+                                    className="px-2 md:px-3 py-1 md:py-1.5 bg-white text-black text-[7px] md:text-[9px] font-black uppercase rounded-full shadow-lg active:scale-95 transition-all hover:bg-slate-200 flex-shrink-0"
                                 >
-                                    Subscribe
+                                    Sub
                                 </button>
                             </div>
 
@@ -477,33 +477,33 @@ export default function ShopPage() {
                                     </div>
                                 </div>
 
-                                <div className="flex items-center justify-between border-t border-white/5 pt-4">
-                                    <div className="flex items-center gap-5 w-full">
+                                <div className="flex items-center justify-between border-t border-white/5 pt-3 md:pt-4">
+                                    <div className="flex items-center gap-2 md:gap-5 w-full">
                                         {/* Icons Row */}
-                                        <div className="flex items-center gap-5">
+                                        <div className="flex items-center gap-2.5 md:gap-5">
                                             <button
                                                 onClick={(e) => { e.stopPropagation(); /* handleLike */ }}
                                                 className="text-white/40 hover:text-red-500 transition-all active:scale-75"
                                             >
-                                                <IonIcon name="heart-outline" className="text-xl" />
+                                                <IonIcon name="heart-outline" className="text-lg md:text-xl" />
                                             </button>
                                             <button
                                                 onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
                                                 className="text-white/40 hover:text-blue-500 transition-all active:scale-75"
                                             >
-                                                <IonIcon name="cart-outline" className="text-xl" />
+                                                <IonIcon name="cart-outline" className="text-lg md:text-xl" />
                                             </button>
                                             <button
                                                 onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
                                                 className="text-white/40 hover:text-white transition-all active:scale-75"
                                             >
-                                                <IonIcon name="chatbubble-outline" className="text-xl" />
+                                                <IonIcon name="chatbubble-outline" className="text-lg md:text-xl" />
                                             </button>
                                             <button
                                                 onClick={(e) => { e.stopPropagation(); /* handleShare */ }}
                                                 className="text-white/40 hover:text-green-500 transition-all active:scale-75"
                                             >
-                                                <IonIcon name="share-social-outline" className="text-xl" />
+                                                <IonIcon name="share-social-outline" className="text-lg md:text-xl" />
                                             </button>
                                         </div>
 
@@ -542,7 +542,7 @@ export default function ShopPage() {
                                                     ) : product.status === 'delivered' ? (
                                                         <span className="text-[8px] text-blue-400 font-black uppercase">Wait Buyer</span>
                                                     ) : product.status === 'received' ? (
-                                                        <span className="text-[8px] text-green-500 font-black uppercase">Done</span>
+                                                        <span className="text-[8px] text-green-500 font-black uppercase">Orders Completed</span>
                                                     ) : null}
                                                 </div>
                                             ) : activeTab === 'orders' ? (
@@ -555,7 +555,7 @@ export default function ShopPage() {
                                                             Received?
                                                         </button>
                                                     ) : product.status === 'received' ? (
-                                                        <span className="text-[8px] text-green-500 font-black uppercase">Received</span>
+                                                        <span className="text-[8px] text-green-500 font-black uppercase">Orders Completed</span>
                                                     ) : null}
                                                 </div>
                                             ) : null}
@@ -584,186 +584,250 @@ export default function ShopPage() {
 
 
             {/* Product Details Modal (Assuming existing code is mostly fine used selectedProduct state) */}
-            {
-                selectedProduct && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300" onClick={() => setSelectedProduct(null)}>
-                        <div
-                            className="bg-[#121212] border border-white/10 rounded-[2.5rem] w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col md:flex-row max-h-[85vh] md:max-h-[90vh] animate-in zoom-in-95 duration-300"
-                            onClick={(e) => e.stopPropagation()}
-                        >
-                            {/* Image Section */}
-                            <div className="w-full md:w-1/2 bg-black relative h-64 md:h-auto shrink-0">
-                                <Image
-                                    src={(selectedProduct.image_url && (selectedProduct.image_url.includes('uploads') || selectedProduct.image_url.includes('\\')))
-                                        ? `/uploads/${selectedProduct.image_url.split(/[\\/]/).pop()}`
-                                        : (selectedProduct.image_url || "https://picsum.photos/400/400")}
-                                    alt={selectedProduct.title}
-                                    fill
-                                    className="object-cover"
-                                />
+            {selectedProduct && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-2 md:p-4 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300" onClick={() => { setSelectedProduct(null); setActivePreviewIndex(0); }}>
+                    <div
+                        className="bg-[#121212] border border-white/10 rounded-[1.5rem] md:rounded-[2.5rem] w-full max-w-5xl shadow-2xl overflow-hidden flex flex-col md:flex-row h-full md:h-auto max-h-[95vh] md:max-h-[90vh] animate-in zoom-in-95 duration-300"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* Left Side: Image Gallery */}
+                        <div className="w-full md:w-[45%] bg-[#0a0a0a] relative flex flex-col shrink-0 border-b md:border-b-0 md:border-r border-white/5">
+                            {/* Main Preview */}
+                            <div className="relative flex-1 min-h-[140px] md:min-h-[450px]">
+                                {(() => {
+                                    const allImages = [
+                                        selectedProduct.image_url,
+                                        ...(Array.isArray(selectedProduct.variants) ? selectedProduct.variants.map((v: any) => v.url || v.image_url) : [])
+                                    ].filter(Boolean);
+                                    
+                                    // Remove duplicates
+                                    const uniqueImages = Array.from(new Set(allImages));
+                                    const currentImg = uniqueImages[activePreviewIndex] || uniqueImages[0];
+
+                                    return (
+                                        <>
+                                            <Image
+                                                src={(currentImg && (currentImg.includes('uploads') || currentImg.includes('\\')))
+                                                    ? `/uploads/${currentImg.split(/[\\/]/).pop()}`
+                                                    : (currentImg || "https://picsum.photos/400/400")}
+                                                alt={selectedProduct.title}
+                                                fill
+                                                className="object-cover transition-all duration-500"
+                                            />
+                                            
+                                            {uniqueImages.length > 1 && (
+                                                <>
+                                                    <button 
+                                                        onClick={() => setActivePreviewIndex(prev => (prev === 0 ? uniqueImages.length - 1 : prev - 1))}
+                                                        className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-white flex items-center justify-center hover:bg-white hover:text-black transition-all"
+                                                    >
+                                                        <IonIcon name="chevron-back" />
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => setActivePreviewIndex(prev => (prev === uniqueImages.length - 1 ? 0 : prev + 1))}
+                                                        className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-white flex items-center justify-center hover:bg-white hover:text-black transition-all"
+                                                    >
+                                                        <IonIcon name="chevron-forward" />
+                                                    </button>
+                                                </>
+                                            )}
+                                        </>
+                                    );
+                                })()}
+
+                                {/* Close button mobile */}
                                 <button
-                                    onClick={() => setSelectedProduct(null)}
-                                    className="absolute top-4 left-4 md:hidden w-8 h-8 rounded-full bg-black/50 backdrop-blur-sm text-white flex items-center justify-center hover:bg-black/70 transition-colors"
+                                    onClick={() => { setSelectedProduct(null); setActivePreviewIndex(0); }}
+                                    className="absolute top-4 right-4 md:hidden w-10 h-10 rounded-full bg-black/50 backdrop-blur-md text-white flex items-center justify-center"
                                 >
-                                    <IonIcon name="arrow-back" className="text-lg" />
+                                    <IonIcon name="close" className="text-xl" />
                                 </button>
                             </div>
-                            {/* Details */}
-                            <div className="w-full md:w-1/2 p-5 md:p-10 flex flex-col overflow-y-auto custom-scrollbar bg-black">
-                                <h2 className="text-2xl font-bold text-white mb-2">{selectedProduct.title}</h2>
-                                <div className="flex flex-wrap gap-2 mb-6">
-                                    <span className="px-3 py-1 bg-white/5 text-gray-300 text-[10px] font-black rounded-full border border-white/10 uppercase tracking-widest">{selectedProduct.category}</span>
-                                    <span className="px-3 py-1 bg-white/10 text-white text-[10px] font-black rounded-full border border-white/20 uppercase tracking-widest">{selectedProduct.status}</span>
+
+                            {/* Thumbnails */}
+                            <div className="p-3 md:p-4 bg-black/40 backdrop-blur-md border-t border-white/5 overflow-x-auto no-scrollbar flex gap-2">
+                                {(() => {
+                                    const allImages = [
+                                        selectedProduct.image_url,
+                                        ...(Array.isArray(selectedProduct.variants) ? selectedProduct.variants.map((v: any) => v.url || v.image_url) : [])
+                                    ].filter(Boolean);
+                                    const uniqueImages = Array.from(new Set(allImages));
+
+                                    return uniqueImages.map((img: any, idx) => (
+                                        <div 
+                                            key={idx}
+                                            onClick={() => setActivePreviewIndex(idx)}
+                                            className={`relative w-12 h-12 md:w-16 md:h-16 rounded-lg md:rounded-xl overflow-hidden cursor-pointer border-2 transition-all shrink-0 ${activePreviewIndex === idx ? 'border-blue-500 scale-105 shadow-lg' : 'border-transparent opacity-50 hover:opacity-100'}`}
+                                        >
+                                            <Image
+                                                src={(img && (img.includes('uploads') || img.includes('\\')))
+                                                    ? `/uploads/${img.split(/[\\/]/).pop()}`
+                                                    : (img || "https://picsum.photos/400/400")}
+                                                alt="Thumb"
+                                                fill
+                                                className="object-cover"
+                                            />
+                                        </div>
+                                    ));
+                                })()}
+                            </div>
+                        </div>
+
+                        {/* Right Side: Details */}
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                            {/* Header */}
+                            <div className="p-6 md:p-8 flex items-center justify-between border-b border-white/5 bg-white/[0.02]">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-full overflow-hidden border border-blue-500/30 bg-blue-500/10 flex items-center justify-center">
+                                        {selectedProduct.profile_picture ? (
+                                            <Image src={selectedProduct.profile_picture} alt="Seller" width={40} height={40} className="object-cover" />
+                                        ) : (
+                                            <IonIcon name="person" className="text-blue-400" />
+                                        )}
+                                    </div>
+                                    <div>
+                                        <h4 className="text-[10px] font-black uppercase tracking-widest text-blue-400">Seller Profile</h4>
+                                        <p className="text-sm font-bold text-white">{selectedProduct.owner_username || selectedProduct.username || 'Anonymous Seller'}</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border ${
+                                        selectedProduct.status === 'reviewing' ? 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' :
+                                        selectedProduct.status === 'rejected' ? 'bg-red-500/10 text-red-500 border-red-500/20' :
+                                        'bg-green-500/10 text-green-500 border-green-500/20'
+                                    }`}>
+                                        {selectedProduct.status}
+                                    </span>
+                                    <button
+                                        onClick={() => { setSelectedProduct(null); setActivePreviewIndex(0); }}
+                                        className="hidden md:flex w-10 h-10 rounded-full hover:bg-white/5 text-gray-400 hover:text-white items-center justify-center transition-all"
+                                    >
+                                        <IonIcon name="close" className="text-2xl" />
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Scrollable Content */}
+                            <div className="flex-1 overflow-y-auto p-6 md:p-8 custom-scrollbar space-y-8">
+                                <div>
+                                    <h2 className="text-2xl md:text-3xl font-black text-white mb-2 tracking-tight">{selectedProduct.title}</h2>
+                                    <div className="flex flex-wrap gap-2">
+                                        <span className="px-2 py-0.5 bg-blue-500/10 text-blue-400 text-[9px] font-black rounded border border-blue-500/20 uppercase tracking-widest">
+                                            {selectedProduct.category}
+                                        </span>
+                                        {selectedProduct.sub_category && (
+                                            <span className="px-2 py-0.5 bg-purple-500/10 text-purple-400 text-[9px] font-black rounded border border-purple-500/20 uppercase tracking-widest">
+                                                {selectedProduct.sub_category}
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
 
-                                <p className="text-gray-400 text-xs mb-8 leading-relaxed">{selectedProduct.description}</p>
-
-                                {/* Logistics & Payment Details */}
-                                <div className="space-y-6 mb-8">
-                                    <div className="grid grid-cols-2 gap-4">
-
-                                        <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
-                                            <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Return Policy</label>
-                                            <p className="text-xs font-bold text-white">{selectedProduct.return_policy?.text || 'Standard Policy'}</p>
-                                        </div>
-                                    </div>
-
-                                    <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
-                                        <label className="text-[10px] font-black text-slate-500 uppercase block mb-2">Available in Countries</label>
-                                        <div className="flex flex-wrap gap-2">
-                                            {selectedProduct.shipping_info?.rates?.length > 0 ? (
-                                                selectedProduct.shipping_info.rates.map((r: any, i: number) => (
-                                                    <span key={i} className="px-2 py-1 bg-slate-800 rounded text-[10px] text-slate-300 font-bold border border-white/5">
-                                                        {r.country} (R{r.charge})
+                                {/* Price Section */}
+                                <div className="p-6 bg-white/[0.03] rounded-[2rem] border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-1">Pricing Details</p>
+                                        <div className="flex items-baseline gap-3">
+                                            {selectedProduct.promo_price ? (
+                                                <>
+                                                    <span className="text-3xl font-black text-white tracking-tighter">R {selectedProduct.promo_price}</span>
+                                                    <span className="text-sm font-bold text-slate-500 line-through opacity-60">R {selectedProduct.price}</span>
+                                                    <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-[8px] font-black rounded-full border border-green-500/20">
+                                                        {Math.round((1 - selectedProduct.promo_price / selectedProduct.price) * 100)}% OFF
                                                     </span>
-                                                ))
+                                                </>
                                             ) : (
-                                                <span className="text-xs text-slate-500 font-bold italic">No specific shipping rates set</span>
+                                                <span className="text-3xl font-black text-white tracking-tighter">R {selectedProduct.price}</span>
                                             )}
                                         </div>
                                     </div>
-
-                                    <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
-                                        <label className="text-[10px] font-black text-slate-500 uppercase block mb-2">Accepted Payments</label>
-                                        <div className="flex flex-wrap gap-2">
-                                            {selectedProduct.payment_methods?.length > 0 ? (
-                                                selectedProduct.payment_methods.map((p: string, i: number) => (
-                                                    <span key={i} className="px-3 py-1 bg-white/5 text-white text-[10px] font-black rounded-lg border border-white/10 uppercase">
-                                                        {p.toUpperCase()}
-                                                    </span>
-                                                ))
-                                            ) : (
-                                                <span className="text-xs text-slate-500 font-bold italic">Contact seller for payment</span>
-                                            )}
-                                        </div>
+                                    <div className="text-right">
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-1">Stock Availability</p>
+                                        <span className={`text-xl font-black ${parseInt(selectedProduct.stock) > 0 ? 'text-blue-400' : 'text-red-500'}`}>
+                                            {selectedProduct.stock || 0} Units
+                                        </span>
                                     </div>
                                 </div>
 
-                                <div className="flex items-center gap-3 mb-6">
-                                    {activeTab === 'market' && currentUser?.id !== selectedProduct.user_id ? (
-                                        <button
-                                            onClick={() => handleBuyItem(selectedProduct.id)}
-                                            className="flex-1 py-4 bg-white hover:bg-white/90 text-black rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-lg active:scale-95"
-                                        >
-                                            <IonIcon name="bag-handle-outline" className="text-lg" />
-                                            Buy Now (R{selectedProduct.price})
-                                        </button>
-                                    ) : (
-                                        <button
-                                            onClick={() => {
-                                                setShareProduct(selectedProduct);
-                                                setShowShareModal(true);
-                                            }}
-                                            className="flex-1 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 active:scale-95"
-                                        >
-                                            <IonIcon name="share-social-outline" className="text-lg" />
-                                            Share This Listing
-                                        </button>
-                                    )}
+                                {/* Description */}
+                                <div>
+                                    <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400 mb-3">Product Description</h4>
+                                    <p className="text-sm text-slate-300 leading-relaxed bg-white/[0.02] p-6 rounded-[2rem] border border-white/5">
+                                        {selectedProduct.description || "No description provided for this listing."}
+                                    </p>
                                 </div>
 
-                                <div className="mt-auto">
-                                    {(selectedProduct.status === 'reviewing' || selectedProduct.status === 'rejected' || (activeTab === 'my-products' && myListingsTab !== 'all')) && currentUser?.id === selectedProduct.user_id && (
-                                        <div className="grid grid-cols-2 gap-4 mt-4">
-                                            <button onClick={() => { handleEditProduct(selectedProduct); setSelectedProduct(null); }} className="py-3 bg-white/5 hover:bg-white/10 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest border border-white/10 transition-all">Edit</button>
-                                            <button onClick={() => handleDeleteProduct(selectedProduct.id)} className="py-3 bg-red-600/10 hover:bg-red-600/20 text-red-500 rounded-2xl font-black text-[10px] uppercase tracking-widest border border-red-500/20 transition-all">Delete</button>
+                                {/* Detailed Specs Grid */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="p-5 bg-white/[0.03] rounded-[1.5rem] border border-white/5">
+                                        <div className="flex items-center gap-2 mb-3">
+                                            <IonIcon name="refresh-circle-outline" className="text-blue-400 text-lg" />
+                                            <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Return & Warranty</h4>
                                         </div>
-                                    )}
-                                    {activeTab === 'orders' && selectedProduct.status === 'delivered' && (
-                                        <div className="mt-4">
-                                            <button
-                                                onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'received'); setSelectedProduct(null); }}
-                                                className="w-full py-4 bg-green-600 hover:bg-green-500 text-white rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-lg shadow-green-600/20 active:scale-95"
-                                            >
-                                                <IonIcon name="checkmark-done" className="text-lg" />
-                                                Mark as Received
-                                            </button>
+                                        <div className="space-y-1">
+                                            <p className="text-xs font-bold text-white">Policy: {selectedProduct.return_policy?.text || 'Standard'}</p>
+                                            {selectedProduct.return_policy?.date && <p className="text-[10px] text-slate-500">Duration: {selectedProduct.return_policy.date}</p>}
                                         </div>
-                                    )}
-                                    {activeTab === 'orders' && selectedProduct.status === 'received' && (
-                                        <div className="mt-4 py-4 bg-green-600/10 text-green-500 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 border border-green-500/20">
-                                            <IonIcon name="checkmark-circle" className="text-xl" />
-                                            Order Completed & Received
+                                    </div>
+
+                                    <div className="p-5 bg-white/[0.03] rounded-[1.5rem] border border-white/5">
+                                        <div className="flex items-center gap-2 mb-3">
+                                            <IonIcon name="card-outline" className="text-blue-400 text-lg" />
+                                            <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Payment Options</h4>
                                         </div>
-                                    )}
-                                    {activeTab === 'my-products' && myListingsTab === 'all' && (
-                                        <div className="grid grid-cols-2 gap-4 mt-4">
-                                            {selectedProduct.status === 'processing' ? (
-                                                <>
-                                                    <button
-                                                        onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'shipped'); setSelectedProduct(null); }}
-                                                        className="py-3 bg-blue-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-lg active:scale-95"
-                                                    >
-                                                        Pass to Shipping
-                                                    </button>
-                                                    <button
-                                                        onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'pending'); setSelectedProduct(null); }}
-                                                        className="py-3 bg-red-600/10 text-red-500 rounded-2xl font-black text-[10px] uppercase tracking-widest border border-red-500/20 active:scale-95"
-                                                    >
-                                                        Cancel / Revert
-                                                    </button>
-                                                </>
-                                            ) : (selectedProduct.status === 'approved' || selectedProduct.status === 'all' || selectedProduct.status === 'pending') ? (
-                                                <>
-                                                    <button
-                                                        onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'processing'); setSelectedProduct(null); }}
-                                                        className="py-3 bg-white text-black rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-lg active:scale-95"
-                                                    >
-                                                        Approval / Pass to Proc.
-                                                    </button>
-                                                    <button
-                                                        onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'cancelled'); setSelectedProduct(null); }}
-                                                        className="py-3 bg-red-600/10 text-red-500 rounded-2xl font-black text-[10px] uppercase tracking-widest border border-red-500/20 transition-all active:scale-95"
-                                                    >
-                                                        Cancel
-                                                    </button>
-                                                </>
-                                            ) : selectedProduct.status === 'shipped' ? (
-                                                <button
-                                                    onClick={() => { handleUpdateOrderStatus(selectedProduct.id, 'delivered'); setSelectedProduct(null); }}
-                                                    className="py-3 bg-green-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-lg active:scale-95 w-full col-span-2"
-                                                >
-                                                    Pass to Delivered
-                                                </button>
-                                            ) : selectedProduct.status === 'delivered' ? (
-                                                <div className="w-full col-span-2 py-4 bg-blue-600/10 text-blue-400 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 border border-blue-400/20">
-                                                    <IonIcon name="time-outline" className="text-lg" />
-                                                    Waiting for Buyer Confirmation
-                                                </div>
-                                            ) : selectedProduct.status === 'received' ? (
-                                                <div className="w-full col-span-2 py-4 bg-green-600/10 text-green-500 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 border border-green-500/20">
-                                                    <IonIcon name="checkmark-circle" className="text-lg" />
-                                                    Transaction Completed (Received)
-                                                </div>
-                                            ) : null}
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {selectedProduct.payment_methods?.length > 0 ? selectedProduct.payment_methods.map((p: any) => (
+                                                <span key={p} className="px-2 py-0.5 bg-white/5 rounded text-[8px] font-black uppercase text-white border border-white/10">{p}</span>
+                                            )) : <span className="text-[10px] text-slate-500 italic">No methods specified</span>}
                                         </div>
-                                    )}
+                                    </div>
                                 </div>
+                            </div>
+
+                            {/* Footer Actions */}
+                            <div className="p-4 md:p-8 border-t border-white/5 bg-white/[0.02] flex items-center gap-3">
+                                {activeTab === 'market' && currentUser?.id !== selectedProduct.user_id ? (
+                                    <button
+                                        onClick={() => handleBuyItem(selectedProduct.id)}
+                                        className="flex-1 py-3 md:py-4 bg-white text-black rounded-xl md:rounded-2xl font-black text-[10px] md:text-[12px] uppercase tracking-[0.1em] md:tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-xl hover:scale-[1.02] active:scale-95"
+                                    >
+                                        <IonIcon name="bag-handle" className="text-lg md:text-xl" />
+                                        Buy Now
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={() => {
+                                            setShareProduct(selectedProduct);
+                                            setShowShareModal(true);
+                                        }}
+                                        className="flex-1 py-3 md:py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-[12px] uppercase tracking-[0.1em] md:tracking-[0.2em] transition-all flex items-center justify-center gap-2"
+                                    >
+                                        <IonIcon name="share-social" className="text-lg md:text-xl" />
+                                        Share
+                                    </button>
+                                )}
+                                
+                                {currentUser?.id === selectedProduct.user_id && (
+                                    <div className="flex gap-2">
+                                        <button 
+                                            onClick={() => { handleEditProduct(selectedProduct); setSelectedProduct(null); }}
+                                            className="w-10 h-10 md:w-14 md:h-14 rounded-xl md:rounded-2xl bg-white/5 hover:bg-white/10 text-white border border-white/10 flex items-center justify-center transition-all"
+                                        >
+                                            <IonIcon name="create-outline" className="text-lg md:text-xl" />
+                                        </button>
+                                        <button 
+                                            onClick={() => handleDeleteProduct(selectedProduct.id)}
+                                            className="w-10 h-10 md:w-14 md:h-14 rounded-xl md:rounded-2xl bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 flex items-center justify-center transition-all"
+                                        >
+                                            <IonIcon name="trash-outline" className="text-lg md:text-xl" />
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>
-                )
-            }
+                </div>
+            )}
             {/* Share Modal */}
             <ShareModal
                 isOpen={showShareModal}
