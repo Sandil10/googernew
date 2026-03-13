@@ -23,7 +23,7 @@ export default function ReceiptModal({ isOpen, onClose, transaction, currentUser
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in duration-300">
             <div className="absolute inset-0" onClick={onClose} />
 
-            <div className="relative bg-[#1a2b4b] border border-white/10 rounded-[3rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300">
+            <div className="relative bg-[#1a2b4b] border border-white/10 rounded-[1.5rem] md:rounded-[3rem] w-full max-w-[340px] md:max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300">
                 {/* Header with Logo */}
                 <div className="p-4 flex flex-col items-center border-b border-white/10 bg-white/5">
                     <div className="w-32 h-10 relative">
@@ -31,13 +31,13 @@ export default function ReceiptModal({ isOpen, onClose, transaction, currentUser
                     </div>
                 </div>
 
-                <div className="p-6 pb-28">
-                    <div className="text-center mb-6">
-                        <div className="w-12 h-12 bg-blue-500/20 border border-blue-500/50 rounded-full flex items-center justify-center mx-auto mb-3">
-                            <IonIcon name="receipt" className="text-2xl text-blue-400" />
+                <div className="p-4 md:p-6 pb-24 md:pb-28">
+                    <div className="text-center mb-4 md:mb-6">
+                        <div className="w-10 h-10 md:w-12 md:h-12 bg-blue-500/20 border border-blue-500/50 rounded-full flex items-center justify-center mx-auto mb-2 md:mb-3">
+                            <IonIcon name="receipt" className="text-xl md:text-2xl text-blue-400" />
                         </div>
-                        <h3 className="text-lg font-black text-white italic uppercase tracking-[0.2em] mb-1">Transaction Receipt</h3>
-                        <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest leading-relaxed">Verified and Confirmed by system</p>
+                        <h3 className="text-base md:text-lg font-black text-white italic uppercase tracking-[0.2em] mb-1">Transaction Receipt</h3>
+                        <p className="text-[8px] md:text-[9px] text-slate-500 font-bold uppercase tracking-widest leading-relaxed">Verified and Confirmed by system</p>
                     </div>
 
                     <div className="space-y-3">
@@ -61,27 +61,27 @@ export default function ReceiptModal({ isOpen, onClose, transaction, currentUser
                         </div>
                     </div>
 
-                    <div className="mt-6 bg-white/[0.03] border border-white/5 p-4 rounded-2xl flex flex-col items-center">
+                    <div className="mt-4 md:mt-6 bg-white/[0.03] border border-white/5 p-3 md:p-4 rounded-xl md:rounded-2xl flex flex-col items-center">
                         <span className="text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1">Total Amount</span>
                         <div className="flex items-center gap-2">
-                            <div className="relative w-8 h-4"><Image src="/assets/images/rupee.png" alt="₹" fill className="object-contain" /></div>
-                            <span className="text-2xl font-black text-white">{parseFloat(transaction.amount).toFixed(2)}</span>
+                            <div className="relative w-7 h-3.5 md:w-8 md:h-4"><Image src="/assets/images/rupee.png" alt="₹" fill className="object-contain" /></div>
+                            <span className="text-xl md:text-2xl font-black text-white">{parseFloat(transaction.amount).toFixed(2)}</span>
                         </div>
                     </div>
                 </div>
 
                 {/* Bottom Bar with Download */}
-                <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[#1a2b4b] to-transparent">
+                <div className="absolute bottom-0 left-0 right-0 p-3 md:p-4 bg-gradient-to-t from-[#1a2b4b] to-transparent">
                     <button
                         onClick={() => generateTransactionReceipt(transaction, currentUser)}
-                        className="w-full h-12 bg-blue-600 hover:bg-blue-500 text-white rounded-xl flex items-center justify-center gap-3 transition-all active:scale-95 shadow-xl shadow-blue-600/20 group"
+                        className="w-full h-10 md:h-12 bg-blue-600 hover:bg-blue-500 text-white rounded-lg md:rounded-xl flex items-center justify-center gap-3 transition-all active:scale-95 shadow-xl shadow-blue-600/20 group"
                     >
-                        <IonIcon name="download-outline" className="text-lg group-hover:scale-110 transition-transform" />
-                        <span className="text-[9px] font-black uppercase tracking-[0.2em]">Download Receipt</span>
+                        <IonIcon name="download-outline" className="text-base md:text-lg group-hover:scale-110 transition-transform" />
+                        <span className="text-[8px] md:text-[9px] font-black uppercase tracking-[0.2em]">Download Receipt</span>
                     </button>
                     <button
                         onClick={onClose}
-                        className="w-full py-2 mt-1 text-[8px] text-slate-500 font-bold uppercase tracking-widest hover:text-white transition-colors"
+                        className="w-full py-1.5 mt-1 text-[7px] md:text-[8px] text-slate-500 font-bold uppercase tracking-widest hover:text-white transition-colors"
                     >
                         Close
                     </button>
