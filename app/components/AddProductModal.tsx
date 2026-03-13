@@ -1403,7 +1403,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 type="number"
                                                 value={variants[activeImageIndex]?.promo_price || ""}
                                                 onChange={(e) => handleVariantChange(activeImageIndex, 'promo_price', e.target.value)}
-                                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white mt-1 focus:ring-1 focus:ring-white outline-none transition-all placeholder:text-white/10"
+                                                className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white mt-1 focus:ring-1 focus:ring-white outline-none transition-all placeholder:text-white/40"
                                                 placeholder="Example: 599.00 (Promo Price Box)"
                                                 onKeyPress={(e) => {
                                                     if (!/[0-9.]/.test(e.key)) e.preventDefault();
@@ -1486,7 +1486,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             />
                                                             {!sel.detail && sel.value && (
                                                                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                                                    <span className="text-[9px] font-black text-white/[0.1] uppercase tracking-[0.2em]">
+                                                                    <span className="text-[9px] font-black text-white/80 uppercase tracking-[0.2em]">
                                                                         {SIZES.includes(sel.value) ? `${sel.value} 20 to 21` : `10 ${sel.value}`}
                                                                     </span>
                                                                 </div>
@@ -1523,7 +1523,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             />
                                                             {!sel.stock && sel.value && (
                                                                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                                                    <span className="text-[9px] font-black text-white/[0.1] uppercase tracking-[0.2em]">
+                                                                    <span className="text-[9px] font-black text-white/80 uppercase tracking-[0.2em]">
                                                                         {SIZES.includes(sel.value) ? "Qty" : `Qty (${sel.value})`}
                                                                     </span>
                                                                 </div>
