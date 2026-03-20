@@ -1,7 +1,7 @@
 "use client";
 
 import Link from 'next/link';
-import IonIcon from '../components/IonIcon';
+import IonIcon from '@/app/components/IonIcon';
 import Image from "next/image";
 import { useState, useEffect } from "react";
 

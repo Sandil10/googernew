@@ -3,8 +3,8 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import IonIcon from '../../../components/IonIcon';
-import { authService } from '../../../../services/authService';
+import IonIcon from '@/app/components/IonIcon';
+import { authService } from '@/services/authService';
 
 export default function Topup() {
     const router = useRouter();

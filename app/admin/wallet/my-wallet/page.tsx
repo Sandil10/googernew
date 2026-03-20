@@ -2,15 +2,15 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { authService } from '../../../../services/authService';
-import { walletService } from '../../../../services/walletService';
+import { authService } from '@/services/authService';
+import { walletService } from '@/services/walletService';
 import Link from 'next/link';
 import Image from 'next/image';
 import IonIcon from '@/app/components/IonIcon';
 import ConfirmTransferModal from '@/app/components/ConfirmTransferModal';
 import SecurityVerificationModal from '@/app/components/SecurityVerificationModal';
 import ReceiptModal from '@/app/components/ReceiptModal';
-import { generateTransactionReceipt } from '../../../../utils/pdfGenerator';
+import { generateTransactionReceipt } from '@/utils/pdfGenerator';
 
 export default function MyWallet() {
     const router = useRouter();

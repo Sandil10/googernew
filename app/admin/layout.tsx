@@ -4,9 +4,9 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
-import Topbar from "../components/Topbar";
-import IonIcon from "../components/IonIcon";
-import AddProductModal from "../components/AddProductModal";
+import Topbar from "@/app/components/Topbar";
+import IonIcon from "@/app/components/IonIcon";
+import AddProductModal from "@/app/components/AddProductModal";
 
 // Mobile Bottom Nav Items
 const menuItems = [
