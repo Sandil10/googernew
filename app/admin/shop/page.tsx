@@ -14,7 +14,7 @@ import ShareModal from "@/app/components/ShareModal";
 export default function ShopPage() {
     const router = useRouter();
     const [showFilters, setShowFilters] = useState(false);
-    const [activeTab, setActiveTab] = useState("market"); // market, my-products, orders
+    const [activeTab, setActiveTab] = useState("market"); // market, my-products, orders, admin-review
     const [myListingsTab, setMyListingsTab] = useState("active");
     const [myListingsSubTab, setMyListingsSubTab] = useState("all"); // for Your Products sub-filter
     const [myOrdersTab, setMyOrdersTab] = useState("all"); // all, processing, shipped, delivered, returns
@@ -29,6 +29,7 @@ export default function ShopPage() {
     const [showShareModal, setShowShareModal] = useState(false);
     const [shareProduct, setShareProduct] = useState<any>(null);
     const [activePreviewIndex, setActivePreviewIndex] = useState(0);
+    const [reviewActionLoading, setReviewActionLoading] = useState<number | null>(null);
 
     const categories = [
         "Gamings", "Headphones", "Parfums", "Fruits", "Mobiles", "Laptops", "Accessories", "Shoes", "Clothing", "Electronics", "Fashion", "Other"
@@ -66,7 +67,8 @@ export default function ShopPage() {
             let data = [];
             const filters: any = {};
             if (activeTab === "market") {
-                filters.status = 'approved';
+                // 'approved' = newly approved by admin, 'active' = legacy status from old products
+                filters.status = 'approved,active';
                 data = await marketService.getItems(filters);
             } else if (activeTab === "my-products") {
                 if (currentUser?.id) {
@@ -79,7 +81,8 @@ export default function ShopPage() {
                         if (myListingsSubTab === 'delivered') statusFilter = 'delivered,received';
                         data = await orderService.getSellerOrders({ status: statusFilter });
                     } else if (myListingsTab === "active") {
-                        data = await marketService.getItems({ user_id: currentUser.id, status: 'approved' });
+                        // Include both 'approved' (new) and 'active' (legacy) statuses
+                        data = await marketService.getItems({ user_id: currentUser.id, status: 'approved,active' });
                     } else if (myListingsTab === "reviewing") {
                         data = await marketService.getItems({ user_id: currentUser.id, status: 'reviewing,rejected' });
                     } else if (myListingsTab === "deleted") {
@@ -96,24 +99,13 @@ export default function ShopPage() {
 
             if (selectedCategory && activeTab === 'market') {
                 // Already handled by filters if passed to marketService.getItems
-                // But for orders, maybe category doesn't apply the same way? 
-                // Mostly user wants categories for the public marketplace.
             }
-            // data = await marketService.getItems(filters); // original logic was slightly different branching
-            // Let's stick to original structure but add category
-            /*
-            if (activeTab === "market") {
-                data = await marketService.getItems({ status: 'approved', category: selectedCategory || undefined });
-            } else if (activeTab === "my-products") {
-                if (currentUser?.id) {
-                    data = await marketService.getItems({ user_id: currentUser.id, status: 'approved', category: selectedCategory || undefined });
-                }
-            } else if (activeTab === "reviewing") {
-                if (currentUser?.id) {
-                    data = await marketService.getItems({ user_id: currentUser.id, status: 'reviewing', category: selectedCategory || undefined });
-                }
+
+            // ADMIN: load all reviewing products for admin review queue
+            if (activeTab === 'admin-review') {
+                data = await marketService.getItems({ status: 'reviewing,rejected' });
             }
-            */
+
             setProducts(data || []);
         } catch (e) {
             console.error("Failed to load products", e);
@@ -124,12 +116,36 @@ export default function ShopPage() {
 
     const refresh = () => {
         loadProducts();
-        if (activeTab !== 'market') {
+        if (activeTab !== 'market' && activeTab !== 'admin-review') {
             setActiveTab("my-products");
             setMyListingsTab("reviewing");
         }
         setEditingProduct(null);
         setIsCategoriesDrawerOpen(false);
+    };
+
+    const handleApproveProduct = async (id: number) => {
+        setReviewActionLoading(id);
+        try {
+            await marketService.updateStatus(id, 'approved');
+            loadProducts();
+        } catch (e: any) {
+            alert(e.message || 'Failed to approve product');
+        } finally {
+            setReviewActionLoading(null);
+        }
+    };
+
+    const handleRejectProduct = async (id: number) => {
+        setReviewActionLoading(id);
+        try {
+            await marketService.updateStatus(id, 'rejected');
+            loadProducts();
+        } catch (e: any) {
+            alert(e.message || 'Failed to reject product');
+        } finally {
+            setReviewActionLoading(null);
+        }
     };
 
     const handleDeleteProduct = async (id: number) => {
@@ -237,6 +253,25 @@ export default function ShopPage() {
                             </div>
                             {activeTab === "orders" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>}
                         </button>
+
+                        {/* Admin Review Tab — only visible to admins */}
+                        {(currentUser?.role === 'admin' || currentUser?.is_admin || currentUser?.user_type === 'admin') && (
+                            <button
+                                onClick={() => setActiveTab("admin-review")}
+                                className={`pb-3 text-sm font-medium transition-colors relative whitespace-nowrap ${activeTab === "admin-review" ? "text-yellow-400" : "text-gray-400 hover:text-yellow-300"}`}
+                            >
+                                <div className="flex items-center gap-2">
+                                    <IonIcon name="shield-checkmark-outline" />
+                                    <span>Review Queue</span>
+                                    {products.filter(p => p.status === 'reviewing').length > 0 && activeTab === 'admin-review' && (
+                                        <span className="w-4 h-4 bg-yellow-500 text-black rounded-full text-[8px] font-black flex items-center justify-center">
+                                            {products.filter(p => p.status === 'reviewing').length}
+                                        </span>
+                                    )}
+                                </div>
+                                {activeTab === "admin-review" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-yellow-500 shadow-[0_0_10px_rgba(234,179,8,0.5)]"></div>}
+                            </button>
+                        )}
                     </div>
                 </div>
 
@@ -382,7 +417,134 @@ export default function ShopPage() {
                 </div>
             )}
 
-            {/* Product Grid */}
+            {/* ===== ADMIN REVIEW QUEUE ===== */}
+            {activeTab === 'admin-review' && (
+                <div className="animate-in fade-in slide-in-from-top-4 duration-500">
+                    <div className="flex items-center gap-3 mb-6">
+                        <div className="w-10 h-10 rounded-2xl bg-yellow-500/10 border border-yellow-500/20 flex items-center justify-center">
+                            <IonIcon name="shield-checkmark" className="text-yellow-500 text-lg" />
+                        </div>
+                        <div>
+                            <h2 className="text-sm font-black text-white uppercase tracking-widest">Admin Review Queue</h2>
+                            <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">
+                                {products.filter(p => p.status === 'reviewing').length} pending · {products.filter(p => p.status === 'rejected').length} rejected
+                            </p>
+                        </div>
+                    </div>
+
+                    {loading ? (
+                        <div className="flex items-center justify-center py-20">
+                            <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-yellow-500"></div>
+                        </div>
+                    ) : products.length === 0 ? (
+                        <div className="text-center py-20 bg-yellow-500/5 rounded-[3rem] border border-yellow-500/10 border-dashed">
+                            <IonIcon name="checkmark-done-circle-outline" className="text-4xl mb-3 text-yellow-500/30" />
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">All clear — no products pending review</p>
+                        </div>
+                    ) : (
+                        <div className="flex flex-col gap-4">
+                            {products.map((product) => (
+                                <div
+                                    key={product.id}
+                                    className={`flex flex-col md:flex-row gap-4 bg-[#1a1a1a] rounded-[2rem] border p-4 md:p-6 transition-all ${
+                                        product.status === 'rejected'
+                                            ? 'border-red-500/20 bg-red-500/5'
+                                            : 'border-yellow-500/10 hover:border-yellow-500/30'
+                                    }`}
+                                >
+                                    {/* Product Image */}
+                                    <div className="relative w-full md:w-32 h-32 rounded-2xl overflow-hidden flex-shrink-0">
+                                        <Image
+                                            src={(product.image_url && (product.image_url.startsWith('data:') || product.image_url.startsWith('http')))
+                                                ? product.image_url
+                                                : (product.image_url ? `/uploads/${product.image_url.split(/[\\/]/).pop()}` : 'https://picsum.photos/400/400')}
+                                            alt={product.title}
+                                            fill
+                                            className="object-cover"
+                                        />
+                                        <div className={`absolute top-2 left-2 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest ${
+                                            product.status === 'rejected'
+                                                ? 'bg-red-600 text-white'
+                                                : 'bg-yellow-500 text-black'
+                                        }`}>
+                                            {product.status === 'rejected' ? 'Rejected' : 'In Review'}
+                                        </div>
+                                    </div>
+
+                                    {/* Product Info */}
+                                    <div className="flex-1 flex flex-col gap-2 min-w-0">
+                                        <div className="flex items-start justify-between gap-4">
+                                            <div>
+                                                <h3 className="text-sm font-black text-white uppercase tracking-tight truncate">{product.title}</h3>
+                                                <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">
+                                                    by @{product.username || product.owner_username || 'Unknown'}
+                                                </p>
+                                            </div>
+                                            <div className="flex flex-col items-end shrink-0">
+                                                <span className="text-lg font-black text-white">R {product.promo_price || product.price}</span>
+                                                {product.promo_price && (
+                                                    <span className="text-[9px] text-slate-500 line-through">R {product.price}</span>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div className="flex flex-wrap gap-2 text-[9px]">
+                                            <span className="px-2 py-0.5 bg-blue-500/10 text-blue-400 rounded border border-blue-500/20 font-black uppercase tracking-widest">{product.category}</span>
+                                            {product.sub_category && (
+                                                <span className="px-2 py-0.5 bg-purple-500/10 text-purple-400 rounded border border-purple-500/20 font-black uppercase tracking-widest">{product.sub_category}</span>
+                                            )}
+                                            <span className="px-2 py-0.5 bg-white/5 text-slate-400 rounded border border-white/10 font-black uppercase tracking-widest">{product.stock} in stock</span>
+                                        </div>
+
+                                        {product.description && (
+                                            <p className="text-[10px] text-slate-400 leading-relaxed line-clamp-2">{product.description}</p>
+                                        )}
+
+                                        <p className="text-[8px] text-slate-600 font-bold uppercase tracking-widest">
+                                            Submitted {new Date(product.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                        </p>
+
+                                        {/* Action Buttons */}
+                                        <div className="flex items-center gap-3 mt-2 pt-3 border-t border-white/5">
+                                            <button
+                                                onClick={() => handleApproveProduct(product.id)}
+                                                disabled={reviewActionLoading === product.id}
+                                                className="flex-1 py-2.5 bg-green-500 hover:bg-green-400 text-black text-[10px] font-black uppercase tracking-widest rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-lg shadow-green-500/20"
+                                            >
+                                                {reviewActionLoading === product.id ? (
+                                                    <div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                                                ) : (
+                                                    <IonIcon name="checkmark-circle" className="text-sm" />
+                                                )}
+                                                Approve
+                                            </button>
+                                            <button
+                                                onClick={() => handleRejectProduct(product.id)}
+                                                disabled={reviewActionLoading === product.id}
+                                                className="flex-1 py-2.5 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white text-[10px] font-black uppercase tracking-widest rounded-xl border border-red-500/20 hover:border-red-500 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                            >
+                                                <IonIcon name="close-circle" className="text-sm" />
+                                                Reject
+                                            </button>
+                                            <button
+                                                onClick={() => setSelectedProduct(product)}
+                                                className="w-10 h-10 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl flex items-center justify-center text-slate-400 hover:text-white transition-all"
+                                                title="View Details"
+                                            >
+                                                <IonIcon name="eye-outline" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Product Grid — only shown outside admin-review tab */}
+            {activeTab !== 'admin-review' && (
+            <>
             {loading ? (
                 <div className="flex items-center justify-center py-20">
                     <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-white"></div>
@@ -603,10 +765,11 @@ export default function ShopPage() {
                 )
             }
 
+            {/* End of conditional product grid (hidden in admin-review tab) */}
+            </>
+            )}
 
-
-
-
+            {/* Product Details Modal (Assuming existing code is mostly fine used selectedProduct state) */}
             {/* Product Details Modal (Assuming existing code is mostly fine used selectedProduct state) */}
             {selectedProduct && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-2 md:p-4 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300" onClick={() => { setSelectedProduct(null); setActivePreviewIndex(0); }}>

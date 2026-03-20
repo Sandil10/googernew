@@ -113,5 +113,22 @@ export const marketService = {
             console.error('Error deleting market item:', error);
             throw error;
         }
+    },
+
+    // Update item status (admin: approve / reject / reviewing)
+    updateStatus: async (id: number, status: string) => {
+        try {
+            const response = await fetch(`${API_URL}/market/${id}/status`, {
+                method: 'PUT',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ status }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Failed to update status');
+            return data;
+        } catch (error) {
+            console.error('Error updating market item status:', error);
+            throw error;
+        }
     }
 };

@@ -274,7 +274,7 @@ exports.verifyPassword = async (req, res) => {
 exports.getProfile = async (req, res) => {
     try {
         const user = await pool.query(
-            'SELECT id, user_id, username, full_name, email, profile_picture, bio, referral_code, wallet_balance, created_at FROM users WHERE id = $1',
+            'SELECT id, user_id, username, full_name, email, profile_picture, bio, referral_code, wallet_balance, user_type, created_at FROM users WHERE id = $1',
             [req.user.id]
         );
 

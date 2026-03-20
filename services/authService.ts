@@ -110,7 +110,14 @@ export const authService = {
             });
 
             const result = await safeJson(response);
-            if (!response.ok) throw new Error(result?.message || 'Failed to fetch profile');
+            if (!response.ok) {
+                // If token is invalid/expired, clear storage and force re-login
+                if (response.status === 401) {
+                    storage.remove('token');
+                    storage.remove('user');
+                }
+                throw new Error(result?.message || 'Failed to fetch profile');
+            }
 
             if (result?.user) storage.set('user', JSON.stringify(result.user));
             return result?.user;
@@ -133,7 +140,13 @@ export const authService = {
             });
 
             const result = await safeJson(response);
-            if (!response.ok) throw new Error(result?.message || 'Failed to fetch wallet');
+            if (!response.ok) {
+                if (response.status === 401) {
+                    storage.remove('token');
+                    storage.remove('user');
+                }
+                throw new Error(result?.message || 'Failed to fetch wallet');
+            }
             return result;
         } catch (error: any) {
             throw error;

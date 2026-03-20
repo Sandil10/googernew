@@ -26,16 +26,9 @@ export default function Topbar() {
                 if (authService.isAuthenticated()) {
                     const profile = await authService.getProfile();
                     setUser(profile);
-                } else {
-                    // No token at all — show logged-out state silently
-                    console.error('Not logged in');
                 }
-            } catch (error: any) {
+            } catch (error) {
                 console.error("Error fetching user:", error);
-                // If token was invalid (cleared by authService), redirect to login
-                if (!authService.isAuthenticated()) {
-                    router.push('/');
-                }
             } finally {
                 setLoading(false);
             }
@@ -46,9 +39,7 @@ export default function Topbar() {
 
     const profileImage = user?.profile_picture
         ? (user.profile_picture.startsWith('http') || user.profile_picture.startsWith('data:') ? user.profile_picture : `/uploads/${user.profile_picture.split(/[\\/]/).pop()}`)
-        : user
-            ? `https://ui-avatars.com/api/?name=${encodeURIComponent(user.full_name || user.username || 'User')}&size=200&background=random`
-            : null; // null → we won't render the Image at all
+        : (user ? `https://ui-avatars.com/api/?name=${encodeURIComponent(user.full_name || user.username)}&size=200&background=random` : "");
 
     const [notifications, setNotifications] = useState<any[]>([]);
     const [showNotifications, setShowNotifications] = useState(false);
@@ -204,7 +195,7 @@ export default function Topbar() {
                 <div className="ml-2">
                     {loading ? (
                         <div className="w-9 h-9 rounded-full border-2 border-white/10 border-t-purple-500 animate-spin"></div>
-                    ) : profileImage ? (
+                    ) : (
                         <Link
                             href="/dashboard/profile"
                             className="relative block w-9 h-9 rounded-full overflow-hidden border-2 border-white/10 hover:border-purple-500/50 transition-all active:scale-95 group"
@@ -215,13 +206,6 @@ export default function Topbar() {
                                 fill
                                 className="object-cover group-hover:scale-110 transition-transform duration-300"
                             />
-                        </Link>
-                    ) : (
-                        <Link
-                            href="/"
-                            className="relative block w-9 h-9 rounded-full overflow-hidden border-2 border-white/10 flex items-center justify-center bg-slate-800 hover:border-purple-500/50 transition-all"
-                        >
-                            <IonIcon name="person-outline" className="text-slate-400" />
                         </Link>
                     )}
                 </div>

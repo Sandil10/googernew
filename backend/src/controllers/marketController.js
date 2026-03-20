@@ -40,18 +40,32 @@ exports.createMarketItem = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid data format provided' });
         }
 
-        // Handle Image Uploads (Convert memory buffers to Base64 Data URLs)
+        // Handle Image Uploads (Match req.files to variants requiring an upload)
+        let fileIndex = 0;
         let gallery = [];
-        if (req.files && req.files.length > 0) {
-            req.files.forEach((file, index) => {
-                const base64 = file.buffer.toString('base64');
-                const url = `data:${file.mimetype};base64,${base64}`;
-                gallery.push({ url, color: (variants[index] && variants[index].color) || null });
-                if (variants[index]) variants[index].url = url;
-            });
-        }
 
-        const imageUrl = gallery.length > 0 ? gallery[0].url : (variants[0]?.url || null);
+        variants = variants.map((v, index) => {
+            // If the image_url is a blob URL, it means it's a file that was just uploaded
+            if (v.image_url && v.image_url.startsWith('blob:')) {
+                if (req.files && req.files[fileIndex]) {
+                    const file = req.files[fileIndex];
+                    const base64 = file.buffer.toString('base64');
+                    const url = `data:${file.mimetype};base64,${base64}`;
+                    
+                    const updatedV = { ...v, url: url, image_url: url };
+                    gallery.push({ url, color: v.color || null });
+                    fileIndex++;
+                    return updatedV;
+                }
+            }
+            // If it's already a data: or http URL, keep it
+            if (v.image_url) {
+                gallery.push({ url: v.image_url, color: v.color || null });
+            }
+            return v;
+        });
+
+        const imageUrl = gallery.length > 0 ? gallery[0].url : (variants[0]?.image_url || null);
 
         if (!title || !price || !category) {
             return res.status(400).json({ success: false, message: 'Title, price, and category are required' });
@@ -140,17 +154,33 @@ exports.updateMarketItem = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid data format' });
         }
 
-        let newGalleryItems = [];
-        if (req.files && req.files.length > 0) {
-            req.files.forEach((file, index) => {
-                const base64 = file.buffer.toString('base64');
-                const url = `data:${file.mimetype};base64,${base64}`;
-                newGalleryItems.push({ url, color: (variants && variants[index] && variants[index].color) || null });
-                if (variants && variants[index]) variants[index].url = url;
+        // Handle Image Uploads (Match req.files to variants requiring an upload)
+        let fileIndex = 0;
+        let gallery = [];
+        if (variants) {
+            variants = variants.map((v, index) => {
+                // If the image_url is a blob URL, it means it's a file that was just uploaded
+                if (v.image_url && v.image_url.startsWith('blob:')) {
+                    if (req.files && req.files[fileIndex]) {
+                        const file = req.files[fileIndex];
+                        const base64 = file.buffer.toString('base64');
+                        const url = `data:${file.mimetype};base64,${base64}`;
+                        
+                        const updatedV = { ...v, url: url, image_url: url };
+                        gallery.push({ url, color: v.color || null });
+                        fileIndex++;
+                        return updatedV;
+                    }
+                }
+                // If it's already a data: or http URL, keep it
+                if (v.image_url) {
+                    gallery.push({ url: v.image_url, color: v.color || null });
+                }
+                return v;
             });
         }
 
-        const imageUrl = newGalleryItems.length > 0 ? newGalleryItems[0].url : (variants?.[0]?.url || item.image_url);
+        const imageUrl = gallery.length > 0 ? gallery[0].url : (variants?.[0]?.image_url || item.image_url);
         const numericPrice = price ? parseFloat(price) : item.price;
         const numericPromoPrice = promo_price !== undefined ? (promo_price ? parseFloat(promo_price) : null) : item.promo_price;
 
@@ -237,16 +267,21 @@ exports.getMarketItems = async (req, res) => {
             query += ` AND m.category = $${params.length}`;
         }
         if (user_id) {
-            params.push(user_id);
+            // Cast to integer for safe comparison
+            params.push(parseInt(user_id, 10));
             query += ` AND m.user_id = $${params.length}`;
         }
         if (status) {
-            const statusArray = status.split(',');
+            // Normalize: treat 'approved' as also matching 'active' (legacy status)
+            let statusArray = status.split(',').map(s => s.trim());
+            // If 'approved' is in the list, also include legacy 'active'
+            if (statusArray.includes('approved') && !statusArray.includes('active')) {
+                statusArray.push('active');
+            }
             params.push(statusArray);
             query += ` AND m.status = ANY($${params.length})`;
         } else {
             // Default filter: hide deleted items from public market
-            // Hide items in 'deleted' status that are older than 7 days based on updated_at
             query += " AND (m.status != 'deleted' OR m.updated_at > CURRENT_TIMESTAMP - INTERVAL '7 days')";
         }
 
@@ -257,9 +292,14 @@ exports.getMarketItems = async (req, res) => {
 
         query += ` ORDER BY m.created_at DESC`;
 
+        console.log('[DEBUG] getMarketItems query:', query);
+        console.log('[DEBUG] getMarketItems params:', params);
+
         const result = await pool.query(query, params);
+        console.log('[DEBUG] getMarketItems Result Rows:', result.rows.map(r => ({ id: r.id, user_id: r.user_id, status: r.status })));
         res.status(200).json({ success: true, data: result.rows });
     } catch (error) {
+        console.error('getMarketItems error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
     }
 };
