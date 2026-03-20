@@ -609,7 +609,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         const currentVariants = Array.isArray(variants) ? variants : [];
         if (index < 0) return;
 
-        let newVariants = [...currentVariants];
+        const newVariants = [...currentVariants];
 
         // Ensure the variant exists
         if (!newVariants[index]) {
