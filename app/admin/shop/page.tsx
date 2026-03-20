@@ -782,12 +782,17 @@ export default function ShopPage() {
                             {/* Main Preview */}
                             <div className="relative flex-1 min-h-[140px] md:min-h-[450px]">
                                 {(() => {
+                                    let variantsData = [];
+                                    try {
+                                        variantsData = typeof selectedProduct.variants === 'string' ? JSON.parse(selectedProduct.variants) : selectedProduct.variants;
+                                    } catch (e) {
+                                        console.warn("Failed to parse variants for product", selectedProduct.id, e);
+                                    }
+
                                     const allImages = [
                                         selectedProduct.image_url,
-                                        ...(Array.isArray(selectedProduct.variants) 
-                                            ? selectedProduct.variants 
-                                            : (typeof selectedProduct.variants === 'string' ? JSON.parse(selectedProduct.variants) : [])
-                                        ).map((v: any) => v.url || v.image_url)
+                                        ...(Array.isArray(variantsData) ? variantsData : [])
+                                            .map((v: any) => v.url || v.image_url)
                                     ].filter(Boolean);
 
                                     // Remove duplicates
@@ -853,9 +858,10 @@ export default function ShopPage() {
                             {/* Thumbnails */}
                             <div className="p-3 md:p-4 bg-black/40 backdrop-blur-md border-t border-white/5 overflow-x-auto no-scrollbar flex gap-2">
                                 {(() => {
+                                    const variantsData = typeof selectedProduct.variants === 'string' ? JSON.parse(selectedProduct.variants) : selectedProduct.variants;
                                     const allImages = [
                                         selectedProduct.image_url,
-                                        ...(Array.isArray(selectedProduct.variants) ? selectedProduct.variants.map((v: any) => v.url || v.image_url) : [])
+                                        ...(Array.isArray(variantsData) ? variantsData.map((v: any) => v.url || v.image_url) : [])
                                     ].filter(Boolean);
                                     const uniqueImages = Array.from(new Set(allImages));
 
@@ -1015,43 +1021,13 @@ export default function ShopPage() {
 
                             {/* Footer Actions */}
                             <div className="p-4 md:p-8 border-t border-white/5 bg-white/[0.02] flex items-center gap-3">
-                                {activeTab === 'market' && currentUser?.id !== selectedProduct.user_id ? (
-                                    <button
-                                        onClick={() => handleBuyItem(selectedProduct.id)}
-                                        className="flex-1 py-3 md:py-4 bg-white text-black rounded-xl md:rounded-2xl font-black text-[10px] md:text-[12px] uppercase tracking-[0.1em] md:tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-xl hover:scale-[1.02] active:scale-95"
-                                    >
-                                        <IonIcon name="bag-handle" className="text-lg md:text-xl" />
-                                        Buy Now
-                                    </button>
-                                ) : (
-                                    <button
-                                        onClick={() => {
-                                            setShareProduct(selectedProduct);
-                                            setShowShareModal(true);
-                                        }}
-                                        className="flex-1 py-3 md:py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl md:rounded-2xl font-black text-[10px] md:text-[12px] uppercase tracking-[0.1em] md:tracking-[0.2em] transition-all flex items-center justify-center gap-2"
-                                    >
-                                        <IonIcon name="share-social" className="text-lg md:text-xl" />
-                                        Share
-                                    </button>
-                                )}
-
-                                {currentUser?.id === selectedProduct.user_id && (
-                                    <div className="flex gap-2">
-                                        <button
-                                            onClick={() => { handleEditProduct(selectedProduct); setSelectedProduct(null); }}
-                                            className="w-10 h-10 md:w-14 md:h-14 rounded-xl md:rounded-2xl bg-white/5 hover:bg-white/10 text-white border border-white/10 flex items-center justify-center transition-all"
-                                        >
-                                            <IonIcon name="create-outline" className="text-lg md:text-xl" />
-                                        </button>
-                                        <button
-                                            onClick={() => handleDeleteProduct(selectedProduct.id)}
-                                            className="w-10 h-10 md:w-14 md:h-14 rounded-xl md:rounded-2xl bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 flex items-center justify-center transition-all"
-                                        >
-                                            <IonIcon name="trash-outline" className="text-lg md:text-xl" />
-                                        </button>
-                                    </div>
-                                )}
+                                <button
+                                    onClick={() => handleBuyItem(selectedProduct.id)}
+                                    className="flex-1 py-3 md:py-4 bg-white text-black rounded-xl md:rounded-2xl font-black text-[10px] md:text-[12px] uppercase tracking-[0.1em] md:tracking-[0.2em] transition-all flex items-center justify-center gap-2 shadow-xl hover:scale-[1.02] active:scale-95"
+                                >
+                                    <IonIcon name="bag-handle" className="text-xl md:text-2xl" />
+                                    Buy Now
+                                </button>
                             </div>
                         </div>
                     </div>
