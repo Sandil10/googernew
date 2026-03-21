@@ -581,9 +581,10 @@ export default function ShopPage() {
                                 </div>
                                 <button
                                     onClick={(e) => { e.stopPropagation(); alert('Subscribed!'); }}
-                                    className="px-2 md:px-3 py-1 md:py-1.5 bg-white text-black text-[7px] md:text-[9px] font-black uppercase rounded-full shadow-lg active:scale-95 transition-all hover:bg-slate-200 flex-shrink-0"
+                                    className="px-2 md:px-4 py-1 md:py-1.5 bg-white text-black text-[7px] md:text-[9px] font-black uppercase rounded-full shadow-lg active:scale-95 transition-all hover:bg-slate-200 flex-shrink-0"
                                 >
-                                    Sub
+                                    <span className="md:hidden">Sub</span>
+                                    <span className="hidden md:inline">Subscribe</span>
                                 </button>
                             </div>
 
@@ -644,7 +645,7 @@ export default function ShopPage() {
                             </div>
 
                             {/* Content Section */}
-                            <div className="px-6 pb-2">
+                            <div className="px-3 md:px-6 pb-2">
                                 <h3 className="text-white text-[12px] font-black truncate mb-3 uppercase tracking-tight group-hover:text-blue-400 transition-colors">{product.title}</h3>
 
                                 <div className="flex flex-col mb-6">
@@ -657,96 +658,80 @@ export default function ShopPage() {
                                     </div>
                                 </div>
 
-                                <div className="flex items-center justify-between border-t border-white/5 pt-3 md:pt-4">
-                                    <div className="flex items-center gap-2 md:gap-5 w-full">
-                                        <div className="flex items-center gap-4 md:gap-6">
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); /* handleLike */ }}
-                                                className="text-white/40 hover:text-red-500 transition-all active:scale-75"
-                                            >
-                                                <IonIcon name="heart-outline" className="text-lg md:text-xl" />
-                                            </button>
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
-                                                className="text-white/40 hover:text-blue-500 transition-all active:scale-75"
-                                            >
-                                                <IonIcon name="eye-outline" className="text-lg md:text-xl" />
-                                            </button>
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
-                                                className="text-white/40 hover:text-white transition-all active:scale-75"
-                                            >
-                                                <IonIcon name="chatbubble-outline" className="text-lg md:text-xl" />
-                                            </button>
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); /* handleShare */ }}
-                                                className="text-white/40 hover:text-green-500 transition-all active:scale-75"
-                                            >
-                                                <IonIcon name="share-social-outline" className="text-lg md:text-xl" />
-                                            </button>
-                                        </div>
+                                {/* Bottom action bar: 2-row on mobile, 1-row on desktop */}
+                                <div className="border-t border-white/5 pt-2 md:pt-4 flex flex-col gap-2">
 
-                                        <div className="ml-auto flex items-center gap-3">
-                                            {product.status === 'rejected' ? (
-                                                <button
-                                                    onClick={(e) => { e.stopPropagation(); handleEditProduct(product); }}
-                                                    className="px-3 py-1 bg-white/10 hover:bg-white text-black text-[9px] font-black uppercase rounded-lg transition-all"
-                                                >
-                                                    Edit
-                                                </button>
-                                            ) : (activeTab === 'my-products' && myListingsTab === 'all') ? (
-                                                <div className="flex flex-wrap gap-1.5 justify-end">
-                                                    {(product.status === 'pending' || product.status === 'approved' || product.status === 'all') ? (
-                                                        <button
-                                                            onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'processing'); }}
-                                                            className="px-2 py-1 bg-white text-black text-[8px] font-black uppercase rounded-lg border border-white"
-                                                        >
-                                                            Process
-                                                        </button>
-                                                    ) : product.status === 'processing' ? (
-                                                        <button
-                                                            onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'shipped'); }}
-                                                            className="px-2 py-1 bg-blue-600 text-white rounded-lg"
-                                                        >
-                                                            Ship
-                                                        </button>
-                                                    ) : product.status === 'shipped' ? (
-                                                        <button
-                                                            onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'delivered'); }}
-                                                            className="px-2 py-1 bg-green-600 text-white rounded-lg"
-                                                        >
-                                                            Deliver
-                                                        </button>
-                                                    ) : product.status === 'delivered' ? (
-                                                        <span className="text-[8px] text-blue-400 font-black uppercase">Wait Buyer</span>
-                                                    ) : product.status === 'received' ? (
-                                                        <span className="text-[8px] text-green-500 font-black uppercase">Orders Completed</span>
-                                                    ) : null}
-                                                </div>
-                                            ) : activeTab === 'orders' ? (
-                                                <div className="flex items-center gap-2">
-                                                    {product.status === 'delivered' ? (
-                                                        <button
-                                                            onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'received'); }}
-                                                            className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg"
-                                                        >
-                                                            Received?
-                                                        </button>
-                                                    ) : product.status === 'received' ? (
-                                                        <span className="text-[8px] text-green-500 font-black uppercase">Orders Completed</span>
-                                                    ) : null}
-                                                </div>
-                                            ) : null}
+                                    {/* Row 1: All interaction icons + cart (always visible on all sizes) */}
+                                    <div className="flex items-center gap-2 md:gap-3 w-full">
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); /* handleLike */ }}
+                                            className="text-white/40 hover:text-red-500 transition-all active:scale-75"
+                                        >
+                                            <IonIcon name="heart-outline" className="text-base md:text-xl" />
+                                        </button>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
+                                            className="text-white/40 hover:text-white transition-all active:scale-75"
+                                        >
+                                            <IonIcon name="chatbubble-outline" className="text-base md:text-xl" />
+                                        </button>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); /* handleShare */ }}
+                                            className="text-white/40 hover:text-green-500 transition-all active:scale-75"
+                                        >
+                                            <IonIcon name="share-social-outline" className="text-base md:text-xl" />
+                                        </button>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
+                                            className="text-white/40 hover:text-blue-500 transition-all active:scale-75"
+                                        >
+                                            <IonIcon name="eye-outline" className="text-base md:text-xl" />
+                                        </button>
 
-                                            {/* Smaller Cart Icon at Far Right */}
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
-                                                className="text-white/40 hover:text-blue-400 transition-all active:scale-75 ml-1"
-                                            >
-                                                <IonIcon name="cart-outline" className="text-base md:text-lg" />
-                                            </button>
-                                        </div>
+                                        {/* Cart Icon — pinned right, always visible */}
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
+                                            className="ml-auto flex-shrink-0 flex items-center justify-center w-6 h-6 text-white/40 hover:text-blue-400 transition-all active:scale-75"
+                                        >
+                                            <IonIcon name="cart-outline" className="text-base md:text-lg" />
+                                        </button>
                                     </div>
+
+                                    {/* Row 2: Context action buttons — shown only when needed */}
+                                    {(() => {
+                                        const actionBtn = product.status === 'rejected' ? (
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); handleEditProduct(product); }}
+                                                className="px-3 py-1 bg-white/10 hover:bg-white hover:text-black text-white text-[9px] font-black uppercase rounded-lg transition-all whitespace-nowrap"
+                                            >
+                                                Edit
+                                            </button>
+                                        ) : (activeTab === 'my-products' && myListingsTab === 'all') ? (
+                                            (product.status === 'pending' || product.status === 'approved' || product.status === 'all') ? (
+                                                <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'processing'); }} className="px-2 py-1 bg-white text-black text-[8px] font-black uppercase rounded-lg border border-white whitespace-nowrap">Process</button>
+                                            ) : product.status === 'processing' ? (
+                                                <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'shipped'); }} className="px-2 py-1 bg-blue-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap">Ship</button>
+                                            ) : product.status === 'shipped' ? (
+                                                <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'delivered'); }} className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap">Deliver</button>
+                                            ) : product.status === 'delivered' ? (
+                                                <span className="text-[8px] text-blue-400 font-black uppercase whitespace-nowrap">Wait Buyer</span>
+                                            ) : product.status === 'received' ? (
+                                                <span className="text-[8px] text-green-500 font-black uppercase whitespace-nowrap">Done ✓</span>
+                                            ) : null
+                                        ) : activeTab === 'orders' ? (
+                                            product.status === 'delivered' ? (
+                                                <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'received'); }} className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap">Received?</button>
+                                            ) : product.status === 'received' ? (
+                                                <span className="text-[8px] text-green-500 font-black uppercase whitespace-nowrap">Done ✓</span>
+                                            ) : null
+                                        ) : null;
+
+                                        return actionBtn ? (
+                                            <div className="flex items-center">
+                                                {actionBtn}
+                                            </div>
+                                        ) : null;
+                                    })()}
                                 </div>
                             </div>
                         </div>

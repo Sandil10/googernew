@@ -130,5 +130,109 @@ export const marketService = {
             console.error('Error updating market item status:', error);
             throw error;
         }
+    },
+
+    // Engagement Features
+    toggleLike: async (id: number) => {
+        try {
+            const response = await fetch(`${API_URL}/market/${id}/like`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Failed to like item');
+            return data.liked;
+        } catch (error) {
+            console.error('Error liking market item:', error);
+            throw error;
+        }
+    },
+
+    addComment: async (id: number, text: string) => {
+        try {
+            const response = await fetch(`${API_URL}/market/${id}/comments`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ text }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Failed to add comment');
+            return data.data;
+        } catch (error) {
+            console.error('Error adding comment:', error);
+            throw error;
+        }
+    },
+
+    getComments: async (id: number) => {
+        try {
+            const response = await fetch(`${API_URL}/market/${id}/comments`, {
+                method: 'GET',
+                headers: getAuthHeaders(),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Failed to fetch comments');
+            return data.data;
+        } catch (error) {
+            console.error('Error fetching comments:', error);
+            throw error;
+        }
+    },
+
+    logShare: async (id: number) => {
+        try {
+            const response = await fetch(`${API_URL}/market/${id}/share`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            return await response.json();
+        } catch (error) {
+            console.error('Error logging share:', error);
+        }
+    },
+
+    logView: async (id: number) => {
+        try {
+            const response = await fetch(`${API_URL}/market/${id}/view`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            return await response.json();
+        } catch (error) {
+            console.error('Error logging view:', error);
+        }
+    },
+
+    getLikes: async (id: number) => {
+        try {
+            const response = await fetch(`${API_URL}/market/${id}/likes`, {
+                method: 'GET',
+                headers: getAuthHeaders(),
+            });
+            const data = await response.json();
+            return data.data || [];
+        } catch (error) { console.error(error); return []; }
+    },
+
+    getShares: async (id: number) => {
+        try {
+            const response = await fetch(`${API_URL}/market/${id}/shares`, {
+                method: 'GET',
+                headers: getAuthHeaders(),
+            });
+            const data = await response.json();
+            return data.data || [];
+        } catch (error) { console.error(error); return []; }
+    },
+
+    getViews: async (id: number) => {
+        try {
+            const response = await fetch(`${API_URL}/market/${id}/views`, {
+                method: 'GET',
+                headers: getAuthHeaders(),
+            });
+            const data = await response.json();
+            return data.data || [];
+        } catch (error) { console.error(error); return []; }
     }
 };

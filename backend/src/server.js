@@ -67,6 +67,10 @@ app.use('/wallet', walletRoutes);
 app.use('/market', marketRoutes);
 app.use('/orders', orderRoutes);
 
+app.get('/api/test', (req, res) => {
+    res.json({ success: true, message: 'New routes are live' });
+});
+
 // Health check route
 app.get('/api/health', async (req, res) => {
     try {

@@ -1,4 +1,5 @@
 const pool = require('../config/database');
+const jwt = require('jsonwebtoken');
 
 // Create a new market item
 exports.createMarketItem = async (req, res) => {
@@ -51,7 +52,7 @@ exports.createMarketItem = async (req, res) => {
                     const file = req.files[fileIndex];
                     const base64 = file.buffer.toString('base64');
                     const url = `data:${file.mimetype};base64,${base64}`;
-                    
+
                     const updatedV = { ...v, url: url, image_url: url };
                     gallery.push({ url, color: v.color || null });
                     fileIndex++;
@@ -165,7 +166,7 @@ exports.updateMarketItem = async (req, res) => {
                         const file = req.files[fileIndex];
                         const base64 = file.buffer.toString('base64');
                         const url = `data:${file.mimetype};base64,${base64}`;
-                        
+
                         const updatedV = { ...v, url: url, image_url: url };
                         gallery.push({ url, color: v.color || null });
                         fileIndex++;
@@ -210,7 +211,7 @@ exports.updateMarketItem = async (req, res) => {
             [
                 title, description, isNaN(numericPrice) ? item.price : numericPrice,
                 numericPromoPrice,
-                category, sub_category, level3_category, manual_category, 
+                category, sub_category, level3_category, manual_category,
                 isNaN(parseInt(stock)) ? item.stock : parseInt(stock),
                 imageUrl,
                 variants ? JSON.stringify(variants) : null,
@@ -340,13 +341,17 @@ exports.toggleLike = async (req, res) => {
     try {
         const { id } = req.params;
         const userId = req.user.id;
-        const checkLike = await pool.query('SELECT id FROM market_likes WHERE market_id = $1 AND user_id = $2', [id, userId]);
+        const checkLike = await pool.query('SELECT 1 FROM market_likes WHERE market_id = $1 AND user_id = $2', [id, userId]);
 
         if (checkLike.rows.length > 0) {
             await pool.query('DELETE FROM market_likes WHERE market_id = $1 AND user_id = $2', [id, userId]);
+            // Decrement likes_count in market table
+            await pool.query('UPDATE market SET likes_count = GREATEST(likes_count - 1, 0) WHERE id = $1', [id]);
             res.status(200).json({ success: true, liked: false });
         } else {
             await pool.query('INSERT INTO market_likes (market_id, user_id) VALUES ($1, $2)', [id, userId]);
+            // Increment likes_count in market table
+            await pool.query('UPDATE market SET likes_count = likes_count + 1 WHERE id = $1', [id]);
             res.status(200).json({ success: true, liked: true });
         }
     } catch (error) {
@@ -368,10 +373,113 @@ exports.addComment = async (req, res) => {
             'INSERT INTO market_comments (market_id, user_id, text) VALUES ($1, $2, $3) RETURNING *',
             [id, userId, text]
         );
+        // Increment comments_count in market table
+        await pool.query('UPDATE market SET comments_count = comments_count + 1 WHERE id = $1', [id]);
+
         res.status(201).json({ success: true, data: result.rows[0] });
     } catch (error) {
         console.error('Error adding comment:', error);
         res.status(500).json({ success: false, message: 'Server error adding comment' });
+    }
+};
+
+// Log a share event
+exports.logShare = async (req, res) => {
+    try {
+        const { id } = req.params;
+        let userId = req.user?.id || null;
+
+        // Manual token check if req.user is not set (for public-optional routes)
+        if (!userId) {
+            const authHeader = req.header('Authorization');
+            const token = authHeader?.replace('Bearer ', '');
+            if (token) {
+                try {
+                    const secret = process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET;
+                    const decoded = jwt.verify(token, secret);
+                    userId = decoded.id;
+                } catch (e) { /* ignore */ }
+            }
+        }
+
+        // Optionally track who shared (if logged in)
+        if (userId) {
+            await pool.query('INSERT INTO market_shares (market_id, user_id) VALUES ($1, $2)', [id, userId]);
+        }
+
+        // Increment shares_count in market table
+        await pool.query('UPDATE market SET shares_count = shares_count + 1 WHERE id = $1', [id]);
+
+        res.status(200).json({ success: true });
+    } catch (error) {
+        console.error('Error logging share:', error);
+        res.status(500).json({ success: false, message: 'Server error logging share' });
+    }
+};
+
+// Log a view event (Limit to once every 24 hours per user per product)
+exports.logView = async (req, res) => {
+    try {
+        const { id } = req.params;
+        let userId = req.user?.id || null;
+
+        // Manual token check if req.user is not set
+        if (!userId) {
+            const authHeader = req.header('Authorization');
+            const token = authHeader?.startsWith('Bearer ') ? authHeader.replace('Bearer ', '') : authHeader;
+            if (token) {
+                try {
+                    const secret = process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET;
+                    const decoded = jwt.verify(token, secret);
+                    userId = decoded.id;
+                } catch (e) { /* ignore auth for view count increment if invalid */ }
+            }
+        }
+
+        if (!userId) {
+            // Unauthenticated view - increment count always for anonymous (minimal tracking)
+            await pool.query('UPDATE market SET views_count = views_count + 1 WHERE id = $1', [id]);
+            return res.status(200).json({ success: true, message: 'Viewer not logged in' });
+        }
+
+        // Check for existing view within 24 hours
+        const viewCheck = await pool.query(
+            'SELECT last_viewed_at FROM market_views WHERE market_id = $1 AND user_id = $2',
+            [id, userId]
+        );
+
+        const now = new Date();
+        let shouldIncrement = false;
+
+        if (viewCheck.rows.length === 0) {
+            // First time viewing
+            await pool.query(
+                'INSERT INTO market_views (market_id, user_id, last_viewed_at) VALUES ($1, $2, CURRENT_TIMESTAMP)',
+                [id, userId]
+            );
+            shouldIncrement = true;
+        } else {
+            const lastViewed = new Date(viewCheck.rows[0].last_viewed_at);
+            const diffInHours = (now - lastViewed) / (1000 * 60 * 60);
+
+            if (diffInHours >= 24) {
+                // Update timestamp and increment
+                await pool.query(
+                    'UPDATE market_views SET last_viewed_at = CURRENT_TIMESTAMP WHERE market_id = $1 AND user_id = $2',
+                    [id, userId]
+                );
+                shouldIncrement = true;
+            }
+        }
+
+        if (shouldIncrement) {
+            await pool.query('UPDATE market SET views_count = views_count + 1 WHERE id = $1', [id]);
+        }
+
+        res.status(200).json({ success: true, incremented: shouldIncrement });
+    } catch (error) {
+        console.error('Error logging view:', error);
+        res.status(500).json({ success: false, message: 'Server error logging view' });
     }
 };
 
@@ -391,5 +499,61 @@ exports.getComments = async (req, res) => {
     } catch (error) {
         console.error('Error fetching comments:', error);
         res.status(500).json({ success: false, message: 'Server error fetching comments' });
+    }
+};
+// Get all users who liked an item
+exports.getLikes = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await pool.query(
+            `SELECT l.*, u.username, u.profile_picture 
+             FROM market_likes l 
+             JOIN users u ON l.user_id = u.id 
+             WHERE l.market_id = $1 
+             ORDER BY l.created_at DESC`,
+            [id]
+        );
+        res.status(200).json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error('Error fetching likes:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+};
+
+// Get all users who shared an item
+exports.getShares = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await pool.query(
+            `SELECT s.*, u.username, u.profile_picture 
+             FROM market_shares s 
+             JOIN users u ON s.user_id = u.id 
+             WHERE s.market_id = $1 
+             ORDER BY s.created_at DESC`,
+            [id]
+        );
+        res.status(200).json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error('Error fetching shares:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+};
+
+// Get all users who viewed an item
+exports.getViews = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await pool.query(
+            `SELECT v.*, u.username, u.profile_picture 
+             FROM market_views v 
+             JOIN users u ON v.user_id = u.id 
+             WHERE v.market_id = $1 
+             ORDER BY v.last_viewed_at DESC`,
+            [id]
+        );
+        res.status(200).json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error('Error fetching views:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
     }
 };
