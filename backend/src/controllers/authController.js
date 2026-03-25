@@ -270,6 +270,29 @@ exports.verifyPassword = async (req, res) => {
     }
 };
 
+// Get public profile of any user
+exports.getUserById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await pool.query(
+            'SELECT id, user_id, username, full_name, profile_picture, bio, user_type, created_at FROM users WHERE id = $1',
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        res.status(200).json({
+            success: true,
+            user: result.rows[0]
+        });
+    } catch (error) {
+        console.error('getUserById error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+};
+
 // Get current user profile
 exports.getProfile = async (req, res) => {
     try {

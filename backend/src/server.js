@@ -29,11 +29,13 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
-// Rate Limiting - Basic protection
+// Rate Limiting - Relaxed for complex interactions and development
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 1000, // limit each IP to 1000 requests per windowMs
-    message: { success: false, message: 'Too many requests, please try again later.' }
+    max: process.env.NODE_ENV === 'development' ? 10000 : 5000, // Higher limit for development
+    message: { success: false, message: 'Too many requests, please try again later.' },
+    standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+    legacyHeaders: false, // Disable the `X-RateLimit-*` headers
 });
 app.use('/api/', limiter);
 

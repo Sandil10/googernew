@@ -114,7 +114,7 @@ export default function ShopPage() {
 
     const openBottomSheet = async (type: "likes" | "comments" | "shares" | "views", product: any) => {
         setBottomSheetType(type);
-        setInteractionProduct(product); 
+        setInteractionProduct(product);
         setIsBottomSheetOpen(true);
         setBottomSheetData([]); // Loading state
 
@@ -134,6 +134,9 @@ export default function ShopPage() {
         } catch (e) { console.error(e); }
     };
 
+    const [draggingType, setDraggingType] = useState<string | null>(null);
+    const [dragActive, setDragActive] = useState(false);
+
     const handleLogShare = async (id: number) => {
         try {
             await marketService.logShare(id);
@@ -150,42 +153,65 @@ export default function ShopPage() {
     };
 
 
-    const InteractionButton = ({ icon, count, color, onSingleClick, onLongReach, product }: any) => {
+    const InteractionButton = ({ icon, count, color, onSingleClick, onLongReach, product, type }: any) => {
         const [pressTimer, setPressTimer] = useState<any>(null);
         const [pressActive, setPressActive] = useState(false);
 
         const handleStart = (e: any) => {
-            e.preventDefault();
-            e.stopPropagation();
+            const target = e.currentTarget;
+            const pointerId = e.pointerId;
             setPressActive(false);
             const timer = setTimeout(() => {
-                setPressActive(true);
-                onLongReach();
+                try {
+                    target.setPointerCapture(pointerId);
+                    setPressActive(true);
+                    setDragActive(true);
+                    setDraggingType(type);
+                    onLongReach();
+                } catch (err) { }
             }, 600);
             setPressTimer(timer);
         };
 
         const handleEnd = (e: any) => {
-            e.preventDefault();
-            e.stopPropagation();
             if (pressTimer) clearTimeout(pressTimer);
+            try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) { }
+
             if (!pressActive) {
                 onSingleClick();
             }
             setPressTimer(null);
             setPressActive(false);
+            setDragActive(false);
+            setDraggingType(null);
+        };
+
+        const handlePointerMove = (e: any) => {
+            if (!dragActive) return;
+            const target = document.elementFromPoint(e.clientX, e.clientY);
+            const button = target?.closest('[data-interaction-type]');
+            if (button) {
+                const newType: any = button.getAttribute('data-interaction-type');
+                if (newType !== draggingType) {
+                    setDraggingType(newType);
+                    openBottomSheet(newType, product);
+                }
+            }
         };
 
         return (
             <button
                 type="button"
-                onMouseDown={handleStart}
-                onMouseUp={handleEnd}
-                onMouseLeave={(e) => { e.stopPropagation(); if (pressTimer) clearTimeout(pressTimer); setPressTimer(null); setPressActive(false); }}
-                onTouchStart={handleStart}
-                onTouchEnd={handleEnd}
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                className={`text-white/40 hover:${color} transition-all active:scale-75 flex items-center gap-0.5 focus:outline-none focus:ring-0 ${pressActive ? 'scale-110 !text-white' : ''}`}
+                data-interaction-type={type}
+                onPointerDown={handleStart}
+                onPointerUp={handleEnd}
+                onPointerMove={handlePointerMove}
+                onMouseLeave={() => { if (pressTimer) clearTimeout(pressTimer); }}
+                className={`text-white/40 hover:${color} transition-all active:scale-75 flex items-center gap-0.5 focus:outline-none focus:ring-0 ${draggingType === type || pressActive ? 'scale-125 !text-white z-10' : ''}`}
+                style={{
+                    transition: 'all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)',
+                    transform: draggingType === type ? 'scale(1.4) translateY(-4px)' : (pressActive ? 'scale(1.2)' : 'scale(1)')
+                }}
             >
                 <IonIcon name={icon} className="text-base md:text-xl" />
                 {count > 0 && <span className="text-[9px] font-bold">{count}</span>}
@@ -782,34 +808,37 @@ export default function ShopPage() {
                                             <span className="md:hidden">Sub</span>
                                             <span className="hidden md:inline">Subscribe</span>
                                         </button>
-                                        
+
                                         <div className="relative">
                                             <button
-                                                onClick={(e) => { 
-                                                    e.stopPropagation(); 
-                                                    setOpenMenuProductId(openMenuProductId === product.id ? null : product.id); 
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setOpenMenuProductId(openMenuProductId === product.id ? null : product.id);
                                                 }}
                                                 className="w-6 h-6 md:w-8 md:h-8 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center transition-all active:scale-75"
                                             >
-                                                <IonIcon name="ellipsis-horizontal" className="text-xs md:text-sm" />
+                                                <div className="flex flex-col gap-0.5">
+                                                    <div className="w-1 h-1 bg-white rounded-full"></div>
+                                                    <div className="w-1 h-1 bg-white rounded-full"></div>
+                                                </div>
                                             </button>
 
                                             {/* Dropdown Menu */}
                                             {openMenuProductId === product.id && (
-                                                <div 
+                                                <div
                                                     className="absolute right-0 top-full mt-2 w-32 md:w-40 bg-[#1a1a1a] border border-white/10 rounded-2xl shadow-2xl py-2 z-[60] animate-in slide-in-from-top-2 duration-200 overflow-hidden"
                                                     onClick={(e) => e.stopPropagation()}
                                                 >
                                                     {currentUser?.id === product.user_id ? (
                                                         <>
-                                                            <button 
+                                                            <button
                                                                 onClick={() => handleEditProduct(product)}
                                                                 className="w-full px-4 py-2.5 text-left text-[10px] md:text-xs font-bold text-white hover:bg-white/5 flex items-center gap-2 transition-colors"
                                                             >
                                                                 <IonIcon name="create-outline" className="text-blue-400" />
                                                                 Edit
                                                             </button>
-                                                            <button 
+                                                            <button
                                                                 onClick={() => handleDeleteProduct(product.id)}
                                                                 className="w-full px-4 py-2.5 text-left text-[10px] md:text-xs font-bold text-red-500 hover:bg-white/5 flex items-center gap-2 transition-colors border-t border-white/5"
                                                             >
@@ -819,14 +848,14 @@ export default function ShopPage() {
                                                         </>
                                                     ) : (
                                                         <>
-                                                            <button 
+                                                            <button
                                                                 onClick={() => { setReportingProduct(product); setOpenMenuProductId(null); }}
                                                                 className="w-full px-4 py-2.5 text-left text-[10px] md:text-xs font-bold text-white hover:bg-white/5 flex items-center gap-2 transition-colors"
                                                             >
                                                                 <IonIcon name="alert-circle-outline" className="text-yellow-500" />
                                                                 Report
                                                             </button>
-                                                            <button 
+                                                            <button
                                                                 onClick={() => handleNotInterested(product.id)}
                                                                 className="w-full px-4 py-2.5 text-left text-[10px] md:text-xs font-bold text-white hover:bg-white/5 flex items-center gap-2 transition-colors border-t border-white/5"
                                                             >
@@ -914,35 +943,42 @@ export default function ShopPage() {
                                     {/* Bottom action bar: 2-row on mobile, 1-row on desktop */}
                                     <div className="border-t border-white/5 pt-2 md:pt-4 flex flex-col gap-2">
 
-                                        {/* Row 1: All interaction icons + cart (always visible on all sizes) */}
-                                        <div className="flex items-center gap-2 md:gap-3 w-full">
-                                            <InteractionButton 
+                                        <div className="flex items-center gap-2 md:gap-3 w-full" onPointerLeave={() => { if (dragActive) setDragActive(false); setDraggingType(null); }}>
+                                            <InteractionButton
+                                                type="likes"
                                                 icon="heart-outline"
                                                 count={product.likes_count}
                                                 color="text-red-500"
                                                 onSingleClick={() => handleToggleLike(product.id)}
                                                 onLongReach={() => openBottomSheet('likes', product)}
+                                                product={product}
                                             />
-                                            <InteractionButton 
+                                            <InteractionButton
+                                                type="comments"
                                                 icon="chatbubble-outline"
                                                 count={product.comments_count}
                                                 color="text-white"
                                                 onSingleClick={() => { setSelectedProduct(product); handleLogView(product.id); }}
                                                 onLongReach={() => openBottomSheet('comments', product)}
+                                                product={product}
                                             />
-                                            <InteractionButton 
+                                            <InteractionButton
+                                                type="shares"
                                                 icon="share-social-outline"
                                                 count={product.shares_count}
                                                 color="text-green-500"
                                                 onSingleClick={() => { setShareProduct(product); setShowShareModal(true); }}
                                                 onLongReach={() => openBottomSheet('shares', product)}
+                                                product={product}
                                             />
-                                            <InteractionButton 
+                                            <InteractionButton
+                                                type="views"
                                                 icon="eye-outline"
                                                 count={product.views_count}
                                                 color="text-blue-500"
                                                 onSingleClick={() => { setSelectedProduct(product); handleLogView(product.id); }}
                                                 onLongReach={() => openBottomSheet('views', product)}
+                                                product={product}
                                             />
 
                                             {/* Cart Icon — pinned right, always visible */}
@@ -1022,6 +1058,37 @@ export default function ShopPage() {
                     >
                         {/* Left Side: Image Gallery */}
                         <div className="w-full md:w-[45%] bg-[#0a0a0a] relative flex flex-col shrink-0 border-b md:border-b-0 md:border-r border-white/5">
+                            {/* Top Navigation Bar */}
+                            <div className="h-16 md:h-20 bg-black flex items-center justify-between px-4 md:px-6 border-b border-white/5 shrink-0">
+                                <div 
+                                    className="flex items-center gap-2 md:gap-3 cursor-pointer group"
+                                    onClick={() => { setSelectedProduct(null); router.push(`/dashboard/profile?id=${selectedProduct.user_id}`); }}
+                                >
+                                    <div className="w-8 h-8 md:w-10 md:h-10 rounded-full overflow-hidden border border-white/10 bg-white/5 flex items-center justify-center">
+                                        {selectedProduct.profile_picture ? (
+                                            <Image src={selectedProduct.profile_picture} alt="Seller" width={40} height={40} className="object-cover" />
+                                        ) : (
+                                            <IonIcon name="person" className="text-white/40" />
+                                        )}
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <h4 className="text-[7px] md:text-[9px] font-black uppercase tracking-widest text-blue-400 leading-tight">Seller Profile</h4>
+                                        <p className="text-[11px] md:text-sm font-bold text-white group-hover:text-blue-400 transition-colors leading-tight">
+                                            {selectedProduct.owner_username || selectedProduct.username || 'Anonymous Seller'}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center gap-3">
+                                    <button
+                                        onClick={() => { setSelectedProduct(null); setActivePreviewIndex(0); }}
+                                        className="w-10 h-10 rounded-full hover:bg-white/5 text-gray-400 hover:text-white flex items-center justify-center transition-all bg-white/[0.03] border border-white/5 shadow-inner"
+                                    >
+                                        <IonIcon name="close" className="text-2xl" />
+                                    </button>
+                                </div>
+                            </div>
+
                             {/* Main Preview */}
                             <div className="relative flex-1 min-h-[140px] md:min-h-[450px]">
                                 {(() => {
@@ -1048,22 +1115,45 @@ export default function ShopPage() {
                                                 className="object-cover transition-all duration-500"
                                             />
 
-                                            {uniqueImages.length > 1 && (
-                                                <>
-                                                    <button
-                                                        onClick={() => setActivePreviewIndex(prev => (prev === 0 ? uniqueImages.length - 1 : prev - 1))}
-                                                        className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-white flex items-center justify-center hover:bg-white hover:text-black transition-all"
-                                                    >
-                                                        <IonIcon name="chevron-back" />
-                                                    </button>
-                                                    <button
-                                                        onClick={() => setActivePreviewIndex(prev => (prev === uniqueImages.length - 1 ? 0 : prev + 1))}
-                                                        className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-white flex items-center justify-center hover:bg-white hover:text-black transition-all"
-                                                    >
-                                                        <IonIcon name="chevron-forward" />
-                                                    </button>
-                                                </>
-                                            )}
+                                            {/* Lateral Overlays */}
+                                            <div className="absolute inset-0 flex items-center justify-end px-4 pointer-events-none z-[35]">
+                                                {/* Right Side: Engagement Icons Column */}
+                                                <div className="flex flex-col items-center gap-6 pointer-events-auto">
+
+
+                                                    {/* Vertical Engagement Controls */}
+                                                    <div className="flex flex-col items-center gap-6 mt-4">
+                                                        <button 
+                                                            onClick={(e) => { e.stopPropagation(); handleToggleLike(selectedProduct.id); openBottomSheet('likes', selectedProduct); }} 
+                                                            className="text-white hover:text-red-500 transition-all active:scale-75 flex flex-col items-center gap-0.5 focus:outline-none"
+                                                        >
+                                                            <IonIcon name="heart" className="text-2xl drop-shadow-lg" />
+                                                            <span className="text-[10px] font-black drop-shadow-md">{selectedProduct.likes_count || 0}</span>
+                                                        </button>
+                                                        <button 
+                                                            onClick={(e) => { e.stopPropagation(); openBottomSheet('comments', selectedProduct); }} 
+                                                            className="text-white hover:text-blue-400 transition-all active:scale-75 flex flex-col items-center gap-0.5 focus:outline-none"
+                                                        >
+                                                            <IonIcon name="chatbubble" className="text-2xl drop-shadow-lg" />
+                                                            <span className="text-[10px] font-black drop-shadow-md">{selectedProduct.comments_count || 0}</span>
+                                                        </button>
+                                                        <button 
+                                                            onClick={(e) => { e.stopPropagation(); openBottomSheet('shares', selectedProduct); }} 
+                                                            className="text-white hover:text-green-500 transition-all active:scale-75 flex flex-col items-center gap-0.5 focus:outline-none"
+                                                        >
+                                                            <IonIcon name="share-social" className="text-2xl drop-shadow-lg" />
+                                                            <span className="text-[10px] font-black drop-shadow-md">{selectedProduct.shares_count || 0}</span>
+                                                        </button>
+                                                        <button 
+                                                            onClick={(e) => { e.stopPropagation(); openBottomSheet('views', selectedProduct); }} 
+                                                            className="text-white hover:text-blue-500 transition-all active:scale-75 flex flex-col items-center gap-0.5 focus:outline-none"
+                                                        >
+                                                            <IonIcon name="eye" className="text-2xl drop-shadow-lg" />
+                                                            <span className="text-[10px] font-black drop-shadow-md">{selectedProduct.views_count || 0}</span>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
 
                                             {/* Product Discount Badge */}
                                             {(() => {
@@ -1084,13 +1174,6 @@ export default function ShopPage() {
                                     );
                                 })()}
 
-                                {/* Close button mobile */}
-                                <button
-                                    onClick={() => { setSelectedProduct(null); setActivePreviewIndex(0); }}
-                                    className="absolute top-4 right-4 md:hidden w-10 h-10 rounded-full bg-black/50 backdrop-blur-md text-white flex items-center justify-center"
-                                >
-                                    <IonIcon name="close" className="text-xl" />
-                                </button>
                             </div>
 
                             {/* Thumbnails */}
@@ -1124,41 +1207,19 @@ export default function ShopPage() {
 
                         {/* Right Side: Details */}
                         <div className="flex-1 flex flex-col overflow-hidden">
-                            {/* Header */}
-                            <div className="p-6 md:p-8 flex items-center justify-between border-b border-white/5 bg-white/[0.02]">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 rounded-full overflow-hidden border border-blue-500/30 bg-blue-500/10 flex items-center justify-center">
-                                        {selectedProduct.profile_picture ? (
-                                            <Image src={selectedProduct.profile_picture} alt="Seller" width={40} height={40} className="object-cover" />
-                                        ) : (
-                                            <IonIcon name="person" className="text-blue-400" />
-                                        )}
-                                    </div>
-                                    <div>
-                                        <h4 className="text-[10px] font-black uppercase tracking-widest text-blue-400">Seller Profile</h4>
-                                        <p className="text-sm font-bold text-white">{selectedProduct.owner_username || selectedProduct.username || 'Anonymous Seller'}</p>
-                                    </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border ${selectedProduct.status === 'reviewing' ? 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' :
-                                        selectedProduct.status === 'rejected' ? 'bg-red-500/10 text-red-500 border-red-500/20' :
-                                            'bg-green-500/10 text-green-500 border-green-500/20'
-                                        }`}>
-                                        {selectedProduct.status}
-                                    </span>
-                                    <button
-                                        onClick={() => { setSelectedProduct(null); setActivePreviewIndex(0); }}
-                                        className="hidden md:flex w-10 h-10 rounded-full hover:bg-white/5 text-gray-400 hover:text-white items-center justify-center transition-all"
-                                    >
-                                        <IonIcon name="close" className="text-2xl" />
-                                    </button>
-                                </div>
-                            </div>
 
                             {/* Scrollable Content */}
                             <div className="flex-1 overflow-y-auto p-6 md:p-8 custom-scrollbar space-y-8">
                                 <div>
-                                    <h2 className="text-2xl md:text-3xl font-black text-white mb-2 tracking-tight">{selectedProduct.title}</h2>
+                                    <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
+                                        <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight leading-tight">{selectedProduct.title}</h2>
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); alert('Subscribed!'); }}
+                                            className="px-6 py-2.5 bg-white text-black text-[10px] md:text-[11px] font-black uppercase rounded-xl shadow-xl hover:bg-slate-200 transition-all active:scale-95 shrink-0"
+                                        >
+                                            Subscribe
+                                        </button>
+                                    </div>
                                     <div className="flex flex-wrap gap-2">
                                         <span className="px-2 py-0.5 bg-blue-500/10 text-blue-400 text-[9px] font-black rounded border border-blue-500/20 uppercase tracking-widest">
                                             {selectedProduct.category}
@@ -1169,24 +1230,7 @@ export default function ShopPage() {
                                             </span>
                                         )}
                                     </div>
-                                    <div className="flex items-center gap-6 mt-6">
-                                        <button onClick={(e) => { e.stopPropagation(); handleToggleLike(selectedProduct.id); openBottomSheet('likes', selectedProduct); }} className="text-white/40 hover:text-red-500 transition-all active:scale-75 flex items-center gap-1.5 focus:outline-none focus:ring-0">
-                                            <IonIcon name="heart-outline" className="text-xl" />
-                                            {selectedProduct.likes_count > 0 && <span className="text-xs font-bold">{selectedProduct.likes_count}</span>}
-                                        </button>
-                                        <button onClick={(e) => { e.stopPropagation(); openBottomSheet('comments', selectedProduct); }} className="text-white/40 hover:text-white transition-all active:scale-75 flex items-center gap-1.5 focus:outline-none focus:ring-0">
-                                            <IonIcon name="chatbubble-outline" className="text-xl" />
-                                            {selectedProduct.comments_count > 0 && <span className="text-xs font-bold">{selectedProduct.comments_count}</span>}
-                                        </button>
-                                        <button onClick={(e) => { e.stopPropagation(); openBottomSheet('shares', selectedProduct); }} className="text-white/40 hover:text-green-500 transition-all active:scale-75 flex items-center gap-1.5 focus:outline-none focus:ring-0">
-                                            <IonIcon name="share-social-outline" className="text-xl" />
-                                            {selectedProduct.shares_count > 0 && <span className="text-xs font-bold">{selectedProduct.shares_count}</span>}
-                                        </button>
-                                        <button onClick={(e) => { e.stopPropagation(); openBottomSheet('views', selectedProduct); }} className="text-white/40 hover:text-blue-500 transition-all active:scale-75 flex items-center gap-1.5 focus:outline-none focus:ring-0">
-                                            <IonIcon name="eye-outline" className="text-xl" />
-                                            {selectedProduct.views_count > 0 && <span className="text-xs font-bold">{selectedProduct.views_count}</span>}
-                                        </button>
-                                    </div>
+
                                 </div>
 
                                 {/* Price Section */}
@@ -1406,7 +1450,7 @@ export default function ShopPage() {
                 onAction={(action) => {
                     const targetProd = interactionProduct || selectedProduct;
                     if (!targetProd) return;
-                    
+
                     if (action === 'star') handleToggleLike(targetProd.id);
                     if (action === 'upload' || action === 'forward') {
                         setShareProduct(targetProd);
@@ -1422,11 +1466,11 @@ export default function ShopPage() {
 
             {/* Report Modal */}
             {reportingProduct && (
-                <div 
+                <div
                     className="fixed inset-0 z-[250] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-300"
                     onClick={() => setReportingProduct(null)}
                 >
-                    <div 
+                    <div
                         className="bg-[#111111] border border-white/10 rounded-[2rem] w-full max-w-sm shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300"
                         onClick={(e) => e.stopPropagation()}
                     >
@@ -1439,7 +1483,7 @@ export default function ShopPage() {
                                 <IonIcon name="close" />
                             </button>
                         </div>
-                        
+
                         <div className="p-6 space-y-4">
                             <div className="p-4 bg-white/[0.02] border border-white/5 rounded-2xl">
                                 <p className="text-[10px] text-white/30 font-bold uppercase mb-2">Reporting Product</p>
@@ -1449,7 +1493,7 @@ export default function ShopPage() {
                             <div className="space-y-3">
                                 <p className="text-[11px] text-white/40 font-bold px-1">Why are you reporting this?</p>
                                 {["Prohibited Item", "Suspicious Activity", "Wrong Category", "Other"].map((reason) => (
-                                    <button 
+                                    <button
                                         key={reason}
                                         onClick={() => handleReportSubmit(reportingProduct.id)}
                                         className="w-full px-4 py-3 bg-white/5 hover:bg-white/10 border border-white/5 rounded-xl text-left text-xs font-bold text-white transition-all active:scale-[0.98]"

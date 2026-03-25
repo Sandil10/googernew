@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import IonIcon from "./IonIcon";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 
 interface InteractionBottomSheetProps {
     isOpen: boolean;
@@ -23,6 +24,7 @@ export default function InteractionBottomSheet({
     onAction,
     onAddComment
 }: InteractionBottomSheetProps) {
+    const router = useRouter();
     const [aniState, setAniState] = useState(false);
     const [newComment, setNewComment] = useState("");
 
@@ -37,6 +39,11 @@ export default function InteractionBottomSheet({
     }, [isOpen]);
 
     if (!isOpen) return null;
+
+    const handleUserClick = (userId: any) => {
+        onClose();
+        router.push(`/dashboard/profile?id=${userId}`);
+    };
 
     const titles = {
         likes: "Who Liked This",
@@ -65,7 +72,7 @@ export default function InteractionBottomSheet({
                 <div className="w-full flex justify-center py-3">
                     <div className="w-10 h-1 rounded-full bg-white/20" />
                 </div>
- 
+
                 {/* Header */}
                 <div className="px-6 pb-4 border-b border-white/5 flex items-center justify-between">
                     <div>
@@ -81,24 +88,28 @@ export default function InteractionBottomSheet({
                         <IonIcon name="close" />
                     </button>
                 </div>
- 
+
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-4 custom-scrollbar min-h-[200px] mb-8">
-                     <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-2">
                         {data.length > 0 ? data.map((item, idx) => (
-                            <div key={idx} className="flex items-center gap-3 p-3 bg-white/[0.02] rounded-2xl border border-white/5 animate-in slide-in-from-bottom-2 duration-300">
-                                <div className="w-8 h-8 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center overflow-hidden">
+                            <div
+                                key={idx}
+                                onClick={() => handleUserClick(item.user_id || item.id)}
+                                className="flex items-center gap-3 p-3 bg-white/[0.02] rounded-2xl border border-white/5 animate-in slide-in-from-bottom-2 duration-300 cursor-pointer hover:bg-white/[0.05] transition-all active:scale-[0.98]"
+                            >
+                                <div className="w-8 h-8 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center overflow-hidden shrink-0">
                                     {item.profile_picture ? (
                                         <Image src={item.profile_picture} alt="P" width={32} height={32} className="w-full h-full object-cover" />
                                     ) : (
                                         <IonIcon name="person" className="text-blue-400 text-sm" />
                                     )}
                                 </div>
-                                <div className="flex flex-col">
-                                    <span className="text-xs font-bold text-white uppercase tracking-tight leading-none">{item.username || "Anonymous"}</span>
+                                <div className="flex flex-col min-w-0">
+                                    <span className="text-xs font-bold text-white uppercase tracking-tight leading-none truncate">{item.username || "Anonymous"}</span>
                                     {item.text && <p className="text-[10px] text-slate-400 mt-1 line-clamp-1 italic">"{item.text}"</p>}
                                 </div>
-                                <span className="ml-auto text-[8px] text-slate-500 uppercase font-black">
+                                <span className="ml-auto text-[8px] text-slate-500 uppercase font-black shrink-0">
                                     {new Date(item.created_at || Date.now()).toLocaleDateString()}
                                 </span>
                             </div>

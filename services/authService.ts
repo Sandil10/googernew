@@ -126,6 +126,20 @@ export const authService = {
         }
     },
 
+    getUserProfile: async (id: string | number) => {
+        try {
+            const response = await fetch(`${API_URL}/auth/user/${id}`, {
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json' },
+            });
+            const result = await safeJson(response);
+            if (!response.ok) throw new Error(result?.message || 'Failed to fetch user');
+            return result?.user;
+        } catch (error: any) {
+            throw error;
+        }
+    },
+
     getWallet: async () => {
         try {
             const token = storage.get('token');

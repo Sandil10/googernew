@@ -2,30 +2,57 @@
 
 import Image from "next/image";
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { authService } from "@/services/authService";
+import { marketService } from "@/services/marketService";
 import IonIcon from "@/app/components/IonIcon";
 import EditProfileModal from "@/app/components/EditProfileModal";
 
 export default function ProfilePage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
+    const profileId = searchParams ? searchParams.get('id') : null;
+
     const [activeTab, setActiveTab] = useState("posts");
     const [showMenu, setShowMenu] = useState(false);
     const [showEditModal, setShowEditModal] = useState(false);
     const [loading, setLoading] = useState(true);
     const [user, setUser] = useState<any>(null);
+    const [posts, setPosts] = useState<any[]>([]);
+    const [isOwnProfile, setIsOwnProfile] = useState(false);
 
     const fetchProfile = async () => {
         try {
-            if (!authService.isAuthenticated()) {
-                router.push('/');
-                return;
+            setLoading(true);
+            let profileData;
+            
+            if (profileId) {
+                // Fetch specific user's public profile
+                profileData = await authService.getUserProfile(profileId);
+                const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
+                setIsOwnProfile(currentUser.id === parseInt(profileId));
+
+                // Fetch their products
+                const userProducts = await marketService.getItems({ user_id: profileId, status: 'approved,active' });
+                setPosts(userProducts || []);
+            } else {
+                // Fetch own profile
+                if (!authService.isAuthenticated()) {
+                    router.push('/');
+                    return;
+                }
+                profileData = await authService.getProfile();
+                setIsOwnProfile(true);
+
+                // Fetch own products
+                const myProducts = await marketService.getItems({ user_id: profileData.id });
+                setPosts(myProducts || []);
             }
-            const profile = await authService.getProfile();
-            setUser(profile);
+            
+            setUser(profileData);
         } catch (error) {
             console.error("Error fetching profile:", error);
-            router.push('/');
+            if (!profileId) router.push('/');
         } finally {
             setLoading(false);
         }
@@ -33,7 +60,7 @@ export default function ProfilePage() {
 
     useEffect(() => {
         fetchProfile();
-    }, [router]);
+    }, [profileId, router]);
 
     const handleLogout = () => {
         authService.logout();
@@ -42,8 +69,6 @@ export default function ProfilePage() {
     const highlights = [
         { id: "add", title: "Add New", isAdd: true },
     ];
-
-    const posts: any[] = [];
 
     if (loading) {
         return (
@@ -93,7 +118,7 @@ export default function ProfilePage() {
                     {/* Stats */}
                     <div className="flex justify-center md:justify-start gap-6 md:gap-8 mb-6">
                         <div className="text-center md:text-left">
-                            <span className="block font-bold text-white text-lg">0</span>
+                            <span className="block font-bold text-white text-lg">{posts.length}</span>
                             <span className="text-gray-400 text-sm">Posts</span>
                         </div>
                         <div className="text-center md:text-left">
@@ -108,12 +133,19 @@ export default function ProfilePage() {
 
                     {/* Action Buttons */}
                     <div className="flex justify-center md:justify-start gap-3 relative">
-                        <button
-                            onClick={() => setShowEditModal(true)}
-                            className="px-6 py-2 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600 transition-colors text-sm"
-                        >
-                            Edit Profile
-                        </button>
+                        {isOwnProfile ? (
+                            <button
+                                onClick={() => setShowEditModal(true)}
+                                className="px-6 py-2 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600 transition-colors text-sm"
+                            >
+                                Edit Profile
+                            </button>
+                        ) : (
+                            <button className="px-6 py-2 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600 transition-colors text-sm flex items-center gap-2">
+                                <IonIcon name="person-add-outline" />
+                                <span>Follow</span>
+                            </button>
+                        )}
                         <div className="relative">
                             <button
                                 onClick={() => setShowMenu(!showMenu)}
@@ -205,13 +237,27 @@ export default function ProfilePage() {
             {posts.length > 0 ? (
                 <div className="grid grid-cols-3 gap-1 md:gap-4">
                     {posts.map((post) => (
-                        <div key={post.id} className="relative aspect-square group cursor-pointer overflow-hidden rounded-md bg-gray-800">
+                        <div key={post.id} className="relative aspect-square group cursor-pointer overflow-hidden rounded-md bg-gray-800"
+                            onClick={() => router.push(`/dashboard/shop?id=${post.id}`)}
+                        >
                             <Image
-                                src={post.img}
-                                alt="Post"
+                                src={(post.image_url && (post.image_url.includes('uploads') || post.image_url.includes('\\')))
+                                    ? `/uploads/${post.image_url.split(/[\\/]/).pop()}`
+                                    : (post.image_url || "https://picsum.photos/400/400")}
+                                alt={post.title}
                                 fill
                                 className="object-cover group-hover:scale-110 transition-transform duration-500"
                             />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
+                                <div className="flex items-center gap-1 text-white font-bold">
+                                    <IonIcon name="heart" />
+                                    <span>{post.likes_count || 0}</span>
+                                </div>
+                                <div className="flex items-center gap-1 text-white font-bold">
+                                    <IonIcon name="chatbubble" />
+                                    <span>{post.comments_count || 0}</span>
+                                </div>
+                            </div>
                         </div>
                     ))}
                 </div>
