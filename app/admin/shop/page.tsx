@@ -9,7 +9,146 @@ import IonIcon from "@/app/components/IonIcon";
 import { marketService } from "@/services/marketService";
 import { authService } from "@/services/authService";
 import { orderService } from "@/services/orderService";
+import { useCart } from "@/app/context/CartContext";
 import ShareModal from "@/app/components/ShareModal";
+
+const COLORS = [
+    { name: "None", hex: "transparent" },
+    { name: "Alice Blue", hex: "#F0F8FF" },
+    { name: "Antique White", hex: "#FAEBD7" },
+    { name: "Aqua", hex: "#00FFFF" },
+    { name: "Aquamarine", hex: "#7FFFD4" },
+    { name: "Azure", hex: "#F0FFFF" },
+    { name: "Beige", hex: "#F5F5DC" },
+    { name: "Bisque", hex: "#FFE4C4" },
+    { name: "Black", hex: "#000000" },
+    { name: "Blanched Almond", hex: "#FFEBCD" },
+    { name: "Blue", hex: "#0000FF" },
+    { name: "Blue Violet", hex: "#8A2BE2" },
+    { name: "Brown", hex: "#A52A2A" },
+    { name: "Burly Wood", hex: "#DEB887" },
+    { name: "Cadet Blue", hex: "#5F9EA0" },
+    { name: "Chartreuse", hex: "#7FFF00" },
+    { name: "Chocolate", hex: "#D2691E" },
+    { name: "Coral", hex: "#FF7F50" },
+    { name: "Cornflower Blue", hex: "#6495ED" },
+    { name: "Cornsilk", hex: "#FFF8DC" },
+    { name: "Crimson", hex: "#DC143C" },
+    { name: "Cyan", hex: "#00FFFF" },
+    { name: "Dark Blue", hex: "#00008B" },
+    { name: "Dark Cyan", hex: "#008B8B" },
+    { name: "Dark Goldenrod", hex: "#B8860B" },
+    { name: "Dark Gray", hex: "#A9A9A9" },
+    { name: "Dark Green", hex: "#006400" },
+    { name: "Dark Khaki", hex: "#BDB76B" },
+    { name: "Dark Magenta", hex: "#8B008B" },
+    { name: "Dark Olive Green", hex: "#556B2F" },
+    { name: "Dark Orange", hex: "#FF8C00" },
+    { name: "Dark Orchid", hex: "#9932CC" },
+    { name: "Dark Red", hex: "#8B0000" },
+    { name: "Dark Salmon", hex: "#E9967A" },
+    { name: "Dark Sea Green", hex: "#8FBC8F" },
+    { name: "Dark Slate Blue", hex: "#483D8B" },
+    { name: "Dark Slate Gray", hex: "#2F4F4F" },
+    { name: "Dark Turquoise", hex: "#00CED1" },
+    { name: "Dark Violet", hex: "#9400D3" },
+    { name: "Deep Pink", hex: "#FF1493" },
+    { name: "Deep Sky Blue", hex: "#00BFFF" },
+    { name: "Dim Gray", hex: "#696969" },
+    { name: "Dodger Blue", hex: "#1E90FF" },
+    { name: "Fire Brick", hex: "#B22222" },
+    { name: "Floral White", hex: "#FFFAF0" },
+    { name: "Forest Green", hex: "#228B22" },
+    { name: "Fuchsia", hex: "#FF00FF" },
+    { name: "Gainsboro", hex: "#DCDCDC" },
+    { name: "Ghost White", hex: "#F8F8FF" },
+    { name: "Gold", hex: "#FFD700" },
+    { name: "Goldenrod", hex: "#DAA520" },
+    { name: "Gray", hex: "#808080" },
+    { name: "Green", hex: "#008000" },
+    { name: "Green Yellow", hex: "#ADFF2F" },
+    { name: "Honey Dew", hex: "#F0FFF0" },
+    { name: "Hot Pink", hex: "#FF69B4" },
+    { name: "Indian Red", hex: "#CD5C5C" },
+    { name: "Indigo", hex: "#4B0082" },
+    { name: "Ivory", hex: "#FFFFF0" },
+    { name: "Khaki", hex: "#F0E68C" },
+    { name: "Lavender", hex: "#E6E6FA" },
+    { name: "Lavender Blush", hex: "#FFF0F5" },
+    { name: "Lawn Green", hex: "#7CFC00" },
+    { name: "Lemon Chiffon", hex: "#FFFACD" },
+    { name: "Light Blue", hex: "#ADD8E6" },
+    { name: "Light Coral", hex: "#F08080" },
+    { name: "Light Cyan", hex: "#E0FFFF" },
+    { name: "Light Goldenrod Yellow", hex: "#FAFAD2" },
+    { name: "Light Gray", hex: "#D3D3D3" },
+    { name: "Light Green", hex: "#90EE90" },
+    { name: "Light Pink", hex: "#FFB6C1" },
+    { name: "Light Salmon", hex: "#FFA07A" },
+    { name: "Light Sea Green", hex: "#20B2AA" },
+    { name: "Light Sky Blue", hex: "#87CEFA" },
+    { name: "Light Slate Gray", hex: "#778899" },
+    { name: "Light Steel Blue", hex: "#B0C4DE" },
+    { name: "Light Yellow", hex: "#FFFFE0" },
+    { name: "Lime", hex: "#00FF00" },
+    { name: "Lime Green", hex: "#32CD32" },
+    { name: "Linen", hex: "#FAF0E6" },
+    { name: "Magenta", hex: "#FF00FF" },
+    { name: "Maroon", hex: "#800000" },
+    { name: "Medium Aquamarine", hex: "#66CDAA" },
+    { name: "Medium Blue", hex: "#0000CD" },
+    { name: "Medium Orchid", hex: "#BA55D3" },
+    { name: "Medium Purple", hex: "#9370DB" },
+    { name: "Medium Sea Green", hex: "#3CB371" },
+    { name: "Medium Slate Blue", hex: "#7B68EE" },
+    { name: "Medium Spring Green", hex: "#00FA9A" },
+    { name: "Medium Turquoise", hex: "#48D1CC" },
+    { name: "Medium Violet Red", hex: "#C71585" },
+    { name: "Midnight Blue", hex: "#191970" },
+    { name: "Mint Cream", hex: "#F5FFFA" },
+    { name: "Misty Rose", hex: "#FFE4E1" },
+    { name: "Moccasin", hex: "#FFE4B5" },
+    { name: "Navajo White", hex: "#FFDEAD" },
+    { name: "Navy", hex: "#000080" },
+    { name: "Old Lace", hex: "#FDF5E6" },
+    { name: "Olive", hex: "#808000" },
+    { name: "Olive Drab", hex: "#6B8E23" },
+    { name: "Orange", hex: "#FFA500" },
+    { name: "Orange Red", hex: "#FF4500" },
+    { name: "Orchid", hex: "#DA70D6" },
+    { name: "Pale Goldenrod", hex: "#EEE8AA" },
+    { name: "Pale Green", hex: "#98FB98" },
+    { name: "Pale Turquoise", hex: "#AFEEEE" },
+    { name: "Pale Violet Red", hex: "#DB7093" },
+    { name: "Papaya Whip", hex: "#FFEFD5" },
+    { name: "Peach Puff", hex: "#FFDAB9" },
+    { name: "Peru", hex: "#CD853F" },
+    { name: "Pink", hex: "#FFC0CB" },
+    { name: "Plum", hex: "#DDA0DD" },
+    { name: "Powder Blue", hex: "#B0E0E6" },
+    { name: "Purple", hex: "#800080" },
+    { name: "Rebecca Purple", hex: "#663399" },
+    { name: "Red", hex: "#FF0000" },
+    { name: "Rosy Brown", hex: "#BC8F8F" },
+    { name: "Royal Blue", hex: "#4169E1" },
+    { name: "Saddle Brown", hex: "#8B4513" },
+    { name: "Salmon", hex: "#FA8072" },
+    { name: "Sandy Brown", hex: "#F4A460" },
+    { name: "Sea Green", hex: "#2E8B57" },
+    { name: "Sea Shell", hex: "#FFF5EE" },
+    { name: "Sienna", hex: "#A0522D" },
+    { name: "Silver", hex: "#C0C0C0" },
+    { name: "Sky Blue", hex: "#87CEEB" },
+    { name: "Slate Blue", hex: "#6A5ACD" },
+    { name: "Slate Gray", hex: "#708090" },
+    { name: "Snow", hex: "#FFFAFA" },
+    { name: "Spring Green", hex: "#00FF7F" },
+    { name: "Steel Blue", hex: "#4682B4" },
+    { name: "Tan", hex: "#D2B48C" },
+    { name: "Teal", hex: "#008080" },
+    { name: "Thistle", hex: "#D8BFD8" },
+    { name: "Tomato", hex: "#FF6347" },
+];
 
 export default function ShopPage() {
     const router = useRouter();
@@ -24,11 +163,15 @@ export default function ShopPage() {
     const [loading, setLoading] = useState(true);
     const [currentUser, setCurrentUser] = useState<any>(null);
     const [selectedProduct, setSelectedProduct] = useState<any>(null);
+    const [quantity, setQuantity] = useState(1);
+    const [selectedVariantIndex, setSelectedVariantIndex] = useState<number | null>(null);
+    const [selectedSize, setSelectedSize] = useState<string | null>(null);
     const [editingProduct, setEditingProduct] = useState<any>(null);
     const [mounted, setMounted] = useState(false);
     const [showShareModal, setShowShareModal] = useState(false);
     const [shareProduct, setShareProduct] = useState<any>(null);
     const [activePreviewIndex, setActivePreviewIndex] = useState(0);
+    const [isSizeDropdownOpen, setIsSizeDropdownOpen] = useState(false);
     const [reviewActionLoading, setReviewActionLoading] = useState<number | null>(null);
 
     const categories = [
@@ -60,6 +203,9 @@ export default function ShopPage() {
             console.error("Not logged in");
         }
     };
+
+    // Cart logic
+    const { addToCart } = useCart();
 
     const loadProducts = async () => {
         setLoading(true);
@@ -169,19 +315,24 @@ export default function ShopPage() {
 
     const handleBuyItem = async (itemId: number) => {
         if (!currentUser) return alert("Please login to buy items");
-        setLoading(true);
-        try {
-            await orderService.createOrder(itemId);
-            alert("Order placed successfully! Check 'My Orders' for status.");
-            setSelectedProduct(null);
-            setActivePreviewIndex(0);
-            setActiveTab("orders");
-        } catch (e: any) {
-            console.error(e);
-            alert(e.message || "Failed to place order");
-        } finally {
-            setLoading(false);
-        }
+        if (!selectedProduct) return;
+
+        // Use currentVariant to get the selected color/image if available
+        const currentVariant = selectedVariantIndex !== null
+            ? (typeof selectedProduct.variants === 'string' ? JSON.parse(selectedProduct.variants) : (selectedProduct.variants || []))[selectedVariantIndex]
+            : null;
+
+        addToCart(
+            selectedProduct,
+            quantity,
+            selectedSize,
+            currentVariant?.color || 'None',
+            selectedVariantIndex
+        );
+
+        setSelectedProduct(null);
+        setSelectedVariantIndex(null);
+        setSelectedSize(null);
     };
 
     const handleUpdateOrderStatus = async (orderId: number, status: string) => {
@@ -446,11 +597,10 @@ export default function ShopPage() {
                             {products.map((product) => (
                                 <div
                                     key={product.id}
-                                    className={`flex flex-col md:flex-row gap-4 bg-[#1a1a1a] rounded-[2rem] border p-4 md:p-6 transition-all ${
-                                        product.status === 'rejected'
-                                            ? 'border-red-500/20 bg-red-500/5'
-                                            : 'border-yellow-500/10 hover:border-yellow-500/30'
-                                    }`}
+                                    className={`flex flex-col md:flex-row gap-4 bg-[#1a1a1a] rounded-[2rem] border p-4 md:p-6 transition-all ${product.status === 'rejected'
+                                        ? 'border-red-500/20 bg-red-500/5'
+                                        : 'border-yellow-500/10 hover:border-yellow-500/30'
+                                        }`}
                                 >
                                     {/* Product Image */}
                                     <div className="relative w-full md:w-32 h-32 rounded-2xl overflow-hidden flex-shrink-0">
@@ -462,11 +612,10 @@ export default function ShopPage() {
                                             fill
                                             className="object-cover"
                                         />
-                                        <div className={`absolute top-2 left-2 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest ${
-                                            product.status === 'rejected'
-                                                ? 'bg-red-600 text-white'
-                                                : 'bg-yellow-500 text-black'
-                                        }`}>
+                                        <div className={`absolute top-2 left-2 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest ${product.status === 'rejected'
+                                            ? 'bg-red-600 text-white'
+                                            : 'bg-yellow-500 text-black'
+                                            }`}>
                                             {product.status === 'rejected' ? 'Rejected' : 'In Review'}
                                         </div>
                                     </div>
@@ -544,220 +693,226 @@ export default function ShopPage() {
 
             {/* Product Grid — only shown outside admin-review tab */}
             {activeTab !== 'admin-review' && (
-            <>
-            {loading ? (
-                <div className="flex items-center justify-center py-20">
-                    <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-white"></div>
-                </div>
-            ) : products.length === 0 ? (
-                <div className="text-center py-20 text-gray-500 bg-white/[0.02] rounded-[3rem] border border-white/5 border-dashed">
-                    <IonIcon name={(activeTab === 'my-products' && myListingsTab === 'reviewing') ? 'time-outline' : 'basket-outline'} className="text-4xl mb-3 opacity-20" />
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">No products found here</p>
-                </div>
-            ) : (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6 mb-10">
-                    {products.map((product) => (
-                        <div
-                            key={product.id}
-                            className="group cursor-pointer bg-[#1a1a1a] rounded-[1.5rem] md:rounded-[2.5rem] pb-4 md:pb-8 border border-white/5 hover:border-white/20 transition-all hover:shadow-2xl relative flex flex-col min-w-0"
-                            onClick={() => setSelectedProduct(product)}
-                        >
-                            {/* Profile Header with Subscribe */}
-                            <div className="flex items-center justify-between gap-1.5 p-3 md:p-4 md:px-5">
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                    <div className="w-6 h-6 md:w-8 md:h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center text-[8px] md:text-[10px] text-white overflow-hidden border border-white/10 shadow-lg relative flex-shrink-0">
-                                        {product.profile_picture ? (
-                                            <Image src={product.profile_picture} alt="Profile" fill className="object-cover" />
-                                        ) : (
-                                            <IonIcon name="person" className="text-white" />
+                <>
+                    {loading ? (
+                        <div className="flex items-center justify-center py-20">
+                            <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-white"></div>
+                        </div>
+                    ) : products.length === 0 ? (
+                        <div className="text-center py-20 text-gray-500 bg-white/[0.02] rounded-[3rem] border border-white/5 border-dashed">
+                            <IonIcon name={(activeTab === 'my-products' && myListingsTab === 'reviewing') ? 'time-outline' : 'basket-outline'} className="text-4xl mb-3 opacity-20" />
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">No products found here</p>
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6 mb-10">
+                            {products.map((product) => (
+                                <div
+                                    key={product.id}
+                                    className="group cursor-pointer bg-[#1a1a1a] rounded-[1.5rem] md:rounded-[2.5rem] pb-4 md:pb-8 border border-white/5 hover:border-white/20 transition-all hover:shadow-2xl relative flex flex-col min-w-0"
+                                    onClick={() => setSelectedProduct(product)}
+                                >
+                                    {/* Profile Header with Subscribe */}
+                                    <div className="flex items-center justify-between gap-1.5 p-3 md:p-4 md:px-5">
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                            <div className="w-6 h-6 md:w-8 md:h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center text-[8px] md:text-[10px] text-white overflow-hidden border border-white/10 shadow-lg relative flex-shrink-0">
+                                                {product.profile_picture ? (
+                                                    <Image src={product.profile_picture} alt="Profile" fill className="object-cover" />
+                                                ) : (
+                                                    <IonIcon name="person" className="text-white" />
+                                                )}
+                                            </div>
+                                            <div className="flex flex-col min-w-0">
+                                                <span className="text-[8px] md:text-[10px] text-white font-black uppercase tracking-tight truncate leading-none">
+                                                    {product.username || product.owner_username || 'Anonymous'}
+                                                </span>
+                                                <span className="text-[6px] md:text-[7px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Seller</span>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); alert('Subscribed!'); }}
+                                            className="px-2 md:px-4 py-1 md:py-1.5 bg-white text-black text-[7px] md:text-[9px] font-black uppercase rounded-full shadow-lg active:scale-95 transition-all hover:bg-slate-200 flex-shrink-0"
+                                        >
+                                            <span className="md:hidden">Sub</span>
+                                            <span className="hidden md:inline">Subscribe</span>
+                                        </button>
+                                    </div>
+
+                                    {/* Image Section */}
+                                    <div className="relative aspect-square mx-3 rounded-[2rem] overflow-hidden mb-5 bg-black border border-white/5 shadow-inner">
+                                        <Image
+                                            src={(product.image_url && (product.image_url.includes('uploads') || product.image_url.includes('\\')))
+                                                ? `/uploads/${product.image_url.split(/[\\/]/).pop()}`
+                                                : (product.image_url || "https://picsum.photos/400/400")}
+                                            alt={product.title}
+                                            fill
+                                            sizes="(max-width: 768px) 50vw, 25vw"
+                                            className="object-cover group-hover:scale-105 transition-transform duration-500"
+                                        />
+                                        {product.status === 'reviewing' && activeTab !== 'orders' && (
+                                            <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center">
+                                                <div className="flex flex-col items-center gap-2 text-white">
+                                                    <div className="w-10 h-10 md:w-12 md:h-12 rounded-full border-2 border-white flex items-center justify-center bg-black/50">
+                                                        <IonIcon name="time" className="text-xl md:text-2xl" />
+                                                    </div>
+                                                    <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider bg-black/60 px-2 py-1 rounded-full border border-white/30">Reviewing</span>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Product Discount Badge on Image Box */}
+                                        {(() => {
+                                            try {
+                                                const comm = typeof product.commission_info === 'string' ? JSON.parse(product.commission_info) : product.commission_info;
+                                                const gComm = comm?.googer_commission;
+                                                if (gComm && parseFloat(gComm) > 0) {
+                                                    return (
+                                                        <div className="absolute bottom-3 right-3 z-10 px-2.5 py-1 bg-green-500/10 backdrop-blur-md border border-green-500/20 rounded-lg shadow-[0_0_10px_rgba(34,197,94,0.1)]">
+                                                            <span className="text-[10px] md:text-xs font-black text-green-500">+{gComm}%</span>
+                                                        </div>
+                                                    );
+                                                }
+                                            } catch (e) {
+                                                console.warn("Failed to parse commission_info for product", product.id);
+                                            }
+                                            return null;
+                                        })()}
+                                        {product.status === 'rejected' && (
+                                            <div className="absolute inset-0 bg-red-900/40 backdrop-blur-[2px] flex items-center justify-center">
+                                                <div className="flex flex-col items-center gap-2 text-white">
+                                                    <div className="w-10 h-10 md:w-12 md:h-12 rounded-full border-2 border-red-500 flex items-center justify-center bg-red-600/30">
+                                                        <IonIcon name="close" className="text-xl md:text-2xl text-red-100" />
+                                                    </div>
+                                                    <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider bg-red-600/80 px-2 py-1 rounded-full border border-red-400">Rejected</span>
+                                                </div>
+                                            </div>
+                                        )}
+                                        {(activeTab === 'orders' || (activeTab === 'my-products' && myListingsTab === 'all')) && product.status && (
+                                            <div className="absolute top-4 right-4 px-2 py-1 bg-black/60 backdrop-blur-md rounded-lg border border-white/10">
+                                                <span className="text-[8px] font-black uppercase text-white tracking-widest">{product.status}</span>
+                                            </div>
                                         )}
                                     </div>
-                                    <div className="flex flex-col min-w-0">
-                                        <span className="text-[8px] md:text-[10px] text-white font-black uppercase tracking-tight truncate leading-none">
-                                            {product.username || product.owner_username || 'Anonymous'}
-                                        </span>
-                                        <span className="text-[6px] md:text-[7px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Seller</span>
-                                    </div>
-                                </div>
-                                <button
-                                    onClick={(e) => { e.stopPropagation(); alert('Subscribed!'); }}
-                                    className="px-2 md:px-4 py-1 md:py-1.5 bg-white text-black text-[7px] md:text-[9px] font-black uppercase rounded-full shadow-lg active:scale-95 transition-all hover:bg-slate-200 flex-shrink-0"
-                                >
-                                    <span className="md:hidden">Sub</span>
-                                    <span className="hidden md:inline">Subscribe</span>
-                                </button>
-                            </div>
 
-                            {/* Image Section */}
-                            <div className="relative aspect-square mx-3 rounded-[2rem] overflow-hidden mb-5 bg-black border border-white/5 shadow-inner">
-                                <Image
-                                    src={(product.image_url && (product.image_url.includes('uploads') || product.image_url.includes('\\')))
-                                        ? `/uploads/${product.image_url.split(/[\\/]/).pop()}`
-                                        : (product.image_url || "https://picsum.photos/400/400")}
-                                    alt={product.title}
-                                    fill
-                                    sizes="(max-width: 768px) 50vw, 25vw"
-                                    className="object-cover group-hover:scale-105 transition-transform duration-500"
-                                />
-                                {product.status === 'reviewing' && activeTab !== 'orders' && (
-                                    <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center">
-                                        <div className="flex flex-col items-center gap-2 text-white">
-                                            <div className="w-10 h-10 md:w-12 md:h-12 rounded-full border-2 border-white flex items-center justify-center bg-black/50">
-                                                <IonIcon name="time" className="text-xl md:text-2xl" />
+                                    {/* Content Section */}
+                                    <div className="px-3 md:px-6 pb-2">
+                                        <h3 className="text-white text-[12px] font-black truncate mb-3 uppercase tracking-tight group-hover:text-blue-400 transition-colors">{product.title}</h3>
+
+                                        <div className="flex flex-col mb-6">
+                                            {product.promo_price && (
+                                                <span className="text-[10px] text-slate-500 line-through font-bold opacity-60">R {product.price}</span>
+                                            )}
+                                            <div className="flex items-baseline gap-1">
+                                                <span className="text-xs font-black text-white/40">R</span>
+                                                <span className="text-2xl font-black text-white tracking-tighter">{product.promo_price || product.price}</span>
                                             </div>
-                                            <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider bg-black/60 px-2 py-1 rounded-full border border-white/30">Reviewing</span>
+                                        </div>
+
+                                        {/* Bottom action bar: 2-row on mobile, 1-row on desktop */}
+                                        <div className="border-t border-white/5 pt-2 md:pt-4 flex flex-col gap-2">
+
+                                            {/* Row 1: All interaction icons + cart (always visible on all sizes) */}
+                                            <div className="flex items-center gap-2 md:gap-3 w-full">
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); /* handleLike */ }}
+                                                    className="text-white/40 hover:text-red-500 transition-all active:scale-75"
+                                                >
+                                                    <IonIcon name="heart-outline" className="text-base md:text-xl" />
+                                                </button>
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
+                                                    className="text-white/40 hover:text-white transition-all active:scale-75"
+                                                >
+                                                    <IonIcon name="chatbubble-outline" className="text-base md:text-xl" />
+                                                </button>
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); /* handleShare */ }}
+                                                    className="text-white/40 hover:text-green-500 transition-all active:scale-75"
+                                                >
+                                                    <IonIcon name="share-social-outline" className="text-base md:text-xl" />
+                                                </button>
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
+                                                    className="text-white/40 hover:text-blue-500 transition-all active:scale-75"
+                                                >
+                                                    <IonIcon name="eye-outline" className="text-base md:text-xl" />
+                                                </button>
+
+                                                {/* Cart Icon — pinned right, always visible */}
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
+                                                    className="ml-auto flex-shrink-0 flex items-center justify-center w-6 h-6 text-white/40 hover:text-blue-400 transition-all active:scale-75"
+                                                >
+                                                    <IonIcon name="cart-outline" className="text-base md:text-lg" />
+                                                </button>
+                                            </div>
+
+                                            {/* Row 2: Context action buttons — shown only when needed */}
+                                            {(() => {
+                                                const actionBtn = product.status === 'rejected' ? (
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); handleEditProduct(product); }}
+                                                        className="px-3 py-1 bg-white/10 hover:bg-white hover:text-black text-white text-[9px] font-black uppercase rounded-lg transition-all whitespace-nowrap"
+                                                    >
+                                                        Edit
+                                                    </button>
+                                                ) : (activeTab === 'my-products' && myListingsTab === 'all') ? (
+                                                    (product.status === 'pending' || product.status === 'approved' || product.status === 'all') ? (
+                                                        <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'processing'); }} className="px-2 py-1 bg-white text-black text-[8px] font-black uppercase rounded-lg border border-white whitespace-nowrap">Process</button>
+                                                    ) : product.status === 'processing' ? (
+                                                        <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'shipped'); }} className="px-2 py-1 bg-blue-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap">Ship</button>
+                                                    ) : product.status === 'shipped' ? (
+                                                        <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'delivered'); }} className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap">Deliver</button>
+                                                    ) : product.status === 'delivered' ? (
+                                                        <span className="text-[8px] text-blue-400 font-black uppercase whitespace-nowrap">Wait Buyer</span>
+                                                    ) : product.status === 'received' ? (
+                                                        <span className="text-[8px] text-green-500 font-black uppercase whitespace-nowrap">Done ✓</span>
+                                                    ) : null
+                                                ) : activeTab === 'orders' ? (
+                                                    product.status === 'delivered' ? (
+                                                        <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'received'); }} className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap">Received?</button>
+                                                    ) : product.status === 'received' ? (
+                                                        <span className="text-[8px] text-green-500 font-black uppercase whitespace-nowrap">Done ✓</span>
+                                                    ) : null
+                                                ) : null;
+
+                                                return actionBtn ? (
+                                                    <div className="flex items-center">
+                                                        {actionBtn}
+                                                    </div>
+                                                ) : null;
+                                            })()}
                                         </div>
                                     </div>
-                                )}
-                                
-                                {/* Product Discount Badge on Image Box */}
-                                {(() => {
-                                    try {
-                                        const comm = typeof product.commission_info === 'string' ? JSON.parse(product.commission_info) : product.commission_info;
-                                        const gComm = comm?.googer_commission;
-                                        if (gComm && parseFloat(gComm) > 0) {
-                                            return (
-                                                <div className="absolute bottom-3 right-3 z-10 px-2.5 py-1 bg-green-500/10 backdrop-blur-md border border-green-500/20 rounded-lg shadow-[0_0_10px_rgba(34,197,94,0.1)]">
-                                                    <span className="text-[10px] md:text-xs font-black text-green-500">+{gComm}%</span>
-                                                </div>
-                                            );
-                                        }
-                                    } catch (e) {
-                                        console.warn("Failed to parse commission_info for product", product.id);
-                                    }
-                                    return null;
-                                })()}
-                                {product.status === 'rejected' && (
-                                    <div className="absolute inset-0 bg-red-900/40 backdrop-blur-[2px] flex items-center justify-center">
-                                        <div className="flex flex-col items-center gap-2 text-white">
-                                            <div className="w-10 h-10 md:w-12 md:h-12 rounded-full border-2 border-red-500 flex items-center justify-center bg-red-600/30">
-                                                <IonIcon name="close" className="text-xl md:text-2xl text-red-100" />
-                                            </div>
-                                            <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider bg-red-600/80 px-2 py-1 rounded-full border border-red-400">Rejected</span>
-                                        </div>
-                                    </div>
-                                )}
-                                {(activeTab === 'orders' || (activeTab === 'my-products' && myListingsTab === 'all')) && product.status && (
-                                    <div className="absolute top-4 right-4 px-2 py-1 bg-black/60 backdrop-blur-md rounded-lg border border-white/10">
-                                        <span className="text-[8px] font-black uppercase text-white tracking-widest">{product.status}</span>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Content Section */}
-                            <div className="px-3 md:px-6 pb-2">
-                                <h3 className="text-white text-[12px] font-black truncate mb-3 uppercase tracking-tight group-hover:text-blue-400 transition-colors">{product.title}</h3>
-
-                                <div className="flex flex-col mb-6">
-                                    {product.promo_price && (
-                                        <span className="text-[10px] text-slate-500 line-through font-bold opacity-60">R {product.price}</span>
-                                    )}
-                                    <div className="flex items-baseline gap-1">
-                                        <span className="text-xs font-black text-white/40">R</span>
-                                        <span className="text-2xl font-black text-white tracking-tighter">{product.promo_price || product.price}</span>
-                                    </div>
                                 </div>
-
-                                {/* Bottom action bar: 2-row on mobile, 1-row on desktop */}
-                                <div className="border-t border-white/5 pt-2 md:pt-4 flex flex-col gap-2">
-
-                                    {/* Row 1: All interaction icons + cart (always visible on all sizes) */}
-                                    <div className="flex items-center gap-2 md:gap-3 w-full">
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); /* handleLike */ }}
-                                            className="text-white/40 hover:text-red-500 transition-all active:scale-75"
-                                        >
-                                            <IonIcon name="heart-outline" className="text-base md:text-xl" />
-                                        </button>
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
-                                            className="text-white/40 hover:text-white transition-all active:scale-75"
-                                        >
-                                            <IonIcon name="chatbubble-outline" className="text-base md:text-xl" />
-                                        </button>
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); /* handleShare */ }}
-                                            className="text-white/40 hover:text-green-500 transition-all active:scale-75"
-                                        >
-                                            <IonIcon name="share-social-outline" className="text-base md:text-xl" />
-                                        </button>
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
-                                            className="text-white/40 hover:text-blue-500 transition-all active:scale-75"
-                                        >
-                                            <IonIcon name="eye-outline" className="text-base md:text-xl" />
-                                        </button>
-
-                                        {/* Cart Icon — pinned right, always visible */}
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); setSelectedProduct(product); }}
-                                            className="ml-auto flex-shrink-0 flex items-center justify-center w-6 h-6 text-white/40 hover:text-blue-400 transition-all active:scale-75"
-                                        >
-                                            <IonIcon name="cart-outline" className="text-base md:text-lg" />
-                                        </button>
-                                    </div>
-
-                                    {/* Row 2: Context action buttons — shown only when needed */}
-                                    {(() => {
-                                        const actionBtn = product.status === 'rejected' ? (
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); handleEditProduct(product); }}
-                                                className="px-3 py-1 bg-white/10 hover:bg-white hover:text-black text-white text-[9px] font-black uppercase rounded-lg transition-all whitespace-nowrap"
-                                            >
-                                                Edit
-                                            </button>
-                                        ) : (activeTab === 'my-products' && myListingsTab === 'all') ? (
-                                            (product.status === 'pending' || product.status === 'approved' || product.status === 'all') ? (
-                                                <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'processing'); }} className="px-2 py-1 bg-white text-black text-[8px] font-black uppercase rounded-lg border border-white whitespace-nowrap">Process</button>
-                                            ) : product.status === 'processing' ? (
-                                                <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'shipped'); }} className="px-2 py-1 bg-blue-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap">Ship</button>
-                                            ) : product.status === 'shipped' ? (
-                                                <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'delivered'); }} className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap">Deliver</button>
-                                            ) : product.status === 'delivered' ? (
-                                                <span className="text-[8px] text-blue-400 font-black uppercase whitespace-nowrap">Wait Buyer</span>
-                                            ) : product.status === 'received' ? (
-                                                <span className="text-[8px] text-green-500 font-black uppercase whitespace-nowrap">Done ✓</span>
-                                            ) : null
-                                        ) : activeTab === 'orders' ? (
-                                            product.status === 'delivered' ? (
-                                                <button onClick={(e) => { e.stopPropagation(); handleUpdateOrderStatus(product.id, 'received'); }} className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap">Received?</button>
-                                            ) : product.status === 'received' ? (
-                                                <span className="text-[8px] text-green-500 font-black uppercase whitespace-nowrap">Done ✓</span>
-                                            ) : null
-                                        ) : null;
-
-                                        return actionBtn ? (
-                                            <div className="flex items-center">
-                                                {actionBtn}
-                                            </div>
-                                        ) : null;
-                                    })()}
-                                </div>
-                            </div>
+                            ))}
                         </div>
-                    ))}
-                </div>
-            )}
+                    )}
 
-            {/* Pagination */}
-            {
-                products.length > 0 && (
-                    <div className="flex justify-center items-center gap-2 mb-20 fade-in">
-                        <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-white/10 text-gray-400 hover:bg-white/5 hover:text-white transition-colors"> <IonIcon name="chevron-back-outline" /> </button>
-                        <button className="w-8 h-8 flex items-center justify-center rounded-lg bg-white text-black font-black text-xs">1</button>
-                        <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-white/10 text-gray-400 hover:bg-white/5 hover:text-white transition-colors"> <IonIcon name="chevron-forward-outline" /> </button>
-                    </div>
-                )
-            }
+                    {/* Pagination */}
+                    {
+                        products.length > 0 && (
+                            <div className="flex justify-center items-center gap-2 mb-20 fade-in">
+                                <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-white/10 text-gray-400 hover:bg-white/5 hover:text-white transition-colors"> <IonIcon name="chevron-back-outline" /> </button>
+                                <button className="w-8 h-8 flex items-center justify-center rounded-lg bg-white text-black font-black text-xs">1</button>
+                                <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-white/10 text-gray-400 hover:bg-white/5 hover:text-white transition-colors"> <IonIcon name="chevron-forward-outline" /> </button>
+                            </div>
+                        )
+                    }
 
-            {/* End of conditional product grid (hidden in admin-review tab) */}
-            </>
+                    {/* End of conditional product grid (hidden in admin-review tab) */}
+                </>
             )}
 
             {/* Product Details Modal (Assuming existing code is mostly fine used selectedProduct state) */}
             {/* Product Details Modal (Assuming existing code is mostly fine used selectedProduct state) */}
             {selectedProduct && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-2 md:p-4 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300" onClick={() => { setSelectedProduct(null); setActivePreviewIndex(0); }}>
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-2 md:p-4 bg-black/95 backdrop-blur-xl animate-in fade-in duration-300" onClick={() => { 
+                    setSelectedProduct(null); 
+                    setActivePreviewIndex(0); 
+                    setSelectedVariantIndex(null);
+                    setSelectedSize(null);
+                    setIsSizeDropdownOpen(false);
+                }}>
                     <div
                         className="bg-[#121212] border border-white/10 rounded-[1.5rem] md:rounded-[2.5rem] w-full max-w-5xl shadow-2xl overflow-hidden flex flex-col md:flex-row h-full md:h-auto max-h-[95vh] md:max-h-[90vh] animate-in zoom-in-95 duration-300"
                         onClick={(e) => e.stopPropagation()}
@@ -833,7 +988,14 @@ export default function ShopPage() {
 
                                 {/* Close button mobile */}
                                 <button
-                                    onClick={() => { setSelectedProduct(null); setActivePreviewIndex(0); }}
+                                    onClick={() => { 
+                                        setSelectedProduct(null); 
+                                        setActivePreviewIndex(0); 
+                                        setQuantity(1); 
+                                        setSelectedVariantIndex(null); 
+                                        setSelectedSize(null);
+                                        setIsSizeDropdownOpen(false);
+                                    }}
                                     className="absolute top-4 right-4 md:hidden w-10 h-10 rounded-full bg-black/50 backdrop-blur-md text-white flex items-center justify-center"
                                 >
                                     <IonIcon name="close" className="text-xl" />
@@ -895,7 +1057,14 @@ export default function ShopPage() {
                                         {selectedProduct.status}
                                     </span>
                                     <button
-                                        onClick={() => { setSelectedProduct(null); setActivePreviewIndex(0); }}
+                                        onClick={() => {
+                                            setSelectedProduct(null);
+                                            setActivePreviewIndex(0);
+                                            setQuantity(1);
+                                            setSelectedVariantIndex(null);
+                                            setSelectedSize(null);
+                                            setIsSizeDropdownOpen(false);
+                                        }}
                                         className="hidden md:flex w-10 h-10 rounded-full hover:bg-white/5 text-gray-400 hover:text-white items-center justify-center transition-all"
                                     >
                                         <IonIcon name="close" className="text-2xl" />
@@ -920,85 +1089,254 @@ export default function ShopPage() {
                                 </div>
 
                                 {/* Price Section */}
-                                <div className="p-6 bg-white/[0.03] rounded-[2rem] border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                                    <div>
-                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-1">Pricing Details</p>
-                                        <div className="flex items-baseline gap-3">
+                                <div className="p-6 bg-white/[0.03] rounded-[2rem] border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                                    <div className="flex-1">
+                                        <p className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-500 mb-0.5">Price Details</p>
+                                        <div className="flex items-center gap-3">
                                             {selectedProduct.promo_price ? (
                                                 <>
-                                                    <span className="text-3xl font-black text-white tracking-tighter">R {selectedProduct.promo_price}</span>
-                                                    <span className="text-sm font-bold text-slate-500 line-through opacity-60">R {selectedProduct.price}</span>
-                                                    <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-[8px] font-black rounded-full border border-green-500/20">
-                                                        {Math.round((1 - selectedProduct.promo_price / selectedProduct.price) * 100)}% OFF
-                                                    </span>
+                                                    <div className="flex flex-row items-baseline gap-3">
+                                                        <span className="text-[10px] font-bold text-slate-500 line-through opacity-60">R {(selectedProduct.price * quantity).toFixed(2)}</span>
+                                                        <span className="text-2xl font-black text-white tracking-tighter">R {(selectedProduct.promo_price * quantity).toFixed(2)}</span>
+                                                    </div>
+                                                    <div className="flex flex-col gap-1">
+                                                        <span className="px-1.5 py-0.5 bg-green-500/20 text-green-400 text-[8px] font-black rounded-full border border-green-500/20 w-fit">
+                                                            {Math.round((1 - selectedProduct.promo_price / selectedProduct.price) * 100)}% OFF
+                                                        </span>
+                                                    </div>
                                                 </>
                                             ) : (
-                                                <span className="text-3xl font-black text-white tracking-tighter">R {selectedProduct.price}</span>
+                                                <div className="flex flex-col gap-1">
+                                                    <span className="text-2xl font-black text-white tracking-tighter">R {(selectedProduct.price * quantity).toFixed(2)}</span>
+                                                </div>
                                             )}
                                         </div>
                                     </div>
-                                    <div className="text-right">
-                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-1">Stock Availability</p>
-                                        <span className={`text-xl font-black ${parseInt(selectedProduct.stock) > 0 ? 'text-blue-400' : 'text-red-500'}`}>
-                                            {selectedProduct.stock || 0} Units
-                                        </span>
+
+                                    {/* Quantity Box */}
+                                    <div className="flex items-center gap-2 bg-white/[0.05] p-1.5 rounded-2xl border border-white/5 shadow-inner">
+                                        <button
+                                            onClick={() => setQuantity(Math.max(1, quantity - 1))}
+                                            className="w-8 h-8 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all active:scale-95"
+                                        >
+                                            <IonIcon name="remove-outline" />
+                                        </button>
+                                        <div className="w-10 text-center">
+                                            <span className="text-lg font-black text-white">{quantity}</span>
+                                        </div>
+                                        <button
+                                            onClick={() => setQuantity(quantity + 1)}
+                                            className="w-8 h-8 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all active:scale-95"
+                                        >
+                                            <IonIcon name="add-outline" />
+                                        </button>
                                     </div>
                                 </div>
 
-                                {/* Description */}
-                                <div>
-                                    <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400 mb-3">Product Description</h4>
-                                    <p className="text-sm text-slate-300 leading-relaxed bg-white/[0.02] p-6 rounded-[2rem] border border-white/5">
-                                        {selectedProduct.description || "No description provided for this listing."}
-                                    </p>
-                                </div>
+                                {/* Variants & Delivery Details */}
+                                <div className="space-y-8">
+                                    {(() => {
+                                        const productVariants = typeof selectedProduct.variants === 'string' ? JSON.parse(selectedProduct.variants) : (selectedProduct.variants || []);
+                                        const allMainImages = [selectedProduct.image_url, ...productVariants.map((v: any) => v.url || v.image_url)].filter(Boolean);
+                                        const uniqueDetailImages = Array.from(new Set(allMainImages));
 
-                                {/* Detailed Specs Grid */}
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="p-5 bg-white/[0.03] rounded-[1.5rem] border border-white/5">
-                                        <div className="flex items-center gap-2 mb-3">
-                                            <IonIcon name="refresh-circle-outline" className="text-blue-400 text-lg" />
-                                            <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Return & Warranty</h4>
-                                        </div>
-                                        <div className="space-y-2">
-                                            <div className="flex flex-col gap-0.5">
-                                                <p className="text-[8px] font-black uppercase text-slate-500 tracking-wider">Return Policy</p>
-                                                <p className="text-xs font-bold text-white">{selectedProduct.return_policy?.text || 'Standard'}</p>
-                                                {selectedProduct.return_policy?.date && <p className="text-[10px] text-slate-500">Duration: {selectedProduct.return_policy.date}</p>}
-                                            </div>
-                                            <div className="flex flex-col gap-0.5 pt-2 border-t border-white/5">
-                                                <p className="text-[8px] font-black uppercase text-slate-500 tracking-wider">Warranty Info</p>
-                                                <p className="text-xs font-bold text-blue-400 uppercase tracking-tight">
-                                                    {(() => {
-                                                        const w = typeof selectedProduct.warranty_info === 'string' ? JSON.parse(selectedProduct.warranty_info) : selectedProduct.warranty_info;
-                                                        return (w?.warranty === 'Custom' ? w?.custom : w?.warranty) || 'No Warranty';
-                                                    })()}
-                                                </p>
-                                            </div>
-                                        </div>
-                                    </div>
+                                        const variantChoices: any[] = [];
+                                        const seenVariants = new Set();
 
-                                    <div className="p-5 bg-white/[0.03] rounded-[1.5rem] border border-white/5">
-                                        <div className="flex items-center gap-2 mb-3">
-                                            <IonIcon name="earth-outline" className="text-blue-400 text-lg" />
-                                            <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Available Countries</h4>
-                                        </div>
-                                        <div className="flex flex-wrap gap-2">
-                                            {(() => {
-                                                const shippingInfo = typeof selectedProduct.shipping_info === 'string' ? JSON.parse(selectedProduct.shipping_info) : selectedProduct.shipping_info;
-                                                const rates = shippingInfo?.rates || [];
-                                                
-                                                if (rates.length > 0) {
-                                                    return rates.map((r: any, idx: number) => (
-                                                        <div key={idx} className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-xl border border-white/10 group hover:border-blue-500/30 transition-all">
-                                                            <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]" />
-                                                            <span className="text-[10px] font-black uppercase text-white tracking-widest">{r.country}</span>
-                                                            <span className="text-[9px] font-bold text-slate-500">R{r.charge}</span>
+                                        productVariants.forEach((v: any, idx: number) => {
+                                            const key = `${v.color || 'None'}-${v.image_url || v.url || ''}`;
+                                            if (!seenVariants.has(key)) {
+                                                seenVariants.add(key);
+                                                variantChoices.push({
+                                                    ...v,
+                                                    color: v.color || 'None',
+                                                    originalIndex: idx
+                                                });
+                                            }
+                                        });
+
+                                        // For single posts with no variants, add the main product as a choice
+                                        if (variantChoices.length === 0) {
+                                            variantChoices.push({
+                                                color: 'None',
+                                                image_url: selectedProduct.image_url,
+                                                originalIndex: null
+                                            });
+                                        }
+
+                                        const currentVariant = selectedVariantIndex !== null ? productVariants[selectedVariantIndex] : null;
+                                        const activeColor = currentVariant?.color || 'None';
+
+                                        return (
+                                            <div className="space-y-6">
+                                                {variantChoices.length > 0 && (
+                                                    <div>
+                                                        <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400 mb-3">Available Variants</h4>
+                                                        <div className="flex flex-wrap gap-4 bg-white/[0.01] p-5 rounded-[1.5rem] border border-white/5">
+                                                            {variantChoices.map((variant, idx) => {
+                                                                const colorInfo = COLORS.find(c => c.name === variant.color) || COLORS[0];
+
+                                                                const img = variant.image_url || variant.url || selectedProduct.image_url;
+                                                                const processedImg = (img && (img.includes('uploads') || img.includes('\\')))
+                                                                    ? `/uploads/${img.split(/[\\/]/).pop()}`
+                                                                    : img;
+
+                                                                const isSelected = variant.originalIndex === null
+                                                                    ? selectedVariantIndex === null
+                                                                    : selectedVariantIndex === variant.originalIndex;
+
+                                                                return (
+                                                                    <div
+                                                                        key={idx}
+                                                                        onClick={() => {
+                                                                            setSelectedVariantIndex(variant.originalIndex);
+                                                                            setSelectedSize(null);
+                                                                            const imgIndex = uniqueDetailImages.indexOf(img);
+                                                                            if (imgIndex !== -1) setActivePreviewIndex(imgIndex);
+                                                                        }}
+                                                                        className={`group flex flex-col items-center gap-3 cursor-pointer transition-all ${isSelected ? 'scale-105' : 'opacity-60 hover:opacity-100'}`}
+                                                                    >
+                                                                        <div className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl overflow-hidden border-2 shadow-xl transition-all ${isSelected ? 'border-blue-500 shadow-blue-500/20' : 'border-white/10'}`}>
+                                                                            {processedImg && (
+                                                                                <Image
+                                                                                    src={processedImg}
+                                                                                    alt={variant.color}
+                                                                                    width={64}
+                                                                                    height={64}
+                                                                                    className="w-full h-full object-cover"
+                                                                                />
+                                                                            )}
+                                                                        </div>
+                                                                        <div className="flex flex-col items-center gap-1.5">
+                                                                            {variant.color !== 'None' && (
+                                                                                <div
+                                                                                    className="w-4 h-4 rounded-full border border-white/20 shadow-lg"
+                                                                                    style={{ backgroundColor: colorInfo.hex }}
+                                                                                />
+                                                                            )}
+                                                                            <span className={`text-[7px] font-black uppercase tracking-widest transition-colors ${isSelected ? 'text-blue-400' : 'text-white/30'}`}>
+                                                                                {variant.color === 'None' ? 'Standard' : variant.color}
+                                                                            </span>
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })}
                                                         </div>
-                                                    ));
-                                                }
-                                                return <span className="text-[10px] text-slate-500 italic">No countries specified</span>;
-                                            })()}
+                                                    </div>
+                                                )}
+
+                                                <div className="animate-in fade-in slide-in-from-top-2 duration-300 space-y-8">
+                                                    <div className="flex items-center justify-between bg-white/[0.01] p-5 rounded-[1.5rem] border border-white/5 relative">
+                                                        <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400">Select Size</h4>
+                                                        <div className="relative">
+                                                            <button
+                                                                onClick={() => setIsSizeDropdownOpen(!isSizeDropdownOpen)}
+                                                                className={`flex items-center gap-3 px-5 py-2.5 rounded-xl border-2 transition-all ${selectedSize ? 'bg-blue-600/10 border-blue-500/30 text-blue-400 shadow-lg shadow-blue-500/5 rotate-in-y-180' : 'bg-white/5 border-white/10 text-white/40 hover:bg-white/10 hover:text-white'}`}
+                                                            >
+                                                                <span className="text-[10px] font-black uppercase tracking-widest">{selectedSize || 'Choose Size'}</span>
+                                                                <IonIcon name={isSizeDropdownOpen ? "chevron-up" : "chevron-down"} className="text-sm" />
+                                                            </button>
+
+                                                            {/* Custom Dropdown Overlay */}
+                                                            {isSizeDropdownOpen && (
+                                                                <div className="absolute right-0 bottom-full mb-3 w-48 bg-[#111] border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-[100] animate-in slide-in-from-bottom-2 fade-in duration-200">
+                                                                    <div className="p-2 grid grid-cols-1 gap-1">
+                                                                        {(() => {
+                                                                            const matchingVariants = (selectedVariantIndex !== null)
+                                                                                ? productVariants.filter((pv: any) => (pv.color || 'None').toString().toLowerCase() === (activeColor || 'None').toString().toLowerCase())
+                                                                                : productVariants;
+                                                                            const allSizes = matchingVariants.flatMap((pv: any) => {
+                                                                                if (Array.isArray(pv.selections)) return pv.selections.map((s: any) => s.value);
+                                                                                if (pv.selection) return [pv.selection];
+                                                                                if (pv.size) return [pv.size];
+                                                                                return [];
+                                                                            });
+                                                                            return Array.from(new Set(allSizes));
+                                                                        })().map((size: any, idx: number) => (
+                                                                            <button
+                                                                                key={idx}
+                                                                                onClick={() => {
+                                                                                    setSelectedSize(size);
+                                                                                    setIsSizeDropdownOpen(false);
+                                                                                }}
+                                                                                className={`w-full px-4 py-3 flex items-center justify-between rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${selectedSize === size ? 'bg-blue-600 text-white' : 'text-white/40 hover:bg-white/5 hover:text-white'}`}
+                                                                            >
+                                                                                {size}
+                                                                                {selectedSize === size && <IonIcon name="checkmark" />}
+                                                                            </button>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Selection Summary */}
+                                                    <div className="mt-10 pt-10 border-t border-white/5 space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                                                        <div className="flex justify-between items-center group">
+                                                            <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 group-hover:text-blue-400 transition-colors">Select Size</span>
+                                                            <span className="text-xs font-black text-white">{selectedSize || '-'}</span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center group">
+                                                            <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 group-hover:text-blue-400 transition-colors">Color</span>
+                                                            <span className="text-xs font-black text-blue-400 uppercase tracking-widest">{activeColor || 'Default'}</span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center group">
+                                                            <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 group-hover:text-blue-400 transition-colors">Delivery</span>
+                                                            <span className="text-[10px] font-black text-white uppercase tracking-tight">
+                                                                {(() => {
+                                                                    const d1 = new Date(); const d2 = new Date();
+                                                                    d1.setDate(d1.getDate() + 4); d2.setDate(d2.getDate() + 8);
+                                                                    const format = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                                                                    return `${format(d1)} - ${format(d2)}`;
+                                                                })()}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })()}
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="p-5 bg-white/[0.03] rounded-[2rem] border border-white/5">
+                                            <div className="flex items-center gap-2 mb-4">
+                                                <IonIcon name="earth-outline" className="text-blue-400 text-lg" />
+                                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Delivery Countries</h4>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                {(() => {
+                                                    const shippingInfo = typeof selectedProduct.shipping_info === 'string' ? JSON.parse(selectedProduct.shipping_info) : selectedProduct.shipping_info;
+                                                    const rates = shippingInfo?.rates || [];
+                                                    if (rates.length > 0) {
+                                                        return rates.map((r: any, idx: number) => (
+                                                            <div key={idx} className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-xl border border-white/10 group hover:border-blue-500/30 transition-all">
+                                                                <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]" />
+                                                                <span className="text-[10px] font-black uppercase text-white tracking-widest">{r.country}</span>
+                                                                <span className="text-[9px] font-bold text-slate-500">R{r.charge}</span>
+                                                            </div>
+                                                        ));
+                                                    }
+                                                    return <span className="text-[10px] text-slate-500 italic">No countries specified</span>;
+                                                })()}
+                                            </div>
+                                        </div>
+
+                                        <div className="p-5 bg-white/[0.03] rounded-[2rem] border border-white/5">
+                                            <div className="flex items-center gap-2 mb-4">
+                                                <IonIcon name="refresh-circle-outline" className="text-blue-400 text-lg" />
+                                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Warranty Details</h4>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <div className="flex flex-col gap-0.5 pt-2">
+                                                    <p className="text-[8px] font-black uppercase text-blue-400 tracking-tight">
+                                                        {(() => {
+                                                            const w = typeof selectedProduct.warranty_info === 'string' ? JSON.parse(selectedProduct.warranty_info) : selectedProduct.warranty_info;
+                                                            return (w?.warranty === 'Custom' ? w?.custom : w?.warranty) || 'No Warranty';
+                                                        })()}
+                                                    </p>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>

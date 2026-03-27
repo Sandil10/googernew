@@ -7,6 +7,8 @@ import { useState, useEffect } from "react";
 import Topbar from "@/app/components/Topbar";
 import IonIcon from "@/app/components/IonIcon";
 import AddProductModal from "@/app/components/AddProductModal";
+import CartSidebar from "@/app/components/CartSidebar";
+import { useCart } from "@/app/context/CartContext";
 
 // Mobile Bottom Nav Items
 const menuItems = [
@@ -24,6 +26,7 @@ export default function DashboardLayout({
     const pathname = usePathname();
     const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
     const [editingProduct, setEditingProduct] = useState<any>(null);
+    const { setIsCartOpen, cartCount } = useCart();
 
     useEffect(() => {
         const handleOpen = (e: any) => {
@@ -90,16 +93,17 @@ export default function DashboardLayout({
                         <div key={item.name} className="relative flex flex-col items-center">
                             {/* Floating Cart Icon above Chat only on mobile */}
                             {item.name === "Chats" && pathname === "/dashboard/shop" && (
-                                <Link
-                                    href="/dashboard/cart"
+                                <button
+                                    onClick={() => setIsCartOpen(true)}
                                     className="absolute -top-14 w-12 h-12 bg-white text-black rounded-full flex items-center justify-center shadow-2xl border border-white/10 active:scale-90 transition-all z-[60]"
                                 >
                                     <IonIcon name="cart" className="text-xl" />
-                                    {/* Optional: Cart Count Badge */}
-                                    <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-600 rounded-full border-2 border-zinc-900 flex items-center justify-center">
-                                        <span className="text-[10px] font-black text-white">0</span>
-                                    </div>
-                                </Link>
+                                    {cartCount > 0 && (
+                                        <div className="absolute -top-1 -right-1 w-5 h-5 bg-blue-600 rounded-full border-2 border-zinc-900 flex items-center justify-center">
+                                            <span className="text-[10px] font-black text-white">{cartCount}</span>
+                                        </div>
+                                    )}
+                                </button>
                             )}
                             <Link
                                 href={item.href}
@@ -133,6 +137,9 @@ export default function DashboardLayout({
                     onSuccess={handleSuccess}
                 />
             )}
+
+            {/* Global Cart Sidebar */}
+            <CartSidebar />
         </div>
     );
 }

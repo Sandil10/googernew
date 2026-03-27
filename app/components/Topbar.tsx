@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
+import { useCart } from "@/app/context/CartContext";
 
 const menuItems = [
     { name: "Home", icon: "home", href: "/dashboard" },
@@ -19,6 +20,7 @@ export default function Topbar() {
     const pathname = usePathname();
     const [user, setUser] = useState<any>(null);
     const [loading, setLoading] = useState(true);
+    const { cartCount, setIsCartOpen, isCartOpen } = useCart();
 
     useEffect(() => {
         const fetchUser = async () => {
@@ -137,13 +139,21 @@ export default function Topbar() {
             {/* Actions & Profile Menu */}
             <div className="flex items-center gap-1 sm:gap-2">
                 {/* Cart Icon */}
-                <Link
-                    href="/dashboard/cart"
-                    className="hidden md:flex w-9 h-9 items-center justify-center text-gray-400 hover:text-white transition-all duration-300 rounded-full hover:bg-white/10 relative group"
-                    title="Cart"
-                >
-                    <IonIcon name="cart-outline" className="text-xl group-hover:scale-110 transition-transform" />
-                </Link>
+                <div className="relative">
+                    <button
+                        onClick={() => setIsCartOpen(!isCartOpen)}
+                        className={`w-9 h-9 flex items-center justify-center transition-all duration-300 rounded-full relative group
+                        ${isCartOpen ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}
+                        title="Cart"
+                    >
+                        <IonIcon name={isCartOpen ? "cart" : "cart-outline"} className="text-xl group-hover:scale-110 transition-transform" />
+                        {cartCount > 0 && (
+                            <span className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 text-white text-[9px] font-black rounded-full flex items-center justify-center border-2 border-[#18181b] animate-in zoom-in duration-300">
+                                {cartCount}
+                            </span>
+                        )}
+                    </button>
+                </div>
 
                 {/* Notification Button */}
                 <div className="relative">
