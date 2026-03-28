@@ -3,7 +3,6 @@ const nextConfig = {
   // Fix HTTP 431 "Request Header Fields Too Large" caused by large cookies/JWT tokens.
   // Raises the maximum allowed HTTP header size from the default 8KB to 32KB.
   experimental: {
-    serverComponentsHmrCache: false, // needed when using custom header size
   },
   httpAgentOptions: {
     maxHeaderSize: 32768, // 32KB (default is 8192 = 8KB)
@@ -32,6 +31,31 @@ const nextConfig = {
         hostname: 'ui-avatars.com',
       },
     ],
+  },
+  async rewrites() {
+    return [
+      {
+        source: '/api/:path*',
+        destination: 'http://localhost:5000/api/:path*',
+      },
+      // Reverse compatibility for legacy routes if needed
+      {
+        source: '/auth/:path*',
+        destination: 'http://localhost:5000/auth/:path*',
+      },
+      {
+        source: '/wallet/:path*',
+        destination: 'http://localhost:5000/wallet/:path*',
+      },
+      {
+        source: '/market/:path*',
+        destination: 'http://localhost:5000/market/:path*',
+      },
+      {
+        source: '/orders/:path*',
+        destination: 'http://localhost:5000/orders/:path*',
+      },
+    ];
   },
 };
 

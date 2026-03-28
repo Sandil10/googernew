@@ -294,6 +294,18 @@ export default function ShopPage() {
         }
     };
 
+    const handleMarkInactive = async (id: number) => {
+        setReviewActionLoading(id);
+        try {
+            await marketService.updateStatus(id, 'inactive');
+            loadProducts();
+        } catch (e: any) {
+            alert(e.message || 'Failed to mark product as inactive');
+        } finally {
+            setReviewActionLoading(null);
+        }
+    };
+
     const handleDeleteProduct = async (id: number) => {
         if (!confirm("Are you sure you want to delete this listing?")) return;
         try {
@@ -676,6 +688,14 @@ export default function ShopPage() {
                                                 Reject
                                             </button>
                                             <button
+                                                onClick={() => handleMarkInactive(product.id)}
+                                                disabled={reviewActionLoading === product.id}
+                                                className="flex-1 py-2.5 bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-black text-[10px] font-black uppercase tracking-widest rounded-xl border border-amber-500/20 hover:border-amber-500 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                            >
+                                                <IonIcon name="archive" className="text-sm" />
+                                                Inactive
+                                            </button>
+                                            <button
                                                 onClick={() => setSelectedProduct(product)}
                                                 className="w-10 h-10 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl flex items-center justify-center text-slate-400 hover:text-white transition-all"
                                                 title="View Details"
@@ -844,6 +864,26 @@ export default function ShopPage() {
                                                 >
                                                     <IonIcon name="cart-outline" className="text-base md:text-lg" />
                                                 </button>
+
+                                                {/* Inactive toggle for admin */}
+                                                {(currentUser?.role === 'admin' || currentUser?.is_admin || currentUser?.user_type === 'admin') && product.status === 'approved' && (
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); handleMarkInactive(product.id); }}
+                                                        className="flex-shrink-0 flex items-center justify-center w-6 h-6 text-white/30 hover:text-amber-400 transition-all active:scale-75"
+                                                        title="Mark as Inactive"
+                                                    >
+                                                        <IonIcon name="archive-outline" className="text-base md:text-lg" />
+                                                    </button>
+                                                )}
+                                                {(currentUser?.role === 'admin' || currentUser?.is_admin || currentUser?.user_type === 'admin') && product.status === 'inactive' && (
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); handleApproveProduct(product.id); }}
+                                                        className="flex-shrink-0 flex items-center justify-center w-6 h-6 text-amber-400 hover:text-green-400 transition-all active:scale-75"
+                                                        title="Re-activate product"
+                                                    >
+                                                        <IonIcon name="checkmark-circle-outline" className="text-base md:text-lg" />
+                                                    </button>
+                                                )}
                                             </div>
 
                                             {/* Row 2: Context action buttons — shown only when needed */}

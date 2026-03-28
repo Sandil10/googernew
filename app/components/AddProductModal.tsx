@@ -241,13 +241,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     setPreviews(loadedPreviews.length > 0 ? loadedPreviews : [initialData.image_url]);
                     setSelectedImages(new Array(loadedPreviews.length || 1).fill(null));
 
-                    // Detect mode
-                    const colors = variantsData.map((v: any) => v.color || "None");
-                    const uniqueColors = new Set(colors.filter(c => c !== "None")).size;
-                    const firstSelections = JSON.stringify(variantsData[0].selections || []);
-                    const hasDifferentVariants = variantsData.some((v: any) => JSON.stringify(v.selections || []) !== firstSelections);
-
-                    if (uniqueColors > 1 || hasDifferentVariants) {
+                    // Detect mode: If multiple variants were saved, maintain 'variants' mode to allow separate editing
+                    if (variantsData.length > 1) {
                         setUploadMode('variants');
                     } else {
                         setUploadMode('single');
@@ -1448,7 +1443,9 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             <div key={sIdx} className="flex flex-col gap-2 bg-black/40 border border-white/5 p-4 rounded-2xl animate-in slide-in-from-right-4 duration-300">
                                                 <div className="flex items-center justify-between">
                                                     <div className="flex flex-col">
-                                                        <span className="text-[8px] font-black text-white uppercase mb-0.5">Variant Selection</span>
+                                                        <span className="text-[8px] font-black text-white uppercase mb-0.5">
+                                                            {UOMS.includes(sel.value) ? "Variant UOM" : "Variant Size"}
+                                                        </span>
                                                         <span className="text-xs font-bold text-white">{sel.value}</span>
                                                     </div>
                                                     <button
@@ -2265,7 +2262,12 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 const newVariants = [...variants];
                                                 const targetIdx = activeImageIndex;
                                                 const currentSelections = newVariants[targetIdx]?.selections || [];
-                                                const newSelections = tempSelections.map(val => ({
+                                                
+                                                // Ensure uniqueness
+                                                const existingValues = new Set(currentSelections.map((s: any) => s.value));
+                                                const uniqueNew = tempSelections.filter(val => !existingValues.has(val));
+
+                                                const newSelections = uniqueNew.map(val => ({
                                                     value: val,
                                                     stock: "",
                                                     detail: "",
@@ -2274,7 +2276,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 newVariants[targetIdx] = {
                                                     ...newVariants[targetIdx],
                                                     selections: [...currentSelections, ...newSelections],
-                                                    type: isUOM ? 'UOM' : 'Size' // Fallback for legacy support
+                                                    type: isUOM ? 'UOM' : 'Size'
                                                 };
                                                 setVariants(newVariants);
                                             }

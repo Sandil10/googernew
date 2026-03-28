@@ -38,7 +38,6 @@ export default function IonIcon({ name, size, className }: IonIconProps) {
 
     return (
         <ion-icon
-            key={name}
             name={name}
             size={size}
             className={className}

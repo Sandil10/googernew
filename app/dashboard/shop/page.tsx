@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useMemo, memo } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import IonIcon from "@/app/components/IonIcon";
@@ -12,6 +12,13 @@ import { orderService } from "@/services/orderService";
 import { useCart } from "@/app/context/CartContext";
 import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
+
+const SIZES = ["S", "M", "L", "XL", "XXL", "3XL", "4XL", "5XL", "mm", "cm"];
+const UOMS = [
+  "Piece", "Pair", "Set", "Kg", "Gram", "Litre", "ML", "Pack", "Box", "Dozon",
+  "Metre", "Yard", "Foot", "Inch", "mm", "cm", "Sq Ft", "Roll", "Bundle", "Bag", "Bottle", "Can",
+  "Carton", "Pallet", "Unit", "Service", "Hour", "Day", "Month"
+];
 
 const COLORS = [
   { name: "None", hex: "transparent" },
@@ -222,6 +229,123 @@ const COLORS = [
   { name: "Baby Pink", hex: "#F4C2C2" },
 ];
 
+// Moved outside ShopPage to prevent remounting issues
+const InteractionButton = memo(({
+  icon,
+  activeIcon,
+  count,
+  color,
+  activeColor,
+  isActive,
+  onSingleClick,
+  onLongReach,
+  type,
+  orientation = "horizontal",
+  iconSize = "text-base md:text-xl",
+}: any) => {
+  const timerRef = useRef<any>(null);
+  const longPressedRef = useRef(false);
+
+  const handleStart = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    longPressedRef.current = false;
+    timerRef.current = setTimeout(() => {
+      longPressedRef.current = true;
+      onLongReach();
+    }, 600);
+  };
+
+  const handleEnd = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    if (!longPressedRef.current) {
+      onSingleClick();
+    }
+    longPressedRef.current = false;
+  };
+
+  const handleCancel = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    longPressedRef.current = false;
+  };
+
+  const currentIcon = isActive && activeIcon ? activeIcon : icon;
+  const currentColorClass = isActive ? activeColor : `text-white/40 hover:text-white`;
+
+  return (
+    <button
+      type="button"
+      data-interaction-type={type}
+      onPointerDown={handleStart}
+      onPointerUp={handleEnd}
+      onPointerLeave={handleCancel}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+      className={`${currentColorClass} transition-all duration-300 active:scale-75 flex ${orientation === "vertical" ? "flex-col" : "items-center"} gap-0.5 focus:outline-none focus:ring-0 select-none cursor-pointer touch-none`}
+    >
+      <IonIcon name={currentIcon} className={iconSize} />
+      {count > 0 && <span className="text-[9px] font-bold">{count}</span>}
+    </button>
+  );
+});
+
+InteractionButton.displayName = "InteractionButton";
+
+interface MarketItemWrapperProps {
+  product: any;
+  children: React.ReactNode;
+  isCompact?: boolean;
+  onView?: (id: number) => void;
+  activeTab?: string;
+}
+
+const MarketItemWrapper = memo(
+  ({
+    product,
+    children,
+    onView,
+    activeTab,
+  }: MarketItemWrapperProps) => {
+    useEffect(() => {
+      // "When a user sees a product for the first time... it should automatically count as 1 view."
+      if (product?.id && activeTab === "market" && onView) {
+        onView(product.id);
+      }
+    }, [product?.id, activeTab, onView]);
+
+    return <>{children}</>;
+  },
+);
+
+MarketItemWrapper.displayName = "MarketItemWrapper";
+
+function formatRelativeTime(dateString: string) {
+  if (!dateString) return "";
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+  if (diffInSeconds < 60) return "just now";
+
+  const minutes = Math.floor(diffInSeconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+
+  const years = Math.floor(months / 12);
+  return `${years}y ago`;
+}
+
 export default function ShopPage() {
   const router = useRouter();
   const [showFilters, setShowFilters] = useState(false);
@@ -232,6 +356,7 @@ export default function ShopPage() {
   const [isCategoriesDrawerOpen, setIsCategoriesDrawerOpen] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(""); // Filter state
   const [products, setProducts] = useState<any[]>([]);
+  const [isBottomSheetLoading, setIsBottomSheetLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
@@ -258,6 +383,8 @@ export default function ShopPage() {
   const [selectedVariantIndex, setSelectedVariantIndex] = useState<number | null>(null);
   const [selectedSize, setSelectedSize] = useState<string | null>(null);
   const [isSizeDropdownOpen, setIsSizeDropdownOpen] = useState(false);
+  const [likedProductIds, setLikedProductIds] = useState<Set<number>>(new Set());
+  const [inactiveProducts, setInactiveProducts] = useState<any[]>([]);
 
   useEffect(() => {
     if (selectedProduct?.id) {
@@ -309,12 +436,11 @@ export default function ShopPage() {
   };
 
   const handleSendComment = async (text: string) => {
-    if (!selectedProduct) return;
-    setNewComment(text);
-    // We'll let the user click the button in BottomSheet, or if it calls handleSendComment, we handle it here.
-    // Actually, handleAddComment uses newComment. Let's make it more robust:
+    const targetProduct = interactionProduct || selectedProduct;
+    if (!targetProduct) return;
+
     try {
-      const comment = await marketService.addComment(selectedProduct.id, text);
+      const comment = await marketService.addComment(targetProduct.id, text);
       const commentData = {
         ...comment,
         username: currentUser?.username || "You",
@@ -323,7 +449,7 @@ export default function ShopPage() {
       setBottomSheetData((prev) => [commentData, ...prev]);
       setProducts((prev) =>
         prev.map((p) =>
-          p.id === selectedProduct.id
+          p.id === targetProduct.id
             ? { ...p, comments_count: (p.comments_count || 0) + 1 }
             : p,
         ),
@@ -336,6 +462,12 @@ export default function ShopPage() {
   const handleToggleLike = async (id: number) => {
     try {
       const liked = await marketService.toggleLike(id);
+      setLikedProductIds((prev) => {
+        const next = new Set(prev);
+        if (liked) next.add(id);
+        else next.delete(id);
+        return next;
+      });
       setProducts((prev) =>
         prev.map((p) =>
           p.id === id
@@ -343,6 +475,14 @@ export default function ShopPage() {
             : p,
         ),
       );
+
+      // IMPORTANT: Update selectedProduct if modal is open for this ID
+      if (selectedProduct?.id === id) {
+        setSelectedProduct((prev: any) => ({
+          ...prev,
+          likes_count: (prev.likes_count || 0) + (liked ? 1 : -1),
+        }));
+      }
 
       // If bottom sheet is open for likes, refresh it in Real Time
       if (
@@ -366,6 +506,7 @@ export default function ShopPage() {
     setInteractionProduct(product);
     setIsBottomSheetOpen(true);
     setBottomSheetData([]); // Loading state
+    setIsBottomSheetLoading(true);
 
     try {
       let data = [];
@@ -382,11 +523,12 @@ export default function ShopPage() {
       setBottomSheetData(data || []);
     } catch (e) {
       console.error(e);
+    } finally {
+      setIsBottomSheetLoading(false);
     }
   };
 
-  const [draggingType, setDraggingType] = useState<string | null>(null);
-  const [dragActive, setDragActive] = useState(false);
+  // dragging states removed — no icon popup on long press
 
   const handleLogShare = async (id: number) => {
     try {
@@ -403,96 +545,21 @@ export default function ShopPage() {
 
   const handleLogView = async (id: number) => {
     try {
-      await marketService.logView(id);
-      // Optionally update state if we want real-time view counts,
-      // but views are limited to 24h so immediate feedback is less critical than likes.
+      const result = await marketService.logView(id);
+      // Update view count locally if backend confirmed an increment
+      if (result?.incremented !== false) {
+        setProducts((prev) =>
+          prev.map((p) =>
+            p.id === id ? { ...p, views_count: (p.views_count || 0) + 1 } : p,
+          ),
+        );
+      }
     } catch (e) {
       console.error(e);
     }
   };
 
-  const InteractionButton = ({
-    icon,
-    count,
-    color,
-    onSingleClick,
-    onLongReach,
-    product,
-    type,
-  }: any) => {
-    const [pressTimer, setPressTimer] = useState<any>(null);
-    const [pressActive, setPressActive] = useState(false);
-
-    const handleStart = (e: any) => {
-      const target = e.currentTarget;
-      const pointerId = e.pointerId;
-      setPressActive(false);
-      const timer = setTimeout(() => {
-        try {
-          target.setPointerCapture(pointerId);
-          setPressActive(true);
-          setDragActive(true);
-          setDraggingType(type);
-          onLongReach();
-        } catch (err) {}
-      }, 600);
-      setPressTimer(timer);
-    };
-
-    const handleEnd = (e: any) => {
-      if (pressTimer) clearTimeout(pressTimer);
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      } catch (err) {}
-
-      if (!pressActive) {
-        onSingleClick();
-      }
-      setPressTimer(null);
-      setPressActive(false);
-      setDragActive(false);
-      setDraggingType(null);
-    };
-
-    const handlePointerMove = (e: any) => {
-      if (!dragActive) return;
-      const target = document.elementFromPoint(e.clientX, e.clientY);
-      const button = target?.closest("[data-interaction-type]");
-      if (button) {
-        const newType: any = button.getAttribute("data-interaction-type");
-        if (newType !== draggingType) {
-          setDraggingType(newType);
-          openBottomSheet(newType, product);
-        }
-      }
-    };
-
-    return (
-      <button
-        type="button"
-        data-interaction-type={type}
-        onPointerDown={handleStart}
-        onPointerUp={handleEnd}
-        onPointerMove={handlePointerMove}
-        onMouseLeave={() => {
-          if (pressTimer) clearTimeout(pressTimer);
-        }}
-        className={`text-white/40 hover:${color} transition-all active:scale-75 flex items-center gap-0.5 focus:outline-none focus:ring-0 ${draggingType === type || pressActive ? "scale-125 !text-white z-10" : ""}`}
-        style={{
-          transition: "all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
-          transform:
-            draggingType === type
-              ? "scale(1.4) translateY(-4px)"
-              : pressActive
-                ? "scale(1.2)"
-                : "scale(1)",
-        }}
-      >
-        <IonIcon name={icon} className="text-base md:text-xl" />
-        {count > 0 && <span className="text-[9px] font-bold">{count}</span>}
-      </button>
-    );
-  };
+  // InteractionButton is now outside ShopPage
 
   const categories = [
     "Gamings",
@@ -524,6 +591,15 @@ export default function ShopPage() {
     currentUser,
     selectedCategory,
   ]);
+
+  // Load inactive products for market tab
+  useEffect(() => {
+    if (activeTab === "market") {
+      marketService.getItems({ status: "inactive" }).then((data: any[]) => {
+        setInactiveProducts(data || []);
+      }).catch(() => setInactiveProducts([]));
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     const handleRefresh = () => refresh();
@@ -663,8 +739,8 @@ export default function ShopPage() {
     const currentVariant =
       selectedVariantIndex !== null
         ? (typeof selectedProduct.variants === "string"
-            ? JSON.parse(selectedProduct.variants)
-            : selectedProduct.variants || [])[selectedVariantIndex]
+          ? JSON.parse(selectedProduct.variants)
+          : selectedProduct.variants || [])[selectedVariantIndex]
         : null;
 
     addToCart(
@@ -701,25 +777,7 @@ export default function ShopPage() {
     setOpenMenuProductId(null);
   };
 
-  const MarketItemWrapper = ({
-    product,
-    children,
-    isCompact = false,
-  }: {
-    product: any;
-    children: React.ReactNode;
-    isCompact?: boolean;
-  }) => {
-    useEffect(() => {
-      // "When a user sees a product for the first time... it should automatically count as 1 view."
-      // Simple view log on mount. 24h limit is handled by backend.
-      if (product?.id && activeTab === "market") {
-        handleLogView(product.id);
-      }
-    }, [product?.id]);
 
-    return <>{children}</>;
-  };
 
   return (
     <div className="pb-10 relative min-h-screen">
@@ -785,7 +843,7 @@ export default function ShopPage() {
             >
               <div className="flex items-center gap-2">
                 <IonIcon name="cart-outline" />
-                Your Orders
+                My Orders
               </div>
               {activeTab === "orders" && (
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>
@@ -833,7 +891,7 @@ export default function ShopPage() {
                   label: "Active Products",
                   icon: "checkmark-circle",
                 },
-                { id: "all", label: "Your Orders", icon: "receipt" },
+                { id: "all", label: "My Orders", icon: "receipt" },
                 {
                   id: "reviewing",
                   label: products.some((p) => p.status === "rejected")
@@ -849,11 +907,10 @@ export default function ShopPage() {
                   key={tab.id}
                   onClick={() => setMyListingsTab(tab.id)}
                   className={`flex items-center justify-center gap-2 px-4 py-2 w-44 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
-                                        ${
-                                          myListingsTab === tab.id
-                                            ? "bg-white text-black shadow-lg shadow-white/5 scale-[1.02]"
-                                            : "text-slate-500 hover:text-white hover:bg-white/5"
-                                        }`}
+                                        ${myListingsTab === tab.id
+                      ? "bg-white text-black shadow-lg shadow-white/5 scale-[1.02]"
+                      : "text-slate-500 hover:text-white hover:bg-white/5"
+                    }`}
                 >
                   <IonIcon
                     name={
@@ -891,11 +948,10 @@ export default function ShopPage() {
                   key={sub.id}
                   onClick={() => setMyListingsSubTab(sub.id)}
                   className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all whitespace-nowrap
-                                        ${
-                                          myListingsSubTab === sub.id
-                                            ? "bg-white/10 text-white"
-                                            : "text-slate-600 hover:text-slate-400"
-                                        }`}
+                                        ${myListingsSubTab === sub.id
+                      ? "bg-white/10 text-white"
+                      : "text-slate-600 hover:text-slate-400"
+                    }`}
                 >
                   {sub.label}
                 </button>
@@ -933,11 +989,10 @@ export default function ShopPage() {
                 key={tab.id}
                 onClick={() => setMyOrdersTab(tab.id)}
                 className={`flex items-center justify-center gap-2 px-4 py-2 w-44 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all whitespace-nowrap
-                                    ${
-                                      myOrdersTab === tab.id
-                                        ? "bg-white text-black shadow-lg shadow-white/5 scale-[1.02]"
-                                        : "text-slate-500 hover:text-white hover:bg-white/5"
-                                    }`}
+                                    ${myOrdersTab === tab.id
+                    ? "bg-white text-black shadow-lg shadow-white/5 scale-[1.02]"
+                    : "text-slate-500 hover:text-white hover:bg-white/5"
+                  }`}
               >
                 <IonIcon
                   name={tab.icon + (myOrdersTab === tab.id ? "" : "-outline")}
@@ -1033,7 +1088,13 @@ export default function ShopPage() {
           {products
             .filter((p) => !hiddenProductIds.includes(p.id))
             .map((item) => (
-              <MarketItemWrapper key={item.id} product={item} isCompact={true}>
+              <MarketItemWrapper
+                key={item.id}
+                product={item}
+                isCompact={true}
+                onView={handleLogView}
+                activeTab={activeTab}
+              >
                 <div
                   className="bg-[#1a1a1a] rounded-[2rem] border border-white/5 hover:border-white/10 transition-all p-4 md:p-6 flex flex-col md:flex-row gap-6 group relative overflow-hidden"
                   onClick={() => {
@@ -1046,8 +1107,8 @@ export default function ShopPage() {
                     <Image
                       src={
                         item.image_url &&
-                        (item.image_url.includes("uploads") ||
-                          item.image_url.includes("\\"))
+                          (item.image_url.includes("uploads") ||
+                            item.image_url.includes("\\"))
                           ? `/uploads/${item.image_url.split(/[\\/]/).pop()}`
                           : item.image_url || "https://picsum.photos/400/400"
                       }
@@ -1205,8 +1266,8 @@ export default function ShopPage() {
                           /* Seller Actions (Sales) */
                           <>
                             {item.status === "pending" ||
-                            item.status === "approved" ||
-                            item.status === "all" ? (
+                              item.status === "approved" ||
+                              item.status === "all" ? (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -1254,6 +1315,8 @@ export default function ShopPage() {
                           onClick={(e) => {
                             e.stopPropagation();
                             setSelectedProduct(item);
+                            setSelectedVariantIndex(null);
+                            setActivePreviewIndex(0);
                           }}
                           className="w-10 h-10 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl flex items-center justify-center text-slate-400 hover:text-white transition-all shadow-inner"
                         >
@@ -1272,11 +1335,18 @@ export default function ShopPage() {
           {products
             .filter((p) => !hiddenProductIds.includes(p.id))
             .map((product) => (
-              <MarketItemWrapper key={product.id} product={product}>
+              <MarketItemWrapper
+                key={product.id}
+                product={product}
+                onView={handleLogView}
+                activeTab={activeTab}
+              >
                 <div
                   className="group cursor-pointer bg-[#1a1a1a] rounded-[1.5rem] md:rounded-[2.5rem] pb-4 md:pb-8 border border-white/5 hover:border-white/20 transition-all hover:shadow-2xl relative flex flex-col min-w-0"
                   onClick={() => {
                     setSelectedProduct(product);
+                    setSelectedVariantIndex(null);
+                    setActivePreviewIndex(0);
                     handleLogView(product.id);
                   }}
                 >
@@ -1302,7 +1372,7 @@ export default function ShopPage() {
                             "Anonymous"}
                         </span>
                         <span className="text-[6px] md:text-[7px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">
-                          Seller
+                          {formatRelativeTime(product.created_at)}
                         </span>
                       </div>
                     </div>
@@ -1404,8 +1474,8 @@ export default function ShopPage() {
                     <Image
                       src={
                         product.image_url &&
-                        (product.image_url.includes("uploads") ||
-                          product.image_url.includes("\\"))
+                          (product.image_url.includes("uploads") ||
+                            product.image_url.includes("\\"))
                           ? `/uploads/${product.image_url.split(/[\\/]/).pop()}`
                           : product.image_url || "https://picsum.photos/400/400"
                       }
@@ -1556,18 +1626,15 @@ export default function ShopPage() {
 
                     {/* Bottom action bar: 2-row on mobile, 1-row on desktop */}
                     <div className="border-t border-white/5 pt-1 md:pt-1.5 flex flex-col gap-2">
-                      <div
-                        className="flex items-center gap-2 md:gap-3 w-full"
-                        onPointerLeave={() => {
-                          if (dragActive) setDragActive(false);
-                          setDraggingType(null);
-                        }}
-                      >
+                      <div className="flex items-center gap-2 md:gap-3 w-full">
                         <InteractionButton
                           type="likes"
                           icon="heart-outline"
+                          activeIcon="heart"
+                          isActive={likedProductIds.has(product.id)}
                           count={product.likes_count}
-                          color="text-red-500"
+                          color="text-white"
+                          activeColor="text-white"
                           onSingleClick={() => handleToggleLike(product.id)}
                           onLongReach={() => openBottomSheet("likes", product)}
                           product={product}
@@ -1575,10 +1642,11 @@ export default function ShopPage() {
                         <InteractionButton
                           type="views"
                           icon="eye-outline"
+                          activeIcon="eye"
                           count={product.views_count}
-                          color="text-blue-500"
+                          color="text-white"
+                          activeColor="text-white"
                           onSingleClick={() => {
-                            setSelectedProduct(product);
                             handleLogView(product.id);
                           }}
                           onLongReach={() => openBottomSheet("views", product)}
@@ -1587,22 +1655,24 @@ export default function ShopPage() {
                         <InteractionButton
                           type="comments"
                           icon="chatbubble-outline"
+                          activeIcon="chatbubble"
                           count={product.comments_count}
                           color="text-white"
+                          activeColor="text-white"
                           onSingleClick={() => {
-                            setSelectedProduct(product);
-                            handleLogView(product.id);
+                            setInteractionProduct(product);
+                            openBottomSheet("comments", product);
                           }}
-                          onLongReach={() =>
-                            openBottomSheet("comments", product)
-                          }
+                          onLongReach={() => openBottomSheet("comments", product)}
                           product={product}
                         />
                         <InteractionButton
                           type="shares"
                           icon="share-social-outline"
+                          activeIcon="share-social"
                           count={product.shares_count}
-                          color="text-green-500"
+                          color="text-white"
+                          activeColor="text-white"
                           onSingleClick={() => {
                             setShareProduct(product);
                             setShowShareModal(true);
@@ -1629,8 +1699,8 @@ export default function ShopPage() {
                           ) : activeTab === "my-products" &&
                             myListingsTab === "all" ? (
                             product.status === "pending" ||
-                            product.status === "approved" ||
-                            product.status === "all" ? (
+                              product.status === "approved" ||
+                              product.status === "all" ? (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -1725,6 +1795,89 @@ export default function ShopPage() {
             {" "}
             <IonIcon name="chevron-forward-outline" />{" "}
           </button>
+        </div>
+      )}
+
+      {/* Inactive Products Section - only in market tab */}
+      {activeTab === "market" && inactiveProducts.length > 0 && (
+        <div className="mb-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
+          <div className="flex items-center gap-3 mb-5">
+            <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+              <IonIcon name="archive" className="text-amber-500 text-sm" />
+            </div>
+            <div>
+              <h2 className="text-sm font-black text-white uppercase tracking-widest">Inactive Products</h2>
+              <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">{inactiveProducts.length} product{inactiveProducts.length !== 1 ? "s" : ""} currently inactive</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6 opacity-70">
+            {inactiveProducts.map((product) => (
+              <div
+                key={product.id}
+                className="group cursor-pointer bg-[#1a1a1a] rounded-[1.5rem] md:rounded-[2.5rem] pb-4 md:pb-6 border border-amber-500/10 hover:border-amber-500/30 transition-all hover:shadow-2xl relative flex flex-col min-w-0"
+                onClick={() => {
+                  setSelectedProduct(product);
+                  setSelectedVariantIndex(null);
+                  setActivePreviewIndex(0);
+                }}
+              >
+                {/* Inactive Badge */}
+                <div className="absolute top-3 right-3 z-20 px-2 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded-full">
+                  <span className="text-[8px] font-black uppercase text-amber-500 tracking-widest">Inactive</span>
+                </div>
+
+                {/* Profile Header */}
+                <div className="flex items-center gap-1.5 p-3 md:p-4 md:px-5">
+                  <div className="w-6 h-6 md:w-8 md:h-8 rounded-full bg-gradient-to-tr from-amber-600 to-orange-600 flex items-center justify-center text-[8px] md:text-[10px] text-white overflow-hidden border border-white/10 shadow-lg relative flex-shrink-0">
+                    {product.profile_picture ? (
+                      <Image src={product.profile_picture} alt="Profile" fill className="object-cover" />
+                    ) : (
+                      <IonIcon name="person" className="text-white" />
+                    )}
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[8px] md:text-[10px] text-white font-black uppercase tracking-tight truncate leading-none">
+                      {product.username || product.owner_username || "Anonymous"}
+                    </span>
+                    <span className="text-[6px] md:text-[7px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">
+                      {formatRelativeTime(product.created_at)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Image Section */}
+                <div className="relative aspect-square mx-1.5 rounded-[1.8rem] md:rounded-[2.2rem] overflow-hidden mb-4 bg-black border border-white/5 shadow-inner">
+                  <Image
+                    src={
+                      product.image_url &&
+                        (product.image_url.includes("uploads") || product.image_url.includes("\\"))
+                        ? `/uploads/${product.image_url.split(/[\\\/]/).pop()}`
+                        : product.image_url || "https://picsum.photos/400/400"
+                    }
+                    alt={product.title}
+                    fill
+                    sizes="(max-width: 768px) 50vw, 25vw"
+                    className="object-cover group-hover:scale-105 transition-transform duration-500 grayscale-[40%]"
+                  />
+                  {/* Inactive overlay */}
+                  <div className="absolute inset-0 bg-amber-900/20 backdrop-blur-[1px] flex items-center justify-center">
+                    <div className="w-10 h-10 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center">
+                      <IonIcon name="archive" className="text-amber-400 text-xl" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Content */}
+                <div className="px-3 md:px-5">
+                  <h3 className="text-white text-[11px] font-black truncate mb-1 uppercase tracking-tight">{product.title}</h3>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-xs font-black text-white/40">R</span>
+                    <span className="text-xl font-black text-white/60 tracking-tighter">{product.promo_price || product.price}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1915,8 +2068,8 @@ export default function ShopPage() {
                       <Image
                         src={
                           currentImg &&
-                          (currentImg.includes("uploads") ||
-                            currentImg.includes("\\"))
+                            (currentImg.includes("uploads") ||
+                              currentImg.includes("\\"))
                             ? `/uploads/${currentImg.split(/[\\/]/).pop()}`
                             : currentImg || "https://picsum.photos/400/400"
                         }
@@ -1927,67 +2080,73 @@ export default function ShopPage() {
 
                       {/* Engagement Icons Overlay */}
                       <div className="absolute top-1/2 -translate-y-1/2 right-4 flex flex-col items-center gap-6 z-[60]">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleToggleLike(selectedProduct.id);
-                            openBottomSheet("likes", selectedProduct);
+                        <InteractionButton
+                          type="likes"
+                          icon="heart-outline"
+                          activeIcon="heart"
+                          isActive={likedProductIds.has(selectedProduct.id)}
+                          count={selectedProduct.likes_count}
+                          color="text-white"
+                          activeColor="text-white"
+                          onSingleClick={() =>
+                            handleToggleLike(selectedProduct.id)
+                          }
+                          onLongReach={() =>
+                            openBottomSheet("likes", selectedProduct)
+                          }
+                          orientation="vertical"
+                          iconSize="text-2xl md:text-3xl"
+                        />
+                        <InteractionButton
+                          type="views"
+                          icon="eye-outline"
+                          activeIcon="eye"
+                          count={selectedProduct.views_count}
+                          color="text-white"
+                          activeColor="text-white"
+                          onSingleClick={() => {
+                            handleLogView(selectedProduct.id);
                           }}
-                          className="text-white hover:text-red-500 transition-all active:scale-75 flex flex-col items-center gap-0.5 focus:outline-none cursor-pointer"
-                        >
-                          <IonIcon
-                            name="heart"
-                            className="text-2xl md:text-3xl drop-shadow-2xl"
-                          />
-                          <span className="text-[10px] md:text-xs font-black drop-shadow-md">
-                            {selectedProduct.likes_count || 0}
-                          </span>
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openBottomSheet("views", selectedProduct);
-                          }}
-                          className="text-white hover:text-blue-500 transition-all active:scale-75 flex flex-col items-center gap-0.5 focus:outline-none cursor-pointer"
-                        >
-                          <IonIcon
-                            name="eye"
-                            className="text-2xl md:text-3xl drop-shadow-2xl"
-                          />
-                          <span className="text-[10px] md:text-xs font-black drop-shadow-md">
-                            {selectedProduct.views_count || 0}
-                          </span>
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
+                          onLongReach={() =>
+                            openBottomSheet("views", selectedProduct)
+                          }
+                          orientation="vertical"
+                          iconSize="text-2xl md:text-3xl"
+                        />
+                        <InteractionButton
+                          type="comments"
+                          icon="chatbubble-outline"
+                          activeIcon="chatbubble"
+                          count={selectedProduct.comments_count}
+                          color="text-white"
+                          activeColor="text-white"
+                          onSingleClick={() => {
+                            setInteractionProduct(selectedProduct);
                             openBottomSheet("comments", selectedProduct);
                           }}
-                          className="text-white hover:text-blue-400 transition-all active:scale-75 flex flex-col items-center gap-0.5 focus:outline-none cursor-pointer"
-                        >
-                          <IonIcon
-                            name="chatbubble"
-                            className="text-2xl md:text-3xl drop-shadow-2xl"
-                          />
-                          <span className="text-[10px] md:text-xs font-black drop-shadow-md">
-                            {selectedProduct.comments_count || 0}
-                          </span>
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openBottomSheet("shares", selectedProduct);
+                          onLongReach={() =>
+                            openBottomSheet("comments", selectedProduct)
+                          }
+                          orientation="vertical"
+                          iconSize="text-2xl md:text-3xl"
+                        />
+                        <InteractionButton
+                          type="shares"
+                          icon="share-social-outline"
+                          activeIcon="share-social"
+                          count={selectedProduct.shares_count}
+                          color="text-white"
+                          activeColor="text-white"
+                          onSingleClick={() => {
+                            setShareProduct(selectedProduct);
+                            setShowShareModal(true);
                           }}
-                          className="text-white hover:text-green-500 transition-all active:scale-75 flex flex-col items-center gap-0.5 focus:outline-none cursor-pointer"
-                        >
-                          <IonIcon
-                            name="share-social"
-                            className="text-2xl md:text-3xl drop-shadow-2xl"
-                          />
-                          <span className="text-[10px] md:text-xs font-black drop-shadow-md">
-                            {selectedProduct.shares_count || 0}
-                          </span>
-                        </button>
+                          onLongReach={() =>
+                            openBottomSheet("shares", selectedProduct)
+                          }
+                          orientation="vertical"
+                          iconSize="text-2xl md:text-3xl"
+                        />
                       </div>
 
                       {/* Product Discount Badge */}
@@ -2022,8 +2181,8 @@ export default function ShopPage() {
                     selectedProduct.image_url,
                     ...(Array.isArray(selectedProduct.variants)
                       ? selectedProduct.variants.map(
-                          (v: any) => v.url || v.image_url,
-                        )
+                        (v: any) => v.url || v.image_url,
+                      )
                       : []),
                   ].filter(Boolean);
                   const uniqueImages = Array.from(new Set(allImages));
@@ -2031,7 +2190,15 @@ export default function ShopPage() {
                   return uniqueImages.map((img: any, idx) => (
                     <div
                       key={idx}
-                      onClick={() => setActivePreviewIndex(idx)}
+                      onClick={() => {
+                        setActivePreviewIndex(idx);
+                        const isReviewMode = activeTab === "my-products" && myListingsTab === "reviewing";
+                        if (isReviewMode) {
+                          const productVariants = typeof selectedProduct.variants === "string" ? JSON.parse(selectedProduct.variants) : selectedProduct.variants || [];
+                          const variantIdx = productVariants.findIndex((v: any) => (v.image_url || v.url) === img);
+                          if (variantIdx !== -1) setSelectedVariantIndex(variantIdx);
+                        }
+                      }}
                       className={`relative w-12 h-12 md:w-16 md:h-16 rounded-lg md:rounded-xl overflow-hidden cursor-pointer border-2 transition-all shrink-0 ${activePreviewIndex === idx ? "border-blue-500 scale-105 shadow-lg" : "border-transparent opacity-50 hover:opacity-100"}`}
                     >
                       <Image
@@ -2050,211 +2217,71 @@ export default function ShopPage() {
               </div>
             </div>
 
-            {/* Right Side: Detail            {/* Right Side: Details */}
+            {/* Right Side: Details */}
             <div className="flex-1 flex flex-col overflow-hidden">
-              {/* Scrollable Content */}
               <div className="flex-1 overflow-y-auto p-6 md:p-8 custom-scrollbar space-y-8">
-                <div>
-                  <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
-                    <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight leading-tight">
-                      {selectedProduct.title}
-                    </h2>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <span className="px-2 py-0.5 bg-blue-500/10 text-blue-400 text-[9px] font-black rounded border border-blue-500/20 uppercase tracking-widest">
-                      {selectedProduct.category}
-                    </span>
-                    {selectedProduct.sub_category && (
-                      <span className="px-2 py-0.5 bg-purple-500/10 text-purple-400 text-[9px] font-black rounded border border-purple-500/20 uppercase tracking-widest">
-                        {selectedProduct.sub_category}
-                      </span>
-                    )}
-                  </div>
-                </div>
+                {(() => {
+                  const isReviewMode = activeTab === "my-products" && myListingsTab === "reviewing";
+                  const productVariants = typeof selectedProduct.variants === "string" ? JSON.parse(selectedProduct.variants) : selectedProduct.variants || [];
+                  const shippingInfo = typeof selectedProduct.shipping_info === "string" ? JSON.parse(selectedProduct.shipping_info) : selectedProduct.shipping_info;
+                  const commissionInfo = typeof selectedProduct.commission_info === "string" ? JSON.parse(selectedProduct.commission_info) : selectedProduct.commission_info;
+                  const returnInfo = typeof selectedProduct.return_policy === "string" ? JSON.parse(selectedProduct.return_policy) : selectedProduct.return_policy;
+                  const warrantyInfo = typeof selectedProduct.warranty_info === "string" ? JSON.parse(selectedProduct.warranty_info) : selectedProduct.warranty_info;
 
-                {/* Price Section */}
-                <div className="p-6 bg-white/[0.03] rounded-[2rem] border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-6">
-                  <div className="flex-1">
-                    <p className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-500 mb-0.5">
-                      Price Details
-                    </p>
-                    <div className="flex items-center gap-3">
-                      {selectedProduct.promo_price ? (
-                        <>
-                          <div className="flex flex-row items-baseline gap-3">
-                            <span className="text-[10px] font-bold text-slate-500 line-through opacity-60">
-                              R {(selectedProduct.price * quantity).toFixed(2)}
-                            </span>
-                            <span className="text-2xl font-black text-white tracking-tighter">
-                              R {(selectedProduct.promo_price * quantity).toFixed(2)}
-                            </span>
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <span className="px-1.5 py-0.5 bg-green-500/20 text-green-400 text-[8px] font-black rounded-full border border-green-500/20 w-fit">
-                              {Math.round(
-                                (1 -
-                                  selectedProduct.promo_price /
-                                    selectedProduct.price) *
-                                  100,
-                              )}
-                              % OFF
-                            </span>
-                          </div>
-                        </>
-                      ) : (
-                        <div className="flex flex-col gap-1">
-                          <span className="text-2xl font-black text-white tracking-tighter">
-                            R {(selectedProduct.price * quantity).toFixed(2)}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  if (isReviewMode) {
+                    const variantChoices = productVariants.length > 0 
+                      ? productVariants.map((v: any, idx: number) => ({ ...v, color: v.color || "None", originalIndex: idx }))
+                      : [{ color: "None", image_url: selectedProduct.image_url, originalIndex: null }];
 
-                  {/* Quantity Box */}
-                  <div className="flex items-center gap-2 bg-white/[0.05] p-1.5 rounded-2xl border border-white/5 shadow-inner">
-                    <button
-                      onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                      className="w-8 h-8 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all active:scale-95"
-                    >
-                      <IonIcon name="remove-outline" />
-                    </button>
-                    <div className="w-10 text-center">
-                      <span className="text-lg font-black text-white">
-                        {quantity}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => setQuantity(quantity + 1)}
-                      className="w-8 h-8 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all active:scale-95"
-                    >
-                      <IonIcon name="add-outline" />
-                    </button>
-                  </div>
-                </div>
 
-                {/* Variants & Delivery Details */}
-                <div className="space-y-8">
-                  {(() => {
-                    const productVariants =
-                      typeof selectedProduct.variants === "string"
-                        ? JSON.parse(selectedProduct.variants)
-                        : selectedProduct.variants || [];
 
-                    const allMainImages = [
-                      selectedProduct.image_url,
-                      ...productVariants.map((v: any) => v.url || v.image_url),
-                    ].filter(Boolean);
-                    const uniqueDetailImages = Array.from(
-                      new Set(allMainImages),
-                    );
+                    const activeVariant = selectedVariantIndex !== null && productVariants[selectedVariantIndex] ? productVariants[selectedVariantIndex] : (productVariants[0] || selectedProduct);
+                    const selValues = activeVariant?.selections || [];
+                    
+                    // Improved extraction logic checking for 'isUOM' flag or list inclusion
+                    const extractedSizes = selValues.filter((v: any) => v.isUOM === false || (!v.hasOwnProperty('isUOM') && SIZES.includes(v.value))).map((v: any) => v.value);
+                    const extractedUoms = selValues.filter((v: any) => v.isUOM === true || (!v.hasOwnProperty('isUOM') && UOMS.includes(v.value))).map((v: any) => v.value);
 
-                    const variantChoices: any[] = [];
-                    const seenVariants = new Set();
-
-                    productVariants.forEach((v: any, idx: number) => {
-                      const key = `${v.color || "None"}-${v.image_url || v.url || ""}`;
-                      if (!seenVariants.has(key)) {
-                        seenVariants.add(key);
-                        variantChoices.push({
-                          ...v,
-                          color: v.color || "None",
-                          originalIndex: idx,
-                        });
-                      }
-                    });
-
-                    // For single posts with no variants, add the main product as a choice
-                    if (variantChoices.length === 0) {
-                      variantChoices.push({
-                        color: "None",
-                        image_url: selectedProduct.image_url,
-                        originalIndex: null,
-                      });
-                    }
-
-                    const currentVariant =
-                      selectedVariantIndex !== null
-                        ? productVariants[selectedVariantIndex]
-                        : null;
-                    const activeColor = currentVariant?.color || "None";
+                    const activeSizes = [...new Set(extractedSizes)].join(", ") || (SIZES.includes(activeVariant?.size || activeVariant?.selection) ? (activeVariant?.size || activeVariant?.selection) : "");
+                    const activeUom = [...new Set(extractedUoms)].join(", ") || (UOMS.includes(activeVariant?.uom) ? activeVariant?.uom : (activeVariant?.uom || selectedProduct.uom || "Piece"));
+                    const activeColor = activeVariant?.color || "Standard";
 
                     return (
-                      <div className="space-y-6">
-                        {variantChoices.length > 0 && (
-                          <div>
-                            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400 mb-3">
-                              Available Variants
-                            </h4>
-                            <div className="flex flex-wrap gap-4 bg-white/[0.01] p-5 rounded-[1.5rem] border border-white/5">
-                              {variantChoices.map((variant, idx) => {
-                                const colorInfo =
-                                  COLORS.find(
-                                    (c) => c.name === variant.color,
-                                  ) || COLORS[0];
+                      <div className="space-y-8 animate-in fade-in duration-500">
+                        <div>
+                          <h2 className="text-3xl font-black text-white tracking-tight leading-tight mb-2">
+                            {selectedProduct.title}
+                          </h2>
+                          <div className="flex flex-wrap gap-2">
+                            <span className="px-2 py-0.5 bg-white/10 text-white text-[10px] font-black rounded border border-white/20 uppercase tracking-widest">
+                              {selectedProduct.category}
+                            </span>
+                          </div>
+                        </div>
 
-                                const img =
-                                  variant.image_url ||
-                                  variant.url ||
-                                  selectedProduct.image_url;
-                                const processedImg =
-                                  img &&
-                                  (img.includes("uploads") ||
-                                    img.includes("\\"))
-                                    ? `/uploads/${img.split(/[\\/]/).pop()}`
-                                    : img;
-
-                                const isSelected =
-                                  variant.originalIndex === null
-                                    ? selectedVariantIndex === null
-                                    : selectedVariantIndex ===
-                                      variant.originalIndex;
-
+                        {variantChoices.length > 1 && (
+                          <div className="space-y-4">
+                            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-white">Variant Inspection</h4>
+                            <div className="flex flex-wrap gap-4 bg-white/[0.01] p-5 rounded-[2rem] border border-white/5">
+                              {variantChoices.map((v: any, idx: number) => {
+                                const isSelected = v.originalIndex === null ? selectedVariantIndex === null : selectedVariantIndex === v.originalIndex;
+                                const img = v.image_url || v.url || selectedProduct.image_url;
+                                const processedImg = img && (img.includes("uploads") || img.includes("\\")) ? `/uploads/${img.split(/[\\/]/).pop()}` : img;
                                 return (
-                                  <div
-                                    key={idx}
+                                  <div 
+                                    key={idx} 
                                     onClick={() => {
-                                      setSelectedVariantIndex(
-                                        variant.originalIndex,
-                                      );
-                                      setSelectedSize(null);
-                                      const imgIndex =
-                                        uniqueDetailImages.indexOf(img);
-                                      if (imgIndex !== -1)
-                                        setActivePreviewIndex(imgIndex);
+                                      setSelectedVariantIndex(v.originalIndex);
+                                      const images = [selectedProduct.image_url, ...productVariants.map((v: any) => v.url || v.image_url)].filter(Boolean);
+                                      const imgIndex = images.indexOf(v.image_url || v.url);
+                                      if (imgIndex !== -1) setActivePreviewIndex(imgIndex);
                                     }}
-                                    className={`group flex flex-col items-center gap-3 cursor-pointer transition-all ${isSelected ? "scale-105" : "opacity-60 hover:opacity-100"}`}
+                                    className={`group flex flex-col items-center gap-2 cursor-pointer transition-all ${isSelected ? "scale-105" : "opacity-40 hover:opacity-100"}`}
                                   >
-                                    <div
-                                      className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl overflow-hidden border-2 shadow-xl transition-all ${isSelected ? "border-blue-500 shadow-blue-500/20" : "border-white/10"}`}
-                                    >
-                                      {processedImg && (
-                                        <Image
-                                          src={processedImg}
-                                          alt={variant.color}
-                                          width={64}
-                                          height={64}
-                                          className="w-full h-full object-cover"
-                                        />
-                                      )}
+                                    <div className={`w-12 h-12 rounded-xl overflow-hidden border-2 transition-all ${isSelected ? "border-blue-500 shadow-lg shadow-blue-500/20" : "border-white/10"}`}>
+                                      {processedImg && <Image src={processedImg} alt="V" width={48} height={48} className="w-full h-full object-cover" />}
                                     </div>
-                                    <div className="flex flex-col items-center gap-1.5">
-                                      {variant.color !== "None" && (
-                                        <div
-                                          className="w-4 h-4 rounded-full border border-white/20 shadow-lg"
-                                          style={{
-                                            backgroundColor: colorInfo.hex,
-                                          }}
-                                        />
-                                      )}
-                                      <span
-                                        className={`text-[7px] font-black uppercase tracking-widest transition-colors ${isSelected ? "text-blue-400" : "text-white/30"}`}
-                                      >
-                                        {variant.color === "None"
-                                          ? "Standard"
-                                          : variant.color}
-                                      </span>
-                                    </div>
+                                    <span className={`text-[7px] font-black uppercase tracking-widest ${isSelected ? "text-white" : "text-white/30"}`}>{v.color}</span>
                                   </div>
                                 );
                               })}
@@ -2262,193 +2289,308 @@ export default function ShopPage() {
                           </div>
                         )}
 
-                        <div className="animate-in fade-in slide-in-from-top-2 duration-300 space-y-8">
-                          <div className="flex items-center justify-between bg-white/[0.01] p-5 rounded-[1.5rem] border border-white/5 relative">
-                            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400">
-                              Select Size
-                            </h4>
-                            <div className="relative">
-                              <button
-                                onClick={() =>
-                                  setIsSizeDropdownOpen(!isSizeDropdownOpen)
-                                }
-                                className={`flex items-center gap-3 px-5 py-2.5 rounded-xl border-2 transition-all ${selectedSize ? "bg-blue-600/10 border-blue-500/30 text-blue-400 shadow-lg shadow-blue-500/5 rotate-in-y-180" : "bg-white/5 border-white/10 text-white/40 hover:bg-white/10 hover:text-white"}`}
-                              >
-                                <span className="text-[10px] font-black uppercase tracking-widest">
-                                  {selectedSize || "Choose Size"}
-                                </span>
-                                <IonIcon
-                                  name={
-                                    isSizeDropdownOpen
-                                      ? "chevron-up"
-                                      : "chevron-down"
-                                  }
-                                  className="text-sm"
-                                />
-                              </button>
+                        {selectedProduct.description && (
+                          <div className="space-y-2">
+                            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-white">Description</h4>
+                            <p className="text-sm text-slate-300 leading-relaxed font-medium whitespace-pre-wrap">
+                              {selectedProduct.description}
+                            </p>
+                          </div>
+                        )}
 
-                              {/* Custom Dropdown Overlay */}
-                              {isSizeDropdownOpen && (
-                                <div className="absolute right-0 bottom-full mb-3 w-48 bg-[#111] border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-[100] animate-in slide-in-from-bottom-2 fade-in duration-200">
-                                  <div className="p-2 grid grid-cols-1 gap-1">
-                                    {(() => {
-                                      const matchingVariants = (selectedVariantIndex !== null)
-                                        ? productVariants.filter(
-                                            (pv: any) =>
-                                              (pv.color || "None").toString().toLowerCase() === (activeColor || "None").toString().toLowerCase(),
-                                          )
-                                        : productVariants;
-                                      const allSizes = matchingVariants.flatMap(
-                                        (pv: any) => {
-                                          if (Array.isArray(pv.selections))
-                                            return pv.selections.map(
-                                              (s: any) => s.value,
-                                            );
-                                          // Support legacy fields
-                                          if (pv.selection) return [pv.selection];
-                                          if (pv.size) return [pv.size];
-                                          return [];
-                                        },
-                                      );
-                                      return Array.from(new Set(allSizes));
-                                    })().map((size: any, idx: number) => (
-                                      <button
-                                        key={idx}
-                                        onClick={() => {
-                                          setSelectedSize(size);
-                                          setIsSizeDropdownOpen(false);
-                                        }}
-                                        className={`w-full px-4 py-3 flex items-center justify-between rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${selectedSize === size ? "bg-blue-600 text-white" : "text-white/40 hover:bg-white/5 hover:text-white"}`}
-                                      >
-                                        {size}
-                                        {selectedSize === size && (
-                                          <IonIcon name="checkmark" />
-                                        )}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
+                        <div className="p-6 bg-white/[0.03] rounded-[2rem] border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                          <div className="flex-1">
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-2">Pricing Breakdown</p>
+                             <div className="flex items-center gap-6">
+                               <div className="flex flex-col">
+                                 <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Main Price</span>
+                                 <span className="text-base font-black text-white/40 line-through">R {parseFloat(activeVariant?.price || selectedProduct.price || 0).toFixed(2)}</span>
+                               </div>
+                               <div className="flex flex-col">
+                                 <span className="text-[8px] font-black text-green-400 uppercase tracking-widest">Promo Price</span>
+                                 <span className="text-xl font-black text-white tracking-tighter">R {parseFloat(activeVariant?.promo_price || selectedProduct.promo_price || 0).toFixed(2)}</span>
+                               </div>
+                             </div>
+                          </div>
+                           <div className="px-5 py-3 bg-green-500/10 rounded-2xl border border-green-500/20 text-center">
+                             <span className="text-[8px] font-black uppercase tracking-widest text-green-400 block mb-0.5">Reseller Commission</span>
+                             <span className="text-base font-black text-white">R {commissionInfo?.resell_amount || '0.00'}</span>
+                           </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="p-5 bg-white/[0.03] rounded-[2rem] border border-white/5 space-y-4">
+                            {activeSizes && (
+                              <div className="flex justify-between items-center pb-3 border-b border-white/5">
+                                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Box Sizes</span>
+                                <span className="text-xs font-black text-white">{activeSizes}</span>
+                              </div>
+                            )}
+                            {activeUom && (
+                              <div className="flex justify-between items-center pb-3 border-b border-white/5">
+                                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">UOM</span>
+                                <span className="text-xs font-black text-white">{activeUom}</span>
+                              </div>
+                            )}
+                            <div className="flex justify-between items-center">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Color</span>
+                              <div className="flex items-center gap-2">
+                                <div className="w-2.5 h-2.5 rounded-full border border-white/20" style={{ backgroundColor: COLORS.find(c => c.name === activeColor)?.hex || '#333' }} />
+                                <span className="px-2 py-0.5 bg-white/10 rounded text-[9px] font-black text-white uppercase whitespace-nowrap">{activeColor}</span>
+                              </div>
                             </div>
                           </div>
 
-                          {/* Selection Summary (User Request Image Style) */}
-                          <div className="mt-10 pt-10 border-t border-white/5 space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                            <div className="flex justify-between items-center group">
-                              <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 group-hover:text-blue-400 transition-colors">
-                                Select Size
-                              </span>
-                              <span className="text-xs font-black text-white">
-                                {selectedSize || "-"}
+                          <div className="p-5 bg-white/[0.03] rounded-[2rem] border border-white/5 space-y-4">
+                            <div className="flex justify-between items-center pb-3 border-b border-white/5">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Warranty</span>
+                              <span className="text-xs font-black text-white uppercase">
+                                {warrantyInfo?.warranty === 'Custom' ? warrantyInfo?.custom : (warrantyInfo?.warranty || 'No Warranty')}
                               </span>
                             </div>
-                            <div className="flex justify-between items-center group">
-                              <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 group-hover:text-blue-400 transition-colors">
-                                Color
-                              </span>
-                              <span className="text-xs font-black text-blue-400 uppercase tracking-widest">
-                                {activeColor || "Default"}
-                              </span>
+                            <div className="flex justify-between items-center pb-3 border-b border-white/5">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Return & Exchange</span>
+                              <span className="text-xs font-black text-white">{returnInfo?.text || returnInfo?.date || "No Returns"}</span>
                             </div>
-                            <div className="flex justify-between items-center group">
-                              <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 group-hover:text-blue-400 transition-colors">
-                                Delivery
-                              </span>
+                            <div className="flex justify-between items-center">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Est. Delivery</span>
                               <span className="text-[10px] font-black text-white uppercase tracking-tight">
                                 {(() => {
                                   const d1 = new Date();
                                   const d2 = new Date();
                                   d1.setDate(d1.getDate() + 4);
                                   d2.setDate(d2.getDate() + 8);
-                                  const format = (d: Date) =>
-                                    d.toLocaleDateString("en-US", {
-                                      month: "short",
-                                      day: "numeric",
-                                    });
+                                  const format = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
                                   return `${format(d1)} - ${format(d2)}`;
                                 })()}
                               </span>
                             </div>
                           </div>
                         </div>
+
+                        <div className="p-6 bg-white/[0.03] rounded-[2rem] border border-white/5">
+                          <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4 flex items-center gap-2">
+                            <IonIcon name="earth-outline" className="text-blue-400" />
+                            Active Delivery Countries
+                          </h4>
+                          <div className="flex flex-wrap gap-2">
+                            {shippingInfo?.rates?.map((r: any, idx: number) => (
+                              <div key={idx} className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-xl border border-white/10">
+                                <span className="text-[10px] font-black text-white uppercase">{r.country}</span>
+                                <span className="text-[9px] font-bold text-blue-400">R{r.charge}</span>
+                              </div>
+                            )) || <span className="text-[10px] italic text-slate-500">Default Group Settings</span>}
+                          </div>
+                        </div>
                       </div>
                     );
-                  })()}
+                  }
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="p-5 bg-white/[0.03] rounded-[2rem] border border-white/5">
-                      <div className="flex items-center gap-2 mb-4">
-                        <IonIcon
-                          name="earth-outline"
-                          className="text-blue-400 text-lg"
-                        />
-                        <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
-                          Delivery Countries
-                        </h4>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {(() => {
-                          const shippingInfo =
-                            typeof selectedProduct.shipping_info === "string"
-                              ? JSON.parse(selectedProduct.shipping_info)
-                              : selectedProduct.shipping_info;
-                          const rates = shippingInfo?.rates || [];
-                          if (rates.length > 0) {
-                            return rates.map((r: any, idx: number) => (
-                              <div
-                                key={idx}
-                                className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-xl border border-white/10 group hover:border-blue-500/30 transition-all"
-                              >
-                                <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]" />
-                                <span className="text-[10px] font-black uppercase text-white tracking-widest">
-                                  {r.country}
-                                </span>
-                                <span className="text-[9px] font-bold text-slate-500">
-                                  R{r.charge}
-                                </span>
-                              </div>
-                            ));
-                          }
-                          return (
-                            <span className="text-[10px] text-slate-500 italic">
-                              No countries specified
+                  // Default View (Market, Add Product, etc) - EXACT RESTORATION
+                  return (
+                    <div className="space-y-8">
+                      <div>
+                        <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
+                          <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight leading-tight">
+                            {selectedProduct.title}
+                          </h2>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <span className="px-2 py-0.5 bg-blue-500/10 text-blue-400 text-[9px] font-black rounded border border-blue-500/20 uppercase tracking-widest">
+                            {selectedProduct.category}
+                          </span>
+                          {selectedProduct.sub_category && (
+                            <span className="px-2 py-0.5 bg-purple-500/10 text-purple-400 text-[9px] font-black rounded border border-purple-500/20 uppercase tracking-widest">
+                              {selectedProduct.sub_category}
                             </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="p-6 bg-white/[0.03] rounded-[2rem] border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                        <div className="flex-1">
+                          <p className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-500 mb-0.5">Price Details</p>
+                          <div className="flex items-center gap-3">
+                            {selectedProduct.promo_price ? (
+                              <>
+                                <div className="flex flex-row items-baseline gap-3">
+                                  <span className="text-[10px] font-bold text-slate-500 line-through opacity-60">R {(selectedProduct.price * quantity).toFixed(2)}</span>
+                                  <span className="text-2xl font-black text-white tracking-tighter">R {(selectedProduct.promo_price * quantity).toFixed(2)}</span>
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  <span className="px-1.5 py-0.5 bg-green-500/20 text-green-400 text-[8px] font-black rounded-full border border-green-500/20 w-fit">
+                                    {Math.round((1 - selectedProduct.promo_price / selectedProduct.price) * 100)}% OFF
+                                  </span>
+                                </div>
+                              </>
+                            ) : (
+                              <div className="flex flex-col gap-1">
+                                <span className="text-2xl font-black text-white tracking-tighter">R {(selectedProduct.price * quantity).toFixed(2)}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 bg-white/[0.05] p-1.5 rounded-2xl border border-white/5 shadow-inner">
+                          <button onClick={() => setQuantity(Math.max(1, quantity - 1))} className="w-8 h-8 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all active:scale-95">
+                            <IonIcon name="remove-outline" />
+                          </button>
+                          <div className="w-10 text-center"><span className="text-lg font-black text-white">{quantity}</span></div>
+                          <button onClick={() => setQuantity(quantity + 1)} className="w-8 h-8 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all active:scale-95">
+                            <IonIcon name="add-outline" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-8">
+                        {(() => {
+                          const allMainImages = [selectedProduct.image_url, ...productVariants.map((v: any) => v.url || v.image_url)].filter(Boolean);
+                          const uniqueDetailImages = Array.from(new Set(allMainImages));
+                          const variantChoices: any[] = [];
+                          const seenVariants = new Set();
+                          productVariants.forEach((v: any, idx: number) => {
+                            const key = `${v.color || "None"}-${v.image_url || v.url || ""}`;
+                            if (!seenVariants.has(key)) {
+                              seenVariants.add(key);
+                              variantChoices.push({ ...v, color: v.color || "None", originalIndex: idx });
+                            }
+                          });
+                          if (variantChoices.length === 0) variantChoices.push({ color: "None", image_url: selectedProduct.image_url, originalIndex: null });
+                          const currentVariant = selectedVariantIndex !== null ? productVariants[selectedVariantIndex] : null;
+                          const activeColor = currentVariant?.color || "None";
+
+                          return (
+                            <div className="space-y-6">
+                              {variantChoices.length > 0 && (
+                                <div>
+                                  <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400 mb-3">Available Variants</h4>
+                                  <div className="flex flex-wrap gap-4 bg-white/[0.01] p-5 rounded-[1.5rem] border border-white/5">
+                                    {variantChoices.map((variant, idx) => {
+                                      const isSelected =
+                                        variant.originalIndex === null
+                                          ? selectedVariantIndex === null
+                                          : selectedVariantIndex ===
+                                            variant.originalIndex;
+
+                                      const img =
+                                        variant.image_url ||
+                                        variant.url ||
+                                        selectedProduct.image_url;
+                                      const processedImg =
+                                        img &&
+                                        (img.includes("uploads") ||
+                                          img.includes("\\"))
+                                          ? `/uploads/${img.split(/[\\/]/).pop()}`
+                                          : img;
+
+                                      return (
+                                        <div
+                                          key={idx}
+                                          onClick={() => {
+                                            setSelectedVariantIndex(
+                                              variant.originalIndex,
+                                            );
+                                            setSelectedSize(null);
+                                            const imgIndex =
+                                              uniqueDetailImages.indexOf(img);
+                                            if (imgIndex !== -1)
+                                              setActivePreviewIndex(imgIndex);
+                                          }}
+                                          className={`group flex flex-col items-center gap-3 cursor-pointer transition-all ${isSelected ? "scale-105" : "opacity-60 hover:opacity-100"}`}
+                                        >
+                                          <div
+                                            className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl overflow-hidden border-2 shadow-xl transition-all ${isSelected ? "border-blue-500 shadow-blue-500/20" : "border-white/10"}`}
+                                          >
+                                            {processedImg && (
+                                              <Image
+                                                src={processedImg}
+                                                alt={variant.color}
+                                                width={64}
+                                                height={64}
+                                                className="w-full h-full object-cover"
+                                              />
+                                            )}
+                                          </div>
+                                          <div className="flex flex-col items-center gap-1.5">
+                                            {variant.color !== "None" && (
+                                              <div
+                                                className="w-4 h-4 rounded-full border border-white/20 shadow-lg"
+                                                style={{
+                                                  backgroundColor:
+                                                    COLORS.find(
+                                                      (c) =>
+                                                        c.name ===
+                                                        variant.color,
+                                                    )?.hex || "#333",
+                                                }}
+                                              />
+                                            )}
+                                            <span
+                                              className={`text-[7px] font-black uppercase tracking-widest transition-colors ${isSelected ? "text-blue-400" : "text-white/30"}`}
+                                            >
+                                              {variant.color === "None"
+                                                ? "Standard"
+                                                : variant.color}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="animate-in fade-in slide-in-from-top-2 duration-300 space-y-8">
+                                <div className="flex items-center justify-between bg-white/[0.01] p-5 rounded-[1.5rem] border border-white/5 relative">
+                                  <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400">Select Size</h4>
+                                  <div className="relative">
+                                    <button onClick={() => setIsSizeDropdownOpen(!isSizeDropdownOpen)} className={`flex items-center gap-3 px-5 py-2.5 rounded-xl border-2 transition-all ${selectedSize ? "bg-blue-600/10 border-blue-500/30 text-blue-400" : "bg-white/5 border-white/10 text-white/40"}`}>
+                                      <span className="text-[10px] font-black uppercase">{selectedSize || "Choose Size"}</span>
+                                      <IonIcon name={isSizeDropdownOpen ? "chevron-up" : "chevron-down"} />
+                                    </button>
+                                    {isSizeDropdownOpen && (
+                                      <div className="absolute right-0 bottom-full mb-3 w-48 bg-[#111] border border-white/10 rounded-2xl shadow-2xl z-[100] p-2">
+                                        {Array.from(new Set(productVariants.flatMap((pv: any) => pv.selections?.map((s: any) => s.value) || [pv.size || pv.selection]))).filter(Boolean).map((size: any, idx) => (
+                                          <button key={idx} onClick={() => { setSelectedSize(size); setIsSizeDropdownOpen(false); }} className="w-full px-4 py-3 rounded-xl text-[10px] font-black uppercase text-left hover:bg-white/5">{size}</button>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="mt-10 pt-10 border-t border-white/5 space-y-4">
+                                  <div className="flex justify-between items-center group">
+                                    <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Select Size</span>
+                                    <span className="text-xs font-black text-white">{selectedSize || "-"}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center group">
+                                    <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Color</span>
+                                    <span className="text-xs font-black text-blue-400 uppercase">{activeColor}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
                           );
                         })()}
-                      </div>
-                    </div>
 
-                    <div className="p-5 bg-white/[0.03] rounded-[2rem] border border-white/5">
-                      <div className="flex items-center gap-2 mb-4">
-                        <IonIcon
-                          name="refresh-circle-outline"
-                          className="text-blue-400 text-lg"
-                        />
-                        <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
-                          Warranty Details
-                        </h4>
-                      </div>
-                      <div className="space-y-2">
-                        <div className="flex flex-col gap-0.5 pt-2">
-                          <p className="text-[8px] font-black uppercase text-blue-400 tracking-tight">
-                            {(() => {
-                              const w =
-                                typeof selectedProduct.warranty_info ===
-                                "string"
-                                  ? JSON.parse(selectedProduct.warranty_info)
-                                  : selectedProduct.warranty_info;
-                              return (
-                                (w?.warranty === "Custom"
-                                  ? w?.custom
-                                  : w?.warranty) || "No Warranty"
-                              );
-                            })()}
-                          </p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="p-5 bg-white/[0.03] rounded-[2rem] border border-white/5">
+                            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Delivery Countries</h4>
+                            <div className="flex flex-wrap gap-2">
+                              {shippingInfo?.rates?.map((r: any, idx: number) => (
+                                <div key={idx} className="px-3 py-1.5 bg-white/5 rounded-xl border border-white/10"><span className="text-[10px] font-black text-white uppercase">{r.country}</span></div>
+                              )) || <span className="text-[10px] italic text-slate-500">Global Delivery</span>}
+                            </div>
+                          </div>
+                          <div className="p-5 bg-white/[0.03] rounded-[2rem] border border-white/5">
+                            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-4">Warranty</h4>
+                            <p className="text-[8px] font-black uppercase text-blue-400">{warrantyInfo?.warranty || "No Warranty"}</p>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                </div>
+                  );
+                })()}
               </div>
 
               {/* Footer Actions */}
@@ -2535,12 +2677,23 @@ export default function ShopPage() {
         product={interactionProduct}
         data={bottomSheetData}
         onAddComment={handleSendComment}
+        currentUser={currentUser}
+        isLoading={isBottomSheetLoading}
+        onTabChange={(newType) => {
+          if (interactionProduct) {
+            openBottomSheet(newType, interactionProduct);
+          }
+        }}
         onAction={(action) => {
           const targetProd = interactionProduct || selectedProduct;
           if (!targetProd) return;
 
           if (action === "star") handleToggleLike(targetProd.id);
-          if (action === "upload" || action === "forward") {
+          if (
+            action === "upload" ||
+            action === "forward" ||
+            action === "share"
+          ) {
             setShareProduct(targetProd);
             setShowShareModal(true);
           }

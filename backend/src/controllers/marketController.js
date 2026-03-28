@@ -282,8 +282,8 @@ exports.getMarketItems = async (req, res) => {
             params.push(statusArray);
             query += ` AND m.status = ANY($${params.length})`;
         } else {
-            // Default filter: hide deleted items from public market
-            query += " AND (m.status != 'deleted' OR m.updated_at > CURRENT_TIMESTAMP - INTERVAL '7 days')";
+            // Default filter: hide deleted and inactive items from public market
+            query += " AND m.status NOT IN ('deleted', 'inactive')";
         }
 
         if (req.query.order_status) {
