@@ -1,0 +1,6 @@
+Error toggling like:
+error: column "id" does not exist
+    at F:\googer new\googer-next\backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async exports.toggleLike (F:\googer new\googer-next\backend\src\controllers\marketController.js:344:27)
+    at async test (F:\googer new\googer-next\backend\test_error.js:18:5)

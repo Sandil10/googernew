@@ -1,0 +1,213 @@
+﻿node.exe : Vercel CLI 48.4.0
+At 
+C:\nvm4w\nodejs\npx.ps1:29 
+char:3
++   & $NODE_EXE $NPX_CLI_JS 
+$args
++   
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: (Vercel   
+  CLI 48.4.0:String) [], R   
+ emoteException
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 
+> [debug] 
+[2026-03-02T05:41:43.884Z] 
+user supplied known 
+subcommand: "build"
+> [debug] 
+[2026-03-02T05:41:44.115Z] 
+Found ".git\config" - 
+detected "F:\googer 
+new\googer-next" as repo root
+> [debug] 
+[2026-03-02T05:41:44.207Z] 
+Found ".git\config" - 
+detected "F:\googer 
+new\googer-next" as repo root
+> [debug] 
+[2026-03-02T05:41:44.209Z] 
+Spinner invoked (Loading 
+scopesΓÇª) with a 1000ms 
+delay
+> [debug] 
+[2026-03-02T05:41:44.210Z] 
+Valid access token, skipping 
+token refresh.
+> [debug] 
+[2026-03-02T05:41:44.211Z] 
+Valid access token, skipping 
+token refresh.
+> [debug] 
+[2026-03-02T05:41:44.233Z] 
+#1 ΓåÆ GET https://api.vercel
+.com/v2/user
+> [debug] 
+[2026-03-02T05:41:44.235Z] 
+#2 ΓåÆ GET https://api.vercel
+.com/v1/teams
+> [debug] 
+[2026-03-02T05:41:45.227Z] 
+#1 ΓåÉ 200 OK: sfo1::tlmrd-17
+72430106182-3c6ffe21b270 
+[994ms]
+> [debug] 
+[2026-03-02T05:41:45.306Z] 
+#2 ΓåÉ 200 OK: sfo1::224td-17
+72430106161-11d609684143 
+[1.07s]
+> [debug] 
+[2026-03-02T05:41:45.310Z] 
+Spinner invoked (Searching 
+for existing projectsΓÇª) 
+with a 1000ms delay
+> [debug] 
+[2026-03-02T05:41:45.311Z] 
+Valid access token, skipping 
+token refresh.
+> [debug] 
+[2026-03-02T05:41:45.311Z] 
+#3 ΓåÆ GET https://api.vercel
+.com/v9/projects/googer-next?
+teamId=team_4gmHXmd8qbz8kd1TA
+0AvDJlA
+> [debug] 
+[2026-03-02T05:41:45.678Z] 
+#3 ΓåÉ 200 OK: sfo1::9j24q-17
+72430106615-ab3e275511cc 
+[367ms]
+> [debug] 
+[2026-03-02T05:41:45.770Z] 
+Found ".git\config" - 
+detected "F:\googer 
+new\googer-next" as repo root
+Linked to 
+sandils-projects/googer-next 
+(created .vercel)
+> Downloading `preview` 
+Environment Variables for 
+sandils-projects/googer-next
+> [debug] 
+[2026-03-02T05:41:45.776Z] 
+Spinner invoked 
+(Downloading) with a 300ms 
+delay
+> [debug] 
+[2026-03-02T05:41:45.776Z] 
+Fetching Environment 
+Variables of project prj_TnXa
+00lQ770dBX7yyvDtLSY6YHDP and 
+target preview
+> [debug] 
+[2026-03-02T05:41:45.776Z] 
+Valid access token, skipping 
+token refresh.
+> [debug] 
+[2026-03-02T05:41:45.777Z] 
+#4 ΓåÆ GET https://api.vercel
+.com/v3/env/pull/prj_TnXa00lQ
+770dBX7yyvDtLSY6YHDP/preview?
+source=vercel-cli%3Apull&team
+Id=team_4gmHXmd8qbz8kd1TA0AvD
+JlA
+> [debug] 
+[2026-03-02T05:41:46.424Z] 
+#4 ΓåÉ 200 OK: sfo1::d5p62-17
+72430107381-fda68a75a83a 
+[647ms]
+Created 
+.vercel\.env.preview.local 
+file  [651ms]
+
+> Downloading project 
+settings
+Downloaded project settings 
+to F:\googer new\googer-next\
+.vercel\project.json [0ms]
+WARN! Build not running on 
+Vercel. System environment 
+variables will not be 
+available.
+> [debug] 
+[2026-03-02T05:41:46.431Z] 
+Loaded environment variables 
+from "F:\googer new\googer-ne
+xt\.vercel\.env.preview.local
+"
+> [debug] 
+[2026-03-02T05:41:46.458Z] 
+Locating files F:\googer 
+new\googer-next
+> [debug] 
+[2026-03-02T05:41:46.460Z] 
+Ignoring F:\googer 
+new\googer-next\.git
+> [debug] 
+[2026-03-02T05:41:46.461Z] 
+Ignoring F:\googer 
+new\googer-next\.gitignore
+> [debug] 
+[2026-03-02T05:41:46.461Z] 
+Ignoring F:\googer 
+new\googer-next\.vercel
+> [debug] 
+[2026-03-02T05:41:46.462Z] 
+Ignoring F:\googer 
+new\googer-next\node_modules
+> [debug] 
+[2026-03-02T05:41:46.465Z] 
+Ignoring F:\googer new\googer
+-next\backend\node_modules
+> [debug] 
+[2026-03-02T05:41:46.473Z] 
+Locating files F:\googer 
+new\googer-next [15ms]
+> [debug] 
+[2026-03-02T05:41:46.868Z] 
+Imported Builder 
+"@vercel/node" from 
+"C:\Users\Bhagya Ranawake\App
+Data\Roaming\npm\node_modules
+\vercel\node_modules\@vercel\
+node"
+> [debug] 
+[2026-03-02T05:41:46.882Z] 
+Imported Builder 
+"@vercel/next" from 
+"C:\Users\Bhagya Ranawake\App
+Data\Roaming\npm\node_modules
+\vercel\node_modules\@vercel\
+next"
+> [debug] 
+[2026-03-02T05:41:46.910Z] 
+Setting env VERCEL_PROJECT_SE
+TTINGS_NODE_VERSION to "24.x"
+> [debug] 
+[2026-03-02T05:41:46.910Z] 
+Building entrypoint 
+"package.json" with 
+"@vercel/next"
+Error: Found invalid Node.js 
+Version: "24.x". Please set 
+Node.js Version to 22.x in 
+your Project Settings to use 
+Node.js 22.
+Learn More: http://vercel.lin
+k/node-version
+> [debug] 
+[2026-03-02T05:41:47.297Z] 
+Vercel CLI 48.4.0
+
+> [debug] 
+[2026-03-02T05:41:48.583Z] 
+Telemetry event tracked
+> [debug] 
+[2026-03-02T05:41:48.956Z] 
+Telemetry subprocess killed 
+due to timeout
+> [debug] 
+[2026-03-02T05:41:48.969Z] 
+Telemetry subprocess exited 
+with code null

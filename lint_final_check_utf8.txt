@@ -1,0 +1,80 @@
+﻿
+> googer-next@0.1.0 lint
+> eslint
+
+
+F:\googer new\googer-next\app\components\AddProductModal.tsx
+   27:7   warning  'MONTHS' is assigned a value but never used            @typescript-eslint/no-unused-vars
+   28:7   warning  'DAYS' is assigned a value but never used              @typescript-eslint/no-unused-vars
+  124:30  warning  'e' is defined but never used                          @typescript-eslint/no-unused-vars
+  302:18  warning  'e' is defined but never used                          @typescript-eslint/no-unused-vars
+  369:11  warning  'addManualVariant' is assigned a value but never used  @typescript-eslint/no-unused-vars
+  428:11  warning  'cycleColor' is assigned a value but never used        @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\components\Sidebar.tsx
+  26:12  warning  'loading' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\components\Topbar.tsx
+  18:11  warning  'router' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\dashboard\layout.tsx
+  3:8  warning  'Image' is defined but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\dashboard\page.tsx
+   3:8   warning  'Link' is defined but never used                     @typescript-eslint/no-unused-vars
+  48:12  warning  'activeStory' is assigned a value but never used     @typescript-eslint/no-unused-vars
+  48:25  warning  'setActiveStory' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\dashboard\shop\page.tsx
+  13:11  warning  'router' is assigned a value but never used                                                                      @typescript-eslint/no-unused-vars
+  14:12  warning  'showFilters' is assigned a value but never used                                                                 @typescript-eslint/no-unused-vars
+  14:25  warning  'setShowFilters' is assigned a value but never used                                                              @typescript-eslint/no-unused-vars
+  17:12  warning  'isCategoriesDrawerOpen' is assigned a value but never used                                                      @typescript-eslint/no-unused-vars
+  23:12  warning  'editingProduct' is assigned a value but never used                                                              @typescript-eslint/no-unused-vars
+  37:8   warning  React Hook useEffect has a missing dependency: 'loadProducts'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+  45:8   warning  React Hook useEffect has a missing dependency: 'refresh'. Either include it or remove the dependency array       react-hooks/exhaustive-deps
+  51:18  warning  'e' is defined but never used                                                                                    @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\dashboard\wallet\my-wallet\page.tsx
+    7:8   warning  'Link' is defined but never used                          @typescript-eslint/no-unused-vars
+   10:8   warning  'ConfirmTransferModal' is defined but never used          @typescript-eslint/no-unused-vars
+   30:12  warning  'showConfirmModal' is assigned a value but never used     @typescript-eslint/no-unused-vars
+   30:30  warning  'setShowConfirmModal' is assigned a value but never used  @typescript-eslint/no-unused-vars
+   31:12  warning  'confirmAction' is assigned a value but never used        @typescript-eslint/no-unused-vars
+   31:27  warning  'setConfirmAction' is assigned a value but never used     @typescript-eslint/no-unused-vars
+  204:11  warning  'copyToClipboard' is assigned a value but never used      @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\dashboard\wallet\page.tsx
+  111:11  warning  'quickActions' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\dashboard\wallet\topup\bank-transfer\page.tsx
+  3:20  warning  'useEffect' is defined but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\dashboard\wallet\topup\page.tsx
+  5:8  warning  'Image' is defined but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\dashboard\wallet\transactions\page.tsx
+  8:8  warning  'Image' is defined but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\app\dashboard\wallet\withdrawal\page.tsx
+  5:8  warning  'Image' is defined but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\services\authService.ts
+  10:58  warning  'e' is defined but never used  @typescript-eslint/no-unused-vars
+  14:58  warning  'e' is defined but never used  @typescript-eslint/no-unused-vars
+  18:54  warning  'e' is defined but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\services\walletService.ts
+  8:58  warning  'e' is defined but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\types\ion-icon.d.ts
+  2:19  warning  'JSX' is defined but never used  @typescript-eslint/no-unused-vars
+
+F:\googer new\googer-next\utils\pdfGenerator.ts
+  25:9   error    'yPos' is never reassigned. Use 'const' instead  prefer-const
+  25:9   warning  'yPos' is assigned a value but never used        @typescript-eslint/no-unused-vars
+  26:11  warning  'lineHeight' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+Γ£û 40 problems (1 error, 39 warnings)
+  1 error and 0 warnings potentially fixable with the `--fix` option.
+

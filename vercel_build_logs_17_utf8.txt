@@ -1,0 +1,97 @@
+﻿node.exe : Vercel CLI 48.4.0
+At 
+C:\nvm4w\nodejs\npx.ps1:29 
+char:3
++   & $NODE_EXE $NPX_CLI_JS 
+$args
++   
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: (Vercel   
+  CLI 48.4.0:String) [], R   
+ emoteException
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 
+WARN! Build not running on 
+Vercel. System environment 
+variables will not be 
+available.
+WARNING: You should not 
+upload the `.next` directory.
+Installing dependencies...
+npm warn Unknown cli config 
+"--unsafe-perm". This will 
+stop working in the next 
+major version of npm.
+
+up to date in 1s
+
+150 packages are looking for funding
+  run `npm fund` for details
+Detected Next.js version: 16.1.6
+Running "npm run build"
+
+> googer-next@0.1.0 build
+> next build
+
+Γû▓ Next.js 16.1.6 (Turbopack)
+- Environments: .env
+
+  Creating an optimized production build ...
+Γ£ô Compiled successfully in 10.8s
+  Running TypeScript ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/17) ...
+  Generating static pages using 7 workers (4/17) 
+  Generating static pages using 7 workers (8/17) 
+  Generating static pages using 7 workers (12/17) 
+Γ£ô Generating static pages using 7 workers (17/17) in 1189.6ms
+  Finalizing page optimization ...
+
+Route (app)
+Γöî Γùï /
+Γö£ Γùï /_not-found
+Γö£ Γùï /dashboard
+Γö£ Γùï /dashboard/chats
+Γö£ Γùï /dashboard/profile
+Γö£ Γùï /dashboard/shop
+Γö£ ╞Æ /dashboard/shop/[id]
+Γö£ Γùï /dashboard/wallet
+Γö£ Γùï /dashboard/wallet/coins-management
+Γö£ Γùï /dashboard/wallet/my-wallet
+Γö£ Γùï /dashboard/wallet/topup
+Γö£ Γùï /dashboard/wallet/topup/bank-transfer
+Γö£ Γùï /dashboard/wallet/transactions
+Γö£ Γùï /dashboard/wallet/withdrawal
+Γöö Γùï /register
+
+Route (pages)
+ΓöÇ ╞Æ /api/[...slug]
+
+Γùï  (Static)   prerendered as static content
+╞Æ  (Dynamic)  server-rendered on demand
+
+Traced Next.js server files in: 1.196s
+Tracing entries due to missing build traces:
+[
+  "F:/googer new/googer-next/.next/server/app/_global-error/page.js",
+  "F:/googer new/googer-next/.next/server/app/_not-found/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/chats/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/profile/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/shop/[id]/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/shop/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/coins-management/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/my-wallet/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/topup/bank-transfer/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/topup/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/transactions/page.js",
+  "F:/googer new/googer-next/.next/server/app/dashboard/wallet/withdrawal/page.js",
+  "F:/googer new/googer-next/.next/server/app/register/page.js",
+  "F:/googer new/googer-next/.next/server/app/favicon.ico/route.js"
+]: 191.785ms
+Created all serverless functions in: 861.609ms
+Error: Unable to find lambda 
+for route: /dashboard/chats

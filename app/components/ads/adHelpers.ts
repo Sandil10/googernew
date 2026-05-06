@@ -1,0 +1,173 @@
+// Shared helpers for sponsored ad rendering.
+// These are pure functions used by both the home feed and the shop page
+// so the two pages share exactly the same preview logic.
+
+export const safeParse = (data: any) => {
+    if (!data) return null;
+    if (typeof data !== "string") return data;
+    try {
+        return JSON.parse(data);
+    } catch {
+        return data;
+    }
+};
+
+export const normalizeExternalUrl = (value: string) => {
+    if (!value?.trim()) return "";
+    return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+};
+
+export const getYouTubeEmbedUrl = (value: string) => {
+    try {
+        const url = new URL(normalizeExternalUrl(value));
+        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+
+        if (host === "youtu.be") {
+            const id = url.pathname.split("/").filter(Boolean)[0];
+            return id ? `https://www.youtube.com/embed/${id}` : null;
+        }
+
+        if (host.includes("youtube.com")) {
+            const id = url.searchParams.get("v");
+            if (id) return `https://www.youtube.com/embed/${id}`;
+            const parts = url.pathname.split("/").filter(Boolean);
+            const embedIndex = parts.findIndex((part) => part === "embed");
+            if (embedIndex >= 0 && parts[embedIndex + 1]) {
+                return `https://www.youtube.com/embed/${parts[embedIndex + 1]}`;
+            }
+        }
+    } catch {
+        return null;
+    }
+
+    return null;
+};
+
+export const getSponsoredSocialEmbedUrl = (value: string) => {
+    const normalized = normalizeExternalUrl(value);
+    if (!normalized) return null;
+
+    const youtube = getYouTubeEmbedUrl(normalized);
+    if (youtube) return youtube;
+
+    try {
+        const url = new URL(normalized);
+        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+        const parts = url.pathname.split("/").filter(Boolean);
+
+        if (host.includes("instagram.com")) {
+            const type = parts[0];
+            const shortcode = parts[1];
+            if (["p", "reel", "tv"].includes(type) && shortcode) {
+                return `https://www.instagram.com/${type}/${shortcode}/embed`;
+            }
+        }
+
+        if (host.includes("tiktok.com")) {
+            const videoIndex = parts.findIndex((part) => part === "video");
+            const videoId = videoIndex >= 0 ? parts[videoIndex + 1] : null;
+            return videoId ? `https://www.tiktok.com/embed/v2/${videoId}` : null;
+        }
+
+        if (host.includes("facebook.com") || host.includes("fb.watch")) {
+            const isVideoUrl = /\/videos\/|\/watch\/|\?v=|fb\.watch/i.test(normalized);
+            const plugin = isVideoUrl ? "video.php" : "post.php";
+            return `https://www.facebook.com/plugins/${plugin}?href=${encodeURIComponent(normalized)}&show_text=false&width=560`;
+        }
+    } catch {
+        return null;
+    }
+
+    return null;
+};
+
+export const getSponsoredLinkPreviewType = (value: string) => {
+    const normalized = normalizeExternalUrl(value);
+    if (!normalized) return null;
+
+    const imagePattern = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
+    const videoPattern = /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i;
+
+    if (imagePattern.test(normalized)) return "image";
+    if (videoPattern.test(normalized)) return "video";
+    if (getSponsoredSocialEmbedUrl(normalized)) return "embed";
+    return "website";
+};
+
+export const getSponsoredCtaHref = (ctaTopic?: string, ctaValue?: string) => {
+    const trimmedValue = String(ctaValue || "").trim();
+    if (!trimmedValue || ctaTopic === "No Button" || ctaTopic === "Message") return "";
+    if (ctaTopic === "Call Now") return `tel:${trimmedValue.replace(/[^\d+]/g, "")}`;
+    if (ctaTopic === "WhatsApp") {
+        if (/^https?:\/\//i.test(trimmedValue)) return trimmedValue;
+        const digits = trimmedValue.replace(/[^\d]/g, "");
+        return digits ? `https://wa.me/${digits}` : "";
+    }
+    if (trimmedValue.includes("@") && !/^https?:\/\//i.test(trimmedValue) && ctaTopic === "Contact Us") {
+        return `mailto:${trimmedValue}`;
+    }
+    return normalizeExternalUrl(trimmedValue);
+};
+
+export const getSponsoredCallHref = (ad: any) => {
+    const directValues = [
+        ad?.cta_topic === "Call Now" ? ad?.cta_value : "",
+        ad?.phone_number,
+        ad?.contact_phone,
+        ad?.phone,
+    ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+
+    for (const value of directValues) {
+        if (/^tel:/i.test(value)) return value;
+        const digits = value.replace(/[^\d+]/g, "");
+        if (digits.replace(/\D/g, "").length >= 7) {
+            return `tel:${digits}`;
+        }
+    }
+
+    return "";
+};
+
+const normalizeUploadPath = (src: string) => {
+    if (!src) return "";
+    return src.includes("uploads") || src.includes("\\")
+        ? `/uploads/${src.split(/[\\/]/).pop()}`
+        : src;
+};
+
+export const getAdPreviewImage = (ad: any, previewType: string | null) => {
+    const activeLink = normalizeExternalUrl(ad?.active_link || "");
+    if (previewType === "image") return activeLink;
+
+    const gallery = Array.isArray(ad?.media_gallery)
+        ? ad.media_gallery
+        : Array.isArray(safeParse(ad?.media_gallery))
+            ? safeParse(ad?.media_gallery)
+            : [];
+
+    const value = [ad?.image_url, ad?.media_preview, ...gallery].find((item) => String(item || "").trim());
+    const image = String(value || "https://picsum.photos/400/400").trim();
+    return normalizeUploadPath(image);
+};
+
+export const getSponsoredAdImages = (ad: any, fallbackImage?: string): string[] => {
+    const gallery = Array.isArray(ad?.media_gallery)
+        ? ad.media_gallery
+        : Array.isArray(safeParse(ad?.media_gallery))
+            ? safeParse(ad?.media_gallery)
+            : [];
+
+    const activeLink = normalizeExternalUrl(ad?.active_link || "");
+    const linkPreviewType = getSponsoredLinkPreviewType(activeLink);
+    const linkImage = linkPreviewType === "image" ? activeLink : "";
+
+    return Array.from(
+        new Set(
+            [fallbackImage, ad?.image_url, ad?.media_preview, linkImage, ...gallery]
+                .map((item) => normalizeUploadPath(String(item || "").trim()))
+                .filter(Boolean) as string[],
+        ),
+    );
+};

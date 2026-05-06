@@ -1,0 +1,372 @@
+(node:8604) [DEP0060] DeprecationWarning: The `util._extend` API is deprecated. Please use Object.assign() instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+(node:8604) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
+⨯ The requested resource "https://ui-avatars.com/api/?name=User&background=111827&color=ffffff" has type "image/svg+xml" but dangerouslyAllowSVG is disabled. Consider adding the "unoptimized" property to the <Image>.
+Failed to proxy http://127.0.0.1:5000/api/chat/conversations Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/chat/conversations Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/cart Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/auth/profile Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/chat/conversations Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/cart Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/auth/profile Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/chat/conversations Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/cart Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/ads/active-public Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/auth/profile Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/auth/profile Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/market/products?status=approved&_shuffle=1778043157964&_feedSession=1778043157964-xh4poihn&limit=20&offset=0&_seen=27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10%2C27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10%2C27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10%2C27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10%2C27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10&_lastOrder=27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10 Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/auth/profile Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/auth/profile Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/auth/user/4/following Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/chat/conversations Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/cart Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/ads/active-public Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/auth/profile Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/auth/profile Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/market/products?status=approved&_shuffle=1778044157304&_feedSession=1778044157304-22bmsaxv&limit=20&offset=0&_seen=27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10%2C27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10%2C27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10%2C27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10%2C27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10&_lastOrder=27%2C26%2C25%2C24%2C23%2C22%2C21%2C19%2C17%2C16%2C15%2C10 Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Failed to proxy http://127.0.0.1:5000/api/auth/profile Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}
+Error: connect ECONNREFUSED 127.0.0.1:5000
+    at <unknown> (Error: connect ECONNREFUSED 127.0.0.1:5000) {
+  errno: -4078,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 5000
+}

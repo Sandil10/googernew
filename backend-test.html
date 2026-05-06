@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Backend Test</title>
+</head>
+<body>
+    <h1>Backend API Test</h1>
+    
+    <h2>1. Health Check</h2>
+    <button onclick="testHealth()">Test Health</button>
+    <pre id="health-result"></pre>
+    
+    <h2>2. Setup Database</h2>
+    <button onclick="setupDB()">Setup Database</button>
+    <pre id="setup-result"></pre>
+    
+    <h2>3. Test Register</h2>
+    <button onclick="testRegister()">Test Register</button>
+    <pre id="register-result"></pre>
+    
+    <script>
+        const API_URL = 'http://localhost:5000/api';
+        
+        async function testHealth() {
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                const data = await response.json();
+                document.getElementById('health-result').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('health-result').textContent = 'Error: ' + error.message;
+            }
+        }
+        
+        async function setupDB() {
+            try {
+                const response = await fetch(`${API_URL}/setup-db`);
+                const data = await response.json();
+                document.getElementById('setup-result').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('setup-result').textContent = 'Error: ' + error.message;
+            }
+        }
+        
+        async function testRegister() {
+            try {
+                const response = await fetch(`${API_URL}/auth/register`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        username: 'testuser' + Date.now(),
+                        fullName: 'Test User',
+                        email: 'test' + Date.now() + '@example.com',
+                        password: 'Test@1234',
+                        isSeller: false
+                    })
+                });
+                const data = await response.json();
+                document.getElementById('register-result').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('register-result').textContent = 'Error: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>

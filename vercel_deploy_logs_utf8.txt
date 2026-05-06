@@ -1,0 +1,22 @@
+﻿node.exe : Vercel CLI 48.4.0
+At 
+C:\nvm4w\nodejs\npx.ps1:29 
+char:3
++   & $NODE_EXE $NPX_CLI_JS 
+$args
++   
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: (Vercel   
+  CLI 48.4.0:String) [], R   
+ emoteException
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 
+Retrieving projectΓÇª
+> Prebuilt deployment cannot 
+be created because `vercel 
+build` failed with error:
+
+Error: Unable to find lambda 
+for route: /dashboard/shop
