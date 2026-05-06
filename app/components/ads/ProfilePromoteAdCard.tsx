@@ -16,8 +16,10 @@ import {
   shouldBypassNextImageOptimization,
 } from "@/app/lib/mediaOptimization";
 
+import { NormalizedAd } from "@/app/lib/ads/adTypes";
+
 type ProfilePromoteAdCardProps = {
-  ad: any;
+  ad: NormalizedAd;
   onProfileClick: (ad: any) => void;
   onProductClick: (product: any) => void;
   onToggleLike?: (adId: string | number) => void | Promise<void>;
@@ -39,9 +41,10 @@ export function ProfilePromoteAdCard({
 }: ProfilePromoteAdCardProps) {
   const [adProducts, setAdProducts] = useState<any[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
+  const raw = ad.raw || {};
 
   useEffect(() => {
-    const ownerId = ad?.user_id ?? ad?.owner_user_id;
+    const ownerId = ad.userId;
     if (!ownerId) {
       setLoadingProducts(false);
       return;
@@ -66,10 +69,10 @@ export function ProfilePromoteAdCard({
     return () => {
       cancelled = true;
     };
-  }, [ad?.user_id, ad?.owner_user_id]);
+  }, [ad.userId]);
 
-  const profilePic = getItemProfilePicture(ad);
-  const username = getItemUsername(ad, "Advertiser");
+  const profilePic = getItemProfilePicture(raw);
+  const username = getItemUsername(raw, "Advertiser");
   const showAdCoinButton = !!canShowCollectCoin?.(ad);
   const displayProducts = loadingProducts
     ? Array.from({ length: 3 }).map((_, i) => ({ id: `ph-${i}`, _placeholder: true }))
@@ -87,7 +90,7 @@ export function ProfilePromoteAdCard({
           type="button"
           onClick={(event) => {
             event.stopPropagation();
-            onCollectCoin(event, ad);
+            onCollectCoin(event, ad.raw || ad);
           }}
           className="absolute right-2 top-12 z-20 flex items-center gap-1 rounded-full border border-red-400/30 bg-red-600 px-2 py-1 text-[7px] font-black uppercase tracking-[0.1em] text-white shadow-xl transition hover:bg-red-500 active:scale-95"
           aria-label="Collect ad coin"
@@ -107,7 +110,7 @@ export function ProfilePromoteAdCard({
       <div className="flex items-center gap-2 border-b border-white/8 px-3 py-2.5">
         <button
           type="button"
-          onClick={() => onProfileClick(ad)}
+          onClick={() => onProfileClick(ad.raw || ad)}
           className="relative h-8 w-8 shrink-0 overflow-hidden rounded-full border border-white/10 bg-white/10"
         >
           {profilePic ? (
@@ -131,14 +134,14 @@ export function ProfilePromoteAdCard({
         <div className="min-w-0 flex-1">
           <button
             type="button"
-            onClick={() => onProfileClick(ad)}
+            onClick={() => onProfileClick(ad.raw || ad)}
             className="block truncate text-left text-[10px] font-black uppercase tracking-tight text-white hover:text-blue-400 transition-colors"
           >
             {username}
           </button>
           <span className="block text-[8px] font-bold tracking-[0.14em] text-slate-500">Ad</span>
         </div>
-        <SubscribeButton userId={ad.user_id ?? ad.owner_user_id} initialIsSubscribed={false} size="small" />
+        <SubscribeButton userId={ad.userId} initialIsSubscribed={false} size="small" />
       </div>
 
       <div className="grid grid-cols-3 gap-1 p-1.5">
@@ -199,10 +202,10 @@ export function ProfilePromoteAdCard({
                 type="likes"
                 icon="heart-outline"
                 activeIcon="heart"
-                isActive={!!ad.user_liked}
-                count={ad.likes_count || 0}
+                isActive={ad.liked}
+                count={ad.likeCount}
                 onSingleClick={() => onToggleLike(ad.id)}
-                onLongPress={() => onOpenSheet?.("likes", ad)}
+                onLongPress={() => onOpenSheet?.("likes", ad.raw || ad)}
                 iconSize="text-base"
               />
             )}
@@ -211,9 +214,9 @@ export function ProfilePromoteAdCard({
                 type="comments"
                 icon="chatbubble-outline"
                 activeIcon="chatbubble"
-                count={ad.comments_count || 0}
-                onSingleClick={() => onOpenSheet("comments", ad)}
-                onLongPress={() => onOpenSheet("comments", ad)}
+                count={ad.commentCount}
+                onSingleClick={() => onOpenSheet("comments", ad.raw || ad)}
+                onLongPress={() => onOpenSheet("comments", ad.raw || ad)}
                 iconSize="text-base"
               />
             )}
@@ -222,9 +225,9 @@ export function ProfilePromoteAdCard({
                 type="shares"
                 icon="share-social-outline"
                 activeIcon="share-social"
-                count={ad.shares_count || 0}
-                onSingleClick={() => onShare(ad)}
-                onLongPress={() => onOpenSheet?.("shares", ad)}
+                count={ad.shareCount}
+                onSingleClick={() => onShare(ad.raw || ad)}
+                onLongPress={() => onOpenSheet?.("shares", ad.raw || ad)}
                 iconSize="text-base"
               />
             )}
@@ -232,7 +235,7 @@ export function ProfilePromoteAdCard({
         )}
         <button
           type="button"
-          onClick={() => onProfileClick(ad)}
+          onClick={() => onProfileClick(ad.raw || ad)}
           className="w-full rounded-xl bg-white/[0.05] py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/60 transition hover:bg-white/[0.09] hover:text-white active:scale-95"
         >
           View Profile

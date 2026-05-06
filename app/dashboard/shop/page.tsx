@@ -17,6 +17,8 @@ import { AdSecondViewModal } from "@/app/components/ads/AdSecondViewModal";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { normalizeAd } from "@/app/lib/ads/adSystem";
+import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
+import { matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { useAdActions } from "@/app/lib/ads/useAdActions";
 import { normalizeProductAd } from "@/app/lib/market/adProductAdapter";
 import { formatRelativeTime } from "@/app/lib/relativeTime";
@@ -1149,7 +1151,7 @@ function ProfilePromoteAdBanner({
         {ads.map((ad) => (
           <PromotedAdCard
             key={`pp-banner-${ad.id}`}
-            ad={normalizeAd(ad)}
+            ad={normalizeAdData(ad)}
             source="shop"
             onProfileClick={(profileAd) => router.push(`/dashboard/profile?user=${getItemUsername(profileAd, "Advertiser")}`)}
             onProductClick={(product) => router.push(`/dashboard/shop?id=${product.id}`)}
@@ -1330,23 +1332,10 @@ export default function ShopPage() {
     };
   };
 
-  const matchesSponsoredIdentity = (product: any, targetId: string | number) => {
-    if (!product) return false;
-    const normalizedTargetId = String(targetId);
-    const normalizedAdId = normalizedTargetId.replace(/^ad-/, "");
-    return (
-      String(product.id) === normalizedTargetId ||
-      String(product.id) === normalizedAdId ||
-      String(product.adId || product.ad_id || "") === normalizedAdId ||
-      String(product.linked_product_id || product.product_id || product.productId || "") === normalizedAdId ||
-      [product.product_code, product.share_code, product.shareCode].some(code => code && String(code) === normalizedAdId)
-    );
-  };
-
   const liveSelectedProduct = useMemo(() => {
     if (!selectedProduct) return null;
-    const live = products.find(p => matchesSponsoredIdentity(p, selectedProduct.id)) ||
-      marketAds.find(p => matchesSponsoredIdentity(p, selectedProduct.id));
+    const live = products.find(p => matchesAdIdentity(p, selectedProduct.id)) ||
+      marketAds.find(p => matchesAdIdentity(p, selectedProduct.id));
     if (!live) return selectedProduct;
     // Merge live data but preserve the "ad-ness" from the selectedProduct snapshot
     return {
@@ -1361,8 +1350,8 @@ export default function ShopPage() {
 
   const liveSharedAdPreviewModal = useMemo(() => {
     if (!sharedAdPreviewModal) return null;
-    const live = marketAds.find(p => matchesSponsoredIdentity(p, sharedAdPreviewModal.ad.id)) ||
-      products.find(p => matchesSponsoredIdentity(p, sharedAdPreviewModal.ad.id));
+    const live = marketAds.find(p => matchesAdIdentity(p, sharedAdPreviewModal.ad.id)) ||
+      products.find(p => matchesAdIdentity(p, sharedAdPreviewModal.ad.id));
     const ad = live ? {
       ...live,
       is_sponsored: sharedAdPreviewModal.ad.is_sponsored || live.is_sponsored,
@@ -1421,8 +1410,8 @@ export default function ShopPage() {
     // If it's a video ad, we only enforce the watch timer in the second-view modal.
     // In the grid (first view), we allow the button to appear immediately after like.
     const isViewingInModal = 
-      (liveSelectedProduct && matchesSponsoredIdentity(liveSelectedProduct, product.id)) || 
-      (liveSharedAdPreviewModal && matchesSponsoredIdentity(liveSharedAdPreviewModal.ad, product.id));
+      (liveSelectedProduct && matchesAdIdentity(liveSelectedProduct, product.id)) || 
+      (liveSharedAdPreviewModal && matchesAdIdentity(liveSharedAdPreviewModal.ad, product.id));
 
     if (isViewingInModal && isSponsoredVideoAdProduct(product)) {
       const eligibilityKey = getAdCoinEligibilityKey(product);
@@ -2134,11 +2123,11 @@ export default function ShopPage() {
   const handleToggleLike = async (id: string | number) => {
 
     const currentProduct =
-      products.find((p) => matchesSponsoredIdentity(p, id)) ||
-      marketAds.find((p) => matchesSponsoredIdentity(p, id)) ||
-      (matchesSponsoredIdentity(selectedProduct, id) ? selectedProduct : null) ||
-      (matchesSponsoredIdentity(sponsoredImageModal?.product, id) ? sponsoredImageModal?.product : null) ||
-      (matchesSponsoredIdentity(sharedAdPreviewModal?.ad, id) ? sharedAdPreviewModal?.ad : null);
+      products.find((p) => matchesAdIdentity(p, id)) ||
+      marketAds.find((p) => matchesAdIdentity(p, id)) ||
+      (matchesAdIdentity(selectedProduct, id) ? selectedProduct : null) ||
+      (matchesAdIdentity(sponsoredImageModal?.product, id) ? sponsoredImageModal?.product : null) ||
+      (matchesAdIdentity(sharedAdPreviewModal?.ad, id) ? sharedAdPreviewModal?.ad : null);
     if (!currentProduct) return;
     const wasLiked = !!currentProduct.user_liked;
     const willBeLiked = !wasLiked;
@@ -2153,23 +2142,24 @@ export default function ShopPage() {
     }
 
     const updateLocalState = (p: any) => {
-      if (!matchesSponsoredIdentity(p, id)) return p;
+      if (!matchesAdIdentity(p, id)) return p;
       return {
         ...p,
         user_liked: willBeLiked,
+        isLiked: willBeLiked, // Support both for normalization
         likes_count: Math.max(0, (p.likes_count || 0) + (willBeLiked ? 1 : -1))
       };
     };
 
     setProducts(prev => prev.map(updateLocalState));
     setMarketAds(prev => prev.map(updateLocalState));
-    if (matchesSponsoredIdentity(selectedProduct, id)) {
+    if (matchesAdIdentity(selectedProduct, id)) {
       setSelectedProduct((prev: any) => updateLocalState(prev));
     }
-    if (matchesSponsoredIdentity(sponsoredImageModal?.product, id)) {
+    if (matchesAdIdentity(sponsoredImageModal?.product, id)) {
       setSponsoredImageModal((prev: any) => prev ? { ...prev, product: updateLocalState(prev.product) } : prev);
     }
-    if (matchesSponsoredIdentity(sharedAdPreviewModal?.ad, id)) {
+    if (matchesAdIdentity(sharedAdPreviewModal?.ad, id)) {
       setSharedAdPreviewModal((prev: any) => prev ? { ...prev, ad: updateLocalState(prev.ad) } : prev);
     }
 
@@ -4513,7 +4503,7 @@ export default function ShopPage() {
                   <MarketItemWrapper product={product} onView={handleLogView} activeTab={activeTab}>
                     {isProductPromoteCard ? (
                       <PromotedAdCard
-                        ad={normalizeAd({ ...product, ...normalizeProductAd(product) })}
+                        ad={normalizeAdData({ ...product, ...normalizeProductAd(product) })}
                         source="shop"
                         onProductClick={() => {
                           void openProductPromoteSecondView(product);
@@ -4531,7 +4521,7 @@ export default function ShopPage() {
                       />
                     ) : (
                       <PromotedAdCard
-                        ad={normalizeAd(product)}
+                        ad={normalizeAdData(product)}
                         source="shop"
                         isMenuOpen={openMenuProductId === product.id}
                         onToggleMenu={(id) => setOpenMenuProductId(openMenuProductId === id ? null : id)}

@@ -22,9 +22,10 @@ import {
     normalizeMediaSrc,
     shouldBypassNextImageOptimization,
 } from "@/app/lib/mediaOptimization";
+import { NormalizedAd } from "@/app/lib/ads/adTypes";
 
 export type AdCardHandlers = {
-    onOpenSecondView: (ad: any) => void;
+    onOpenSecondView?: (ad: any) => void;
     onToggleLike: (adId: string | number) => void | Promise<void>;
     onOpenSheet: (type: AdInteractionType, ad: any) => void;
     onShare: (ad: any) => void;
@@ -37,7 +38,7 @@ export type AdCardHandlers = {
 };
 
 export type PhotoVideoAdCardProps = AdCardHandlers & {
-    ad: any;
+    ad: NormalizedAd;
     source?: "home" | "shop";
     isMenuOpen: boolean;
     onToggleMenu: (adId: any) => void;
@@ -60,25 +61,26 @@ export function PhotoVideoAdCard({
     onNavigateToProfile,
     canShowCollectCoin,
 }: PhotoVideoAdCardProps) {
-    const activeLink = normalizeExternalUrl(ad.active_link || "");
+    const raw = ad.raw || {};
+    const activeLink = normalizeExternalUrl(raw.active_link || "");
     const previewType = getSponsoredLinkPreviewType(activeLink);
     const secondViewKind =
         previewType === "embed"
             ? "embed"
-            : previewType === "video" || /video/i.test(String(ad.media_type || "")) || /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(String(ad.media_preview || ad.video_url || ""))
+            : previewType === "video" || /video/i.test(String(raw.media_type || "")) || /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(String(raw.media_preview || raw.video_url || ""))
                 ? "video"
                 : "image";
-    const previewImage = normalizeMediaSrc(getAdPreviewImage(ad, previewType));
-    const callHref = getSponsoredCallHref(ad);
-    const ctaHref = getSponsoredCtaHref(ad.cta_topic, ad.cta_value);
-    const ctaLabel = ad.cta_topic && ad.cta_topic !== "No Button" ? ad.cta_topic : "Visit";
-    const secondaryCtaLabel = ad.cta_topic === "Call Now" ? "" : ctaLabel;
-    const hasSecondaryCta = !!secondaryCtaLabel && ad.cta_topic !== "No Button";
+    const previewImage = normalizeMediaSrc(ad.image || getAdPreviewImage(raw, previewType));
+    const callHref = getSponsoredCallHref(raw);
+    const ctaHref = getSponsoredCtaHref(raw.cta_topic, raw.cta_value);
+    const ctaLabel = raw.cta_topic && raw.cta_topic !== "No Button" ? raw.cta_topic : "Visit";
+    const secondaryCtaLabel = raw.cta_topic === "Call Now" ? "" : ctaLabel;
+    const hasSecondaryCta = !!secondaryCtaLabel && raw.cta_topic !== "No Button";
     const showAdCoinButton = canShowCollectCoin(ad);
     const showSponsoredLinkPreview = !!activeLink;
-    const advertiserName = getItemUsername(ad, "Sponsored");
-    const advertiserImage = getItemProfilePicture(ad);
-    const timeLabel = useRelativeTime(ad.created_at || ad.createdAt, "just now");
+    const advertiserName = getItemUsername(raw, "Sponsored");
+    const advertiserImage = getItemProfilePicture(raw);
+    const timeLabel = useRelativeTime(ad.createdAt, "just now");
 
     const handleSponsoredLinkOpen = (event: React.MouseEvent) => {
         event.stopPropagation();
@@ -325,45 +327,45 @@ export function PhotoVideoAdCard({
                             type="likes"
                             icon="heart-outline"
                             activeIcon="heart"
-                            isActive={!!ad.user_liked || !!ad.isLiked || !!ad.liked}
-                            count={ad.likes_count}
+                            isActive={ad.liked}
+                            count={ad.likeCount}
                             color="text-white/80"
                             activeColor="text-white"
                             onSingleClick={handleLikeClick}
-                            onLongPress={() => onOpenSheet("likes", ad)}
+                            onLongPress={() => onOpenSheet("likes", ad.raw || ad)}
                             iconSize="text-[21px]"
                         />
                         <AdInteractionButton
                             type="views"
                             icon="eye-outline"
                             activeIcon="eye"
-                            count={ad.views_count}
+                            count={ad.viewCount}
                             color="text-white/80"
                             activeColor="text-white"
-                            onSingleClick={() => onOpenSheet("views", ad)}
-                            onLongPress={() => onOpenSheet("views", ad)}
+                            onSingleClick={() => onOpenSheet("views", ad.raw || ad)}
+                            onLongPress={() => onOpenSheet("views", ad.raw || ad)}
                             iconSize="text-[21px]"
                         />
                         <AdInteractionButton
                             type="comments"
                             icon="chatbubble-outline"
                             activeIcon="chatbubble"
-                            count={ad.comments_count}
+                            count={ad.commentCount}
                             color="text-white/80"
                             activeColor="text-white"
-                            onSingleClick={() => onOpenSheet("comments", ad)}
-                            onLongPress={() => onOpenSheet("comments", ad)}
+                            onSingleClick={() => onOpenSheet("comments", ad.raw || ad)}
+                            onLongPress={() => onOpenSheet("comments", ad.raw || ad)}
                             iconSize="text-[21px]"
                         />
                         <AdInteractionButton
                             type="shares"
                             icon="share-social-outline"
                             activeIcon="share-social"
-                            count={ad.shares_count || 0}
+                            count={ad.shareCount}
                             color="text-white/80"
                             activeColor="text-white"
-                            onSingleClick={() => onShare(ad)}
-                            onLongPress={() => onOpenSheet("shares", ad)}
+                            onSingleClick={() => onShare(ad.raw || ad)}
+                            onLongPress={() => onOpenSheet("shares", ad.raw || ad)}
                             iconSize="text-[21px]"
                         />
                     </div>

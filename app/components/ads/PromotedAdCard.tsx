@@ -5,10 +5,10 @@ import { PhotoVideoAdCard } from "@/app/components/ads/PhotoVideoAdCard";
 import { ProfilePromoteAdCard } from "@/app/components/ads/ProfilePromoteAdCard";
 import { PromotedProductCard } from "@/app/components/market/PromotedProductCard";
 import { normalizeProductAd } from "@/app/lib/market/adProductAdapter";
-import { normalizeAd, type NormalizedAd } from "@/app/lib/ads/adSystem";
+import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 
 type PromotedAdCardProps = {
-  ad: NormalizedAd | any;
+  ad: any;
   source?: "home" | "shop";
   isMenuOpen?: boolean;
   onToggleMenu?: (adId: any) => void;
@@ -52,23 +52,18 @@ export function PromotedAdCard({
   currentUser,
   compact,
 }: PromotedAdCardProps) {
-  const normalized = normalizeAd(ad);
-  const actionAd = {
-    ...(normalized.raw || ad),
-    shareCode: normalized.shareCode,
-    share_code: normalized.shareCode,
-    type: normalized.type,
-  };
+  const normalized = normalizeAdData(ad);
+  const actionAd = normalized.raw || ad;
 
   if (normalized.type === "product") {
     return (
       <PromotedProductCard
         item={({
-          ...normalizeProductAd(normalized),
+          ...normalizeProductAd(normalized.raw),
+          id: normalized.id,
           shareCode: normalized.shareCode,
-          user_liked: normalized.user_liked,
-          ad_coin_collected: normalized.ad_coin_collected,
-          ad_like_locked: normalized.ad_like_locked,
+          user_liked: normalized.liked,
+          ad_coin_collected: normalized.coinCollected,
         } as any)}
         source={source}
         onClick={() => onProductClick?.(actionAd)}
@@ -89,23 +84,23 @@ export function PromotedAdCard({
   }
 
   if (normalized.type === "profile") {
-  return (
-    <ProfilePromoteAdCard
-      ad={{ ...normalized, ...actionAd }}
-      onProductClick={(product) => onProductClick?.(product)}
-      onProfileClick={() => onProfileClick?.(actionAd)}
-      onToggleLike={onToggleLike}
-      onOpenSheet={onOpenSheet}
-      onShare={onShare}
-      onCollectCoin={onCollectCoin}
-      canShowCollectCoin={canShowCollectCoin}
-    />
-  );
+    return (
+      <ProfilePromoteAdCard
+        ad={normalized}
+        onProductClick={(product) => onProductClick?.(product)}
+        onProfileClick={() => onProfileClick?.(actionAd)}
+        onToggleLike={onToggleLike}
+        onOpenSheet={onOpenSheet}
+        onShare={onShare}
+        onCollectCoin={onCollectCoin}
+        canShowCollectCoin={canShowCollectCoin}
+      />
+    );
   }
 
   return (
     <PhotoVideoAdCard
-      ad={{ ...normalized, ...actionAd }}
+      ad={normalized}
       source={source}
       isMenuOpen={isMenuOpen}
       onToggleMenu={onToggleMenu || (() => {})}
