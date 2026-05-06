@@ -10,6 +10,15 @@ import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
 import { formatRelativeTime } from "@/app/lib/relativeTime";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
+import { useAdStore } from "@/app/lib/ads/adStore";
+import SubscribeButton from "@/app/components/SubscribeButton";
+import { SharedProductCard } from "@/app/components/market/SharedProductCard";
+import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
+import { useAdActions } from "@/app/lib/ads/useAdActions";
+import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
+import { matchesAdIdentity } from "@/app/lib/ads/adIdentity";
+import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondViewModal";
+import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 
 type UserRecord = {
     id?: number;
@@ -46,6 +55,8 @@ type PostRecord = {
     updated_at?: string;
     user_liked?: boolean;
     commission_info?: any;
+    is_sponsored?: boolean;
+    campaign_type?: string;
 };
 
 type SheetType = "likes" | "comments" | "shares" | "views";
@@ -194,6 +205,9 @@ export default function ProfilePage() {
     const [showMenu, setShowMenu] = useState(false);
     const [loading, setLoading] = useState(true);
     const [user, setUser] = useState<UserRecord | null>(null);
+    const [marketAds, setMarketAds] = useState<any[]>([]);
+    const syncAds = useAdStore((state) => state.syncAds);
+    const updateAdState = useAdStore((state) => state.updateAdState);
     const [currentUser, setCurrentUser] = useState<any>(null);
     const [isOwnProfile, setIsOwnProfile] = useState(false);
     const [subscriberCount, setSubscriberCount] = useState(0);
@@ -221,7 +235,7 @@ export default function ProfilePage() {
     const [, setRelativeTimeTick] = useState(0);
     const [openMenuProductId, setOpenMenuProductId] = useState<number | null>(null);
     const [hiddenPostIds, setHiddenPostIds] = useState<number[]>([]);
-    const [notification, setNotification] = useState<{ type: "error" | "success"; title: string; message: string } | null>(null);
+    const [notification, setNotification] = useState<{ type: "success" | "error"; title?: string; message: string } | null>(null);
     const [showShareModal, setShowShareModal] = useState(false);
     const [shareProduct, setShareProduct] = useState<any>(null);
     const [initialShareView, setInitialShareView] = useState<"share" | "resell">("share");
@@ -232,6 +246,49 @@ export default function ProfilePage() {
     const [bottomSheetType, setBottomSheetType] = useState<SheetType>("comments");
     const [interactionProduct, setInteractionProduct] = useState<any>(null);
     const [bottomSheetData, setBottomSheetData] = useState<any[]>([]);
+    const [adPreviewModal, setAdPreviewModal] = useState<{ ad: any; type: "ad" | "product"; kind?: any } | null>(null);
+
+    const updateAdLocalState = useCallback((id: string | number, updates: any) => {
+        setPosts((prev) => prev.map((post) => {
+            if (matchesAdIdentity(post, id)) {
+                return { ...post, ...updates };
+            }
+            return post;
+        }));
+        setAdPreviewModal((prev) => {
+            if (!prev || !prev.ad) return prev;
+            if (matchesAdIdentity(prev.ad, id)) {
+                return { ...prev, ad: { ...prev.ad, ...updates } };
+            }
+            return prev;
+        });
+        setInteractionProduct((prev: any) => {
+            if (!prev) return prev;
+            if (matchesAdIdentity(prev, id)) {
+                return { ...prev, ...updates };
+            }
+            return prev;
+        });
+    }, []);
+
+    const adActions = useAdActions(null, {
+        currentUser,
+        onBeforeLike: (item, liked) => updateAdLocalState(item.id, { user_liked: liked }),
+        onLikeConfirmed: (item, liked) => updateAdLocalState(item.id, { user_liked: liked }),
+        onLikeReverted: (item, liked) => updateAdLocalState(item.id, { user_liked: liked }),
+        onShare: (item) => handleShareClick(item.raw || item),
+        onOpenSheet: (type, item) => openBottomSheet(type as any, item.raw || item),
+        onCoinCollected: (item, collectionId) => {
+            updateAdLocalState(collectionId, { ad_coin_collected: true, ad_like_locked: true });
+        },
+        onNotify: (n) => setNotification({ type: n.type, title: n.title, message: n.message }),
+    });
+
+    useEffect(() => {
+        if (!notification) return;
+        const timer = setTimeout(() => setNotification(null), 4000);
+        return () => clearTimeout(timer);
+    }, [notification]);
 
     const CONNECTIONS_PAGE_SIZE = 5;
 
@@ -245,7 +302,9 @@ export default function ProfilePage() {
                 setCurrentUser(localUser?.id ? localUser : null);
                 setIsOwnProfile(localUser?.id === Number(profileId));
                 const userProducts = await marketService.getItems({ user_id: profileId, status: "active,approved" });
-                setPosts((userProducts || []).filter(isLiveMarketPost));
+                const filtered = (userProducts || []).filter(isLiveMarketPost);
+                setPosts(filtered);
+                syncAds(filtered.filter((p: any) => p.is_sponsored || p.campaign_type));
             } else {
                 if (!authService.isAuthenticated()) {
                     router.push("/");
@@ -255,7 +314,9 @@ export default function ProfilePage() {
                 setCurrentUser(profileData);
                 setIsOwnProfile(true);
                 const myProducts = await marketService.getItems({ user_id: profileData.id, status: "active,approved" });
-                setPosts((myProducts || []).filter(isLiveMarketPost));
+                const filtered = (myProducts || []).filter(isLiveMarketPost);
+                setPosts(filtered);
+                syncAds(filtered.filter((p: any) => p.is_sponsored || p.campaign_type));
             }
             setUser(profileData);
             setSubscriberCount(Number(profileData?.subscriber_count || 0));
@@ -412,9 +473,16 @@ export default function ProfilePage() {
         } finally { setIsBottomSheetLoading(false); }
     };
 
-    const handleToggleLike = async (id: number) => {
-        const currentPost = posts.find((p) => p.id === id);
+    const handleToggleLike = async (item: any) => {
+        const id = typeof item === 'object' ? item.id : item;
+        const currentPost = typeof item === 'object' ? item : posts.find((p) => p.id === id);
         if (!currentPost) return;
+
+        if (currentPost.is_sponsored || currentPost.campaign_type) {
+            await adActions.like(currentPost);
+            return;
+        }
+
         const wasLiked = !!currentPost.user_liked;
         const willBeLiked = !wasLiked;
         setPosts((prev) => prev.map((p) => p.id === id ? { ...p, user_liked: willBeLiked, likes_count: Math.max(0, (p.likes_count || 0) + (willBeLiked ? 1 : -1)) } : p));
@@ -434,6 +502,7 @@ export default function ProfilePage() {
     const handleLogShare = async (id: number) => {
         await marketService.logShare(id);
         setPosts((prev) => prev.map((p) => p.id === id ? { ...p, shares_count: (p.shares_count || 0) + 1 } : p));
+        updateAdState(id, (prev) => ({ shares_count: (prev.shares_count || 0) + 1 }));
     };
 
     const handleShareClick = (product: any, view: "share" | "resell" = "share") => {
@@ -459,6 +528,7 @@ export default function ProfilePage() {
         const result = await marketService.logView(id);
         if (result?.incremented === true) {
             setPosts((prev) => prev.map((p) => p.id === id ? { ...p, views_count: (p.views_count || 0) + 1 } : p));
+            updateAdState(id, (prev) => ({ views_count: (prev.views_count || 0) + 1 }));
         }
     };
 
@@ -782,7 +852,6 @@ export default function ProfilePage() {
         .filter(Boolean)
         .map((line) => line.replace(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi, "").trim())
         .filter(Boolean);
-    const visiblePosts = posts.filter((p) => !hiddenPostIds.includes(p.id));
     const canShowMail = Boolean((isOwnProfile && (user?.contact_email || user?.email)) || (!isOwnProfile && user?.contact_email && user?.contact_email_visibility !== "only_me"));
     const canShowContact = Boolean((isOwnProfile && (user?.contact_phone || user?.shipping_address?.phone || user?.shipping_address?.phone2)) || (!isOwnProfile && user?.contact_phone && user?.contact_phone_visibility !== "only_me"));
 
@@ -1040,120 +1109,66 @@ export default function ProfilePage() {
 
                 <div className="border-t border-white/6 bg-[#101010]">
                     {activeTab === "threads" ? (
-                        visiblePosts.length > 0 ? (
+                        posts.filter(p => !hiddenPostIds.includes(p.id)).length > 0 ? (
                             <div className="grid grid-cols-2 gap-2 px-3 py-4 sm:grid-cols-2 sm:px-4 md:gap-6 md:px-6 lg:grid-cols-4">
-                                {visiblePosts.map((post, index) => {
-                                    const postImage = (post.image_url && (post.image_url.includes("uploads") || post.image_url.includes("\\"))) ? `/uploads/${post.image_url.split(/[\\/]/).pop()}` : (post.image_url || "");
-
-                                    return (
-                                        <div key={post.id || index} className="relative group flex min-w-0 flex-col transition-all duration-500 hover:z-10">
-                                            <div
-                                                className="group cursor-pointer rounded-[1.5rem] border border-white/5 bg-[#1a1a1a] pb-4 transition-all hover:border-white/20 hover:shadow-2xl md:rounded-[2.5rem] md:pb-8"
-                                                onClick={() => {
-                                                    handleLogView(post.id);
-                                                    router.push(`/dashboard/shop?id=${post.id}`);
+                                {posts.filter(p => !hiddenPostIds.includes(p.id)).map((post, index) => {
+                                    const isAd = !!(post.is_sponsored || post.campaign_type);
+                                    if (isAd) {
+                                        const normalizedAd = normalizeAdData(post);
+                                        return (
+                                            <PromotedAdCard
+                                                key={`${post.id}-${index}`}
+                                                ad={normalizedAd}
+                                                source="shop"
+                                                onProductClick={(p) => setAdPreviewModal({ ad: p, type: "product" })}
+                                                onAddToBagClick={(p) => setAdPreviewModal({ ad: p, type: "product" })}
+                                                onOpenSecondView={(targetAd) => setAdPreviewModal({
+                                                    ad: targetAd,
+                                                    type: "ad",
+                                                    kind: normalizedAd.type === "video" ? "video" : "image",
+                                                })}
+                                                onToggleLike={(item) => handleToggleLike(item)}
+                                                onOpenSheet={(type, p) => openBottomSheet(type as any, p)}
+                                                onShare={handleShareClick}
+                                                onLogView={handleLogView}
+                                                onReport={(p) => setReportingProduct(p)}
+                                                onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, Number(id)])}
+                                                onCollectCoin={(event, p) => adActions.handleAdCoinClick(event, p)}
+                                                canShowCollectCoin={(p) => adActions.canShowCollectCoin(p)}
+                                                onNavigateToProfile={(event, userId) => {
+                                                    if (userId) router.push(`/dashboard/profile?id=${userId}`);
                                                 }}
-                                            >
-                                                <div className="flex items-center justify-between gap-1 p-2 md:p-4 md:px-5">
-                                                    <div className="flex min-w-0 items-center gap-1">
-                                                        <div className="relative h-5 w-5 flex-shrink-0 overflow-hidden rounded-full border border-white/10 bg-gradient-to-tr from-blue-600 to-purple-600 shadow-lg md:h-8 md:w-8">
-                                                            {profileImage ? (
-                                                                <Image src={profileImage} alt={displayName} fill className="object-cover" unoptimized />
-                                                            ) : (
-                                                                <div className="flex h-full w-full items-center justify-center text-[7px] text-white md:text-[10px]">
-                                                                    <IonIcon name="person" className="text-white" />
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                        <div className="flex min-w-0 flex-col">
-                                                            <span className="truncate text-[7px] font-black uppercase leading-none tracking-tight text-white md:text-[10px]">
-                                                                {user.username || displayName}
-                                                            </span>
-                                                            <span className="mt-0.5 text-[5px] font-bold tracking-widest text-slate-500 md:text-[7px]">
-                                                                {formatRelativeTime(post.created_at || post.updated_at, "just now")}
-                                                            </span>
-                                                        </div>
-                                                    </div>
-                                                    <div className="relative">
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                setOpenMenuProductId(openMenuProductId === post.id ? null : post.id);
-                                                            }}
-                                                            className="flex h-5 w-5 items-center justify-center rounded-full bg-white/5 text-white transition-all active:scale-75 hover:bg-white/10 md:h-8 md:w-8"
-                                                        >
-                                                            <div className="flex flex-col gap-0.5">
-                                                                <div className="h-1 w-1 rounded-full bg-white" />
-                                                                <div className="h-1 w-1 rounded-full bg-white" />
-                                                            </div>
-                                                        </button>
-                                                        {openMenuProductId === post.id && (
-                                                            <div className="absolute right-0 top-full z-[60] mt-2 w-56 overflow-hidden rounded-2xl border border-white/10 bg-[#1a1a1a] py-2 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-                                                                <button onClick={() => { handleShareClick(post, "resell"); setOpenMenuProductId(null); }} className="flex w-full items-center gap-3 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"><IonIcon name="cash-outline" className="text-lg text-amber-500" />Resell Commission Link</button>
-                                                                <button onClick={() => { handleShareClick(post, "share"); setOpenMenuProductId(null); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"><IonIcon name="share-social-outline" className="text-lg text-blue-400" />Share Link</button>
-                                                                <button onClick={() => { setNotification({ type: "success", title: "Coming Soon", message: "Promote feature coming soon!" }); setOpenMenuProductId(null); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"><IonIcon name="rocket-outline" className="text-lg text-purple-400" />Promote</button>
-                                                                {currentUser?.id === post.user_id ? (
-                                                                    <>
-                                                                        <button onClick={() => { router.push(`/dashboard/shop?id=${post.id}`); setOpenMenuProductId(null); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"><IonIcon name="create-outline" className="text-lg text-emerald-400" />Edit Post</button>
-                                                                        <button onClick={async () => { if (window.confirm("Delete this post?")) { await marketService.deleteItem(post.id); setPosts((prev) => prev.filter((p) => p.id !== post.id)); } setOpenMenuProductId(null); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-red-500 transition-colors hover:bg-white/5"><IonIcon name="trash-outline" className="text-lg" />Delete Post</button>
-                                                                    </>
-                                                                ) : (
-                                                                    <>
-                                                                        <button onClick={() => { setReportingProduct(post); setOpenMenuProductId(null); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"><IonIcon name="alert-circle-outline" className="text-lg text-yellow-500" />Report</button>
-                                                                        <button onClick={() => { setHiddenPostIds((prev) => [...prev, post.id]); setOpenMenuProductId(null); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"><IonIcon name="eye-off-outline" className="text-lg text-slate-500" />Not Interested</button>
-                                                                    </>
-                                                                )}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                </div>
-
-                                                <div className="relative mx-2 mb-3 aspect-square overflow-hidden rounded-[1.2rem] border border-white/5 bg-black shadow-inner md:rounded-[2rem]">
-                                                    <Image
-                                                        src={postImage || "https://picsum.photos/400/400"}
-                                                        alt={post.title || "Product"}
-                                                        fill
-                                                        sizes="(max-width: 768px) 50vw, 25vw"
-                                                        className="object-cover transition-transform duration-500 group-hover:scale-105"
-                                                        unoptimized
-                                                    />
-                                                </div>
-
-                                                <div className="px-3 pb-2 md:px-6">
-                                                    <div className="mb-1.5 flex items-start justify-between gap-2 md:mb-2">
-                                                        <h3 className="min-w-0 flex-1 truncate text-[9px] font-black uppercase tracking-tight text-white transition-colors group-hover:text-amber-400 md:text-[12px]">
-                                                            {post.title || `${displayName} Product`}
-                                                        </h3>
-                                                        <button
-                                                            type="button"
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                handleLogView(post.id);
-                                                                router.push(`/dashboard/shop?id=${post.id}`);
-                                                            }}
-                                                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-white/5 bg-white/5 text-white/40 shadow-inner transition-all active:scale-75 hover:bg-white/10 hover:text-blue-400 md:h-10 md:w-10 md:rounded-2xl"
-                                                            title="Open product"
-                                                        >
-                                                            <IonIcon name="cart-outline" className="text-lg md:text-xl" />
-                                                        </button>
-                                                    </div>
-                                                    {post.description && (
-                                                        <p className="mb-3 line-clamp-2 text-[10px] leading-4 text-zinc-400 md:text-xs">
-                                                            {post.description}
-                                                        </p>
-                                                    )}
-
-                                                    <div className="border-t border-white/5 pt-2 md:pt-3">
-                                                        <div className="grid grid-cols-4 items-center gap-1 px-1 py-1 md:gap-2">
-                                                            <InteractionButton type="likes" icon="heart-outline" activeIcon="heart" isActive={!!post.user_liked} count={post.likes_count} activeColor="text-white" onSingleClick={() => handleToggleLike(post.id)} onLongReach={() => openBottomSheet("likes", post)} />
-                                                            <InteractionButton type="views" icon="eye-outline" activeIcon="eye" count={post.views_count} activeColor="text-white" onSingleClick={() => handleLogView(post.id)} onLongReach={() => openBottomSheet("views", post)} />
-                                                            <InteractionButton type="comments" icon="chatbubble-outline" activeIcon="chatbubble" count={post.comments_count} activeColor="text-white" onSingleClick={() => openBottomSheet("comments", post)} onLongReach={() => openBottomSheet("comments", post)} />
-                                                            <InteractionButton type="shares" icon="share-social-outline" activeIcon="share-social" count={post.shares_count} activeColor="text-white" onSingleClick={() => handleShareClick(post)} onLongReach={() => openBottomSheet("shares", post)} iconSize="text-sm md:text-base opacity-90" />
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
+                                                currentUser={currentUser}
+                                            />
+                                        );
+                                    }
+                                    return (
+                                        <SharedProductCard
+                                            key={`${post.id}-${index}`}
+                                            product={post}
+                                            isAd={isAd}
+                                            currentUser={currentUser}
+                                            onProductClick={(p) => router.push(`/dashboard/shop?id=${p.id}`)}
+                                            onAddToBagClick={(p) => router.push(`/dashboard/shop?id=${p.id}`)}
+                                            onToggleLike={(item) => handleToggleLike(item)}
+                                            onOpenSheet={(type, p) => openBottomSheet(type as any, p)}
+                                            onShare={handleShareClick}
+                                            onLogView={handleLogView}
+                                            onReport={(p) => setReportingProduct(p)}
+                                            onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, Number(id)])}
+                                            onCollectCoin={(event, p) => adActions.handleAdCoinClick(event, p)}
+                                            canShowCollectCoin={(p) => adActions.canShowCollectCoin(p)}
+                                            onNavigateToProfile={(event, userId) => {
+                                                if (userId) router.push(`/dashboard/profile?id=${userId}`);
+                                            }}
+                                            onEditProduct={(p) => router.push(`/dashboard/shop?id=${p.id}`)}
+                                            onDeleteProduct={async (p) => {
+                                                if (window.confirm("Delete this post?")) {
+                                                    await marketService.deleteItem(p.id);
+                                                    setPosts((prev) => prev.filter((item) => item.id !== p.id));
+                                                }
+                                            }}
+                                        />
                                     );
                                 })}
                             </div>
@@ -1517,6 +1532,7 @@ export default function ProfilePage() {
                     const comment = await marketService.addComment(interactionProduct.id, text, parentId);
                     setBottomSheetData((prev) => [...prev, { ...comment, username: currentUser?.username || "You", profile_picture: currentUser?.profile_picture }]);
                     setPosts((prev) => prev.map((p) => p.id === interactionProduct.id ? { ...p, comments_count: (p.comments_count || 0) + 1 } : p));
+                    updateAdState(interactionProduct, (prev) => ({ comments_count: (prev.comments_count || 0) + 1 }));
                 }}
                 onDeleteComment={async (commentId) => {
                     const result = await marketService.deleteComment(commentId);
@@ -1524,6 +1540,7 @@ export default function ProfilePage() {
                     setBottomSheetData((prev) => prev.filter((c) => c.id !== commentId && c.parent_id !== commentId));
                     if (interactionProduct?.id) {
                         setPosts((prev) => prev.map((p) => p.id === interactionProduct.id ? { ...p, comments_count: Math.max((p.comments_count || 0) - deletedCount, 0) } : p));
+                        updateAdState(interactionProduct, (prev) => ({ comments_count: Math.max((prev.comments_count || 0) - deletedCount, 0) }));
                     }
                 }}
                 onLikeComment={async (commentId) => {
@@ -1543,6 +1560,53 @@ export default function ProfilePage() {
                 currentUser={currentUser}
                 isLoading={isBottomSheetLoading}
             />
+
+            {notification && (
+                <div className="fixed bottom-24 left-1/2 z-[200] w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                    <div className={`flex items-center gap-3 rounded-2xl border px-4 py-3 shadow-2xl ${notification.type === "success" ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400" : "border-red-500/20 bg-red-500/10 text-red-400"}`}>
+                        <IonIcon name={notification.type === "success" ? "checkmark-circle" : "alert-circle"} className="text-xl" />
+                        <div className="min-w-0 flex-1">
+                            {notification.title && <p className="text-[10px] font-black uppercase tracking-widest opacity-60">{notification.title}</p>}
+                            <p className="text-xs font-bold">{notification.message}</p>
+                        </div>
+                        <button onClick={() => setNotification(null)} className="flex h-7 w-7 items-center justify-center rounded-full bg-white/5 hover:bg-white/10"><IonIcon name="close" /></button>
+                    </div>
+                </div>
+            )}
+
+            {adPreviewModal && adPreviewModal.type === "ad" && (
+                <SharedAdSecondViewModal
+                    onClose={() => setAdPreviewModal(null)}
+                    ad={adPreviewModal.ad}
+                    kind={adPreviewModal.kind || "image"}
+                    onToggleLike={(item) => handleToggleLike(item)}
+                    onOpenSheet={openBottomSheet}
+                    onShare={(ad) => handleShareClick(ad.raw || ad)}
+                    onReport={() => {}}
+                    onNotInterested={() => {}}
+                    onCollectCoin={(e, target) => adActions.handleAdCoinClick(e, target)}
+                    onNavigateToProfile={(e, target) => {
+                        setAdPreviewModal(null);
+                        router.push(`/dashboard/profile?id=${target.user_id}`);
+                    }}
+                    canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
+                />
+            )}
+
+            {adPreviewModal && adPreviewModal.type === "product" && (
+                <ShopProductSecondViewModal
+                    onClose={() => setAdPreviewModal(null)}
+                    product={adPreviewModal.ad}
+                    currentUser={currentUser}
+                    onToggleLike={(item) => handleToggleLike(item)}
+                    onLogView={handleLogView}
+                    onOpenSheet={(type, p) => openBottomSheet(type as any, p)}
+                    onShare={handleShareClick}
+                    onCollectCoin={(e, target) => adActions.handleAdCoinClick(e, target)}
+                    canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
+                    onNavigateToProfile={() => setAdPreviewModal(null)}
+                />
+            )}
 
         </div>
     );

@@ -18,7 +18,6 @@ import {
     AD_CARD_IMAGE_SIZES,
     AVATAR_IMAGE_SIZES,
     FEED_IMAGE_BLUR_DATA_URL,
-    HOME_FEED_IMAGE_SIZES,
     normalizeMediaSrc,
     shouldBypassNextImageOptimization,
 } from "@/app/lib/mediaOptimization";
@@ -26,7 +25,7 @@ import { NormalizedAd } from "@/app/lib/ads/adTypes";
 
 export type AdCardHandlers = {
     onOpenSecondView?: (ad: any) => void;
-    onToggleLike: (adId: string | number) => void | Promise<void>;
+    onToggleLike: (ad: any) => void | Promise<void>;
     onOpenSheet: (type: AdInteractionType, ad: any) => void;
     onShare: (ad: any) => void;
     onLogView?: (ad: any) => void;
@@ -37,17 +36,15 @@ export type AdCardHandlers = {
     canShowCollectCoin: (ad: any) => boolean;
 };
 
-export type PhotoVideoAdCardProps = AdCardHandlers & {
+export type SharedPhotoVideoAdCardProps = AdCardHandlers & {
     ad: NormalizedAd;
-    source?: "home" | "shop";
     isMenuOpen: boolean;
     onToggleMenu: (adId: any) => void;
     onCloseMenu: () => void;
 };
 
-export function PhotoVideoAdCard({
+export function SharedPhotoVideoAdCard({
     ad,
-    source = "shop",
     isMenuOpen,
     onToggleMenu,
     onCloseMenu,
@@ -60,7 +57,7 @@ export function PhotoVideoAdCard({
     onCollectCoin,
     onNavigateToProfile,
     canShowCollectCoin,
-}: PhotoVideoAdCardProps) {
+}: SharedPhotoVideoAdCardProps) {
     const raw = ad.raw || {};
     const activeLink = normalizeExternalUrl(ad.active_link || raw.active_link || "");
     const previewType = getSponsoredLinkPreviewType(activeLink);
@@ -93,11 +90,11 @@ export function PhotoVideoAdCard({
     };
 
     const handleLikeClick = () => {
-        onToggleLike(ad.id);
+        onToggleLike(ad);
     };
 
     return (
-        <div className="group bg-[#1a1a1a] rounded-[1.5rem] md:rounded-[2.5rem] pb-4 md:pb-8 border border-white/5 hover:border-white/20 transition-all hover:shadow-2xl relative flex flex-col min-w-0">
+        <div className="group bg-[#1a1a1a] rounded-[1.5rem] md:rounded-[2.5rem] pb-4 md:pb-8 border border-white/5 hover:border-white/20 transition-all hover:shadow-2xl relative flex flex-col min-w-0 w-full">
             {showAdCoinButton && (
                 <button
                     type="button"
@@ -231,11 +228,11 @@ export function PhotoVideoAdCard({
                 type="button"
                 onClick={(event) => {
                     event.stopPropagation();
-                    onOpenSecondView?.(ad);
+                    if (onOpenSecondView) onOpenSecondView(ad);
                 }}
                 className="block w-full text-left"
             >
-                <div className={source === "home" ? "relative w-full aspect-[4/3] overflow-hidden rounded-[28px]" : "relative mx-2 mb-3 overflow-hidden rounded-[1.2rem] border border-white/5 bg-black shadow-inner md:rounded-[2rem] aspect-[2/1.1] lg:aspect-square"}>
+                <div className="relative mx-2 mb-3 overflow-hidden rounded-[1.2rem] border border-white/5 bg-black shadow-inner md:rounded-[2rem] aspect-[2/1.1] lg:aspect-square">
                     <div className="relative h-full w-full">
                         {showSponsoredLinkPreview ? (
                             <div className="relative h-full w-full bg-[#0f1115]">
@@ -243,7 +240,7 @@ export function PhotoVideoAdCard({
                                     src={previewImage}
                                     alt={ad.title || "Sponsored media"}
                                     fill
-                                    sizes={source === "home" ? HOME_FEED_IMAGE_SIZES : AD_CARD_IMAGE_SIZES}
+                                    sizes={AD_CARD_IMAGE_SIZES}
                                     quality={58}
                                     loading="lazy"
                                     placeholder="blur"
@@ -278,7 +275,7 @@ export function PhotoVideoAdCard({
                                 src={previewImage}
                                 alt={ad.title || "Sponsored media"}
                                 fill
-                                sizes={source === "home" ? HOME_FEED_IMAGE_SIZES : AD_CARD_IMAGE_SIZES}
+                                sizes={AD_CARD_IMAGE_SIZES}
                                 quality={58}
                                 loading="lazy"
                                 placeholder="blur"
@@ -374,9 +371,6 @@ export function PhotoVideoAdCard({
                     </div>
                 </div>
             </div>
-
-            {/* Reserved slot for future subscribe placement; currently unused for photo/video ads */}
-            {false && advertiserId && <SubscribeButton googId={Number(String(ad.id).replace(/^ad-/, ""))} authorId={Number(advertiserId)} authorName={advertiserName} />}
         </div>
     );
 }

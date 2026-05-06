@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import IonIcon from "@/app/components/IonIcon";
 import { marketService } from "@/services/marketService";
@@ -11,10 +11,13 @@ import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
 import { InteractionButton } from "@/app/components/InteractionButton";
 import SubscribeButton from "@/app/components/SubscribeButton";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
-import { AdSecondViewModal } from "@/app/components/ads/AdSecondViewModal";
+import { ProfilePromoteCarousel } from "@/app/components/ads/ProfilePromoteCarousel";
+import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondViewModal";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
-import { useAdActions } from "@/app/lib/ads/useAdActions";
-import { normalizeProductAd } from "@/app/lib/market/adProductAdapter";
+import { canShowCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
+import { useAdStore } from "@/app/lib/ads/adStore";
+import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
+import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
 import { formatRelativeTime } from "@/app/lib/relativeTime";
 import { getShareUrlForItem } from "@/app/lib/shareLinks";
 import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
@@ -358,6 +361,9 @@ export default function DashboardPage() {
     const [postText, setPostText] = useState("");
     const [posts, setPosts] = useState<WritePost[]>([]);
     const [ads, setAds] = useState<any[]>([]);
+    const syncAds = useAdStore((state) => state.syncAds);
+    const updateAdState = useAdStore((state) => state.updateAdState);
+    const adStates = useAdStore((state) => state.adStates);
     const [isLoadingFeed, setIsLoadingFeed] = useState(true);
     const [, setTick] = useState(0);
     const [openMenuAdId, setOpenMenuAdId] = useState<string | number | null>(null);
@@ -388,7 +394,6 @@ export default function DashboardPage() {
     const [reportCustomReason, setReportCustomReason] = useState("");
     const [reportSubmitting, setReportSubmitting] = useState(false);
     const [reportSubmitted, setReportSubmitted] = useState(false);
-    const [profilePromoteIndex, setProfilePromoteIndex] = useState(0);
 
     const syncAdOwnerProfile = (ad: any, user: any) => {
         if (!ad || !user?.id) return ad;
@@ -415,12 +420,47 @@ export default function DashboardPage() {
             },
         };
     };
+    const getHomeLiveAd = useCallback((ad: any) => {
+        if (!ad) return ad;
+        const liveState = adStates[getAdInteractionId(ad)] || {};
+        const raw = {
+            ...(ad.raw || ad),
+            user_liked: liveState.user_liked ?? ad.user_liked ?? ad.liked,
+            likes_count: liveState.likes_count ?? ad.likes_count ?? ad.likeCount,
+            ad_coin_collected: liveState.ad_coin_collected ?? ad.ad_coin_collected ?? ad.coinCollected,
+            ad_like_locked: liveState.ad_like_locked ?? ad.ad_like_locked,
+            views_count: liveState.views_count ?? ad.views_count ?? ad.viewCount,
+            comments_count: liveState.comments_count ?? ad.comments_count ?? ad.commentCount,
+            shares_count: liveState.shares_count ?? ad.shares_count ?? ad.shareCount,
+        };
+        const normalized = normalizeAdData(raw);
+
+        return {
+            ...raw,
+            ...normalized,
+            raw,
+            user_liked: normalized.liked,
+            likes_count: normalized.likeCount,
+            ad_coin_collected: normalized.coinCollected,
+            ad_like_locked: raw.ad_like_locked,
+        };
+    }, [adStates]);
+    const resolveHomeLiveAd = useCallback((itemOrId: any) => {
+        if (itemOrId && typeof itemOrId === "object") return getHomeLiveAd(itemOrId);
+        const interactionId = getAdInteractionId(itemOrId);
+        const sourceAd = ads.find((ad) => getAdInteractionId(ad) === interactionId);
+        return sourceAd ? getHomeLiveAd(sourceAd) : null;
+    }, [ads, getHomeLiveAd]);
+    const liveHomeAds = useMemo(
+        () => ads.map((ad) => getHomeLiveAd(ad)),
+        [ads, getHomeLiveAd],
+    );
     const homeProfilePromoteAds = useMemo(
-        () => ads.filter((ad) => ad.campaign_type === "Profile Promote"),
-        [ads],
+        () => liveHomeAds.filter((ad) => ad.campaign_type === "Profile Promote"),
+        [liveHomeAds],
     );
     const homeFeedItems = useMemo(() => {
-        const nonProfilePromoteAds = ads.filter((ad) => ad.campaign_type !== "Profile Promote");
+        const nonProfilePromoteAds = liveHomeAds.filter((ad) => ad.campaign_type !== "Profile Promote");
         const mixedItems = interleaveWritePostsWithAds(posts, nonProfilePromoteAds, "googer-home-ad-rotation-v1", { current: homeAdOrder }, 4);
         if (!homeProfilePromoteAds.length) return mixedItems;
         const insertIndex = Math.min(4, mixedItems.length);
@@ -429,9 +469,9 @@ export default function DashboardPage() {
             { type: "profilePromoteCarousel" as const, ads: homeProfilePromoteAds },
             ...mixedItems.slice(insertIndex),
         ];
-    }, [ads, homeAdOrder, homeProfilePromoteAds, posts]);
+    }, [homeAdOrder, homeProfilePromoteAds, liveHomeAds, posts]);
     const trendingPosts = useMemo<TrendingPost[]>(() => {
-        const adTrends = ads.slice(0, 5).map((ad) => {
+        const adTrends = liveHomeAds.slice(0, 5).map((ad) => {
             const activeLink = normalizeExternalUrl(ad.active_link || "");
             const previewType = getSponsoredLinkPreviewType(activeLink);
             return {
@@ -458,7 +498,7 @@ export default function DashboardPage() {
         }));
 
         return [...adTrends, ...writeTrends].slice(0, 6);
-    }, [ads, posts]);
+    }, [liveHomeAds, posts]);
 
     useEffect(() => {
         if (!composeMode || !composeSectionRef.current) return;
@@ -479,6 +519,7 @@ export default function DashboardPage() {
                 publicItems = await getPublicActiveAds();
                 if (!mounted) return;
                 setAds(publicItems);
+                syncAds(publicItems);
                 setIsLoadingFeed(false);
             } catch (error) {
                 console.error("Failed to load ads:", error);
@@ -496,10 +537,6 @@ export default function DashboardPage() {
     }, []);
 
     // Force periodic re-render so time labels (New → 2h → 3h ...) update in real-time
-    useEffect(() => {
-        setProfilePromoteIndex((current) => (homeProfilePromoteAds.length ? current % homeProfilePromoteAds.length : 0));
-    }, [homeProfilePromoteAds.length]);
-
     useEffect(() => {
         const interval = setInterval(() => setTick((t) => t + 1), 60 * 1000);
         return () => clearInterval(interval);
@@ -659,7 +696,11 @@ export default function DashboardPage() {
         if (!interactionPost || !comment.trim()) return;
         try {
             const commentData = await googService.addComment(interactionPost.id, comment.trim(), parentId);
-            setPostSheetData((current) => [...current, commentData]);
+            setPostSheetData((current) => [...current, {
+                ...commentData,
+                username: currentUser?.username || commentData?.username || "You",
+                profile_picture: currentUser?.profile_picture ?? commentData?.profile_picture,
+            }]);
             setPosts((currentPosts) =>
                 currentPosts.map((post) => post.id === interactionPost.id ? { ...post, comments: post.comments + 1 } : post),
             );
@@ -806,136 +847,13 @@ export default function DashboardPage() {
         };
     }, []);
 
-    const syncOpenAdCopies = (itemId: string | number, updater: (item: any) => any) => {
-        const matchesAdId = (item: any) => (
-            item && (
-                String(item.id) === String(itemId) ||
-                String(item.adId || "") === String(itemId).replace(/^ad-/, "")
-            )
-        );
-
-        setAdPreviewModal((current) => {
-            if (!current?.ad || !matchesAdId(current.ad)) return current;
-            return { ...current, ad: updater(current.ad) };
-        });
-        setProductAdModal((current: any) => (
-            matchesAdId(current) ? updater(current) : current
-        ));
-        setPendingAdCoinAd((current: any) => (
-            matchesAdId(current) ? updater(current) : current
-        ));
-        setInteractionAd((current: any) => (
-            matchesAdId(current) ? updater(current) : current
-        ));
-        setShareAdItem((current: any) => (
-            matchesAdId(current) ? updater(current) : current
-        ));
-    };
+    // Removed manual sync helpers syncOpenAdCopies and updateAdLocalState in favor of useAdStore
 
     const toggleFeedLike = async (itemOrId: any) => {
-        const sourceItem = typeof itemOrId === "object" && itemOrId ? itemOrId : null;
-        const itemId = sourceItem?.id ?? itemOrId;
-        const requestId = String(itemId).startsWith("ad-") ? itemId : itemId;
-        const syncProductPromoteModalFromFeed = (updater: (item: any) => any) => {
-            setProductAdModal((current: any) => {
-                if (!current?.adId) return current;
-                const sourceAd = ads.find((ad) => String(ad.adId || "") === String(current.adId || ""));
-                return sourceAd ? updater({ ...sourceAd, ...current }) : updater(current);
-            });
-        };
-        const matchesItem = (item: any) => (
-            item && (
-                String(item.id) === String(itemId) ||
-                String(item.adId || "") === String(itemId).replace(/^ad-/, "")
-            )
-        );
-        const currentItem =
-            (sourceItem && matchesItem(sourceItem) ? sourceItem : null) ||
-            (productAdModal && matchesItem(productAdModal) ? productAdModal : null) ||
-            (adPreviewModal?.ad && matchesItem(adPreviewModal.ad) ? adPreviewModal.ad : null) ||
-            ads.find(matchesItem);
-        if (!currentItem) return;
+        const liveAd = resolveHomeLiveAd(itemOrId);
+        if (!liveAd?.id) return;
 
-        const wasLiked = !!currentItem.user_liked;
-        const willBeLiked = !wasLiked;
-        if (currentItem?.ad_like_locked && wasLiked && !willBeLiked) return;
-        const optimisticLikedItem = {
-            ...currentItem,
-            user_liked: willBeLiked,
-            likes_count: Math.max(0, (currentItem.likes_count || 0) + (willBeLiked ? 1 : -1)),
-        };
-        const coinReadyId = getSponsoredCollectionId(optimisticLikedItem);
-
-        setAds((currentItems) =>
-            currentItems.map((item) =>
-                matchesItem(item)
-                    ? { ...item, user_liked: willBeLiked, likes_count: Math.max(0, (item.likes_count || 0) + (willBeLiked ? 1 : -1)) }
-                    : item,
-            ),
-        );
-        syncOpenAdCopies(itemId, (item) => ({ ...item, user_liked: willBeLiked, likes_count: Math.max(0, (item.likes_count || 0) + (willBeLiked ? 1 : -1)) }));
-        syncProductPromoteModalFromFeed((item) => ({ ...item, user_liked: willBeLiked, likes_count: Math.max(0, (item.likes_count || 0) + (willBeLiked ? 1 : -1)) }));
-        if (willBeLiked && canShowCollectCoinButton(optimisticLikedItem)) {
-            setHomeCoinReadyAdIds((current) => new Set(current).add(String(coinReadyId)));
-        } else {
-            setHomeCoinReadyAdIds((current) => {
-                const next = new Set(current);
-                next.delete(String(coinReadyId));
-                return next;
-            });
-        }
-
-        try {
-            const serverLiked = await marketService.toggleLike(requestId);
-            if (!serverLiked) {
-                setPendingAdCoinAd((current: any) => (matchesItem(current) ? null : current));
-                setHomeCoinReadyAdIds((current) => {
-                    const next = new Set(current);
-                    next.delete(String(coinReadyId));
-                    return next;
-                });
-            }
-            setAds((currentItems) =>
-                currentItems.map((item) =>
-                    matchesItem(item)
-                        ? {
-                            ...item,
-                            user_liked: serverLiked,
-                            likes_count: Math.max(0, (item.likes_count || 0) + (serverLiked === willBeLiked ? 0 : serverLiked ? 1 : -1)),
-                        }
-                        : item,
-                ),
-            );
-            syncOpenAdCopies(itemId, (item) => ({
-                ...item,
-                user_liked: serverLiked,
-                likes_count: Math.max(0, (item.likes_count || 0) + (serverLiked === willBeLiked ? 0 : serverLiked ? 1 : -1)),
-            }));
-            syncProductPromoteModalFromFeed((item) => ({
-                ...item,
-                user_liked: serverLiked,
-                likes_count: Math.max(0, (item.likes_count || 0) + (serverLiked === willBeLiked ? 0 : serverLiked ? 1 : -1)),
-            }));
-            if (serverLiked && canShowCollectCoinButton({ ...optimisticLikedItem, user_liked: true })) {
-                setHomeCoinReadyAdIds((current) => new Set(current).add(String(coinReadyId)));
-            }
-        } catch {
-            setPendingAdCoinAd((current: any) => (matchesItem(current) ? null : current));
-            setHomeCoinReadyAdIds((current) => {
-                const next = new Set(current);
-                next.delete(String(coinReadyId));
-                return next;
-            });
-            setAds((currentItems) =>
-                currentItems.map((item) =>
-                    matchesItem(item)
-                        ? { ...item, user_liked: wasLiked, likes_count: Math.max(0, (item.likes_count || 0) + (wasLiked ? 1 : -1)) }
-                        : item,
-                ),
-            );
-            syncOpenAdCopies(itemId, (item) => ({ ...item, user_liked: wasLiked, likes_count: Math.max(0, (item.likes_count || 0) + (wasLiked ? 1 : -1)) }));
-            syncProductPromoteModalFromFeed((item) => ({ ...item, user_liked: wasLiked, likes_count: Math.max(0, (item.likes_count || 0) + (wasLiked ? 1 : -1)) }));
-        }
+        await adActions.like(liveAd);
     };
 
     const getProductPromoteShareItem = (item: any) => {
@@ -994,16 +912,7 @@ export default function DashboardPage() {
         try {
             const result = await marketService.logShare(shareAdItem.id);
             if (result?.incremented === true) {
-                setAds((currentItems) =>
-                    currentItems.map((feedItem) =>
-                        feedItem.id === shareAdItem.id
-                            ? { ...feedItem, shares_count: (feedItem.shares_count || 0) + 1 }
-                            : feedItem,
-                    ),
-                );
-                setShareAdItem((currentItem: any) =>
-                    currentItem ? { ...currentItem, shares_count: (currentItem.shares_count || 0) + 1 } : currentItem,
-                );
+                updateAdState(shareAdItem, (prev) => ({ shares_count: (prev.shares_count || 0) + 1 }));
             }
         } catch (error) {
             console.error("Failed to log ad share:", error);
@@ -1011,8 +920,10 @@ export default function DashboardPage() {
     };
 
     const viewFeedItem = async (item: any) => {
-        setAds((currentItems) => currentItems.map((feedItem) => feedItem.id === item.id ? { ...feedItem, views_count: (feedItem.views_count || 0) + 1 } : feedItem));
-        await marketService.logView(item.id);
+        const result = await marketService.logView(item.id);
+        if (result?.incremented === true) {
+            updateAdState(item, (prev) => ({ views_count: (prev.views_count || 0) + 1 }));
+        }
     };
 
     const getSponsoredCollectionId = (ad: any) => {
@@ -1020,46 +931,57 @@ export default function DashboardPage() {
         return String(ad?.id || "").startsWith("ad-") ? ad.id : (ad?.adId ? `ad-${ad.adId}` : ad?.id);
     };
 
-    const canShowCollectCoinButton = (ad: any) => {
-        if (!ad?.is_sponsored || ad?.ad_coin_collected || String(currentUser?.id || "") === String(ad?.user_id || "")) return false;
-        const collectionId = getSponsoredCollectionId(ad);
-        return !!ad?.user_liked || homeCoinReadyAdIds.has(String(collectionId));
-    };
+    const canShowAdCollectCoin = (ad: any) => (
+        canShowCollectCoinButton(ad, currentUser) ||
+        homeCoinReadyAdIds.has(String(getSponsoredCollectionId(ad?.raw || ad)))
+    );
 
     const markAdCoinCollectedLocally = (adId: string | number) => {
-        setAds((currentItems) =>
-            currentItems.map((item) =>
-                String(item.id) === String(adId) || String(item.adId || "") === String(adId).replace(/^ad-/, "")
-                    ? { ...item, ad_coin_collected: true, ad_like_locked: true }
-                    : item,
-            ),
-        );
-        syncOpenAdCopies(adId, (item) => ({ ...item, ad_coin_collected: true, ad_like_locked: true }));
+        updateAdState(adId, { ad_coin_collected: true, ad_like_locked: true });
     };
 
     const adActions = useAdActions(null, {
         currentUser,
-        canCollectCoin: canShowCollectCoinButton,
-        getCollectionId: getSponsoredCollectionId,
+        canShowCollectCoin: canShowAdCollectCoin,
+        // Removed local sync callbacks - useAdActions now updates useAdStore globally
         onShare: (item) => {
-            setShareAdItem(getProductPromoteShareItem(item));
+            setShareAdItem(getProductPromoteShareItem(item.raw || item));
             setShowAdShareModal(true);
         },
-        onOpenSheet: (type, item) => openMarketAdSheet(type, item),
-        onCoinCollected: (_item, collectionId) => {
+        onOpenSheet: (type, item) => openMarketAdSheet(type, item.raw || item),
+        onCoinCollected: (ad, collectionId) => {
             markAdCoinCollectedLocally(collectionId);
             setHomeCoinReadyAdIds((current) => {
                 const next = new Set(current);
                 next.delete(String(collectionId));
                 return next;
             });
+            setNotification({
+                type: "success",
+                title: "Coin Collected",
+                message: `Rupieer ${Number(ad.raw?.ad_coin_value || 1).toFixed(2)} added to your wallet.`,
+            });
         },
-        onNeedCoinConfirmation: (item) => setPendingAdCoinAd(item),
+        onCoinError: (_ad, error: any) => {
+            setNotification({
+                type: "error",
+                title: "Collection Failed",
+                message: error?.message || "Could not collect the ad coin.",
+            });
+        },
+        onNeedCoinConfirmation: (item) => setPendingAdCoinAd(item.raw || item),
+        onNotify: setNotification,
+        onSubscribe: (ad) => {
+            if (ad.userId) router.push(`/dashboard/profile?id=${ad.userId}`);
+        },
+        onAddToBag: (ad) => {
+            openProductAdAddToBag(ad.raw || ad);
+        }
     });
 
     const collectAdCoin = async (ad: any) => {
         try {
-            await adActions.collectCoin(ad);
+            await adActions.collectAdCoin(ad);
         } catch (error) {
             console.error("Ad coin collection failed:", error);
         } finally {
@@ -1068,7 +990,7 @@ export default function DashboardPage() {
     };
 
     const handleAdCoinClick = (event: React.MouseEvent, ad: any) => {
-        adActions.collectCoinClick(event, ad);
+        adActions.handleAdCoinClick(event, ad);
     };
 
     const openTrendingPostDetails = (post: TrendingPost) => {
@@ -1099,18 +1021,88 @@ export default function DashboardPage() {
         setProductAdModal(null);
     };
 
-    const openProductAdInShopSecondView = (product: any) => {
+    const resolveProductPromoteOriginalProduct = async (product: any) => {
+        if (product?.campaign_type !== "Product Promote") return product;
+
+        const extractProductTargetFromLink = (link: any) => {
+            const raw = String(link || "").trim();
+            if (!raw) return { id: null as string | number | null, code: null as string | null };
+            try {
+                const url = new URL(raw.startsWith("http") ? raw : `https://googer.local${raw.startsWith("/") ? raw : `/${raw}`}`);
+                const parts = url.pathname.split("/").filter(Boolean);
+                const index = parts.findIndex((part) => ["product", "share", "shop"].includes(part.toLowerCase()));
+                const value = index >= 0 ? parts[index + 1] : "";
+                if (!value) return { id: null, code: null };
+                const decoded = decodeURIComponent(value);
+                return /^\d+$/.test(decoded) ? { id: decoded, code: null } : { id: null, code: decoded };
+            } catch {
+                return { id: null, code: null };
+            }
+        };
+
+        const linkTarget = extractProductTargetFromLink(product?.active_link);
+        const isAdShell = String(product?.id || "").startsWith("ad-") || product?.adId || product?.ad_id;
+        const linkedId = product?.linked_product_id ?? product?.product_id ?? product?.productId;
+        const linkedCode =
+            product?.linked_product_code ??
+            linkTarget.code ??
+            (!isAdShell ? (product?.product_code ?? product?.share_code ?? product?.shareCode) : null);
+        const fallbackId = String(product?.id || "").startsWith("ad-") ? null : product?.id;
+        const targetId = linkedId ?? linkTarget.id ?? fallbackId;
+
+        let originalProduct = null;
+        if (targetId != null) {
+            try {
+                originalProduct = await marketService.getItemById(targetId);
+            } catch (error) {
+                console.error("Failed to fetch promoted product by id:", error);
+            }
+        }
+
+        if (!originalProduct && linkedCode) {
+            try {
+                originalProduct = await marketService.getItemByCode(String(linkedCode));
+            } catch (error) {
+                console.error("Failed to fetch promoted product by code:", error);
+            }
+        }
+
+        return {
+            ...(originalProduct || product),
+            id: originalProduct?.id ?? targetId ?? product?.id,
+            product_id: originalProduct?.id ?? targetId ?? product?.product_id,
+            linked_product_id: originalProduct?.id ?? targetId ?? product?.linked_product_id,
+            linked_product_code: originalProduct?.product_code ?? linkedCode ?? product?.linked_product_code,
+            is_sponsored: false,
+            isAd: false,
+            campaign_type: product.campaign_type,
+            user_liked: product.user_liked,
+            likes_count: product.likes_count,
+            comments_count: product.comments_count,
+            shares_count: product.shares_count,
+            views_count: product.views_count,
+            ad_coin_collected: product.ad_coin_collected,
+            ad_like_locked: product.ad_like_locked,
+            ad_coin_value: product.ad_coin_value,
+            adId: product.adId || product.ad_id,
+            ad_id: product.ad_id || product.adId,
+            isProductPromoteSecondView: true,
+            share_code: product.share_code,
+        };
+    };
+
+    const openProductAdInShopSecondView = async (product: any) => {
         if (!product?.id) return;
         setProductAdSizeError(false);
-        setProductAdModal(product);
+        setProductAdModal(await resolveProductPromoteOriginalProduct(product));
         void viewFeedItem(product);
     };
 
-    const openProductAdAddToBag = (product: any) => {
+    const openProductAdAddToBag = async (product: any) => {
         if (!product?.id) return;
         setProductAdSizeError(true);
         setNotification({ type: "error", title: "Size is required", message: "Size is required" });
-        setProductAdModal(product);
+        setProductAdModal(await resolveProductPromoteOriginalProduct(product));
         void viewFeedItem(product);
     };
 
@@ -1144,14 +1136,12 @@ export default function DashboardPage() {
         if (!interactionAd || !comment.trim()) return;
         try {
             const commentData = await marketService.addComment(interactionAd.id, comment.trim(), parentId);
-            setAdSheetData((current) => [...current, commentData]);
-            setAds((currentAds) =>
-                currentAds.map((ad) =>
-                    ad.id === interactionAd.id
-                        ? { ...ad, comments_count: (ad.comments_count || 0) + 1 }
-                        : ad,
-                ),
-            );
+            setAdSheetData((current) => [...current, {
+                ...commentData,
+                username: currentUser?.username || commentData?.username || "You",
+                profile_picture: currentUser?.profile_picture ?? commentData?.profile_picture,
+            }]);
+            updateAdState(interactionAd, (prev) => ({ comments_count: (prev.comments_count || 0) + 1 }));
         } catch (error) {
             console.error("Failed to save ad comment:", error);
         }
@@ -1200,477 +1190,62 @@ export default function DashboardPage() {
                             }
 
                             if (item.type === "profilePromoteCarousel") {
-                                const carouselAds = item.ads;
-                                const canSlide = carouselAds.length > 3;
-                                const visibleAds = canSlide
-                                    ? Array.from({ length: 3 }, (_, offset) => carouselAds[(profilePromoteIndex + offset) % carouselAds.length])
-                                    : carouselAds.slice(0, 3);
-
                                 return (
-                                    <article key="profile-promote-carousel" className="px-4 py-4 transition-colors sm:px-7">
-                                        <div className="mx-auto w-full max-w-[828px]">
-                                            <div className="mb-3 flex items-center justify-end gap-2">
-                                                {canSlide && (
-                                                    <>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setProfilePromoteIndex((current) => (current - 1 + carouselAds.length) % carouselAds.length)}
-                                                            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 text-sm font-black text-white transition hover:bg-white/10 active:scale-95"
-                                                            aria-label="Previous profile promote ads"
-                                                        >
-                                                            &lt;
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setProfilePromoteIndex((current) => (current + 1) % carouselAds.length)}
-                                                            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 text-sm font-black text-white transition hover:bg-white/10 active:scale-95"
-                                                            aria-label="Next profile promote ads"
-                                                        >
-                                                            &gt;
-                                                        </button>
-                                                    </>
-                                                )}
-                                            </div>
-                                            <div className="overflow-hidden">
-                                                <div className="flex gap-3">
-                                                    {visibleAds.map((profileAd) => (
-                                                        <PromotedAdCard
-                                                            key={`profile-promote-${profileAd.id}`}
-                                                            ad={profileAd}
-                                                            source="home"
-                                                            onProductClick={openProductAdInShopSecondView}
-                                                            onToggleLike={() => toggleFeedLike(profileAd)}
-                                                            onOpenSheet={openMarketAdSheet}
-                                                            onShare={shareFeedItem}
-                                                            onCollectCoin={handleAdCoinClick}
-                                                            canShowCollectCoin={canShowCollectCoinButton}
-                                                            onProfileClick={(clickedAd) => {
-                                                                if (clickedAd.user_id) {
-                                                                    router.push(`/dashboard/profile?id=${clickedAd.user_id}`);
-                                                                    return;
-                                                                }
-                                                                router.push(`/dashboard/profile?user=${encodeURIComponent(getItemUsername(clickedAd, "Advertiser"))}`);
-                                                            }}
-                                                        />
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </article>
+                                    <ProfilePromoteCarousel
+                                        key="profile-promote-carousel"
+                                        ads={item.ads}
+                                        onProductClick={openProductAdInShopSecondView}
+                                        onProfileClick={(clickedAd) => {
+                                            if (clickedAd.user_id) {
+                                                router.push(`/dashboard/profile?id=${clickedAd.user_id}`);
+                                                return;
+                                            }
+                                            router.push(`/dashboard/profile?user=${encodeURIComponent(getItemUsername(clickedAd, "Advertiser"))}`);
+                                        }}
+                                    />
                                 );
-                            }
-
-                            const ad = item.ad;
+                            }                            const ad = item.ad;
                             const activeLink = normalizeExternalUrl(ad.active_link || "");
                             const previewType = getSponsoredLinkPreviewType(activeLink);
-                            const previewImage = getAdPreviewImage(ad, previewType);
-                            const callHref = getSponsoredCallHref(ad);
-                            const ctaHref = getSponsoredCtaHref(ad.cta_topic, ad.cta_value);
-                            const ctaLabel = ad.cta_topic && ad.cta_topic !== "No Button" ? ad.cta_topic : "Visit";
-                            const secondaryCtaLabel = ad.cta_topic === "Call Now" ? "" : ctaLabel;
-                            const hasSecondaryCta = !!secondaryCtaLabel && ad.cta_topic !== "No Button";
-                            const showAdCoinButton = canShowCollectCoinButton(ad);
-                            const isProductPromote = ad.campaign_type === "Product Promote";
-                            const showSponsoredLinkPreview = !!activeLink;
-                            const secondViewKind = getSponsoredSecondViewKind(ad, previewType);
 
-                            if (isProductPromote) {
-                                const normalizedProductAd = {
-                                    ...normalizeProductAd(ad),
-                                    user_liked: ad.user_liked,
-                                    ad_coin_collected: ad.ad_coin_collected,
-                                    ad_like_locked: ad.ad_like_locked,
-                                };
-                                return (
-                                    <article key={`ad-${ad.id}`} className="px-4 py-4 transition-colors sm:px-7">
-                                        <div className="mx-auto w-full max-w-[360px]">
+                            return (
+                                <article key={`ad-${ad.id}`} className="px-4 py-4 transition-colors sm:px-7">
+                                    <div className="mx-auto w-full max-w-[360px]">
                                         <PromotedAdCard
-                                            ad={{ ...ad, ...normalizedProductAd }}
-                                            source="shop"
-                                            onProductClick={() => {
-                                                openProductAdInShopSecondView(ad);
-                                            }}
-                                            onAddToBagClick={() => openProductAdAddToBag(ad)}
-                                            onToggleLike={() => toggleFeedLike(ad)}
-                                            onOpenSheet={(type) => openMarketAdSheet(type as SheetType, ad)}
-                                            onShare={() => shareFeedItem(ad)}
+                                            ad={ad}
+                                            isMenuOpen={openMenuAdId === ad.id}
+                                            onToggleMenu={(adId) => setOpenMenuAdId(openMenuAdId === adId ? null : adId)}
+                                            onCloseMenu={() => setOpenMenuAdId(null)}
+                                            onOpenSecondView={() => openAdInShop(ad, previewType)}
+                                            onProductClick={openProductAdInShopSecondView}
+                                            onAddToBagClick={openProductAdAddToBag}
+                                            onToggleLike={toggleFeedLike}
+                                            onOpenSheet={openMarketAdSheet}
+                                            onShare={shareFeedItem}
                                             onLogView={() => void viewFeedItem(ad)}
-                                            onReport={() => {
+                                            onReport={(targetAd) => {
                                                 setReportTargetPost({
-                                                    ...ad,
-                                                    id: ad.id,
-                                                    text: ad.title || ad.description || "",
-                                                    user: {
-                                                        id: ad.user_id,
-                                                        name: getItemUsername(ad, "Sponsored"),
-                                                        img: getItemProfilePicture(ad) || "",
-                                                    },
+                                                    ...targetAd,
+                                                    id: targetAd.id,
+                                                    text: targetAd.title || targetAd.description || "",
+                                                    user: { id: targetAd.user_id, name: getItemUsername(targetAd, "Sponsored"), img: getItemProfilePicture(targetAd) || "" },
                                                     liked: false,
-                                                    likes: ad.likes_count || 0,
-                                                    comments: ad.comments_count || 0,
-                                                    views: ad.views_count || 0,
+                                                    likes: targetAd.likes_count || 0,
+                                                    comments: targetAd.comments_count || 0,
+                                                    views: targetAd.views_count || 0,
                                                     reposts: 0,
-                                                    shares: ad.shares_count || 0,
+                                                    shares: targetAd.shares_count || 0,
                                                 } as WritePost);
                                                 setReportReason("");
                                                 setReportCustomReason("");
                                                 setReportSubmitted(false);
                                             }}
                                             onNotInterested={hideAdFromHome}
-                                            onCollectCoin={(event) => handleAdCoinClick(event, ad)}
-                                            canShowCollectCoin={() => canShowCollectCoinButton(ad)}
-                                            onNavigateToProfile={(event) => navigateToAdProfile(event, ad)}
+                                            onCollectCoin={handleAdCoinClick}
+                                            onNavigateToProfile={navigateToAdProfile}
+                                            canShowCollectCoin={canShowAdCollectCoin}
                                             currentUser={currentUser}
                                         />
-                                        </div>
-                                    </article>
-                                );
-                            }
-
-                            if (ad.campaign_type === "Profile Promote") {
-                                return (
-                                    <article key={`ad-${ad.id}`} className="flex justify-center px-4 py-4 transition-colors sm:px-7">
-                                        <PromotedAdCard
-                                            ad={ad}
-                                            source="home"
-                                            onProductClick={openProductAdInShopSecondView}
-                                            onToggleLike={() => toggleFeedLike(ad)}
-                                            onOpenSheet={openMarketAdSheet}
-                                            onShare={shareFeedItem}
-                                            onCollectCoin={handleAdCoinClick}
-                                            canShowCollectCoin={canShowCollectCoinButton}
-                                            onProfileClick={(profileAd) => {
-                                                if (profileAd.user_id) {
-                                                    router.push(`/dashboard/profile?id=${profileAd.user_id}`);
-                                                    return;
-                                                }
-                                                router.push(`/dashboard/profile?user=${encodeURIComponent(getItemUsername(profileAd, "Advertiser"))}`);
-                                            }}
-                                        />
-                                    </article>
-                                );
-                            }
-
-                            if (ad.campaign_type !== "Profile Promote") {
-                                return (
-                                    <article key={`ad-${ad.id}`} className="px-4 py-4 transition-colors sm:px-7">
-                                        <div className="mx-auto w-full max-w-[360px]">
-                                            <PromotedAdCard
-                                                ad={ad}
-                                                source="shop"
-                                                isMenuOpen={openMenuAdId === ad.id}
-                                                onToggleMenu={(adId) => setOpenMenuAdId(openMenuAdId === adId ? null : adId)}
-                                                onCloseMenu={() => setOpenMenuAdId(null)}
-                                                onOpenSecondView={() => openAdInShop(ad, previewType)}
-                                                onToggleLike={() => toggleFeedLike(ad)}
-                                                onOpenSheet={openMarketAdSheet}
-                                                onShare={shareFeedItem}
-                                                onReport={(targetAd) => {
-                                                    setReportTargetPost({
-                                                        ...targetAd,
-                                                        id: targetAd.id,
-                                                        text: targetAd.title || targetAd.description || "",
-                                                        user: { id: targetAd.user_id, name: getItemUsername(targetAd, "Sponsored"), img: getItemProfilePicture(targetAd) || "" },
-                                                        liked: false,
-                                                        likes: targetAd.likes_count || 0,
-                                                        comments: targetAd.comments_count || 0,
-                                                        views: targetAd.views_count || 0,
-                                                        reposts: 0,
-                                                        shares: targetAd.shares_count || 0,
-                                                    } as WritePost);
-                                                    setReportReason("");
-                                                    setReportCustomReason("");
-                                                    setReportSubmitted(false);
-                                                }}
-                                                onNotInterested={hideAdFromHome}
-                                                onCollectCoin={handleAdCoinClick}
-                                                onNavigateToProfile={navigateToAdProfile}
-                                                canShowCollectCoin={canShowCollectCoinButton}
-                                            />
-                                        </div>
-                                    </article>
-                                );
-                            }
-
-                            return (
-                                <article
-                                    key={`ad-${ad.id}`}
-                                    className="relative border-b border-white/10 px-5 py-5 transition-colors last:border-b-0 hover:bg-white/[0.025] sm:px-7"
-                                >
-                                    <div
-                                        className="relative rounded-[1.5rem] border border-white/5 bg-[#1a1a1a] pb-4 shadow-[0_14px_40px_rgba(0,0,0,0.18)] transition-all hover:border-white/20 md:rounded-[2.5rem] md:pb-6"
-                                    >
-                                        {showAdCoinButton && (
-                                            <button
-                                                type="button"
-                                                onClick={(event) => handleAdCoinClick(event, ad)}
-                                                className="absolute right-3 top-[57px] z-[25] flex items-center gap-1.5 rounded-full border border-red-400/30 bg-red-600 px-2 py-1 text-[8px] font-black uppercase tracking-[0.1em] text-white shadow-xl transition hover:bg-red-500 active:scale-95 md:right-4 md:top-[62px]"
-                                                aria-label="Collect ad coin"
-                                            >
-                                                <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
-                                                    <Image
-                                                        src="/assets/images/rupee.png"
-                                                        alt="Ruppier coin"
-                                                        width={28}
-                                                        height={28}
-                                                        className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
-                                                        unoptimized
-                                                    />
-                                                </span>
-                                                <span className="leading-none">Ruppier</span>
-                                            </button>
-                                        )}
-
-                                        <header className="flex items-center justify-between gap-2 p-3 md:px-5 md:py-4">
-                                            <div className="flex min-w-0 items-center gap-2">
-                                                <button
-                                                    type="button"
-                                                    className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full border border-white/10 bg-white/10 transition hover:ring-2 hover:ring-white/20"
-                                                    onClick={(event) => navigateToAdProfile(event, ad)}
-                                                    aria-label="Open advertiser profile"
-                                                >
-                                                    {getItemProfilePicture(ad) ? (
-                                                        <Image
-                                                            src={normalizeMediaSrc(getItemProfilePicture(ad))}
-                                                            alt="Profile"
-                                                            fill
-                                                            sizes={AVATAR_IMAGE_SIZES}
-                                                            className="object-cover"
-                                                            loading="lazy"
-                                                            placeholder="blur"
-                                                            blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
-                                                            unoptimized={shouldBypassNextImageOptimization(getItemProfilePicture(ad))}
-                                                        />
-                                                    ) : (
-                                                        <span className="flex h-full w-full items-center justify-center bg-gradient-to-tr from-blue-700 to-purple-700">
-                                                            <IonIcon name="person" className="text-white" />
-                                                        </span>
-                                                    )}
-                                                </button>
-                                                <div className="min-w-0">
-                                                    <button
-                                                        type="button"
-                                                        onClick={(event) => navigateToAdProfile(event, ad)}
-                                                        className="block truncate text-left text-[12px] font-black uppercase tracking-tight text-white transition hover:text-blue-400"
-                                                    >
-                                                        {getItemUsername(ad, "Sponsored")}
-                                                    </button>
-                                                    <span className="mt-0.5 block text-[9px] font-bold tracking-[0.16em] text-slate-500">
-                                                        Ad
-                                                    </span>
-                                                </div>
-                                            </div>
-
-                                            {(ad.user_id ?? ad.owner_user_id) && (
-                                                <SubscribeButton googId={ad.id} authorId={ad.user_id ?? ad.owner_user_id} authorName={getItemUsername(ad, "Advertiser")} />
-                                            )}
-                                            <div className="relative">
-                                                <button
-                                                    type="button"
-                                                    onClick={(event) => {
-                                                        event.stopPropagation();
-                                                        setOpenMenuAdId(openMenuAdId === ad.id ? null : ad.id);
-                                                    }}
-                                                    className="flex h-8 w-8 items-center justify-center rounded-full bg-white/5 text-white transition-all hover:bg-white/10 active:scale-75"
-                                                    aria-label="Open ad options"
-                                                >
-                                                    <div className="flex flex-col gap-0.5">
-                                                        <div className="h-1 w-1 rounded-full bg-white" />
-                                                        <div className="h-1 w-1 rounded-full bg-white" />
-                                                    </div>
-                                                </button>
-                                                {openMenuAdId === ad.id && (
-                                                    <div className="absolute right-0 top-full z-30 mt-2 w-56 overflow-hidden rounded-2xl border border-white/10 bg-[#1a1a1a] py-2 shadow-2xl">
-                                                        <button type="button" onClick={(event) => { event.stopPropagation(); setOpenMenuAdId(null); }} className="flex w-full items-center gap-3 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5">
-                                                            <IonIcon name="eye-off-outline" className="text-lg text-slate-500" />
-                                                            Not Interested
-                                                        </button>
-                                                        <button type="button" onClick={(event) => { event.stopPropagation(); shareFeedItem(ad); setOpenMenuAdId(null); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5">
-                                                            <IonIcon name="share-social-outline" className="text-lg text-blue-400" />
-                                                            Share Link
-                                                        </button>
-                                                        <button type="button" onClick={(event) => { event.stopPropagation(); setReportTargetPost({ ...ad, id: ad.id, text: ad.title || ad.description || "", user: { id: ad.user_id, name: getItemUsername(ad, "Sponsored"), img: getItemProfilePicture(ad) || "" }, liked: false, likes: ad.likes_count || 0, comments: ad.comments_count || 0, views: ad.views_count || 0, reposts: 0, shares: ad.shares_count || 0 } as WritePost); setReportReason(""); setReportCustomReason(""); setReportSubmitted(false); setOpenMenuAdId(null); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5">
-                                                            <IonIcon name="alert-circle-outline" className="text-lg text-yellow-500" />
-                                                            Report
-                                                        </button>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </header>
-
-                                        {ad.campaign_type === "Profile Promote" ? (
-                                            <div className="mx-4 mb-4 md:mx-6">
-                                                <PromotedAdCard
-                                                    ad={ad}
-                                                    source="home"
-                                                    onProductClick={openProductAdInShopSecondView}
-                                                    onToggleLike={() => toggleFeedLike(ad)}
-                                                    onOpenSheet={openMarketAdSheet}
-                                                    onShare={shareFeedItem}
-                                                    onCollectCoin={handleAdCoinClick}
-                                                    canShowCollectCoin={canShowCollectCoinButton}
-                                                    onProfileClick={(profileAd) => {
-                                                        if (profileAd.user_id) {
-                                                            router.push(`/dashboard/profile?id=${profileAd.user_id}`);
-                                                            return;
-                                                        }
-                                                        router.push(`/dashboard/profile?user=${encodeURIComponent(getItemUsername(profileAd, "Advertiser"))}`);
-                                                    }}
-                                                />
-                                            </div>
-                                        ) : (
-                                            <button
-                                                type="button"
-                                                onClick={(event) => {
-                                                    event.stopPropagation();
-                                                    openAdInShop(ad, previewType);
-                                                }}
-                                                className="block w-full text-left"
-                                            >
-                                                <div className="relative mx-3 overflow-hidden rounded-[1.2rem] border border-white/5 bg-black shadow-inner md:mx-4 md:rounded-[2rem]">
-                                                    <div className="relative aspect-[2/1.1] w-full">
-                                                        {showSponsoredLinkPreview ? (
-                                                            <div className="relative h-full w-full bg-[#0f1115]">
-                                                                <Image
-                                                                    src={normalizeMediaSrc(previewImage)}
-                                                                    alt={ad.title || "Sponsored media"}
-                                                                    fill
-                                                                    sizes={HOME_FEED_IMAGE_SIZES}
-                                                                    quality={58}
-                                                                    loading="lazy"
-                                                                    placeholder="blur"
-                                                                    blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
-                                                                    className="object-cover transition-transform duration-500 hover:scale-105"
-                                                                    unoptimized={shouldBypassNextImageOptimization(previewImage)}
-                                                                />
-                                                                <div className="absolute inset-0 bg-gradient-to-t from-black/45 via-black/5 to-transparent" />
-                                {(secondViewKind === "video" || secondViewKind === "embed") && (
-                                                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                                                        <span
-                                                                            className="flex h-14 w-14 items-center justify-center rounded-full bg-white/92 text-black shadow-[0_18px_45px_rgba(0,0,0,0.45)]"
-                                                                            aria-label="Play sponsored media"
-                                                                        >
-                                                                            <IonIcon name="play" className="ml-1 text-2xl" />
-                                                                        </span>
-                                                                    </div>
-                                                                )}
-                                                                {!!activeLink && (
-                                                                    <div className="absolute bottom-0 left-0 right-0 border-t border-white/10 bg-[#dff0d6]/95 px-3 py-2 backdrop-blur-sm">
-                                                                        <p className="overflow-hidden text-[10px] md:text-xs font-black leading-4 text-[#18220f] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] break-words">
-                                                                            {ad.title || "Ad"}
-                                                                        </p>
-                                                                        <span className="mt-1 block w-full truncate text-left text-[9px] font-bold text-[#1d62ad] md:text-[11px]">
-                                                                            {activeLink}
-                                                                        </span>
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        ) : (
-                                                            <Image
-                                                                src={normalizeMediaSrc(previewImage)}
-                                                                alt={ad.title || "Sponsored media"}
-                                                                fill
-                                                                sizes={HOME_FEED_IMAGE_SIZES}
-                                                                quality={58}
-                                                                loading="lazy"
-                                                                placeholder="blur"
-                                                                blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
-                                                                className="object-cover transition-transform duration-500 hover:scale-105"
-                                                                unoptimized={shouldBypassNextImageOptimization(previewImage)}
-                                                            />
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </button>
-                                        )}
-
-                                        <div className="px-4 pb-2 pt-4 md:px-6">
-                                            {ad.campaign_type !== "Profile Promote" && (
-                                                <>
-                                                    <h2 className="overflow-hidden text-[13px] font-black leading-5 text-white [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] break-words md:text-[14px]">
-                                                        {ad.title || "Sponsored post"}
-                                                    </h2>
-
-                                                    {ad.cta_topic !== "No Button" && (
-                                                        <div className="mt-4 flex flex-wrap items-center gap-2">
-                                                            {ad.cta_topic === "Call Now" ? (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={(event) => {
-                                                                        event.stopPropagation();
-                                                                        if (!callHref) return;
-                                                                        window.location.href = callHref;
-                                                                    }}
-                                                                    className={`rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] transition md:px-4 md:py-2 md:text-[10px] ${callHref ? "bg-white text-black hover:bg-slate-200 active:scale-95" : "cursor-default bg-white/10 text-white/35"}`}
-                                                                    disabled={!callHref}
-                                                                >
-                                                                    Call Now
-                                                                </button>
-                                                            ) : hasSecondaryCta ? (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={(event) => openSponsoredLink(event, ad)}
-                                                                    className={`rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] transition md:px-4 md:py-2 md:text-[10px] ${(ctaHref || activeLink || ad.cta_topic === "Message") ? "bg-white text-black hover:bg-slate-200 active:scale-95" : "cursor-default bg-white/10 text-white/35"}`}
-                                                                    disabled={!ctaHref && !activeLink && ad.cta_topic !== "Message"}
-                                                                >
-                                                                    {secondaryCtaLabel}
-                                                                </button>
-                                                            ) : null}
-                                                        </div>
-                                                    )}
-                                                </>
-                                            )}
-
-                                            <div className={`${ad.campaign_type === "Profile Promote" ? "" : "mt-4"} border-t border-white/5 pt-3`}>
-                                                <div className="flex items-center gap-5 text-white/80">
-                                                    <InteractionButton
-                                                        type="likes"
-                                                        icon="heart-outline"
-                                                        activeIcon="heart"
-                                                        isActive={!!ad.user_liked}
-                                                        count={ad.likes_count}
-                                                        color="text-white/80"
-                                                        activeColor="text-white"
-                                                        onSingleClick={() => toggleFeedLike(ad)}
-                                                        onLongPress={() => openMarketAdSheet("likes", ad)}
-                                                        iconSize="text-[21px]"
-                                                    />
-                                                    <InteractionButton
-                                                        type="views"
-                                                        icon="eye-outline"
-                                                        activeIcon="eye"
-                                                        count={ad.views_count}
-                                                        color="text-white/80"
-                                                        activeColor="text-white"
-                                                        onSingleClick={() => viewFeedItem(ad)}
-                                                        onLongPress={() => openMarketAdSheet("views", ad)}
-                                                        iconSize="text-[21px]"
-                                                    />
-                                                    <InteractionButton
-                                                        type="comments"
-                                                        icon="chatbubble-outline"
-                                                        activeIcon="chatbubble"
-                                                        count={ad.comments_count}
-                                                        color="text-white/80"
-                                                        activeColor="text-white"
-                                                        onSingleClick={() => openMarketAdSheet("comments", ad)}
-                                                        onLongPress={() => openMarketAdSheet("comments", ad)}
-                                                        iconSize="text-[21px]"
-                                                    />
-                                                    <InteractionButton
-                                                        type="shares"
-                                                        icon="share-social-outline"
-                                                        activeIcon="share-social"
-                                                        count={ad.shares_count || 0}
-                                                        color="text-white/80"
-                                                        activeColor="text-white"
-                                                        onSingleClick={() => shareFeedItem(ad)}
-                                                        onLongPress={() => openMarketAdSheet("shares", ad)}
-                                                        iconSize="text-[21px]"
-                                                    />
-                                                </div>
-                                            </div>
-                                        </div>
                                     </div>
                                 </article>
                             );
@@ -1789,25 +1364,25 @@ export default function DashboardPage() {
             )}
 
             {adPreviewModal && (
-                <AdSecondViewModal
+                <SharedAdSecondViewModal
                     ad={adPreviewModal.ad}
                     kind={adPreviewModal.kind}
                     onClose={() => setAdPreviewModal(null)}
-                    onToggleLike={() => toggleFeedLike(adPreviewModal.ad)}
-                    onOpenSheet={openMarketAdSheet}
-                    onShare={shareFeedItem}
-                    onReport={(targetAd) => {
+                    onToggleLike={toggleFeedLike}
+                    onOpenSheet={(type, target) => adActions.openSheet(type, target)}
+                    onShare={(target) => adActions.share(target)}
+                    onReport={(ad) => {
                         setReportTargetPost({
-                            ...targetAd,
-                            id: targetAd.id,
-                            text: targetAd.title || targetAd.description || "",
-                            user: { id: targetAd.user_id, name: getItemUsername(targetAd, "Sponsored"), img: getItemProfilePicture(targetAd) || "" },
+                            ...ad,
+                            id: ad.id,
+                            text: ad.title || ad.description || "",
+                            user: { id: ad.user_id, name: getItemUsername(ad, "Sponsored"), img: getItemProfilePicture(ad) || "" },
                             liked: false,
-                            likes: targetAd.likes_count || 0,
-                            comments: targetAd.comments_count || 0,
-                            views: targetAd.views_count || 0,
+                            likes: ad.likes_count || 0,
+                            comments: ad.comments_count || 0,
+                            views: ad.views_count || 0,
                             reposts: 0,
-                            shares: targetAd.shares_count || 0,
+                            shares: ad.shares_count || 0,
                         } as WritePost);
                         setReportReason("");
                         setReportCustomReason("");
@@ -1816,7 +1391,7 @@ export default function DashboardPage() {
                     onNotInterested={hideAdFromHome}
                     onCollectCoin={handleAdCoinClick}
                     onNavigateToProfile={navigateToAdProfile}
-                    canShowCollectCoin={canShowCollectCoinButton}
+                    canShowCollectCoin={canShowAdCollectCoin}
                 />
             )}
 
@@ -1834,7 +1409,7 @@ export default function DashboardPage() {
                     showSubscribeForProduct={(product) => String(currentUser?.id || "") !== String(product.user_id || "")}
                     getSellerId={(product) => String(product.user_id || "")}
                     onSubscribeSeller={(event, product) => navigateToAdProfile(event, product)}
-                    onToggleLike={() => toggleFeedLike(productAdModal)}
+                    onToggleLike={(target) => toggleFeedLike(target)}
                     onLogView={(id) => viewFeedItem({ ...productAdModal, id })}
                     onOpenSheet={(type) => openMarketAdSheet(type as SheetType, productAdModal)}
                     onShare={() => shareFeedItem(productAdModal)}
@@ -1857,7 +1432,7 @@ export default function DashboardPage() {
                     }}
                     onNotInterested={hideAdFromHome}
                     onCollectCoin={(event, product) => handleAdCoinClick(event, product)}
-                    canShowCollectCoin={canShowCollectCoinButton}
+                    canShowCollectCoin={canShowAdCollectCoin}
                     onSizeRequired={() => setNotification({ type: "error", title: "Size is required", message: "Size is required" })}
                     onAddToBag={async (product, quantity, variant, size, country, variantIndex) => {
                         await addToCart(product, quantity, size || variant?.size || null, variant?.color || null, variantIndex, country);
@@ -1973,13 +1548,7 @@ export default function DashboardPage() {
                         await marketService.deleteComment(commentId);
                         const data = await marketService.getComments(interactionAd.id);
                         setAdSheetData(data || []);
-                        setAds((currentAds) =>
-                            currentAds.map((ad) =>
-                                ad.id === interactionAd.id
-                                    ? { ...ad, comments_count: Math.max(0, (ad.comments_count || 0) - 1) }
-                                    : ad,
-                            ),
-                        );
+                        updateAdState(interactionAd, (prev) => ({ comments_count: Math.max(0, (prev.comments_count || 0) - 1) }));
                     } catch (error) {
                         console.error("Failed to delete ad comment:", error);
                     }

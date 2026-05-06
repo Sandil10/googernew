@@ -1,8 +1,12 @@
 export interface NormalizedProductAd {
   id: string | number;
   productId?: string | number;
+  title?: string;
   name: string;
   price: number;
+  promo_price?: number;
+  image_url?: string;
+  media_preview?: string;
   images: string[];
   seller: string;
   profileImage?: string;
@@ -48,11 +52,16 @@ const normalizeUploadPath = (src: any) => {
 export function normalizeProductAd(rawItem: any): NormalizedProductAd {
   // Handle shop products
   if (rawItem.title && rawItem.price !== undefined) {
+    const imageUrl = normalizeUploadPath(rawItem.image_url || rawItem.media_preview);
     return {
       id: rawItem.id,
       productId: rawItem.id,
+      title: rawItem.title,
       name: rawItem.title,
       price: Number(rawItem.promo_price || rawItem.price || 0),
+      promo_price: rawItem.promo_price,
+      image_url: imageUrl,
+      media_preview: imageUrl,
       images: [
         rawItem.image_url,
         ...(Array.isArray(rawItem.variants)
@@ -97,10 +106,15 @@ export function normalizeProductAd(rawItem: any): NormalizedProductAd {
 
   // Handle home feed ads (similar structure but might have different field names)
   return {
+    ...rawItem,
     id: rawItem.id || rawItem.adId,
     productId: rawItem.productId || rawItem.linked_product_id || rawItem.id,
+    title: rawItem.title || rawItem.name,
     name: rawItem.title || rawItem.name,
     price: Number(rawItem.promo_price || rawItem.price || 0),
+    promo_price: rawItem.promo_price,
+    image_url: normalizeUploadPath(rawItem.image_url || rawItem.media_preview),
+    media_preview: normalizeUploadPath(rawItem.media_preview || rawItem.image_url),
     images: [
       rawItem.image_url || rawItem.media_preview,
       ...(Array.isArray(rawItem.media_gallery)

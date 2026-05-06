@@ -6,8 +6,12 @@ import Image from "next/image";
 import IonIcon from "@/app/components/IonIcon";
 import { marketService } from "@/services/marketService";
 import { PromotedProductCard } from "@/app/components/market/PromotedProductCard";
+import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { normalizeProductAd } from "@/app/lib/market/adProductAdapter";
+import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
+import { useAdActions } from "@/app/lib/ads/useAdActions";
+import { useAdStore } from "@/app/lib/ads/adStore";
 import ShareModal from "@/app/components/ShareModal";
 import { getShareUrlForItem } from "@/app/lib/shareLinks";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
@@ -25,6 +29,30 @@ export default function ShareProductPage() {
     const [sheetType, setSheetType] = useState<any>("comments");
     const [sheetData, setSheetData] = useState<any[]>([]);
     const [isSheetLoading, setIsSheetLoading] = useState(false);
+    const [currentUser, setCurrentUser] = useState<any>(null);
+    const [notification, setNotification] = useState<{ type: "success" | "error"; title?: string; message: string } | null>(null);
+    const syncAds = useAdStore((state) => state.syncAds);
+    const updateAdState = useAdStore((state) => state.updateAdState);
+
+    const adActions = useAdActions(product, {
+        currentUser,
+        onShare: () => setShowShareModal(true),
+        onOpenSheet: (kind, ad) => openProductSheet(kind, ad.raw || ad),
+        onNeedCoinConfirmation: (target) => {
+            adActions.collectAdCoin(target);
+        },
+        onCoinCollected: (ad, collectionId) => {
+            updateAdState(collectionId, { ad_coin_collected: true, ad_like_locked: true });
+            setNotification({ type: "success", title: "Collected", message: "Ruppier collected." });
+        },
+        onNotify: (n) => setNotification({ type: n.type, title: n.title, message: n.message }),
+    });
+
+    useEffect(() => {
+        if (!notification) return;
+        const t = setTimeout(() => setNotification(null), 3000);
+        return () => clearTimeout(t);
+    }, [notification]);
 
     useEffect(() => {
         const loadProduct = async () => {
@@ -36,6 +64,7 @@ export default function ShareProductPage() {
                 const data = await marketService.getProductByCodePublic(shareCode);
                 if (data) {
                     setProduct(data);
+                    syncAds([data]);
                 } else {
                     setNotFound(true);
                 }
@@ -78,7 +107,7 @@ export default function ShareProductPage() {
         );
     }
 
-    if (notFound) {
+    if (notFound || !product) {
         return (
             <main className="min-h-screen bg-[#1c1917] text-white flex items-center justify-center px-4">
                 <div className="text-center max-w-sm">
@@ -97,6 +126,7 @@ export default function ShareProductPage() {
     }
 
     const normalizedProduct = normalizeProductAd(product);
+    const isSharedAdProduct = !!product.is_sponsored || !!product.campaign_type || !!product.adId || !!product.ad_id;
 
     return (
         <main className="min-h-screen bg-[#1c1917] text-white">
@@ -111,15 +141,35 @@ export default function ShareProductPage() {
                 </button>
 
                 <div className="relative">
-                    <PromotedProductCard
-                        item={normalizedProduct}
-                        source="home"
-                        onClick={(item: any) => setPreviewModal(item)}
-                        onToggleLike={() => {}}
-                        onOpenSheet={(type, item) => openProductSheet(type, item)}
-                        onShare={() => setShowShareModal(true)}
-                        onNavigateToProfile={() => router.push(`/profile/${product.user?.username || product.owner_user_id}`)}
-                    />
+                    {isSharedAdProduct ? (
+                        <PromotedAdCard
+                            ad={normalizeAdData(product)}
+                            source="home"
+                            onProductClick={(item: any) => setPreviewModal(item)}
+                            onToggleLike={() => adActions.like()}
+                            onOpenSheet={(type, item) => openProductSheet(type, item)}
+                            onShare={() => adActions.share()}
+                            onCollectCoin={(e) => adActions.handleAdCoinClick(e)}
+                            canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
+                            onNavigateToProfile={() => router.push(`/profile/${product.user?.username || product.owner_user_id}`)}
+                        />
+                    ) : (
+                        <PromotedProductCard
+                            item={({
+                                ...normalizedProduct,
+                                user_liked: product.user_liked,
+                                ad_coin_collected: product.ad_coin_collected
+                            } as any)}
+                            source="home"
+                            onClick={(item: any) => setPreviewModal(item)}
+                            onToggleLike={() => adActions.like()}
+                            onOpenSheet={(type, item) => openProductSheet(type, item)}
+                            onShare={() => adActions.share()}
+                            onCollectCoin={(e) => adActions.handleAdCoinClick(e)}
+                            canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
+                            onNavigateToProfile={() => router.push(`/profile/${product.user?.username || product.owner_user_id}`)}
+                        />
+                    )}
                 </div>
             </div>
 
@@ -127,6 +177,11 @@ export default function ShareProductPage() {
                 <ShopProductSecondViewModal
                     onClose={() => setPreviewModal(null)}
                     product={previewModal}
+                    onToggleLike={() => adActions.like()}
+                    onOpenSheet={(type, item) => openProductSheet(type, item)}
+                    onShare={() => adActions.share()}
+                    onCollectCoin={(e) => adActions.handleAdCoinClick(e)}
+                    canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                 />
             )}
 
@@ -148,6 +203,15 @@ export default function ShareProductPage() {
                 data={sheetData}
                 isLoading={isSheetLoading}
             />
+
+            {notification && (
+                <div className="fixed bottom-6 left-1/2 z-[200] -translate-x-1/2 rounded-2xl border border-white/10 bg-[#211d1a] px-5 py-3 shadow-2xl">
+                    <p className={`text-[11px] font-black uppercase tracking-[0.16em] ${notification.type === "error" ? "text-red-400" : "text-emerald-400"}`}>
+                        {notification.title || (notification.type === "error" ? "Error" : "Success")}
+                    </p>
+                    <p className="mt-1 text-xs text-white/70">{notification.message}</p>
+                </div>
+            )}
         </main>
     );
 }

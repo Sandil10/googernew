@@ -1988,6 +1988,12 @@ exports.addComment = async (req, res) => {
 
         if (!text) return res.status(400).json({ success: false, message: 'Comment text is required' });
 
+        const userResult = await pool.query(
+            'SELECT username, profile_picture FROM users WHERE id = $1',
+            [userId]
+        );
+        const commentUser = userResult.rows[0] || {};
+
         console.log(`📝 [addComment] Inserting comment for item ${id} by user ${userId}. Parent: ${parent_id || 'None'}`);
 
         if (isSponsoredFeedItemId(id)) {
@@ -2016,6 +2022,8 @@ exports.addComment = async (req, res) => {
                     id: `ad-comment-${result.rows[0].id}`,
                     parent_id: result.rows[0].parent_id ? `ad-comment-${result.rows[0].parent_id}` : null,
                     market_id: id,
+                    username: commentUser.username || 'You',
+                    profile_picture: commentUser.profile_picture,
                 },
             });
         }
@@ -2028,7 +2036,14 @@ exports.addComment = async (req, res) => {
 
         await pool.query('UPDATE market SET comments_count = COALESCE(comments_count, 0) + 1 WHERE id = $1', [numericId]);
 
-        res.status(201).json({ success: true, data: result.rows[0] });
+        res.status(201).json({
+            success: true,
+            data: {
+                ...result.rows[0],
+                username: commentUser.username || 'You',
+                profile_picture: commentUser.profile_picture,
+            },
+        });
     } catch (error) {
         console.error('❌ [addComment] Database Error:', error);
         res.status(500).json({

@@ -13,13 +13,16 @@ import { useCart } from "@/app/context/CartContext";
 import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
 import SubscribeButton from "@/app/components/SubscribeButton";
-import { AdSecondViewModal } from "@/app/components/ads/AdSecondViewModal";
+import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondViewModal";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
+import { ProfilePromoteCarousel } from "@/app/components/ads/ProfilePromoteCarousel";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
+import { SharedProductCard } from "@/app/components/market/SharedProductCard";
 import { normalizeAd } from "@/app/lib/ads/adSystem";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
-import { matchesAdIdentity } from "@/app/lib/ads/adIdentity";
-import { useAdActions } from "@/app/lib/ads/useAdActions";
+import { getAdInteractionId, matchesAdIdentity } from "@/app/lib/ads/adIdentity";
+import { canShowCollectCoinButton as canShowAdCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
+import { useAdStore } from "@/app/lib/ads/adStore";
 import { normalizeProductAd } from "@/app/lib/market/adProductAdapter";
 import { formatRelativeTime } from "@/app/lib/relativeTime";
 import { getShareUrlForItem } from "@/app/lib/shareLinks";
@@ -971,32 +974,34 @@ function rememberShownAdIds(storageKey: string, adIds: Array<string | number>) {
   window.localStorage.setItem(storageKey, JSON.stringify(next));
 }
 
-function interleaveProductsWithAds(
-  items: any[],
+function getShopAdRotationKey(ad: any) {
+  return getAdInteractionId(ad) || String(ad?.id || ad?.adId || ad?.ad_id || "");
+}
+
+function interleaveShopProductsWithAds(
+  products: any[],
+  ads: any[],
   storageKey: string,
-  productRatio = 4,
-  stableOrderRef?: { current: Record<string, string[]> },
+  productRatio = 6,
 ) {
-  const products = items.filter((item) => !item?.is_sponsored);
-  const ads = items.filter((item) => item?.is_sponsored);
-  if (!ads.length) return products;
+  if (!ads.length || products.length < productRatio) return products;
 
-  const currentAdIds = new Set(ads.map((ad) => String(ad.id)));
-  let stableOrder = stableOrderRef?.current?.[storageKey]?.filter((id) => currentAdIds.has(id)) || [];
-  const missingAds = ads.filter((ad) => !stableOrder.includes(String(ad.id)));
-  if (stableOrder.length === 0 || missingAds.length > 0) {
-    const recentAdIds = new Set(getRecentAdIds(storageKey));
-    const freshAds = shuffleItems(missingAds.filter((ad) => !recentAdIds.has(String(ad.id))));
-    const repeatedAds = shuffleItems(missingAds.filter((ad) => recentAdIds.has(String(ad.id))));
-    stableOrder = [...stableOrder, ...freshAds.map((ad) => String(ad.id)), ...repeatedAds.map((ad) => String(ad.id))];
-    if (stableOrderRef) {
-      stableOrderRef.current[storageKey] = stableOrder;
-    }
-  }
+  const uniqueAds = Array.from(
+    ads
+      .filter((ad) => ad?.is_sponsored)
+      .reduce((map, ad) => {
+        const key = getShopAdRotationKey(ad);
+        if (key && !map.has(key)) map.set(key, ad);
+        return map;
+      }, new Map<string, any>())
+      .values(),
+  );
+  if (!uniqueAds.length) return products;
 
-  const adById = new Map(ads.map((ad) => [String(ad.id), ad]));
-  const rotatedAds = stableOrder.map((id) => adById.get(id)).filter(Boolean);
-  if (!products.length) return rotatedAds;
+  const recentAdIds = new Set(getRecentAdIds(storageKey));
+  const freshAds = shuffleItems(uniqueAds.filter((ad) => !recentAdIds.has(getShopAdRotationKey(ad))));
+  const repeatedAds = shuffleItems(uniqueAds.filter((ad) => recentAdIds.has(getShopAdRotationKey(ad))));
+  const rotatedAds = [...freshAds, ...repeatedAds];
   const shownAdIds: Array<string | number> = [];
   const output: any[] = [];
   let adIndex = 0;
@@ -1007,7 +1012,7 @@ function interleaveProductsWithAds(
       const ad = rotatedAds[adIndex % rotatedAds.length];
       if (ad) {
         output.push(ad);
-        shownAdIds.push(ad.id);
+        shownAdIds.push(getShopAdRotationKey(ad));
         adIndex += 1;
       }
     }
@@ -1069,103 +1074,46 @@ const getCampaignType = (item: any) => String(item?.campaign_type || item?.campa
 const isProductPromoteItem = (item: any) => getCampaignType(item).toLowerCase() === "product promote";
 const isProfilePromoteItem = (item: any) => getCampaignType(item).toLowerCase() === "profile promote" || item?.media_type === "profile";
 
-function ProfilePromoteAdBanner({
-  ads,
-  router,
-  onToggleLike,
-  onOpenSheet,
-  onShare,
-  onCollectCoin,
-  canShowCollectCoin,
-}: {
-  ads: any[];
-  router: any;
-  onToggleLike?: (id: string | number) => void;
-  onOpenSheet?: (type: "likes" | "comments" | "shares" | "views", product: any) => void;
-  onShare?: (product: any) => void;
-  onCollectCoin?: (event: React.MouseEvent, product: any) => void;
-  canShowCollectCoin?: (product: any) => boolean;
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [canScrollLeft, setCanScrollLeft] = useState(false);
-  const [canScrollRight, setCanScrollRight] = useState(false);
+const hydrateProductPromoteShopAd = async (ad: any) => {
+  if (!isProductPromoteItem(ad)) return ad;
 
-  const checkScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    setCanScrollLeft(el.scrollLeft > 4);
-    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
+  const linkedId = ad.linked_product_id || ad.product_id || ad.productId;
+  const linkedCode = ad.linked_product_code || ad.shareCode;
+  let linkedProduct: any = null;
+
+  try {
+    if (linkedId) linkedProduct = await marketService.getItemById(linkedId);
+    else if (linkedCode) linkedProduct = await marketService.getItemByCode(String(linkedCode));
+  } catch (error) {
+    console.error("Failed to hydrate Product Promote ad for shop feed:", error);
+  }
+
+  if (!linkedProduct) return ad;
+
+  return {
+    ...linkedProduct,
+    id: ad.id,
+    adId: ad.adId,
+    ad_id: ad.ad_id || ad.adId,
+    linked_product_id: linkedProduct.id,
+    product_id: linkedProduct.id,
+    linked_product_code: linkedProduct.product_code || ad.linked_product_code,
+    product_code: linkedProduct.product_code || ad.product_code,
+    share_code: ad.share_code,
+    campaign_type: ad.campaign_type,
+    is_sponsored: true,
+    sponsored_label: "Ad",
+    user_liked: ad.user_liked,
+    likes_count: ad.likes_count,
+    comments_count: ad.comments_count,
+    shares_count: ad.shares_count,
+    views_count: ad.views_count,
+    ad_coin_collected: ad.ad_coin_collected,
+    ad_like_locked: ad.ad_like_locked,
+    ad_coin_value: ad.ad_coin_value,
+    created_at: ad.created_at || linkedProduct.created_at,
   };
-
-  useEffect(() => {
-    checkScroll();
-    const el = scrollRef.current;
-    if (!el) return;
-    el.addEventListener("scroll", checkScroll, { passive: true });
-    window.addEventListener("resize", checkScroll, { passive: true });
-    return () => {
-      el.removeEventListener("scroll", checkScroll);
-      window.removeEventListener("resize", checkScroll);
-    };
-  }, [ads]);
-
-  const slide = (direction: "left" | "right") => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollBy({ left: direction === "left" ? -320 : 320, behavior: "smooth" });
-  };
-
-  if (!ads.length) return null;
-
-  return (
-    <div className="col-span-2 sm:col-span-2 lg:col-span-4 my-2 relative">
-      <div className="mb-2 flex items-center gap-2 px-1">
-        <IonIcon name="person-circle-outline" className="text-sm text-white/40" />
-        <p className="text-[9px] font-black uppercase tracking-[0.18em] text-white/35">Featured Profiles</p>
-      </div>
-      {canScrollLeft && (
-        <button
-          type="button"
-          onClick={() => slide("left")}
-          className="absolute left-0 top-1/2 z-10 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-full bg-[#1a1a1a] border border-white/10 shadow-lg text-white transition hover:bg-white/10 active:scale-95"
-          aria-label="Scroll left"
-        >
-          <IonIcon name="chevron-back-outline" className="text-base" />
-        </button>
-      )}
-      {canScrollRight && (
-        <button
-          type="button"
-          onClick={() => slide("right")}
-          className="absolute right-0 top-1/2 z-10 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-full bg-[#1a1a1a] border border-white/10 shadow-lg text-white transition hover:bg-white/10 active:scale-95"
-          aria-label="Scroll right"
-        >
-          <IonIcon name="chevron-forward-outline" className="text-base" />
-        </button>
-      )}
-      <div
-        ref={scrollRef}
-        className="flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-        style={{ scrollSnapType: "x mandatory" }}
-      >
-        {ads.map((ad) => (
-          <PromotedAdCard
-            key={`pp-banner-${ad.id}`}
-            ad={normalizeAdData(ad)}
-            source="shop"
-            onProfileClick={(profileAd) => router.push(`/dashboard/profile?user=${getItemUsername(profileAd, "Advertiser")}`)}
-            onProductClick={(product) => router.push(`/dashboard/shop?id=${product.id}`)}
-            onToggleLike={onToggleLike}
-            onOpenSheet={onOpenSheet}
-            onShare={onShare}
-            onCollectCoin={onCollectCoin}
-            canShowCollectCoin={canShowCollectCoin}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
+};
 
 export default function ShopPage() {
   const MARKET_FEED_HISTORY_KEY = "googer-market-feed-history-v2";
@@ -1254,32 +1202,50 @@ export default function ShopPage() {
   const [orderToCancel, setOrderToCancel] = useState<any>(null); // 'bulk' or item object
   const [orderToDeliver, setOrderToDeliver] = useState<any>(null); // State for delivery confirmation modal
   const [marketAds, setMarketAds] = useState<any[]>([]);
+  const syncAds = useAdStore((state) => state.syncAds);
+  const updateAdState = useAdStore((state) => state.updateAdState);
   const [marketHasMore, setMarketHasMore] = useState(false);
   const [marketNextOffset, setMarketNextOffset] = useState(0);
   const [isLoadingMoreProducts, setIsLoadingMoreProducts] = useState(false);
   const ordersPageSize = 8;
   const marketLoadMoreRef = useRef<HTMLDivElement | null>(null);
-  const marketplaceAdOrderRef = useRef<Record<string, string[]>>({});
-  const profilePromoteAds = useMemo(() => {
-    if (activeTab !== "market") return [];
-    return products.filter(
-      (p) => !!p?.is_sponsored && isProfilePromoteItem(p),
-    );
-  }, [activeTab, products]);
   const visibleMarketplaceProducts = useMemo(() => {
-    const filtered = products
+    const filteredProducts = products
       .filter((p) => !hiddenProductIds.includes(p.id))
       .filter((p) => {
-        if (p?.is_sponsored && isProfilePromoteItem(p)) return false;
+        if (p?.is_sponsored) return false;
         if (activeTab === "my-products" && myListingsTab === "reviewing") {
           return p.status === "reviewing" || p.status === "rejected";
         }
         return true;
       });
 
-    return activeTab === "market"
-      ? interleaveProductsWithAds([...filtered, ...marketAds], "googer-marketplace-ad-rotation-v1", 6, marketplaceAdOrderRef)
-      : filtered;
+    const approvedAds = activeTab === "market"
+      ? [
+        ...products.filter((p) => !!p?.is_sponsored && !hiddenProductIds.includes(p.id)),
+        ...marketAds.filter((ad) => !hiddenProductIds.includes(ad.id)),
+      ]
+      : [];
+
+    if (activeTab !== "market") return filteredProducts;
+
+    const profilePromoteAds = approvedAds.filter(isProfilePromoteItem);
+    const nonProfilePromoteAds = approvedAds.filter((ad) => !isProfilePromoteItem(ad));
+    const interleavedItems = interleaveShopProductsWithAds(
+      filteredProducts,
+      nonProfilePromoteAds,
+      "googer-marketplace-ad-rotation-v2",
+      6,
+    );
+
+    if (!profilePromoteAds.length) return interleavedItems;
+
+    const insertIndex = Math.min(6, interleavedItems.length);
+    return [
+      ...interleavedItems.slice(0, insertIndex),
+      { type: "profilePromoteCarousel", id: "shop-profile-promote-carousel", ads: profilePromoteAds },
+      ...interleavedItems.slice(insertIndex),
+    ];
   }, [activeTab, hiddenProductIds, marketAds, myListingsTab, products]);
   const lastClosedProductId = useRef<string | null>(null);
   const productsCacheRef = useRef<Record<string, any[]>>({});
@@ -1334,17 +1300,38 @@ export default function ShopPage() {
 
   const liveSelectedProduct = useMemo(() => {
     if (!selectedProduct) return null;
-    const live = products.find(p => matchesAdIdentity(p, selectedProduct.id)) ||
-      marketAds.find(p => matchesAdIdentity(p, selectedProduct.id));
+    const lookupId = selectedProduct.adId || selectedProduct.ad_id || selectedProduct.id;
+    const live = products.find(p => matchesAdIdentity(p, lookupId)) ||
+      marketAds.find(p => matchesAdIdentity(p, lookupId)) ||
+      products.find(p => selectedProduct.product_id && String(p.id) === String(selectedProduct.product_id));
     if (!live) return selectedProduct;
+    if (isProductPromoteItem(selectedProduct) && (selectedProduct.adId || selectedProduct.ad_id)) {
+      return {
+        ...selectedProduct,
+        user_liked: live.user_liked ?? selectedProduct.user_liked,
+        likes_count: live.likes_count ?? selectedProduct.likes_count,
+        comments_count: live.comments_count ?? selectedProduct.comments_count,
+        shares_count: live.shares_count ?? selectedProduct.shares_count,
+        views_count: live.views_count ?? selectedProduct.views_count,
+        ad_coin_collected: live.ad_coin_collected ?? selectedProduct.ad_coin_collected,
+        ad_like_locked: live.ad_like_locked ?? selectedProduct.ad_like_locked,
+      };
+    }
     // Merge live data but preserve the "ad-ness" from the selectedProduct snapshot
     return {
       ...live,
       is_sponsored: selectedProduct.is_sponsored || live.is_sponsored,
       adId: selectedProduct.adId || live.adId,
-      ad_id: selectedProduct.ad_id || live.ad_id,
-      user_liked: live.user_liked ?? selectedProduct.user_liked,
-      ad_coin_collected: live.ad_coin_collected ?? selectedProduct.ad_coin_collected
+      ad_id: selectedProduct.ad_id || live.ad_id || selectedProduct.adId,
+      campaign_type: selectedProduct.campaign_type || live.campaign_type,
+      product_id: selectedProduct.product_id || selectedProduct.linked_product_id || live.product_id || live.linked_product_id,
+      linked_product_id: selectedProduct.linked_product_id || selectedProduct.product_id || live.linked_product_id,
+      linked_product_code: selectedProduct.linked_product_code || live.linked_product_code,
+      share_code: selectedProduct.share_code || live.share_code,
+      user_liked: selectedProduct.user_liked ?? live.user_liked,
+      likes_count: selectedProduct.likes_count ?? live.likes_count,
+      ad_coin_collected: selectedProduct.ad_coin_collected ?? live.ad_coin_collected,
+      ad_like_locked: selectedProduct.ad_like_locked ?? live.ad_like_locked,
     };
   }, [selectedProduct, products, marketAds]);
 
@@ -1388,24 +1375,7 @@ export default function ShopPage() {
   };
 
   const canShowCollectCoinButton = (product: any) => {
-    if (!product) return false;
-
-    // Use normalized identity check
-    const isSponsored = !!product.is_sponsored || !!product.adId || !!product.ad_id || String(product.id || "").startsWith("ad-") || !!product.isAd;
-    
-    // Normalize liked status - check multiple potential fields
-    const isLiked = !!product.user_liked || !!product.isLiked || !!product.liked;
-    
-    // Normalize collected status
-    const isCollected = !!product.ad_coin_collected || !!product.coin_collected || !!product.isCollected;
-    
-    // Handle ownership check - be careful with empty IDs
-    const ownerId = product.user_id || product.user?.id || product.owner_user_id || product.owner_id || product.seller_id;
-    const currentUserId = currentUser?.id;
-    const isOwn = !!currentUserId && !!ownerId && String(currentUserId) === String(ownerId);
-
-    // Basic eligibility
-    if (!isSponsored || !isLiked || isCollected || isOwn) return false;
+    if (!canShowAdCollectCoinButton(product, currentUser)) return false;
 
     // If it's a video ad, we only enforce the watch timer in the second-view modal.
     // In the grid (first view), we allow the button to appear immediately after like.
@@ -1458,35 +1428,45 @@ export default function ShopPage() {
           .some((code) => String(code) === String(linkedCode));
       return matchesId || matchesCode;
     });
-    if (localProduct) return localProduct;
+    let originalProduct = localProduct;
 
-    if (targetId != null) {
+    if (!originalProduct && targetId != null) {
       try {
-        return await marketService.getItemById(targetId);
+        originalProduct = await marketService.getItemById(targetId);
       } catch (error) {
         console.error("Failed to fetch promoted product by id:", error);
       }
     }
 
-    if (linkedCode) {
+    if (!originalProduct && linkedCode) {
       try {
-        return await marketService.getItemByCode(String(linkedCode));
+        originalProduct = await marketService.getItemByCode(String(linkedCode));
       } catch (error) {
         console.error("Failed to fetch promoted product by code:", error);
       }
     }
 
     return {
-      ...product,
-      ...(localProduct || {}),
-      id: localProduct?.id ?? targetId ?? product?.id,
-      // Ensure we keep the ad status and state from the ad shell
-      is_sponsored: true,
-      user_liked: product.user_liked || localProduct?.user_liked,
-      ad_coin_collected: product.ad_coin_collected || localProduct?.ad_coin_collected,
-      ad_like_locked: product.ad_like_locked || localProduct?.ad_like_locked,
-      adId: product.adId || adId,
-      ad_id: product.ad_id || ad_id
+      ...(originalProduct || product),
+      id: originalProduct?.id ?? targetId ?? product?.id,
+      product_id: originalProduct?.id ?? targetId ?? product?.product_id,
+      linked_product_id: originalProduct?.id ?? targetId ?? product?.linked_product_id,
+      linked_product_code: originalProduct?.product_code ?? linkedCode ?? product?.linked_product_code,
+      is_sponsored: false,
+      isAd: false,
+      campaign_type: product.campaign_type,
+      user_liked: product.user_liked,
+      likes_count: product.likes_count,
+      comments_count: product.comments_count,
+      shares_count: product.shares_count,
+      views_count: product.views_count,
+      ad_coin_collected: product.ad_coin_collected,
+      ad_like_locked: product.ad_like_locked,
+      ad_coin_value: product.ad_coin_value,
+      adId: product.adId || product.ad_id,
+      ad_id: product.ad_id || product.adId,
+      isProductPromoteSecondView: true,
+      share_code: product.share_code,
     };
   };
 
@@ -1496,7 +1476,7 @@ export default function ShopPage() {
     setSelectedProduct(originalProduct);
     setSelectedVariantIndex(null);
     setActivePreviewIndex(0);
-    handleLogView(originalProduct.id);
+    handleLogView(originalProduct.adId ? `ad-${originalProduct.adId}` : originalProduct.id);
   };
 
   const subscribeButtonClass =
@@ -1775,7 +1755,7 @@ export default function ShopPage() {
         setSelectedShippingCountry(standardized[0]?.country || 'Worldwide');
       }
     }
-  }, [selectedProduct]);
+  }, [selectedProduct?.id, selectedProduct?.adId, selectedProduct?.ad_id, savedAddress?.country]);
 
   useEffect(() => {
     if (!searchParams) return;
@@ -1797,7 +1777,7 @@ export default function ShopPage() {
   }, [selectedProduct?.id]);
 
   useEffect(() => {
-    if (selectedProduct?.id) {
+    if (selectedProduct?.id && !isProductPromoteItem(selectedProduct)) {
       const latestSelectedProduct = products.find((item) => String(item.id) === String(selectedProduct.id));
       if (latestSelectedProduct && latestSelectedProduct !== selectedProduct) {
         setSelectedProduct((prev: any) => (prev ? { ...prev, ...latestSelectedProduct } : prev));
@@ -1837,7 +1817,7 @@ export default function ShopPage() {
         );
       }
     }
-  }, [products, selectedProduct, sponsoredImageModal, sponsoredPreviewModal]);
+  }, [products, selectedProduct?.id, selectedProduct?.campaign_type, sponsoredImageModal?.product?.id, sponsoredPreviewModal?.product?.id]);
 
   const loadComments = async (id: string | number) => {
     try {
@@ -1872,6 +1852,7 @@ export default function ShopPage() {
             : p,
         ),
       );
+      updateAdState(selectedProduct, (prev) => ({ comments_count: (prev.comments_count || 0) + 1 }));
 
       // If bottom sheet is open, refresh comments
       if (isBottomSheetOpen && bottomSheetType === "comments") {
@@ -1901,6 +1882,7 @@ export default function ShopPage() {
             : p,
         ),
       );
+      updateAdState(targetProduct, (prev) => ({ comments_count: (prev.comments_count || 0) + 1 }));
       if (selectedProduct?.id === targetProduct.id) {
         setSelectedProduct((prev: any) =>
           prev ? { ...prev, comments_count: (prev.comments_count || 0) + 1 } : prev,
@@ -1940,6 +1922,7 @@ export default function ShopPage() {
       // Update comments_count on products in the grid and selected product
       const targetProduct = interactionProduct || selectedProduct;
       if (targetProduct) {
+        updateAdState(targetProduct, (prev) => ({ comments_count: Math.max((prev.comments_count || 0) - deletedCount, 0) }));
         setProducts((prev) =>
           prev.map((p) =>
             p.id === targetProduct.id
@@ -2000,45 +1983,7 @@ export default function ShopPage() {
     );
 
     if (matchesSponsoredId(selectedProduct)) {
-      setSelectedProduct((prev: any) =>
-        prev ? { ...prev, ad_coin_collected: true, ad_like_locked: true } : prev,
-      );
-    }
-
-    if (matchesSponsoredId(sponsoredImageModal?.product)) {
-      setSponsoredImageModal((prev: any) =>
-        prev
-          ? {
-            ...prev,
-            product: {
-              ...prev.product,
-              ad_coin_collected: true,
-              ad_like_locked: true,
-            },
-          }
-          : prev,
-      );
-    }
-
-    if (matchesSponsoredId(sponsoredPreviewModal?.product)) {
-      setSponsoredPreviewModal((prev: any) =>
-        prev
-          ? {
-            ...prev,
-            product: {
-              ...prev.product,
-              ad_coin_collected: true,
-              ad_like_locked: true,
-            },
-          }
-          : prev,
-      );
-    }
-
-    if (matchesSponsoredId(sharedAdPreviewModal?.ad)) {
-      setSharedAdPreviewModal((prev: any) =>
-        prev ? { ...prev, ad: { ...prev.ad, ad_coin_collected: true, ad_like_locked: true } } : prev,
-      );
+      updateAdState(selectedProduct, { ad_coin_collected: true, ad_like_locked: true });
     }
   };
 
@@ -2049,26 +1994,28 @@ export default function ShopPage() {
     }));
   };
 
+  // Removed manual updateAdLocalState in favor of useAdStore global reactivity
+
   const adActions = useAdActions(null, {
     currentUser,
-    canCollectCoin: canShowCollectCoinButton,
-    getCollectionId: getSponsoredCollectionId,
-    onShare: (product) => {
-      setShareProduct(product);
+    canShowCollectCoin: canShowCollectCoinButton,
+    // Removed local sync callbacks - useAdActions now updates useAdStore globally
+    onShare: (ad) => {
+      setShareProduct(ad.raw || ad);
       setShowShareModal(true);
     },
-    onOpenSheet: (type, product) => openBottomSheet(type, product),
-    onCoinCollected: (_product, collectionId) => {
+    onOpenSheet: (type, ad) => openBottomSheet(type, ad.raw || ad),
+    onCoinCollected: (ad, collectionId) => {
       markAdCoinCollectedLocally(collectionId);
     },
-    onCoinError: (_product, error: any) => {
+    onCoinError: (_ad, error: any) => {
       setNotification({
         type: "error",
         title: "Collection Failed",
         message: error?.message || "Could not collect the ad coin.",
       });
     },
-    onNeedCoinConfirmation: (product) => setPendingAdCoinProduct(product),
+    onNeedCoinConfirmation: (ad) => setPendingAdCoinProduct(ad.raw || ad),
     onNotify: setNotification,
   });
 
@@ -2099,129 +2046,35 @@ export default function ShopPage() {
 
   const collectAdCoin = async (product: any) => {
     try {
-      const result = await adActions.collectCoin(product);
+      const result = await adActions.collectAdCoin(product);
       setNotification({
         type: "success",
         title: "Coin Collected",
         message: `Rupieer ${Number(result?.amount || product?.ad_coin_value || 1).toFixed(2)} added to the ad owner's wallet.`,
       });
     } catch (error: any) {
-      setNotification({
-        type: "error",
-        title: "Collection Failed",
-        message: error?.message || "Could not collect the ad coin.",
-      });
+      // Notification is already handled by adActions.onCoinError
     } finally {
       setPendingAdCoinProduct(null);
     }
   };
 
   const handleAdCoinClick = (event: React.MouseEvent, product: any) => {
-    adActions.collectCoinClick(event, product);
+    adActions.handleAdCoinClick(event, product);
   };
 
-  const handleToggleLike = async (id: string | number) => {
-
-    const currentProduct =
-      products.find((p) => matchesAdIdentity(p, id)) ||
-      marketAds.find((p) => matchesAdIdentity(p, id)) ||
-      (matchesAdIdentity(selectedProduct, id) ? selectedProduct : null) ||
-      (matchesAdIdentity(sponsoredImageModal?.product, id) ? sponsoredImageModal?.product : null) ||
-      (matchesAdIdentity(sharedAdPreviewModal?.ad, id) ? sharedAdPreviewModal?.ad : null);
-    if (!currentProduct) return;
-    const wasLiked = !!currentProduct.user_liked;
-    const willBeLiked = !wasLiked;
-
-    if (currentProduct?.is_sponsored && currentProduct?.ad_like_locked && wasLiked && !willBeLiked) {
-      setNotification({
-        type: "error",
-        title: "Like Locked",
-        message: "This ad cannot be unliked after the coin has been collected.",
-      });
-      return;
-    }
-
-    const updateLocalState = (p: any) => {
-      if (!matchesAdIdentity(p, id)) return p;
-      return {
-        ...p,
-        user_liked: willBeLiked,
-        isLiked: willBeLiked, // Support both for normalization
-        likes_count: Math.max(0, (p.likes_count || 0) + (willBeLiked ? 1 : -1))
-      };
-    };
-
-    setProducts(prev => prev.map(updateLocalState));
-    setMarketAds(prev => prev.map(updateLocalState));
-    if (matchesAdIdentity(selectedProduct, id)) {
-      setSelectedProduct((prev: any) => updateLocalState(prev));
-    }
-    if (matchesAdIdentity(sponsoredImageModal?.product, id)) {
-      setSponsoredImageModal((prev: any) => prev ? { ...prev, product: updateLocalState(prev.product) } : prev);
-    }
-    if (matchesAdIdentity(sharedAdPreviewModal?.ad, id)) {
-      setSharedAdPreviewModal((prev: any) => prev ? { ...prev, ad: updateLocalState(prev.ad) } : prev);
-    }
-
+  const handleToggleLike = async (item: any) => {
     try {
-      const serverLiked = await marketService.toggleLike(id);
-
-      // Verification Sync: If server returns a different state than our optimistic guess
-      if (serverLiked !== willBeLiked) {
-        const syncState = (p: any) => {
-          if (!matchesSponsoredIdentity(p, id)) return p;
-          return {
-            ...p,
-            user_liked: serverLiked,
-            likes_count: Math.max(
-              0,
-              (p.likes_count || 0) + (serverLiked === willBeLiked ? 0 : serverLiked ? 2 : -2),
-            )
-          };
-        };
-        setProducts(prev => prev.map(syncState));
-        setMarketAds(prev => prev.map(syncState));
-        if (matchesSponsoredIdentity(selectedProduct, id)) {
-          setSelectedProduct((prev: any) => syncState(prev));
-        }
-        if (matchesSponsoredIdentity(sponsoredImageModal?.product, id)) {
-          setSponsoredImageModal((prev: any) => prev ? { ...prev, product: syncState(prev.product) } : prev);
-        }
-        if (matchesSponsoredIdentity(sharedAdPreviewModal?.ad, id)) {
-          setSharedAdPreviewModal((prev: any) => prev ? { ...prev, ad: syncState(prev.ad) } : prev);
-        }
-      }
-
+      const id = typeof item === 'object' ? item.id : item;
+      await adActions.like(item);
+      
       // If bottom sheet is open for likes, refresh it
-      if (
-        isBottomSheetOpen &&
-        bottomSheetType === "likes" &&
-        String(interactionProduct?.id) === String(id)
-      ) {
+      if (isBottomSheetOpen && bottomSheetType === "likes" && String(interactionProduct?.id) === String(id)) {
         const likes = (await marketService.getLikes?.(id)) || [];
         setBottomSheetData(likes);
       }
-    } catch (e) {
-      console.error("Like toggle failed:", e);
-      // Revert on error
-      const revertState = (p: any) => {
-        if (!matchesSponsoredIdentity(p, id)) return p;
-        return {
-          ...p,
-          user_liked: wasLiked,
-          likes_count: Math.max(0, (p.likes_count || 0) + (wasLiked ? 1 : -1))
-        };
-      };
-      setProducts(prev => prev.map(revertState));
-      if (matchesSponsoredIdentity(selectedProduct, id)) {
-        setSelectedProduct((prev: any) => revertState(prev));
-      }
-      if (matchesSponsoredIdentity(sponsoredImageModal?.product, id)) {
-        setSponsoredImageModal((prev: any) => prev ? { ...prev, product: revertState(prev.product) } : prev);
-      }
-      if (matchesSponsoredIdentity(sharedAdPreviewModal?.ad, id)) {
-        setSharedAdPreviewModal((prev: any) => prev ? { ...prev, ad: revertState(prev.ad) } : prev);
-      }
+    } catch (error) {
+      console.error("Like toggle failed:", error);
     }
   };
 
@@ -2278,6 +2131,7 @@ export default function ShopPage() {
           p.id === id ? { ...p, shares_count: (p.shares_count || 0) + 1 } : p,
         ),
       );
+      updateAdState(id, (prev) => ({ shares_count: (prev.shares_count || 0) + 1 }));
       if (selectedProduct?.id === id) {
         setSelectedProduct((prev: any) =>
           prev ? { ...prev, shares_count: (prev.shares_count || 0) + 1 } : prev,
@@ -2358,6 +2212,7 @@ export default function ShopPage() {
             p.id === id ? { ...p, views_count: (p.views_count || 0) + 1 } : p,
           ),
         );
+        updateAdState(id, (prev) => ({ views_count: (prev.views_count || 0) + 1 }));
       }
     } catch (e) {
       console.error(e);
@@ -2369,23 +2224,13 @@ export default function ShopPage() {
     if (!externalUrl) return;
 
     if (previewType === "video") {
-      setSponsoredPreviewModal({
-        product,
-        title: product?.title || "Ad",
-        videoUrl: externalUrl,
-        externalUrl,
-      });
+      setSharedAdPreviewModal({ ad: product, kind: "video" });
       return;
     }
 
     const embedUrl = getSponsoredSocialEmbedUrl(externalUrl);
     if (embedUrl) {
-      setSponsoredPreviewModal({
-        product,
-        title: product?.title || "Ad",
-        embedUrl,
-        externalUrl,
-      });
+      setSharedAdPreviewModal({ ad: product, kind: "embed" });
       return;
     }
 
@@ -2433,13 +2278,10 @@ export default function ShopPage() {
   };
 
   const handleSponsoredImageOpen = (product: any, imageSrc: string) => {
-    const images = getSponsoredAdImages(product, imageSrc);
-    setSponsoredImageModal({
-      product,
-      images,
-      currentIndex: Math.max(0, images.findIndex((item) => item === imageSrc)),
+    setSharedAdPreviewModal({
+      ad: product,
+      kind: "image",
     });
-    setIsSponsoredImageMenuOpen(false);
     handleLogView(product.id);
   };
 
@@ -2517,7 +2359,14 @@ export default function ShopPage() {
         const data = await response.json();
         if (!response.ok) throw new Error(data?.message || "Failed to fetch active ads");
         if (mounted) {
-          setMarketAds((Array.isArray(data?.ads) ? data.ads : []).map(mapPublicActiveAdToShopAd));
+          const ads = Array.isArray(data?.ads) ? data.ads : [];
+          const mappedAds = await Promise.all(
+            ads
+              .map(mapPublicActiveAdToShopAd)
+              .map((ad: any) => hydrateProductPromoteShopAd(ad)),
+          );
+          setMarketAds(mappedAds);
+          syncAds(mappedAds);
         }
       } catch (error) {
         console.error("Failed to load market ads", error);
@@ -4464,6 +4313,26 @@ export default function ShopPage() {
         /* Grid Layout for Marketplace and My Listings (Reviewing) */
         <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2 md:gap-6 mb-10">
           {visibleMarketplaceProducts.map((product, index) => {
+            if (product?.type === "profilePromoteCarousel") {
+              return (
+                <ProfilePromoteCarousel
+                  key={product.id}
+                  ads={product.ads}
+                  className="col-span-2 sm:col-span-2 lg:col-span-4 px-4 py-4 transition-colors sm:px-7"
+                  onProductClick={(previewProduct) => {
+                    void openProductPromoteSecondView(previewProduct);
+                  }}
+                  onProfileClick={(profileAd) => {
+                    if (profileAd.user_id) {
+                      router.push(`/dashboard/profile?id=${profileAd.user_id}`);
+                      return;
+                    }
+                    router.push(`/dashboard/profile?user=${encodeURIComponent(getItemUsername(profileAd, "Advertiser"))}`);
+                  }}
+                />
+              );
+            }
+
             const isSponsoredCard = !!product.is_sponsored;
             // Product Promote ads must render exactly like a normal product card
             // (cart/buy flow, real price, variants), only with an "Ad" label.
@@ -4471,88 +4340,43 @@ export default function ShopPage() {
             const isAdStyleCard = isSponsoredCard && !isProductPromoteCard;
             const sponsoredActiveLink = isAdStyleCard ? normalizeExternalUrl(product.active_link || "") : "";
             const sponsoredLinkPreviewType = isAdStyleCard ? getSponsoredLinkPreviewType(sponsoredActiveLink) : null;
-            const sponsoredCtaLabel = isAdStyleCard
-              ? ((product.cta_topic && product.cta_topic !== "No Button" ? product.cta_topic : "Visit"))
-              : "";
-            const sponsoredCtaHref = isAdStyleCard ? getSponsoredCtaHref(product.cta_topic, product.cta_value) : "";
-            const sponsoredPreviewImage = normalizeMediaSrc(
-              isAdStyleCard && sponsoredLinkPreviewType === "image"
-                ? sponsoredActiveLink
-                : product.image_url &&
-                  (product.image_url.includes("uploads") ||
-                    product.image_url.includes("\\"))
-                  ? `/uploads/${product.image_url.split(/[\\/]/).pop()}`
-                  : product.image_url || "https://picsum.photos/400/400"
-            );
-            const showSponsoredLinkPreview = isAdStyleCard && !!sponsoredActiveLink;
-            const isSponsoredImageAd = isAdStyleCard && sponsoredLinkPreviewType !== "video" && sponsoredLinkPreviewType !== "embed";
-            const showAdCoinButton = canShowCollectCoinButton(product);
-
-            const canOpenProduct = !isAdStyleCard || isSponsoredImageAd;
-            const canUseProductActions = true;
-
-            const showProfilePromoteRow =
-              activeTab === "market" &&
-              profilePromoteAds.length > 0 &&
-              (index + 1) % 8 === 0 &&
-              index < visibleMarketplaceProducts.length - 1;
 
             if (isSponsoredCard) {
               return (
                 <Fragment key={`${product.adId ? `ad-${product.adId}` : ''}:${product.id || index}`}>
                   <MarketItemWrapper product={product} onView={handleLogView} activeTab={activeTab}>
-                    {isProductPromoteCard ? (
-                      <PromotedAdCard
-                        ad={normalizeAdData({ ...product, ...normalizeProductAd(product) })}
-                        source="shop"
-                        onProductClick={() => {
-                          void openProductPromoteSecondView(product);
-                        }}
-                        onToggleLike={handleToggleLike}
-                        onOpenSheet={(type) => openBottomSheet(type as "likes" | "comments" | "shares" | "views", product)}
-                        onShare={() => handleShareClick(product)}
-                        onLogView={() => handleLogView(product.id)}
-                        onReport={() => setReportingProduct(product)}
-                        onNotInterested={(id) => handleNotInterested(Number(id))}
-                        onCollectCoin={(event) => handleAdCoinClick(event, product)}
-                        canShowCollectCoin={canShowCollectCoinButton}
-                        onNavigateToProfile={(event) => navigateToProfile(event, product.user_id)}
-                        currentUser={currentUser}
-                      />
-                    ) : (
-                      <PromotedAdCard
-                        ad={normalizeAdData(product)}
-                        source="shop"
-                        isMenuOpen={openMenuProductId === product.id}
-                        onToggleMenu={(id) => setOpenMenuProductId(openMenuProductId === id ? null : id)}
-                        onCloseMenu={() => setOpenMenuProductId(null)}
-                        onOpenSecondView={() => {
-                          const kind = getSponsoredSecondViewKind(product, sponsoredLinkPreviewType);
-                          setSharedAdPreviewModal({ ad: product, kind });
-                          handleLogView(product.id);
-                        }}
-                        onToggleLike={handleToggleLike}
-                        onOpenSheet={(type, targetAd) => openBottomSheet(type, targetAd)}
-                        onShare={() => handleShareClick(product)}
-                        onReport={() => setReportingProduct(product)}
-                        onNotInterested={(id) => handleNotInterested(Number(id))}
-                        onCollectCoin={(event) => handleAdCoinClick(event, product)}
-                        onNavigateToProfile={(event) => navigateToProfile(event, product.user_id)}
-                        canShowCollectCoin={canShowCollectCoinButton}
-                      />
-                    )}
-                  </MarketItemWrapper>
-                  {showProfilePromoteRow && (
-                    <ProfilePromoteAdBanner
-                      ads={profilePromoteAds}
-                      router={router}
+                    <PromotedAdCard
+                      ad={normalizeAdData(product)}
+                      source="shop"
+                      isMenuOpen={openMenuProductId === product.id}
+                      onToggleMenu={(id) => setOpenMenuProductId(openMenuProductId === id ? null : id)}
+                      onCloseMenu={() => setOpenMenuProductId(null)}
+                      onProductClick={(p) => {
+                        if (isProductPromoteCard) {
+                          void openProductPromoteSecondView(p);
+                        }
+                      }}
+                      onAddToBagClick={(p) => {
+                        if (isProductPromoteCard) {
+                          void openProductPromoteSecondView(p);
+                        }
+                      }}
+                      onOpenSecondView={() => {
+                        if (isProductPromoteCard) return;
+                        const kind = getSponsoredSecondViewKind(product, sponsoredLinkPreviewType);
+                        setSharedAdPreviewModal({ ad: product, kind });
+                        handleLogView(product.id);
+                      }}
                       onToggleLike={handleToggleLike}
-                      onOpenSheet={(type, product) => openBottomSheet(type, product)}
-                      onShare={(product) => handleShareClick(product)}
-                      onCollectCoin={handleAdCoinClick}
+                      onOpenSheet={(type, targetAd) => openBottomSheet(type, targetAd)}
+                      onShare={() => handleShareClick(product)}
+                      onReport={() => setReportingProduct(product)}
+                      onNotInterested={(id) => handleNotInterested(Number(id))}
+                      onCollectCoin={(event) => handleAdCoinClick(event, product)}
+                      onNavigateToProfile={(event) => navigateToProfile(event, product.user_id)}
                       canShowCollectCoin={canShowCollectCoinButton}
                     />
-                  )}
+                  </MarketItemWrapper>
                 </Fragment>
               );
             }
@@ -4564,591 +4388,47 @@ export default function ShopPage() {
                   onView={handleLogView}
                   activeTab={activeTab}
                 >
-                  <div
-                    className={`relative group flex flex-col transition-all duration-500 hover:z-10 ${isAdStyleCard ? "col-span-2 lg:col-span-1" : ""}`}
-                  >
-                    {showAdCoinButton && (
-                      <div className="absolute right-3 top-[57px] z-[25] md:right-4 md:top-[62px]">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleAdCoinClick(e, product);
-                          }}
-                          className={`flex items-center gap-1.5 ${collectCoinButtonClass}`}
-                          aria-label="Collect ad coin"
-                        >
-                          <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
-                            <Image
-                              src="/assets/images/rupee.png"
-                              alt="Ruppier coin"
-                              width={28}
-                              height={28}
-                              className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
-                              unoptimized
-                            />
-                          </span>
-                          <span className="leading-none">Ruppier</span>
-                        </button>
-                      </div>
-                    )}
-                    <div
-                      className={`group bg-[#1a1a1a] rounded-[1.5rem] md:rounded-[2.5rem] pb-4 md:pb-8 border border-white/5 hover:border-white/20 transition-all hover:shadow-2xl relative flex flex-col min-w-0 ${canOpenProduct ? "cursor-pointer" : "cursor-default"}`}
-                      onClick={() => {
-                        if (isSponsoredImageAd) {
-                          handleSponsoredImageOpen(product, sponsoredPreviewImage);
-                          return;
-                        }
-                        if (!canOpenProduct) return;
-                        setSelectedProduct(product);
+                  <SharedProductCard
+                    product={product}
+                    isAd={isProductPromoteCard}
+                    currentUser={currentUser}
+                    onProductClick={(p) => {
+                      if (isProductPromoteCard) {
+                        void openProductPromoteSecondView(p);
+                      } else {
+                        setSelectedProduct(p);
                         setSelectedVariantIndex(null);
                         setActivePreviewIndex(0);
-                        handleLogView(product.id);
-                      }}
-                    >
-                      {/* Profile Header with Subscribe */}
-                      <div className="flex items-center justify-between gap-1 p-2 md:p-4 md:px-5">
-                        <div
-                          className="flex min-w-0 items-center gap-1 group/profile"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                          }}
-                        >
-                          <div className="w-5 h-5 md:w-8 md:h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center text-[7px] md:text-[10px] text-white overflow-hidden border border-white/10 shadow-lg relative flex-shrink-0 group-hover/profile:border-white/40 transition-all">
-                            {getItemProfilePicture(product) ? (
-                              <Image
-                                src={normalizeMediaSrc(getItemProfilePicture(product))}
-                                alt="Profile"
-                                fill
-                                sizes={AVATAR_IMAGE_SIZES}
-                                className="object-cover"
-                                loading="lazy"
-                                placeholder="blur"
-                                blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
-                                unoptimized={shouldBypassNextImageOptimization(getItemProfilePicture(product))}
-                              />
-                            ) : (
-                              <IonIcon name="person" className="text-white" />
-                            )}
-                          </div>
-                          <div className="flex flex-col min-w-0">
-                            <span
-                              onClick={(e) => navigateToProfile(e, product.user_id)}
-                              className="text-[7px] md:text-[10px] text-white font-black uppercase tracking-tight truncate leading-none group-hover/profile:text-blue-400 transition-colors cursor-pointer"
-                            >
-                              {getItemUsername(product, "Anonymous")}
-                            </span>
-                            <span className="text-[5px] md:text-[7px] text-slate-500 font-bold tracking-widest mt-0.5">
-                              {isSponsoredCard ? "Ad" : formatRelativeTime(product.created_at)}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          {showSubscribeForProduct(product) && (
-                            <SubscribeButton userId={product.user_id} initialIsSubscribed={false} size="small" />
-                          )}
-                          <div className="relative">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setOpenMenuProductId(
-                                  openMenuProductId === product.id
-                                    ? null
-                                    : product.id,
-                                );
-                              }}
-                              className="w-5 h-5 md:w-8 md:h-8 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center transition-all active:scale-75"
-                            >
-                              <div className="flex flex-col gap-0.5">
-                                <div className="w-1 h-1 bg-white rounded-full"></div>
-                                <div className="w-1 h-1 bg-white rounded-full"></div>
-                              </div>
-                            </button>
-                            {/* Dropdown Menu */}
-                            {openMenuProductId === product.id && (
-                              <div
-                                className="absolute right-0 top-full mt-2 w-56 bg-[#1a1a1a] border border-white/10 rounded-2xl shadow-2xl py-2 z-[60] animate-in slide-in-from-top-2 duration-200 overflow-hidden"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                {/* Global options */}
-                                {!isAdStyleCard && (
-                                  <button
-                                    onClick={() => { handleShareClick(product, "resell"); setOpenMenuProductId(null); }}
-                                    className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors"
-                                  >
-                                    <IonIcon name="cash-outline" className="text-amber-500 text-lg" />
-                                    Resell Commission Link
-                                  </button>
-                                )}
-                                <button
-                                  onClick={() => {
-                                    handleShareClick(product, "share");
-                                    setOpenMenuProductId(null);
-                                  }}
-                                  className={`w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors ${!isAdStyleCard ? "border-t border-white/5" : ""}`}
-                                >
-                                  <IonIcon name="share-social-outline" className="text-blue-400 text-lg" />
-                                  Share Link
-                                </button>
-                                {!isAdStyleCard && (
-                                  <button
-                                    onClick={() => {
-                                      handlePromoteProduct(product);
-                                      setOpenMenuProductId(null);
-                                    }}
-                                    className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
-                                  >
-                                    <IonIcon name="megaphone-outline" className="text-emerald-400 text-lg" />
-                                    Promote
-                                  </button>
-                                )}
-                                {isAdStyleCard && (
-                                  <>
-                                    <button
-                                      onClick={() => { setReportingProduct(product); setOpenMenuProductId(null); }}
-                                      className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
-                                    >
-                                      <IonIcon name="alert-circle-outline" className="text-yellow-500 text-lg" />
-                                      Report
-                                    </button>
-                                    <button
-                                      onClick={() => { handleNotInterested(product.id); setOpenMenuProductId(null); }}
-                                      className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
-                                    >
-                                      <IonIcon name="eye-off-outline" className="text-slate-500 text-lg" />
-                                      Not Interested
-                                    </button>
-                                  </>
-                                )}
-
-                                {/* Owner options */}
-                                {!isAdStyleCard && currentUser?.id === product.user_id && (
-                                  <>
-                                    <button
-                                      onClick={() => { handleEditProduct(product); setOpenMenuProductId(null); }}
-                                      className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
-                                    >
-                                      <IonIcon name="create-outline" className="text-emerald-400 text-lg" />
-                                      Edit Post
-                                    </button>
-                                    <button
-                                      onClick={() => { handleDeleteProduct(product); setOpenMenuProductId(null); }}
-                                      className="w-full px-4 py-3 text-left text-[11px] font-bold text-red-500 hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
-                                    >
-                                      <IonIcon name="trash-outline" className="text-lg" />
-                                      Delete Post
-                                    </button>
-                                  </>
-                                )}
-
-                                {/* Guest options */}
-                                {!isAdStyleCard && currentUser?.id !== product.user_id && (
-                                  <>
-                                    <button
-                                      onClick={() => { setReportingProduct(product); setOpenMenuProductId(null); }}
-                                      className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
-                                    >
-                                      <IonIcon name="alert-circle-outline" className="text-yellow-500 text-lg" />
-                                      Report
-                                    </button>
-                                    <button
-                                      onClick={() => { handleNotInterested(product.id); setOpenMenuProductId(null); }}
-                                      className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
-                                    >
-                                      <IonIcon name="eye-off-outline" className="text-slate-500 text-lg" />
-                                      Not Interested
-                                    </button>
-                                  </>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Image Section */}
-                      <div className={`relative mx-2 rounded-[1.2rem] md:rounded-[2rem] overflow-hidden mb-3 bg-black border border-white/5 shadow-inner ${isAdStyleCard ? "aspect-[2/1.1] lg:aspect-square" : "aspect-square"}`}>
-                        {showSponsoredLinkPreview ? (
-                          <div className="relative h-full w-full bg-[#0f1115]">
-                            <Image
-                              src={sponsoredPreviewImage}
-                              alt={product.title}
-                              fill
-                              sizes={isAdStyleCard ? AD_CARD_IMAGE_SIZES : PRODUCT_CARD_IMAGE_SIZES}
-                              quality={58}
-                              loading="lazy"
-                              placeholder="blur"
-                              blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
-                              className="object-cover group-hover:scale-105 transition-transform duration-500"
-                              unoptimized={shouldBypassNextImageOptimization(sponsoredPreviewImage)}
-                            />
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/45 via-black/5 to-transparent" />
-                            {(sponsoredLinkPreviewType === "video" || sponsoredLinkPreviewType === "embed") && (
-                              <div className="absolute inset-0 flex items-center justify-center">
-                                <button
-                                  type="button"
-                                  onClick={(e) => handleSponsoredPreviewOpen(e, product, sponsoredLinkPreviewType)}
-                                  className="flex h-14 w-14 items-center justify-center rounded-full bg-white/92 text-black shadow-[0_18px_45px_rgba(0,0,0,0.45)] transition hover:scale-105"
-                                  aria-label="Play sponsored media"
-                                >
-                                  <IonIcon name="play" className="ml-1 text-2xl" />
-                                </button>
-                              </div>
-                            )}
-                            <div className="absolute bottom-0 left-0 right-0 border-t border-white/10 bg-[#dff0d6]/95 px-3 py-2 backdrop-blur-sm">
-                              <p className="overflow-hidden text-[10px] md:text-xs font-black leading-4 text-[#18220f] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] break-words">
-                                {product.title || "Ad"}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={(e) => handleSponsoredExternalOpen(e, sponsoredActiveLink)}
-                                className="mt-1 block truncate text-left text-[9px] md:text-[11px] font-bold text-[#1d62ad] hover:underline"
-                              >
-                                {sponsoredActiveLink}
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <Image
-                            src={sponsoredPreviewImage}
-                            alt={product.title}
-                            fill
-                            sizes={isAdStyleCard ? AD_CARD_IMAGE_SIZES : PRODUCT_CARD_IMAGE_SIZES}
-                            quality={58}
-                            loading="lazy"
-                            placeholder="blur"
-                            blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
-                            className="object-cover group-hover:scale-105 transition-transform duration-500"
-                            unoptimized={shouldBypassNextImageOptimization(sponsoredPreviewImage)}
-                          />
-                        )}
-                        {!isAdStyleCard && product.status === "reviewing" &&
-                          activeTab !== "orders" && (
-                            <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex items-center justify-center">
-                              <div className="flex flex-col items-center gap-2 text-white">
-                                <div className="w-10 h-10 md:w-12 md:h-12 rounded-full border-2 border-white flex items-center justify-center bg-black/50">
-                                  <IonIcon
-                                    name="time"
-                                    className="text-xl md:text-2xl"
-                                  />
-                                </div>
-                                <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider bg-black/60 px-2 py-1 rounded-full border border-white/30">
-                                  Reviewing
-                                </span>
-                              </div>
-                            </div>
-                          )}
-
-                        {/* Product Discount Badge on Image Box */}
-                        {!isAdStyleCard && (() => {
-                          try {
-                            const comm =
-                              typeof product.commission_info === "string"
-                                ? JSON.parse(product.commission_info)
-                                : product.commission_info;
-                            const discount = comm?.discount;
-                            if (discount && parseFloat(discount) > 0) {
-                              return (
-                                <div className="absolute bottom-2 right-2 z-10 px-1.5 py-0.5 bg-green-500/10 backdrop-blur-md border border-green-500/20 rounded-lg shadow-[0_0_10px_rgba(34,197,94,0.1)]">
-                                  <span className="text-[8px] md:text-xs font-black text-green-500">
-                                    +{discount}%
-                                  </span>
-                                </div>
-                              );
-                            }
-                          } catch (e) {
-                            console.warn(
-                              "Failed to parse commission_info for product",
-                              product.id,
-                            );
-                          }
-                          return null;
-                        })()}
-                        {!isAdStyleCard && product.status === "rejected" && (
-                          <div className="absolute inset-0 bg-red-900/40 backdrop-blur-[2px] flex items-center justify-center">
-                            <div className="flex flex-col items-center gap-2 text-white">
-                              <div className="w-10 h-10 md:w-12 md:h-12 rounded-full border-2 border-red-500 flex items-center justify-center bg-red-600/30">
-                                <IonIcon
-                                  name="close"
-                                  className="text-xl md:text-2xl text-red-100"
-                                />
-                              </div>
-                              <span className="text-[10px] md:text-xs font-bold uppercase tracking-wider bg-red-600/80 px-2 py-1 rounded-full border border-red-400">
-                                Rejected
-                              </span>
-                            </div>
-                          </div>
-                        )}
-                        {!isAdStyleCard && (activeTab === "orders" ||
-                          (activeTab === "my-products" &&
-                            myListingsTab === "all")) &&
-                          product.status && (
-                            <div className="absolute top-4 right-4 px-2 py-1 bg-black/60 backdrop-blur-md rounded-lg border border-white/10">
-                              <span className="text-[8px] font-black uppercase text-white tracking-widest">
-                                {product.status}
-                              </span>
-                            </div>
-                          )}
-                      </div>
-
-                      {/* Content Section */}
-                      <div className="px-3 md:px-6 pb-2">
-                        <div className="mb-2 flex items-start justify-between gap-2">
-                          <h3 className="min-w-0 flex-1 overflow-hidden text-white text-[9px] md:text-[12px] font-black uppercase tracking-tight group-hover:text-amber-400 transition-colors [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] break-words">
-                            {product.title}
-                          </h3>
-                          {isAdStyleCard && sponsoredCtaLabel && (
-                            <button
-                              type="button"
-                              onClick={(e) => handleSponsoredCtaClick(e, product)}
-                              className={`shrink-0 rounded-full px-2.5 py-1 text-[8px] md:text-[9px] font-black uppercase tracking-[0.14em] transition ${sponsoredCtaHref || product.cta_topic === "Message" ? "bg-white text-black hover:bg-slate-200 active:scale-95" : "bg-white/10 text-white/35 cursor-default"}`}
-                              disabled={!sponsoredCtaHref && product.cta_topic !== "Message"}
-                            >
-                              {sponsoredCtaLabel}
-                            </button>
-                          )}
-                        </div>
-
-                        {/* Color variants loop */}
-                        {(() => {
-                          const productVariants =
-                            typeof product.variants === "string"
-                              ? JSON.parse(product.variants)
-                              : product.variants || [];
-                          const uniqueColors = Array.from(
-                            new Set(
-                              productVariants
-                                .map((v: any) => v.color)
-                                .filter((c: any) => c && c !== "None"),
-                            ),
-                          );
-
-                          if (uniqueColors.length > 0) {
-                            return (
-                              <div className="flex flex-wrap gap-1 mb-2">
-                                {uniqueColors.map((colorName: any, idx) => {
-                                  const colorInfo = COLORS.find(
-                                    (c) => c.name === colorName,
-                                  );
-                                  if (!colorInfo) return null;
-                                  return (
-                                    <div
-                                      key={idx}
-                                      className="w-2.5 h-2.5 rounded-full border border-white/20 shadow-sm"
-                                      style={{ backgroundColor: colorInfo.hex }}
-                                      title={colorName}
-                                    />
-                                  );
-                                })}
-                              </div>
-                            );
-                          }
-                          return null;
-                        })()}
-
-                        <div className="flex flex-col mb-3">
-                          <div className="flex items-center justify-between gap-2 mr-[-8px]">
-                            {isAdStyleCard ? (
-                              <div className="h-8 md:h-10" />
-                            ) : (
-                              <div className="flex items-baseline gap-1">
-                                <span className="text-xs font-black text-white/40">
-                                  R
-                                </span>
-                                <span className="text-2xl font-black text-white tracking-tighter">
-                                  {product.promo_price || product.price}
-                                </span>
-                              </div>
-                            )}
-                            {!isAdStyleCard && product.status !== "reviewing" && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (!canOpenProduct) return;
-                                  setSelectedProduct(product);
-                                  handleLogView(product.id);
-                                }}
-                                className={`w-10 h-10 flex items-center justify-center bg-white/5 hover:bg-white/10 text-white/40 transition-all rounded-2xl border border-white/5 shadow-inner ${canOpenProduct ? "hover:text-blue-400 active:scale-75" : "cursor-default opacity-70"}`}
-                              >
-                                <IonIcon name="cart-outline" className="text-xl" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Bottom action bar: 2-row on mobile, 1-row on desktop */}
-                        <div className="border-t border-white/5 pt-1.5 md:pt-2 flex flex-col gap-2">
-                          <div className="flex items-center justify-between w-full px-0.5">
-                            {product.status !== "reviewing" && (
-                              <>
-                                <InteractionButton
-                                  type="likes"
-                                  icon="heart-outline"
-                                  activeIcon="heart"
-                                  isActive={!!product.user_liked}
-                                  count={product.likes_count}
-                                  color="text-white"
-                                  activeColor="text-white"
-                                  onSingleClick={() => { if (canUseProductActions) handleToggleLike(product.id); }}
-                                  onLongReach={() => { if (canUseProductActions) openBottomSheet("likes", product); }}
-                                  product={product}
-                                />
-                                <InteractionButton
-                                  type="views"
-                                  icon="eye-outline"
-                                  activeIcon="eye"
-                                  count={product.views_count}
-                                  color="text-white"
-                                  activeColor="text-white"
-                                  onSingleClick={() => {
-                                    if (canUseProductActions) {
-                                      handleLogView(product.id);
-                                    }
-                                  }}
-                                  onLongReach={() => { if (canUseProductActions) openBottomSheet("views", product); }}
-                                  product={product}
-                                />
-                                <InteractionButton
-                                  type="comments"
-                                  icon="chatbubble-outline"
-                                  activeIcon="chatbubble"
-                                  count={product.comments_count}
-                                  color="text-white"
-                                  activeColor="text-white"
-                                  onSingleClick={() => {
-                                    if (!canUseProductActions) return;
-                                    setInteractionProduct(product);
-                                    openBottomSheet("comments", product);
-                                  }}
-                                  onLongReach={() => { if (canUseProductActions) openBottomSheet("comments", product); }}
-                                  product={product}
-                                />
-                                <InteractionButton
-                                  type="shares"
-                                  icon="share-social-outline"
-                                  activeIcon="share-social"
-                                  count={isAdStyleCard ? (product.shares_count || 0) : (() => {
-                                    try {
-                                      const info = typeof product.commission_info === "string" ? JSON.parse(product.commission_info) : product.commission_info;
-                                      const comm = info?.resell_percentage || info?.resell_amount || info?.resell_commission || info?.reseller_commission || info?.googer_commission;
-                                      return comm ? `${comm}%` : 0;
-                                    } catch { return 0; }
-                                  })()}
-                                  color="text-white"
-                                  activeColor="text-white"
-                                  onSingleClick={() => { if (canUseProductActions) handleShareClick(product); }}
-                                  onLongReach={() => { if (canUseProductActions) openBottomSheet("shares", product); }}
-                                  product={product}
-                                  iconSize="text-sm md:text-base opacity-90"
-                                />
-                              </>
-                            )}
-                          </div>
-
-                          {/* Row 2 (mobile: below icons | desktop: hidden since it's in row 1 via ml-auto) */}
-                          {/* Context action buttons — shown only when needed */}
-                          {(() => {
-                            const actionBtn =
-                              product.status === "rejected" ? (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleEditProduct(product);
-                                  }}
-                                  className="px-3 py-1 bg-white/10 hover:bg-white hover:text-black text-white text-[9px] font-black uppercase rounded-lg transition-all whitespace-nowrap"
-                                >
-                                  Edit
-                                </button>
-                              ) : activeTab === "my-products" &&
-                                myListingsTab === "all" ? (
-                                product.status === "pending" ||
-                                  product.status === "approved" ||
-                                  product.status === "all" ? (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleUpdateOrderStatus(
-                                        product.id,
-                                        "processing",
-                                      );
-                                    }}
-                                    className="px-2 py-1 bg-white text-black text-[8px] font-black uppercase rounded-lg border border-white whitespace-nowrap"
-                                  >
-                                    Process
-                                  </button>
-                                ) : product.status === "processing" ? (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleUpdateOrderStatus(
-                                        product.id,
-                                        "shipped",
-                                      );
-                                    }}
-                                    className="px-2 py-1 bg-blue-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap"
-                                  >
-                                    Ship
-                                  </button>
-                                ) : product.status === "shipped" ? (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setOrderToDeliver(product);
-                                    }}
-                                    className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap"
-                                  >
-                                    Deliver
-                                  </button>
-                                ) : product.status === "delivered" ? (
-                                  <span className="text-[8px] text-blue-400 font-black uppercase whitespace-nowrap">
-                                    Wait Buyer
-                                  </span>
-                                ) : product.status === "received" ? (
-                                  <span className="text-[8px] text-green-500 font-black uppercase whitespace-nowrap">
-                                    Done ?
-                                  </span>
-                                ) : null
-                              ) : activeTab === "orders" ? (
-                                product.status === "delivered" ? (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleUpdateOrderStatus(
-                                        product.id,
-                                        "received",
-                                      );
-                                    }}
-                                    className="px-2 py-1 bg-green-600 text-white text-[8px] font-black uppercase rounded-lg whitespace-nowrap"
-                                  >
-                                    Received?
-                                  </button>
-                                ) : product.status === "received" ? (
-                                  <span className="text-[8px] text-green-500 font-black uppercase whitespace-nowrap">
-                                    Done ?
-                                  </span>
-                                ) : null
-                              ) : null;
-
-                            return actionBtn ? (
-                              <div className="flex items-center">{actionBtn}</div>
-                            ) : null;
-                          })()}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </MarketItemWrapper>
-                {showProfilePromoteRow && (
-                  <ProfilePromoteAdBanner
-                    ads={profilePromoteAds}
-                    router={router}
+                        handleLogView(p.id);
+                      }
+                    }}
+                    onAddToBagClick={(p) => {
+                      if (isProductPromoteCard) {
+                        void openProductPromoteSecondView(p);
+                      } else {
+                        setSelectedProduct(p);
+                        setSelectedVariantIndex(null);
+                        setActivePreviewIndex(0);
+                        handleLogView(p.id);
+                      }
+                    }}
                     onToggleLike={handleToggleLike}
-                    onOpenSheet={(type, product) => openBottomSheet(type, product)}
-                    onShare={(product) => handleShareClick(product)}
-                    onCollectCoin={handleAdCoinClick}
+                    onOpenSheet={(type, p) => openBottomSheet(type as any, p)}
+                    onShare={handleShareClick}
+                    onLogView={handleLogView}
+                    onReport={(p) => setReportingProduct(p)}
+                    onNotInterested={(id) => handleNotInterested(Number(id))}
+                    onCollectCoin={(event, p) => handleAdCoinClick(event, p)}
                     canShowCollectCoin={canShowCollectCoinButton}
+                    onNavigateToProfile={(event, userId) => navigateToProfile(event, userId)}
+                    onEditProduct={handleEditProduct}
+                    onDeleteProduct={handleDeleteProduct}
+                    onPromoteProduct={handlePromoteProduct}
+                    onUpdateOrderStatus={handleUpdateOrderStatus}
+                    activeTab={activeTab}
+                    myListingsTab={myListingsTab}
                   />
-                )}
+                </MarketItemWrapper>
               </Fragment>
             );
           })}
@@ -5198,7 +4478,7 @@ export default function ShopPage() {
 
       {/* Product Details Modal */}
       {liveSharedAdPreviewModal && (
-        <AdSecondViewModal
+        <SharedAdSecondViewModal
           ad={liveSharedAdPreviewModal.ad}
           kind={liveSharedAdPreviewModal.kind}
           onClose={() => setSharedAdPreviewModal(null)}
@@ -5210,6 +4490,9 @@ export default function ShopPage() {
           onCollectCoin={(event, ad) => handleAdCoinClick(event, ad)}
           onNavigateToProfile={(event, ad) => navigateToProfile(event, ad.user_id)}
           canShowCollectCoin={canShowCollectCoinButton}
+          onVideoWatchEligible={(ad, watchedSeconds) => {
+            void confirmAdVideoWatchEligible(ad, watchedSeconds);
+          }}
         />
       )}
 

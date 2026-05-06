@@ -81,8 +81,9 @@ export const marketService = {
 
     // Get item by ID
     getItemById: async (id: string | number) => {
+        const numericId = String(id).replace(/^ad-/, "");
         try {
-            const response = await fetch(`${API_URL}/market/${id}`, {
+            const response = await fetch(`${API_URL}/market/${numericId}`, {
                 method: 'GET',
                 headers: getAuthHeaders(),
             });
@@ -141,6 +142,7 @@ export const marketService = {
 
     // Update an item
     updateItem: async (id: string | number, itemData: any) => {
+        const numericId = String(id).replace(/^ad-/, "");
         try {
             const isFormData = itemData instanceof FormData;
             const headers = getAuthHeaders();
@@ -150,7 +152,7 @@ export const marketService = {
                 delete headers['Content-Type'];
             }
 
-            const response = await fetch(`${API_URL}/market/${id}`, {
+            const response = await fetch(`${API_URL}/market/${numericId}`, {
                 method: 'PUT',
                 headers: headers,
                 body: isFormData ? itemData : JSON.stringify(itemData),
@@ -166,8 +168,9 @@ export const marketService = {
 
     // Delete an item
     deleteItem: async (id: string | number) => {
+        const numericId = String(id).replace(/^ad-/, "");
         try {
-            const response = await fetch(`${API_URL}/market/${id}`, {
+            const response = await fetch(`${API_URL}/market/${numericId}`, {
                 method: 'DELETE',
                 headers: getAuthHeaders(),
             });
@@ -182,8 +185,9 @@ export const marketService = {
 
     // Update item status (admin: approve / reject / reviewing)
     updateStatus: async (id: string | number, status: string) => {
+        const numericId = String(id).replace(/^ad-/, "");
         try {
-            const response = await fetch(`${API_URL}/market/${id}/status`, {
+            const response = await fetch(`${API_URL}/market/${numericId}/status`, {
                 method: 'PUT',
                 headers: getAuthHeaders(),
                 body: JSON.stringify({ status }),
@@ -199,8 +203,9 @@ export const marketService = {
 
     // Engagement Features
     toggleLike: async (id: string | number) => {
+        const numericId = String(id);
         try {
-            const response = await fetch(`${API_URL}/market/${id}/like`, {
+            const response = await fetch(`${API_URL}/market/${numericId}/like`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
             });
@@ -214,8 +219,9 @@ export const marketService = {
     },
 
     collectAdCoin: async (id: string | number) => {
+        const numericId = String(id);
         try {
-            const response = await fetch(`${API_URL}/market/${id}/collect-coin`, {
+            const response = await fetch(`${API_URL}/market/${numericId}/collect-coin`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
             });
@@ -229,8 +235,9 @@ export const marketService = {
     },
 
     markAdVideoWatchEligible: async (id: string | number, watchedSeconds = 5) => {
+        const numericId = String(id);
         try {
-            const response = await fetch(`${API_URL}/market/${id}/video-watch-eligible`, {
+            const response = await fetch(`${API_URL}/market/${numericId}/video-watch-eligible`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
                 body: JSON.stringify({ watchedSeconds }),
@@ -245,8 +252,9 @@ export const marketService = {
     },
 
     addComment: async (id: string | number, text: string, parentId?: string | number) => {
+        const engagementId = String(id);
         try {
-            const response = await fetch(`${API_URL}/market/${id}/comments`, {
+            const response = await fetch(`${API_URL}/market/${engagementId}/comments`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
                 body: JSON.stringify({ text, parent_id: parentId }),
@@ -315,8 +323,9 @@ export const marketService = {
     },
 
     getComments: async (id: string | number) => {
+        const engagementId = String(id);
         try {
-            const response = await fetch(`${API_URL}/market/${id}/comments`, {
+            const response = await fetch(`${API_URL}/market/${engagementId}/comments`, {
                 method: 'GET',
                 headers: getAuthHeaders(),
             });
@@ -330,8 +339,9 @@ export const marketService = {
     },
 
     logShare: async (id: string | number) => {
+        const engagementId = String(id);
         try {
-            const response = await fetch(`${API_URL}/market/${id}/share`, {
+            const response = await fetch(`${API_URL}/market/${engagementId}/share`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
             });
@@ -342,8 +352,9 @@ export const marketService = {
     },
 
     logView: async (id: string | number) => {
+        const engagementId = String(id);
         try {
-            const response = await fetch(`${API_URL}/market/${id}/view`, {
+            const response = await fetch(`${API_URL}/market/${engagementId}/view`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
             });
@@ -354,8 +365,9 @@ export const marketService = {
     },
 
     getLikes: async (id: string | number) => {
+        const engagementId = String(id);
         try {
-            const response = await fetch(`${API_URL}/market/${id}/likes`, {
+            const response = await fetch(`${API_URL}/market/${engagementId}/likes`, {
                 method: 'GET',
                 headers: getAuthHeaders(),
             });
@@ -365,8 +377,9 @@ export const marketService = {
     },
 
     getShares: async (id: string | number) => {
+        const engagementId = String(id);
         try {
-            const response = await fetch(`${API_URL}/market/${id}/shares`, {
+            const response = await fetch(`${API_URL}/market/${engagementId}/shares`, {
                 method: 'GET',
                 headers: getAuthHeaders(),
             });
@@ -376,8 +389,9 @@ export const marketService = {
     },
 
     getViews: async (id: string | number) => {
+        const engagementId = String(id);
         try {
-            const response = await fetch(`${API_URL}/market/${id}/views`, {
+            const response = await fetch(`${API_URL}/market/${engagementId}/views`, {
                 method: 'GET',
                 headers: getAuthHeaders(),
             });

@@ -31,7 +31,16 @@ export const matchesAdIdentity = (item: any, targetId: string | number): boolean
  */
 export const getAdInteractionId = (item: any): string => {
   if (!item) return "";
-  const id = item.id || item.adId || item.ad_id;
+  if (typeof item === "string" || typeof item === "number") {
+    const idStr = String(item);
+    return idStr.startsWith("ad-") ? idStr : `ad-${idStr}`;
+  }
+  const sponsoredId = item.adId || item.ad_id;
+  const isSponsored =
+    !!sponsoredId &&
+    (!!item.is_sponsored || !!item.isAd || !!item.campaign_type || String(item.id || "").startsWith("ad-"));
+  const id = isSponsored ? sponsoredId : (item.id || sponsoredId);
+  if (!id) return "";
   const idStr = String(id);
   if (idStr.startsWith("ad-")) return idStr;
   return `ad-${idStr}`;

@@ -1,6 +1,7 @@
 export type AdType = "product" | "photo" | "video" | "profile";
 
 export interface NormalizedAd {
+  [key: string]: any;
   id: string; // The primary ID used for interaction (e.g., "ad-123")
   type: AdType;
   shareCode: string;

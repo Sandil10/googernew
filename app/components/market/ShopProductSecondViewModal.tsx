@@ -8,6 +8,8 @@ import { InteractionButton } from "@/app/components/InteractionButton";
 import { useCart } from "@/app/context/CartContext";
 import { useRelativeTime } from "@/app/lib/relativeTime";
 import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
+import { useAdStore } from "@/app/lib/ads/adStore";
+import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
 
 type SheetType = "likes" | "comments" | "shares" | "views";
 
@@ -28,8 +30,8 @@ interface ShopProductSecondViewModalProps {
   onDelete?: (product: any) => void;
   onReport?: (product: any) => void;
   onNotInterested?: (productId: string | number) => void;
-  onToggleLike?: (id: string | number) => void;
-  onLogView?: (id: string | number) => void;
+  onToggleLike?: (product: any) => void;
+  onLogView?: (id: any) => void;
   onOpenSheet?: (type: SheetType, product: any) => void;
   onCollectCoin?: (event: React.MouseEvent, product: any) => void;
   canShowCollectCoin?: (product: any) => boolean;
@@ -99,6 +101,8 @@ const normalizeImageSrc = (src?: string) => {
   if (!src) return "https://picsum.photos/400/400";
   return src.includes("uploads") || src.includes("\\") ? `/uploads/${src.split(/[\\/]/).pop()}` : src;
 };
+
+const EMPTY_LIVE_STATE = {};
 
 const getProductVariants = (product: any) => {
   const variants = safeParse(product?.variants);
@@ -214,6 +218,20 @@ export function ShopProductSecondViewModal({
   onSizeRequired,
 }: ShopProductSecondViewModalProps) {
   const router = useRouter();
+  const interactionId = product?.adId || product?.ad_id
+    ? getAdInteractionId({ ...product, is_sponsored: true })
+    : getAdInteractionId(product);
+  const liveState = useAdStore((state) => state.adStates[interactionId] || EMPTY_LIVE_STATE);
+  const displayProduct = {
+    ...product,
+    user_liked: liveState.user_liked ?? product.user_liked,
+    liked: liveState.user_liked ?? product.liked ?? product.user_liked,
+    likes_count: liveState.likes_count ?? product.likes_count,
+    ad_coin_collected: liveState.ad_coin_collected ?? product.ad_coin_collected,
+    views_count: liveState.views_count ?? product.views_count,
+    comments_count: liveState.comments_count ?? product.comments_count,
+    shares_count: liveState.shares_count ?? product.shares_count,
+  };
   const sellerName = getItemUsername(product, "Seller");
   const sellerImage = getItemProfilePicture(product);
   const timeLabel = useRelativeTime(product?.created_at, "Product");
@@ -235,7 +253,10 @@ export function ShopProductSecondViewModal({
   const commissionInfo = safeParse(product.commission_info);
   const activeVariant = selectedVariantIndex !== null ? productVariants[selectedVariantIndex] : productVariants[0] || product;
   const sellerId = getSellerId?.(product) || product?.user_id || product?.owner_id || product?.seller_id || product?.user?.id;
-  const showAdCoinButton = !!canShowCollectCoin?.(product);
+  const isProductPromoteSecondView =
+    (product?.isProductPromoteSecondView || String(product?.campaign_type || product?.campaignType || "").toLowerCase() === "product promote") &&
+    !!(product?.adId || product?.ad_id);
+  const showAdCoinButton = isProductPromoteSecondView && !!canShowCollectCoin?.(displayProduct);
   const activeSelections = Array.isArray(activeVariant?.selections) ? activeVariant.selections : [];
   const sizeOptions = safeParse(product.sizes);
   const sizeList = activeSelections.map((selection: any) => selection.value).filter(Boolean).length
@@ -323,7 +344,7 @@ export function ShopProductSecondViewModal({
                       type="button"
                       onClick={(event) => {
                         event.stopPropagation();
-                        onCollectCoin(event, product);
+                        onCollectCoin(event, displayProduct);
                       }}
                       className="flex items-center gap-1.5 rounded-full border border-red-400/30 bg-red-600 px-2 py-1 text-[8px] font-black uppercase tracking-[0.1em] text-white shadow-xl transition hover:bg-red-500 active:scale-95"
                     >
@@ -449,24 +470,24 @@ export function ShopProductSecondViewModal({
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          onToggleLike?.(product.id);
+                          onToggleLike?.(displayProduct);
                         }}
                         className="group flex flex-col items-center gap-1.5 transition-all active:scale-95"
                       >
-                        <div className={`flex h-8 w-8 items-center justify-center rounded-full transition-all ${product.user_liked ? "bg-red-500/15" : "bg-white/5 group-hover:bg-white/10"}`}>
-                          <svg viewBox="0 0 24 24" className={`h-5 w-5 transition-colors ${product.user_liked ? "fill-red-500 text-red-500" : "fill-transparent text-white"}`} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <div className={`flex h-8 w-8 items-center justify-center rounded-full transition-all ${displayProduct.user_liked ? "bg-red-500/15" : "bg-white/5 group-hover:bg-white/10"}`}>
+                          <svg viewBox="0 0 24 24" className={`h-5 w-5 transition-colors ${displayProduct.user_liked ? "fill-red-500 text-red-500" : "fill-transparent text-white"}`} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78Z" />
                           </svg>
                         </div>
-                        {!!product.likes_count && (
-                          <span className={`text-[10px] font-black uppercase tracking-widest transition-colors ${product.user_liked ? "text-red-500" : "text-white"}`}>
-                            {product.likes_count > 999 ? "999+" : product.likes_count}
+                        {!!displayProduct.likes_count && (
+                          <span className={`text-[10px] font-black uppercase tracking-widest transition-colors ${displayProduct.user_liked ? "text-red-500" : "text-white"}`}>
+                            {displayProduct.likes_count > 999 ? "999+" : displayProduct.likes_count}
                           </span>
                         )}
                       </button>
-                      <InteractionButton type="views" icon="eye-outline" activeIcon="eye" count={product.views_count} color="text-white" activeColor="text-white" onSingleClick={() => { onLogView?.(product.id); onOpenSheet?.("views", product); }} onLongPress={() => onOpenSheet?.("views", product)} orientation="vertical" iconSize="text-base md:text-xl" />
-                      <InteractionButton type="comments" icon="chatbubble" activeIcon="chatbubble" count={product.comments_count} color="text-white" activeColor="text-white" onSingleClick={() => onOpenSheet?.("comments", product)} onLongPress={() => onOpenSheet?.("comments", product)} orientation="vertical" iconSize="text-base md:text-xl" />
-                      <InteractionButton type="shares" icon="share-social" activeIcon="share-social" count={product.shares_count || 0} color="text-white" activeColor="text-white" onSingleClick={() => onShare?.(product)} onLongPress={() => onOpenSheet?.("shares", product)} orientation="vertical" iconSize="text-sm md:text-lg opacity-90" />
+                      <InteractionButton type="views" icon="eye-outline" activeIcon="eye" count={displayProduct.views_count} color="text-white" activeColor="text-white" onSingleClick={() => { onLogView?.(displayProduct.id); onOpenSheet?.("views", displayProduct); }} onLongPress={() => onOpenSheet?.("views", displayProduct)} orientation="vertical" iconSize="text-base md:text-xl" />
+                      <InteractionButton type="comments" icon="chatbubble" activeIcon="chatbubble" count={displayProduct.comments_count} color="text-white" activeColor="text-white" onSingleClick={() => onOpenSheet?.("comments", displayProduct)} onLongPress={() => onOpenSheet?.("comments", displayProduct)} orientation="vertical" iconSize="text-base md:text-xl" />
+                      <InteractionButton type="shares" icon="share-social" activeIcon="share-social" count={displayProduct.shares_count || 0} color="text-white" activeColor="text-white" onSingleClick={() => onShare?.(displayProduct)} onLongPress={() => onOpenSheet?.("shares", displayProduct)} orientation="vertical" iconSize="text-sm md:text-lg opacity-90" />
                     </div>
                   </div>
                 )}

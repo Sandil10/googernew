@@ -7,7 +7,6 @@ import IonIcon from "@/app/components/IonIcon";
 import SubscribeButton from "@/app/components/SubscribeButton";
 import { marketService } from "@/services/marketService";
 import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
-import { AdInteractionButton, AdInteractionType } from "@/app/components/ads/AdInteractionButton";
 import {
   AVATAR_IMAGE_SIZES,
   FEED_IMAGE_BLUR_DATA_URL,
@@ -18,27 +17,21 @@ import {
 
 import { NormalizedAd } from "@/app/lib/ads/adTypes";
 
-type ProfilePromoteAdCardProps = {
+type SharedProfilePromoteAdCardProps = {
   ad: NormalizedAd;
   onProfileClick: (ad: any) => void;
   onProductClick: (product: any) => void;
-  onToggleLike?: (adId: string | number) => void | Promise<void>;
-  onOpenSheet?: (type: AdInteractionType, ad: any) => void;
-  onShare?: (ad: any) => void;
   onCollectCoin?: (event: React.MouseEvent, ad: any) => void;
   canShowCollectCoin?: (ad: any) => boolean;
 };
 
-export function ProfilePromoteAdCard({
+export function SharedProfilePromoteAdCard({
   ad,
   onProfileClick,
   onProductClick,
-  onToggleLike,
-  onOpenSheet,
-  onShare,
   onCollectCoin,
   canShowCollectCoin,
-}: ProfilePromoteAdCardProps) {
+}: SharedProfilePromoteAdCardProps) {
   const [adProducts, setAdProducts] = useState<any[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const raw = ad.raw || {};
@@ -195,44 +188,6 @@ export function ProfilePromoteAdCard({
       </div>
 
       <div className="border-t border-white/5 px-3 py-2">
-        {(onToggleLike || onOpenSheet || onShare) && (
-          <div className="mb-2 flex items-center justify-between border-b border-white/5 pb-2 text-white/80">
-            {onToggleLike && (
-              <AdInteractionButton
-                type="likes"
-                icon="heart-outline"
-                activeIcon="heart"
-                isActive={ad.liked}
-                count={ad.likeCount}
-                onSingleClick={() => onToggleLike(ad.id)}
-                onLongPress={() => onOpenSheet?.("likes", ad.raw || ad)}
-                iconSize="text-base"
-              />
-            )}
-            {onOpenSheet && (
-              <AdInteractionButton
-                type="comments"
-                icon="chatbubble-outline"
-                activeIcon="chatbubble"
-                count={ad.commentCount}
-                onSingleClick={() => onOpenSheet("comments", ad.raw || ad)}
-                onLongPress={() => onOpenSheet("comments", ad.raw || ad)}
-                iconSize="text-base"
-              />
-            )}
-            {onShare && (
-              <AdInteractionButton
-                type="shares"
-                icon="share-social-outline"
-                activeIcon="share-social"
-                count={ad.shareCount}
-                onSingleClick={() => onShare(ad.raw || ad)}
-                onLongPress={() => onOpenSheet?.("shares", ad.raw || ad)}
-                iconSize="text-base"
-              />
-            )}
-          </div>
-        )}
         <button
           type="button"
           onClick={() => onProfileClick(ad.raw || ad)}

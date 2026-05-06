@@ -9,7 +9,7 @@ import { googService } from "@/services/googService";
 import { authService } from "@/services/authService";
 import { GoogCard } from "@/app/components/googs/GoogCard";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
-import { AdSecondViewModal, AdSecondViewKind } from "@/app/components/ads/AdSecondViewModal";
+import { SharedAdSecondViewModal, AdSecondViewKind } from "@/app/components/ads/SharedAdSecondViewModal";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { normalizeAd } from "@/app/lib/ads/adSystem";
 import { normalizeProductAd } from "@/app/lib/market/adProductAdapter";
@@ -21,6 +21,10 @@ import {
     getSponsoredLinkPreviewType,
     normalizeExternalUrl,
 } from "@/app/components/ads/adHelpers";
+import { useAdActions } from "@/app/lib/ads/useAdActions";
+import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
+import { matchesAdIdentity } from "@/app/lib/ads/adIdentity";
+import { useAdStore } from "@/app/lib/ads/adStore";
 
 const getAdSecondViewKind = (ad: any): AdSecondViewKind => {
     const link = normalizeExternalUrl(ad?.active_link || "");
@@ -52,7 +56,9 @@ export default function UnifiedSharePage() {
     const [isSheetLoading, setIsSheetLoading] = useState(false);
     const [currentUser, setCurrentUser] = useState<any>(null);
     const [productSizeError, setProductSizeError] = useState(false);
-    const [notification, setNotification] = useState<{ type: "error" | "success"; message: string; title?: string } | null>(null);
+    const [notification, setNotification] = useState<{ type: "success" | "error"; title?: string; message: string } | null>(null);
+    const syncAds = useAdStore((state) => state.syncAds);
+    const updateAdState = useAdStore((state) => state.updateAdState);
 
     const { addToCart } = useCart();
 
@@ -86,12 +92,20 @@ export default function UnifiedSharePage() {
                 if (data.success) {
                     setItem(data.data);
                     setType(data.type);
+                    if (data.type === "ad" || data.type === "product") {
+                        syncAds([data.data]);
+                    }
                     // Log a view automatically (matches feed behavior on render)
                     try {
                         const id = data.data?.id || data.data?.adId || data.data?.productId;
                         if (id != null) {
                             if (data.type === "goog") await googService.logView(Number(id));
-                            else await marketService.logView(id);
+                            else {
+                                const result = await marketService.logView(id);
+                                if (result?.incremented === true) {
+                                    updateAdState(data.data, (prev) => ({ views_count: (prev.views_count || 0) + 1 }));
+                                }
+                            }
                         }
                     } catch {}
                 } else {
@@ -107,6 +121,19 @@ export default function UnifiedSharePage() {
 
         loadItem();
     }, [shareCode]);
+
+    // Removed manual updateAdLocalState in favor of useAdStore global reactivity
+
+    const adActions = useAdActions(item, {
+        currentUser,
+        // Removed local sync callbacks - useAdActions now updates useAdStore globally
+        onShare: () => setShowShareModal(true),
+        onOpenSheet: (kind, ad) => openSheet(kind, ad.raw || ad),
+        onCoinCollected: (ad, collectionId) => {
+            updateAdState(collectionId, { ad_coin_collected: true, ad_like_locked: true });
+        },
+        onNotify: (n) => setNotification({ type: n.type, title: n.title, message: n.message }),
+    });
 
     const openSheet = async (sheetKind: any, targetItem: any) => {
         setSheetType(sheetKind);
@@ -137,13 +164,14 @@ export default function UnifiedSharePage() {
     };
 
     const handleToggleLike = async (id: any) => {
+        if (type === "ad" || type === "product") {
+            await adActions.like();
+            return;
+        }
         try {
             if (type === "goog") {
                 const liked = await googService.toggleLike(Number(id));
                 setItem((prev: any) => prev ? { ...prev, liked, likes: (prev.likes || 0) + (liked ? 1 : -1) } : prev);
-            } else {
-                const liked = await marketService.toggleLike(id);
-                setItem((prev: any) => prev ? { ...prev, user_liked: liked, likes_count: (prev.likes_count || 0) + (liked ? 1 : -1) } : prev);
             }
         } catch (err) {
             console.error('Toggle like failed', err);
@@ -154,13 +182,25 @@ export default function UnifiedSharePage() {
         try {
             const id = target.id || target.adId || target.productId;
             if (type === "goog") await googService.logView(Number(id));
-            else await marketService.logView(id);
+            else {
+                await marketService.logView(id);
+                updateAdState(id, (prev) => ({ views_count: (prev.views_count || 0) + 1 }));
+            }
         } catch (err) {
             console.error('Log view failed', err);
         }
     };
 
     const handleShare = async (target: any) => {
+        if (type === "ad" || type === "product") {
+            adActions.share();
+            const id = target?.id || target?.adId || target?.productId;
+            if (id != null) {
+                await marketService.logShare(id);
+                updateAdState(id, (prev) => ({ shares_count: (prev.shares_count || 0) + 1 }));
+            }
+            return;
+        }
         try {
             setShowShareModal(true);
             const id = target?.id || target?.adId || target?.productId;
@@ -172,27 +212,8 @@ export default function UnifiedSharePage() {
         }
     };
 
-    const canShowCollectCoin = (target: any) => {
-        return !!target?.is_sponsored && !!target?.user_liked && !target?.ad_coin_collected && String(currentUser?.id || "") !== String(target?.user_id || "");
-    };
-
     const handleCollectCoin = async (event: React.MouseEvent, target: any) => {
-        event.stopPropagation();
-        if (!canShowCollectCoin(target)) return;
-
-        try {
-            const collectionId = String(target?.id || "").startsWith("ad-")
-                ? target.id
-                : (target?.adId ? `ad-${target.adId}` : target?.id || target?.productId);
-            await marketService.collectAdCoin(collectionId);
-            setItem((prev: any) => prev ? { ...prev, ad_coin_collected: true, ad_like_locked: true } : prev);
-            setPreviewModal((prev: any) => prev ? { ...prev, ad: { ...prev.ad, ad_coin_collected: true, ad_like_locked: true } } : prev);
-            window.dispatchEvent(new Event("googer-wallet-updated"));
-            setNotification({ type: "success", title: "Collected", message: "Ruppier collected." });
-        } catch (err) {
-            console.error("Collect coin failed", err);
-            setNotification({ type: "error", title: "Could not collect", message: "Please try again." });
-        }
+        adActions.handleAdCoinClick(event, target);
     };
 
     const sheetProduct = useMemo(() => {
@@ -209,12 +230,19 @@ export default function UnifiedSharePage() {
             const newComment = type === "goog"
                 ? await googService.addComment(Number(id), text.trim(), parentId)
                 : await marketService.addComment(id, text.trim(), parentId);
-            setSheetData((prev) => [...prev, newComment]);
+            setSheetData((prev) => [...prev, {
+                ...newComment,
+                username: currentUser?.username || newComment?.username || "You",
+                profile_picture: currentUser?.profile_picture ?? newComment?.profile_picture,
+            }]);
             setItem((prev: any) => prev ? (
                 type === "goog"
                     ? { ...prev, comments: (prev.comments || 0) + 1 }
                     : { ...prev, comments_count: (prev.comments_count || 0) + 1 }
             ) : prev);
+            if (type === "ad" || type === "product") {
+                updateAdState(item, (prev) => ({ comments_count: (prev.comments_count || 0) + 1 }));
+            }
         } catch (err) {
             console.error("Failed to add comment:", err);
         }
@@ -234,6 +262,7 @@ export default function UnifiedSharePage() {
                 const data = await marketService.getComments(id);
                 setSheetData(data || []);
                 setItem((prev: any) => prev ? { ...prev, comments_count: Math.max(0, (prev.comments_count || 0) - 1) } : prev);
+                updateAdState(item, (prev) => ({ comments_count: Math.max(0, (prev.comments_count || 0) - 1) }));
             }
         } catch (err) {
             console.error("Failed to delete comment:", err);
@@ -342,14 +371,14 @@ export default function UnifiedSharePage() {
                     {type === "ad" && (
                         <div className={item.campaign_type === "Profile Promote" ? "flex justify-center p-4" : ""}>
                             <PromotedAdCard
-                                ad={normalizeAd(item)}
+                                ad={normalizeAdData(item)}
                                 source="home"
                                 onProductClick={(product) => setPreviewModal({ ad: product, type: "product" })}
                                 onToggleLike={(id) => handleToggleLike(id)}
                                 onOpenSheet={openSheet}
                                 onShare={(ad) => handleShare(ad)}
                                 onCollectCoin={handleCollectCoin}
-                                canShowCollectCoin={canShowCollectCoin}
+                                canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                                 onProfileClick={(profileAd) => router.push(`/profile/${profileAd.user?.username || profileAd.owner_username || profileAd.user_id}`)}
                                 onOpenSecondView={(targetAd) => setPreviewModal({ ad: targetAd, type: "ad", kind: getAdSecondViewKind(targetAd) })}
                                 onReport={() => {}}
@@ -361,7 +390,7 @@ export default function UnifiedSharePage() {
                     
                     {type === "product" && (
                         <PromotedAdCard
-                            ad={normalizeAd({ ...item, type: "product" })}
+                            ad={normalizeAdData({ ...item, type: "product" })}
                             source="home"
                             onProductClick={(targetItem: any) => setPreviewModal({ ad: targetItem, type: "product" })}
                             onAddToBagClick={openProductAddToBag}
@@ -371,13 +400,15 @@ export default function UnifiedSharePage() {
                             onLogView={(id) => handleLogView({ id })}
                             onNavigateToProfile={() => router.push(`/profile/${item.user?.username || item.owner_user_id}`)}
                             currentUser={currentUser}
+                            onCollectCoin={handleCollectCoin}
+                            canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                         />
                     )}
                 </div>
             </div>
 
             {previewModal && previewModal.type === "ad" && (
-                <AdSecondViewModal
+                <SharedAdSecondViewModal
                     onClose={() => setPreviewModal(null)}
                     ad={previewModal.ad}
                     kind={previewModal.kind || getAdSecondViewKind(previewModal.ad)}
@@ -388,7 +419,7 @@ export default function UnifiedSharePage() {
                     onNotInterested={() => {}}
                     onCollectCoin={handleCollectCoin}
                     onNavigateToProfile={() => router.push(`/profile/${item.user?.username || item.owner_user_id}`)}
-                    canShowCollectCoin={canShowCollectCoin}
+                    canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                 />
             )}
             
@@ -405,6 +436,8 @@ export default function UnifiedSharePage() {
                     initialSizeError={productSizeError}
                     onSizeRequired={() => setNotification({ type: "error", title: "Size is required", message: "Size is required" })}
                     onNavigateToProfile={() => router.push(`/profile/${item.user?.username || item.owner_user_id}`)}
+                    onCollectCoin={handleCollectCoin}
+                    canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                 />
             )}
 
