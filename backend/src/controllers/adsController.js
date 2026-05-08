@@ -1,8 +1,29 @@
 const pool = require('../config/database');
+const { saveUploadedFiles } = require('../utils/localUpload');
 
 let adsTableReady = false;
 const VALID_STATUSES = new Set(['Under Review', 'Active', 'Paused', 'Completed', 'Cancelled']);
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
+const stripDataUrl = (value) => {
+    const text = String(value || '').trim();
+    return text.startsWith('data:') ? '' : text;
+};
+const getMediaUrl = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') return stripDataUrl(value);
+    if (typeof value === 'object') {
+        return stripDataUrl(value.url || value.image_url || value.image || value.src || value.path || '');
+    }
+    return '';
+};
+const getRawMediaValue = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'object') {
+        return String(value.url || value.image_url || value.image || value.src || value.path || '').trim();
+    }
+    return '';
+};
 
 const normalizeMediaGallery = (value, fallback = []) => {
     const source = Array.isArray(value) ? value : fallback;
@@ -53,6 +74,17 @@ const ensureAdsTable = async () => {
     `);
 
     await pool.query(`
+        ALTER TABLE ads
+        ADD COLUMN IF NOT EXISTS likes_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS comments_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS shares_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS linked_product_id INTEGER,
+        ADD COLUMN IF NOT EXISTS linked_product_share_code VARCHAR(32),
+        ADD COLUMN IF NOT EXISTS original_product_id INTEGER,
+        ADD COLUMN IF NOT EXISTS original_product_code VARCHAR(32);
+    `);
+
+    await pool.query(`
         CREATE INDEX IF NOT EXISTS idx_ads_user_id ON ads(user_id);
         CREATE INDEX IF NOT EXISTS idx_ads_status ON ads(status);
         CREATE INDEX IF NOT EXISTS idx_ads_created_at ON ads(created_at DESC);
@@ -61,7 +93,14 @@ const ensureAdsTable = async () => {
     adsTableReady = true;
 };
 
-const mapRow = (row) => ({
+const mapRow = (row) => {
+    const isProductPromote = String(row.campaign_type || '').trim().toLowerCase() === 'product promote';
+    const originalProductId = row.original_product_id ?? row.linked_product_id ?? null;
+    const originalProductCode = row.original_product_code ?? row.linked_product_share_code ?? null;
+    const linkedProductId = row.linked_product_id ?? originalProductId ?? null;
+    const linkedProductShareCode = row.linked_product_share_code ?? originalProductCode ?? null;
+
+    return {
     id: row.id,
     adId: row.ad_id,
     userId: row.user_id,
@@ -84,6 +123,14 @@ const mapRow = (row) => ({
     ageMax: row.age_max,
     reach: Number(row.reach || 0),
     impressions: Number(row.impressions || 0),
+    views_count: Number(row.impressions || row.views_count || 0),
+    viewCount: Number(row.impressions || row.views_count || 0),
+    likes_count: Number(row.likes_count || 0),
+    likeCount: Number(row.likes_count || 0),
+    comments_count: Number(row.comments_count || 0),
+    commentCount: Number(row.comments_count || 0),
+    shares_count: Number(row.shares_count || 0),
+    shareCount: Number(row.shares_count || 0),
     clicks: Number(row.clicks || 0),
     budget: Number(row.budget || 0),
     durationDays: Number(row.duration_days || 0),
@@ -91,11 +138,149 @@ const mapRow = (row) => ({
     remainingBudget: Number(row.remaining_budget || 0),
     status: row.status || 'Under Review',
     campaignPath: row.campaign_path,
+    active_link: row.active_link || row.edit_draft?.activeLink || row.edit_draft?.active_link || '',
+    cta_topic: row.cta_topic || row.edit_draft?.ctaTopic || row.edit_draft?.cta_topic || '',
+    cta_value: row.cta_value || row.edit_draft?.ctaValue || row.edit_draft?.cta_value || '',
+    product_id: row.product_id ?? null,
+    productId: row.product_id ?? null,
+    original_product_id: originalProductId,
+    original_product_code: originalProductCode,
+    linked_product_id: linkedProductId,
+    linked_product_share_code: linkedProductShareCode,
+    linked_product_code: linkedProductShareCode,
+    product_code: isProductPromote ? (originalProductCode || linkedProductShareCode || row.product_code || null) : (row.product_code || row.ad_id),
+    share_code: isProductPromote ? (originalProductCode || linkedProductShareCode || row.share_code || null) : (row.share_code || row.product_code || row.ad_id),
+    shareCode: isProductPromote ? (originalProductCode || linkedProductShareCode || row.share_code || null) : (row.share_code || row.product_code || row.ad_id),
     walletTransferId: row.wallet_transfer_id,
     editDraft: row.edit_draft || {},
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-});
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+    created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+    updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+    };
+};
+
+const isProductPromoteCampaign = (ad) => String(ad?.campaign_type || ad?.campaignType || '').trim().toLowerCase() === 'product promote';
+
+const getProductPromoteTarget = (ad) => {
+    const productIdValue =
+        ad?.original_product_id ??
+        ad?.linked_product_id ??
+        ad?.editDraft?.linkedProductId ??
+        ad?.edit_draft?.linkedProductId ??
+        null;
+    const productCodeValue =
+        ad?.original_product_code ??
+        ad?.linked_product_code ??
+        ad?.linked_product_share_code ??
+        ad?.editDraft?.linkedProductCode ??
+        ad?.edit_draft?.linkedProductCode ??
+        null;
+    const productId = Number.parseInt(String(productIdValue ?? '').trim(), 10);
+    const productCode = String(productCodeValue ?? '').trim();
+
+    return {
+        productId: Number.isFinite(productId) ? productId : null,
+        productCode: productCode || null,
+    };
+};
+
+const normalizePromoteId = (value) => {
+    const raw = String(value ?? '').trim().replace(/^ad-/i, '');
+    if (!raw || !/^\d+$/.test(raw)) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const normalizePromoteCode = (value) => {
+    const raw = String(value ?? '').trim();
+    return raw ? raw : null;
+};
+
+const resolveProductPromoteIdentity = async (payload = {}, fallback = {}) => {
+    const campaignType = String(payload.campaignType || fallback.campaignType || '').trim().toLowerCase();
+    if (campaignType !== 'product promote') {
+        return { linkedProductId: null, linkedProductShareCode: null, originalProductId: null, originalProductCode: null };
+    }
+
+    let linkedProductId = normalizePromoteId(
+        payload.linkedProductId
+        ?? payload.linked_product_id
+        ?? payload.productId
+        ?? payload.product_id
+        ?? payload.originalProductId
+        ?? payload.original_product_id
+        ?? payload.editDraft?.linkedProductId
+        ?? payload.editDraft?.linked_product_id
+        ?? payload.editDraft?.originalProductId
+        ?? payload.editDraft?.original_product_id
+        ?? fallback.linked_product_id
+        ?? fallback.original_product_id
+    );
+
+    let linkedProductShareCode = normalizePromoteCode(
+        payload.linkedProductShareCode
+        ?? payload.linked_product_share_code
+        ?? payload.linkedProductCode
+        ?? payload.linked_product_code
+        ?? payload.productCode
+        ?? payload.product_code
+        ?? payload.originalProductCode
+        ?? payload.original_product_code
+        ?? payload.editDraft?.linkedProductShareCode
+        ?? payload.editDraft?.linked_product_share_code
+        ?? payload.editDraft?.originalProductCode
+        ?? payload.editDraft?.original_product_code
+        ?? fallback.linked_product_share_code
+        ?? fallback.original_product_code
+    );
+
+    if (linkedProductId && !linkedProductShareCode) {
+        const productResult = await pool.query(
+            'SELECT product_code FROM market WHERE id = $1 LIMIT 1',
+            [linkedProductId]
+        );
+        linkedProductShareCode = normalizePromoteCode(productResult.rows[0]?.product_code);
+    }
+
+    if (!linkedProductId && linkedProductShareCode) {
+        const productResult = await pool.query(
+            'SELECT id, product_code FROM market WHERE LOWER(product_code) = LOWER($1) LIMIT 1',
+            [linkedProductShareCode]
+        );
+        linkedProductId = normalizePromoteId(productResult.rows[0]?.id);
+        linkedProductShareCode = normalizePromoteCode(productResult.rows[0]?.product_code || linkedProductShareCode);
+    }
+
+    return {
+        linkedProductId,
+        linkedProductShareCode,
+        originalProductId: linkedProductId,
+        originalProductCode: linkedProductShareCode,
+    };
+};
+
+const deriveVariantSizes = (variants) => {
+    if (!Array.isArray(variants)) return [];
+    return Array.from(
+        new Set(
+            variants
+                .map((variant) => String(variant?.size || variant?.value || variant?.label || "").trim())
+                .filter(Boolean)
+        )
+    );
+};
+
+const deriveVariantColors = (variants) => {
+    if (!Array.isArray(variants)) return [];
+    return Array.from(
+        new Set(
+            variants
+                .map((variant) => String(variant?.color || variant?.name || "").trim())
+                .filter(Boolean)
+        )
+    );
+};
 
 const normalizePayload = (body = {}, fallback = {}) => {
     const baseMediaGallery = normalizeMediaGallery(
@@ -131,6 +316,14 @@ const normalizePayload = (body = {}, fallback = {}) => {
         status: typeof body.status === 'string' && VALID_STATUSES.has(body.status) ? body.status : (fallback.status || 'Under Review'),
         campaignPath: typeof body.campaignPath === 'string' ? body.campaignPath : (fallback.campaignPath || ''),
         walletTransferId: hasOwn(body, 'walletTransferId') ? (body.walletTransferId ?? null) : (fallback.walletTransferId ?? null),
+        productId: hasOwn(body, 'productId') ? body.productId : (body.product_id ?? fallback.productId ?? fallback.product_id ?? null),
+        product_id: hasOwn(body, 'product_id') ? body.product_id : (body.productId ?? fallback.product_id ?? fallback.productId ?? null),
+        productCode: hasOwn(body, 'productCode') ? body.productCode : (body.product_code ?? fallback.productCode ?? fallback.product_code ?? null),
+        product_code: hasOwn(body, 'product_code') ? body.product_code : (body.productCode ?? fallback.product_code ?? fallback.productCode ?? null),
+        linkedProductId: hasOwn(body, 'linkedProductId') ? body.linkedProductId : (body.linked_product_id ?? fallback.linkedProductId ?? fallback.linked_product_id ?? null),
+        linked_product_id: hasOwn(body, 'linked_product_id') ? body.linked_product_id : (body.linkedProductId ?? fallback.linked_product_id ?? fallback.linkedProductId ?? null),
+        linkedProductCode: hasOwn(body, 'linkedProductCode') ? body.linkedProductCode : (body.linked_product_code ?? fallback.linkedProductCode ?? fallback.linked_product_code ?? null),
+        linked_product_code: hasOwn(body, 'linked_product_code') ? body.linked_product_code : (body.linkedProductCode ?? fallback.linked_product_code ?? fallback.linkedProductCode ?? null),
         editDraft: body.editDraft && typeof body.editDraft === 'object' ? body.editDraft : (fallback.editDraft || {}),
         createdAt: body.createdAt ? new Date(body.createdAt) : (fallback.createdAt ? new Date(fallback.createdAt) : null),
     };
@@ -161,13 +354,25 @@ exports.createAd = async (req, res) => {
         }
 
         const payload = normalizePayload(body, { status: 'Under Review' });
+        const productPromoteIdentity = await resolveProductPromoteIdentity(payload);
+        if (String(payload.campaignType || '').trim().toLowerCase() === 'product promote'
+            && !productPromoteIdentity.linkedProductId
+            && !productPromoteIdentity.linkedProductShareCode) {
+            return res.status(400).json({ success: false, message: 'Product Promote requires a linked product' });
+        }
+        payload.editDraft = {
+            ...(payload.editDraft || {}),
+            linkedProductId: productPromoteIdentity.linkedProductId,
+            linkedProductShareCode: productPromoteIdentity.linkedProductShareCode,
+            originalProductId: productPromoteIdentity.originalProductId,
+            originalProductCode: productPromoteIdentity.originalProductCode,
+        };
+        payload.originalProductId = productPromoteIdentity.originalProductId;
+        payload.originalProductCode = productPromoteIdentity.originalProductCode;
 
         // Handle File Uploads
         if (req.files && req.files.length > 0) {
-            const uploadedUrls = req.files.map(file => {
-                const base64 = file.buffer.toString('base64');
-                return `data:${file.mimetype};base64,${base64}`;
-            });
+            const uploadedUrls = await saveUploadedFiles(req.files, 'ads');
             payload.mediaGallery = [...uploadedUrls, ...(payload.mediaGallery || [])].slice(0, 10);
             if (uploadedUrls.length > 0) {
                 payload.mediaPreview = uploadedUrls[0];
@@ -193,18 +398,21 @@ exports.createAd = async (req, res) => {
                 ad_id, user_id, owner_user_id, owner_username, campaign_type, title, description,
                 media_preview, media_gallery, media_type, gender_target, age_min, age_max, reach, impressions,
                 clicks, budget, duration_days, spend, remaining_budget, status, campaign_path,
+                linked_product_id, linked_product_share_code, original_product_id, original_product_code,
                 wallet_transfer_id, edit_draft, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10, $11, $12, $13, $14, $15,
                 $16, $17, $18, $19, $20, $21, $22,
-                $23, $24, COALESCE($25, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP
+                $23, $24, $25, $26, $27, $28, COALESCE($29, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP
             )
             RETURNING *`,
             [
                 payload.adId, userId, owner.user_id, owner.username, payload.campaignType, payload.title, payload.description,
                 payload.mediaPreview, JSON.stringify(payload.mediaGallery), payload.mediaType, payload.genderTarget, payload.ageMin, payload.ageMax, payload.reach, payload.impressions,
                 payload.clicks, payload.budget, payload.durationDays, payload.spend, payload.remainingBudget, isAdmin ? payload.status : 'Under Review', payload.campaignPath,
+                productPromoteIdentity.linkedProductId, productPromoteIdentity.linkedProductShareCode,
+                productPromoteIdentity.originalProductId, productPromoteIdentity.originalProductCode,
                 payload.walletTransferId, JSON.stringify(payload.editDraft), payload.createdAt && !Number.isNaN(payload.createdAt.getTime()) ? payload.createdAt : null,
             ]
         );
@@ -252,13 +460,25 @@ exports.updateAd = async (req, res) => {
         }
 
         const payload = normalizePayload(body, existingAd);
+        const productPromoteIdentity = await resolveProductPromoteIdentity(payload, existingAd);
+        if (String(payload.campaignType || '').trim().toLowerCase() === 'product promote'
+            && !productPromoteIdentity.linkedProductId
+            && !productPromoteIdentity.linkedProductShareCode) {
+            return res.status(400).json({ success: false, message: 'Product Promote requires a linked product' });
+        }
+        payload.editDraft = {
+            ...(payload.editDraft || {}),
+            linkedProductId: productPromoteIdentity.linkedProductId,
+            linkedProductShareCode: productPromoteIdentity.linkedProductShareCode,
+            originalProductId: productPromoteIdentity.originalProductId,
+            originalProductCode: productPromoteIdentity.originalProductCode,
+        };
+        payload.originalProductId = productPromoteIdentity.originalProductId;
+        payload.originalProductCode = productPromoteIdentity.originalProductCode;
 
         // Handle File Uploads
         if (req.files && req.files.length > 0) {
-            const uploadedUrls = req.files.map(file => {
-                const base64 = file.buffer.toString('base64');
-                return `data:${file.mimetype};base64,${base64}`;
-            });
+            const uploadedUrls = await saveUploadedFiles(req.files, 'ads');
             // When updating, we might want to replace or prepend. Let's prepend.
             payload.mediaGallery = [...uploadedUrls, ...(payload.mediaGallery || [])].slice(0, 10);
             if (uploadedUrls.length > 0) {
@@ -325,16 +545,22 @@ exports.updateAd = async (req, res) => {
                  remaining_budget = $16,
                  status = $17,
                  campaign_path = $18,
-                 wallet_transfer_id = COALESCE($19, wallet_transfer_id),
-                 edit_draft = $20,
+                 linked_product_id = $19,
+                 linked_product_share_code = $20,
+                 original_product_id = $21,
+                 original_product_code = $22,
+                 wallet_transfer_id = COALESCE($23, wallet_transfer_id),
+                 edit_draft = $24,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE ad_id = $21
+             WHERE ad_id = $25
              RETURNING *`,
             [
                 payload.campaignType, payload.title, payload.description, payload.mediaPreview, JSON.stringify(payload.mediaGallery), payload.mediaType,
                 payload.genderTarget, payload.ageMin, payload.ageMax, payload.reach, payload.impressions, payload.clicks,
                 payload.budget, payload.durationDays, payload.spend, payload.remainingBudget, payload.status,
-                payload.campaignPath, payload.walletTransferId, JSON.stringify(payload.editDraft), adId,
+                payload.campaignPath, productPromoteIdentity.linkedProductId, productPromoteIdentity.linkedProductShareCode,
+                productPromoteIdentity.originalProductId, productPromoteIdentity.originalProductCode,
+                payload.walletTransferId, JSON.stringify(payload.editDraft), adId,
             ]
         );
 
@@ -416,15 +642,168 @@ exports.getAllAds = async (req, res) => {
 exports.getActiveAdsPublic = async (req, res) => {
     try {
         await ensureAdsTable();
+        const limitRaw = Number.parseInt(req.query.limit, 10);
+        const offsetRaw = Number.parseInt(req.query.offset, 10);
+        const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 20;
+        const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
         const result = await pool.query(
             `SELECT a.*, u.username AS owner_username_joined, u.profile_picture
              FROM ads a
              LEFT JOIN users u ON a.user_id = u.id
              WHERE a.status = 'Active'
-             ORDER BY a.created_at DESC`
+             ORDER BY a.created_at DESC
+             LIMIT $1 OFFSET $2`,
+            [limit + 1, offset]
         );
 
-        return res.status(200).json({ success: true, ads: result.rows.map(mapRow) });
+        const rows = result.rows || [];
+        const ads = rows.slice(0, limit).map((row) => {
+            const ad = mapRow(row);
+            const mediaGallery = (ad.mediaGallery || []).map(getMediaUrl).filter(Boolean);
+            const mediaPreview = getMediaUrl(ad.mediaPreview) || mediaGallery[0] || getRawMediaValue(ad.mediaPreview) || '/assets/images/googer.png';
+            const safeDraft = {
+                ...(ad.editDraft || {}),
+                mediaPreview,
+                mediaGallery,
+            };
+            return {
+                ...ad,
+                mediaPreview,
+                mediaGallery,
+                editDraft: safeDraft,
+                edit_draft: safeDraft,
+                image_url: mediaPreview,
+                main_image: mediaPreview,
+                media_url: mediaPreview,
+                thumbnail_url: mediaPreview,
+                media_preview: mediaPreview,
+                media_gallery: mediaGallery,
+                images: mediaGallery,
+                user: {
+                    ...ad.user,
+                    profile_picture: getMediaUrl(ad.user?.profile_picture) || null,
+                },
+            };
+        });
+
+        const productPromoteTargets = ads
+            .map((ad) => {
+                if (!isProductPromoteCampaign(ad)) return null;
+                return getProductPromoteTarget(ad);
+            })
+            .filter((target) => target && (target.productId || target.productCode));
+
+        const productIds = Array.from(new Set(productPromoteTargets.map((target) => target.productId).filter((value) => Number.isFinite(value))));
+        const productCodes = Array.from(new Set(productPromoteTargets.map((target) => target.productCode).filter(Boolean)));
+        let linkedProducts = [];
+
+        if (productIds.length || productCodes.length) {
+            const linkedResult = await pool.query(
+                `SELECT m.id, m.user_id, m.username, m.title, m.description, m.price, m.promo_price,
+                        m.category, m.sub_category, m.manual_category, m.stock, m.image_url, m.status,
+                        m.likes_count, m.comments_count, m.shares_count, m.views_count,
+                        m.variants, m.shipping_info, m.payment_methods, m.commission_info, m.created_at, m.product_code,
+                        u.username AS owner_username, u.profile_picture
+                 FROM market m
+                 INNER JOIN users u ON m.user_id = u.id
+                 WHERE (m.id = ANY($1::int[]) OR m.product_code = ANY($2::text[]))
+                   AND m.status IN ('approved', 'active')`,
+                [productIds.length ? productIds : [0], productCodes.length ? productCodes : ['']]
+            );
+            linkedProducts = linkedResult.rows || [];
+        }
+
+        const productById = new Map(linkedProducts.map((row) => [Number(row.id), row]));
+        const productByCode = new Map(linkedProducts.map((row) => [String(row.product_code || ''), row]));
+
+        const hydratedAds = ads.map((ad) => {
+            if (!isProductPromoteCampaign(ad)) return ad;
+
+            const target = getProductPromoteTarget(ad);
+            const linked =
+                (target.productId != null && productById.get(Number(target.productId))) ||
+                (target.productCode && productByCode.get(String(target.productCode)));
+
+            if (!linked) {
+                console.warn("Failed to hydrate Product Promote public ad", {
+                    adId: ad.adId || ad.ad_id,
+                    productId: target.productId,
+                    productCode: target.productCode,
+                });
+                return null;
+            }
+
+            const productImage = getMediaUrl(linked.image_url) || getMediaUrl(ad.media_preview) || '/assets/images/googer.png';
+            const price = Number(linked.price || ad.price || 0);
+            const promoPrice = linked.promo_price ?? ad.promo_price ?? null;
+            const linkedVariants = Array.isArray(linked.variants) ? linked.variants : [];
+            const sizes = Array.isArray(linked.sizes)
+                ? linked.sizes
+                : deriveVariantSizes(linkedVariants);
+            const colors = Array.isArray(linked.colors)
+                ? linked.colors
+                : deriveVariantColors(linkedVariants);
+            return {
+                ...ad,
+                ...linked,
+                id: Number(linked.id),
+                adId: ad.adId || ad.ad_id,
+                ad_id: ad.ad_id || ad.adId,
+                title: linked.title || ad.title,
+                description: linked.description || ad.description || '',
+                category: linked.category || ad.category,
+                sub_category: linked.sub_category || ad.sub_category || null,
+                manual_category: linked.manual_category || ad.manual_category || null,
+                stock: linked.stock,
+                price,
+                main_price: price,
+                product_price: price,
+                promo_price: promoPrice,
+                sizes,
+                colors,
+                image_url: productImage,
+                main_image: productImage,
+                media_url: productImage,
+                thumbnail_url: productImage,
+                media_preview: productImage,
+                images: normalizeMediaGallery([productImage, ...(Array.isArray(linked.media_gallery) ? linked.media_gallery : []), ...(Array.isArray(ad.media_gallery) ? ad.media_gallery : [])]),
+                media_gallery: normalizeMediaGallery([productImage, ...(Array.isArray(linked.media_gallery) ? linked.media_gallery : []), ...(Array.isArray(ad.media_gallery) ? ad.media_gallery : [])]),
+                variants: linked.variants || [],
+                shipping_info: linked.shipping_info || null,
+                payment_methods: linked.payment_methods || null,
+                commission_info: linked.commission_info || null,
+                created_at: linked.created_at || ad.created_at,
+                product_code: linked.product_code || ad.product_code,
+                linked_product_share_code: linked.product_code || ad.linked_product_share_code,
+                linked_product_code: linked.product_code || ad.linked_product_code,
+                linked_product_id: linked.id,
+                product_id: linked.id,
+                productId: linked.id,
+                share_code: linked.product_code || ad.share_code || String(linked.id),
+                shareCode: linked.product_code || ad.shareCode || String(linked.id),
+                profile_picture: linked.profile_picture || ad.profile_picture,
+                user: {
+                    ...(ad.user || {}),
+                    id: linked.user_id,
+                    username: linked.owner_username || ad.user?.username || ad.username,
+                    profile_picture: linked.profile_picture || ad.user?.profile_picture || ad.profile_picture || null,
+                },
+                is_sponsored: true,
+                isAd: true,
+                campaign_type: 'Product Promote',
+            };
+        }).filter(Boolean);
+
+        return res.status(200).json({
+            success: true,
+            ads: hydratedAds,
+            pagination: {
+                limit,
+                offset,
+                nextOffset: offset + hydratedAds.length,
+                hasMore: rows.length > limit,
+            },
+        });
     } catch (error) {
         console.error('Get active public ads error:', error);
         return res.status(500).json({ success: false, message: 'Failed to fetch active ads' });

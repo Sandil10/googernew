@@ -206,9 +206,23 @@ export default function DashboardLayout({
             const post = editingGoogPost?.id
                 ? await googService.updatePost(editingGoogPost.id, { text, textColor: googTextColor })
                 : await googService.createPost({ text, textColor: googTextColor });
+            const nowIso = new Date().toISOString();
+            const normalizedPost = editingGoogPost?.id
+                ? {
+                    ...post,
+                    updatedAt: post?.updatedAt || post?.updated_at || nowIso,
+                    updated_at: post?.updated_at || post?.updatedAt || nowIso,
+                  }
+                : {
+                    ...post,
+                    createdAt: nowIso,
+                    created_at: nowIso,
+                    updatedAt: nowIso,
+                    updated_at: nowIso,
+                  };
 
-            window.localStorage.setItem("googer-pending-write-post", JSON.stringify(post));
-            window.dispatchEvent(new CustomEvent(editingGoogPost ? "googer-write-updated" : "googer-write-created", { detail: post }));
+            window.localStorage.setItem("googer-pending-write-post", JSON.stringify(normalizedPost));
+            window.dispatchEvent(new CustomEvent(editingGoogPost ? "googer-write-updated" : "googer-write-created", { detail: normalizedPost }));
             closeWriteGoogModal();
             setShowPostSuccessToast(true);
             window.setTimeout(() => setShowPostSuccessToast(false), 2200);

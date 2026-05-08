@@ -9,6 +9,7 @@ type ProfilePromoteCarouselProps = {
   onProductClick: (product: any) => void;
   onProfileClick: (ad: any) => void;
   className?: string;
+  cardsPerView?: 2 | 3 | 4;
 };
 
 export function ProfilePromoteCarousel({
@@ -16,6 +17,7 @@ export function ProfilePromoteCarousel({
   onProductClick,
   onProfileClick,
   className = "px-4 py-4 transition-colors sm:px-7",
+  cardsPerView = 3,
 }: ProfilePromoteCarouselProps) {
   const [profilePromoteIndex, setProfilePromoteIndex] = useState(0);
 
@@ -25,14 +27,15 @@ export function ProfilePromoteCarousel({
 
   if (!ads.length) return null;
 
-  const canSlide = ads.length > 3;
+  const visibleCount = Math.max(2, Math.min(4, cardsPerView));
+  const canSlide = ads.length > visibleCount;
   const visibleAds = canSlide
-    ? Array.from({ length: 3 }, (_, offset) => ads[(profilePromoteIndex + offset) % ads.length])
-    : ads.slice(0, 3);
+    ? Array.from({ length: visibleCount }, (_, offset) => ads[(profilePromoteIndex + offset) % ads.length])
+    : ads.slice(0, visibleCount);
 
   return (
     <article className={className}>
-      <div className="mx-auto w-full max-w-[828px]">
+      <div className="mx-auto w-full max-w-[1120px]">
         <div className="mb-3 flex items-center justify-end gap-2">
           {canSlide && (
             <>
@@ -56,20 +59,21 @@ export function ProfilePromoteCarousel({
           )}
         </div>
         <div className="overflow-hidden">
-          <div className="flex gap-3">
+          <div className={`grid gap-4 ${visibleCount === 2 ? "grid-cols-2" : visibleCount === 4 ? "grid-cols-4" : "grid-cols-3"}`}>
             {visibleAds.map((profileAd) => (
-              <PromotedAdCard
-                key={`profile-promote-${profileAd.id}`}
-                ad={profileAd}
-                onProductClick={onProductClick}
-                onProfileClick={(clickedAd) => {
-                  if (clickedAd) {
-                    onProfileClick(clickedAd);
-                    return;
-                  }
-                  onProfileClick({ ...profileAd, username: getItemUsername(profileAd, "Advertiser") });
-                }}
-              />
+              <div key={`profile-promote-${profileAd.id}`} className="min-w-0">
+                <PromotedAdCard
+                  ad={profileAd}
+                  onProductClick={onProductClick}
+                  onProfileClick={(clickedAd) => {
+                    if (clickedAd) {
+                      onProfileClick(clickedAd);
+                      return;
+                    }
+                    onProfileClick({ ...profileAd, username: getItemUsername(profileAd, "Advertiser") });
+                  }}
+                />
+              </div>
             ))}
           </div>
         </div>

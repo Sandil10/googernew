@@ -4,7 +4,6 @@ import type React from "react";
 import { SharedPhotoVideoAdCard } from "@/app/components/ads/SharedPhotoVideoAdCard";
 import { SharedProfilePromoteAdCard } from "@/app/components/ads/SharedProfilePromoteAdCard";
 import { SharedProductPromoteAdCard } from "@/app/components/ads/SharedProductPromoteAdCard";
-import { normalizeProductAd } from "@/app/lib/market/adProductAdapter";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
@@ -67,33 +66,57 @@ export function PromotedAdCard({
     ...normalized,
     liked: liveState.user_liked ?? normalized.liked,
     user_liked: liveState.user_liked ?? normalized.user_liked,
-    likeCount: liveState.likes_count ?? normalized.likeCount,
-    likes_count: liveState.likes_count ?? normalized.likes_count,
+    likeCount: liveState.likes_count ?? liveState.likeCount ?? normalized.likeCount,
+    likes_count: liveState.likes_count ?? liveState.likeCount ?? normalized.likes_count,
     coinCollected: liveState.ad_coin_collected ?? normalized.coinCollected,
     ad_coin_collected: liveState.ad_coin_collected ?? normalized.ad_coin_collected,
-    viewCount: liveState.views_count ?? normalized.viewCount,
-    views_count: liveState.views_count ?? normalized.views_count,
-    commentCount: liveState.comments_count ?? normalized.commentCount,
-    comments_count: liveState.comments_count ?? normalized.comments_count,
-    shareCount: liveState.shares_count ?? normalized.shareCount,
-    shares_count: liveState.shares_count ?? normalized.shares_count,
+    viewCount: liveState.views_count ?? liveState.viewCount ?? normalized.viewCount,
+    views_count: liveState.views_count ?? liveState.viewCount ?? normalized.views_count,
+    commentCount: liveState.comments_count ?? liveState.commentCount ?? normalized.commentCount,
+    comments_count: liveState.comments_count ?? liveState.commentCount ?? normalized.comments_count,
+    shareCount: liveState.shares_count ?? liveState.shareCount ?? normalized.shareCount,
+    shares_count: liveState.shares_count ?? liveState.shareCount ?? normalized.shares_count,
   };
+  const campaignType = String(merged.campaign_type || merged.campaignType || actionAd?.campaign_type || actionAd?.campaignType || "").trim();
+  const isProductPromote = campaignType.toLowerCase() === "product promote";
 
-  if (merged.type === "product") {
+  if (merged.type === "product" || isProductPromote) {
+    const hydratedProduct = (normalized.raw as any) || actionAd || ad;
+    const productItem = {
+      ...hydratedProduct,
+      ...merged,
+      image_url: hydratedProduct?.image_url || hydratedProduct?.main_image || hydratedProduct?.media_preview || merged.image,
+      main_image: hydratedProduct?.main_image || hydratedProduct?.image_url || hydratedProduct?.media_preview || merged.image,
+      images: Array.isArray(hydratedProduct?.images)
+        ? hydratedProduct.images
+        : Array.isArray(hydratedProduct?.media_gallery)
+          ? hydratedProduct.media_gallery
+          : merged.image
+            ? [merged.image]
+            : [],
+      variants: Array.isArray(hydratedProduct?.variants) ? hydratedProduct.variants : [],
+      sizes: Array.isArray(hydratedProduct?.sizes) ? hydratedProduct.sizes : [],
+      price: hydratedProduct?.price ?? hydratedProduct?.main_price ?? hydratedProduct?.product_price ?? merged.price,
+      main_price: hydratedProduct?.main_price ?? hydratedProduct?.price ?? hydratedProduct?.product_price ?? merged.price,
+      product_price: hydratedProduct?.product_price ?? hydratedProduct?.price ?? hydratedProduct?.main_price ?? merged.price,
+      promo_price: hydratedProduct?.promo_price ?? merged.promo_price ?? null,
+      raw: hydratedProduct?.raw || hydratedProduct,
+      adId: merged.adId || actionAd?.adId || hydratedProduct?.adId,
+      ad_id: merged.ad_id || actionAd?.ad_id || hydratedProduct?.ad_id,
+      campaign_type: merged.campaign_type || campaignType,
+      is_sponsored: true,
+      user_liked: merged.user_liked,
+      likes_count: merged.likes_count,
+      views_count: merged.views_count,
+      comments_count: merged.comments_count,
+      shares_count: merged.shares_count,
+      ad_coin_collected: merged.ad_coin_collected,
+      ad_like_locked: merged.ad_like_locked,
+    };
+
     return (
       <SharedProductPromoteAdCard
-        item={({
-          ...normalizeProductAd(merged.raw),
-          id: merged.id,
-          shareCode: merged.shareCode,
-          user_liked: merged.liked,
-          likes_count: merged.likeCount,
-          ad_coin_collected: merged.coinCollected,
-          views_count: merged.viewCount,
-          comments_count: merged.commentCount,
-          shares_count: merged.shareCount,
-          raw: merged.raw,
-        } as any)}
+        item={productItem as any}
         onClick={(item) => onProductClick?.(item)}
         onAddToBagClick={(item) => onAddToBagClick?.(item)}
         onToggleLike={onToggleLike || (() => {})}

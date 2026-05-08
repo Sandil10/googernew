@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useState, memo, useEffect, useMemo } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import SubscribeButton from "@/app/components/SubscribeButton";
-import { formatRelativeTime } from "@/app/lib/relativeTime";
+import { RelativeTime } from "@/app/components/RelativeTime";
 import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
 import {
   AVATAR_IMAGE_SIZES,
@@ -86,11 +86,11 @@ export const SharedProductCard = memo(({
 
   // Merge live state (reactive) with initial product data (prop)
   const displayLiked = liveState.user_liked ?? !!product.user_liked;
-  const displayLikesCount = liveState.likes_count ?? Number(product.likes_count || 0);
+  const displayLikesCount = liveState.likes_count ?? liveState.likeCount ?? Number(product.likes_count || product.likeCount || 0);
   const displayCoinCollected = liveState.ad_coin_collected ?? !!product.ad_coin_collected;
-  const displayViewsCount = liveState.views_count ?? Number(product.views_count || 0);
-  const displayCommentsCount = liveState.comments_count ?? Number(product.comments_count || 0);
-  const displaySharesCount = liveState.shares_count ?? Number(product.shares_count || 0);
+  const displayViewsCount = liveState.views_count ?? liveState.viewCount ?? Number(product.views_count || product.viewCount || 0);
+  const displayCommentsCount = liveState.comments_count ?? liveState.commentCount ?? Number(product.comments_count || product.commentCount || 0);
+  const displaySharesCount = liveState.shares_count ?? liveState.shareCount ?? Number(product.shares_count || product.shareCount || 0);
 
   // For the canShowCollectCoin callback, we want to pass a normalized-like object that has the merged state
   const mergedForCallback = useMemo(() => ({
@@ -112,8 +112,15 @@ export const SharedProductCard = memo(({
 
   const sellerName = getItemUsername(product, "Seller");
   const sellerImage = getItemProfilePicture(product);
-  const timeLabel = formatRelativeTime(product.created_at);
-  const img = normalizeMediaSrc(product.image_url || product.media_preview);
+
+  const primaryImage =
+    product.image_url ||
+    product.main_image ||
+    (Array.isArray(product.images) ? product.images[0] : undefined) ||
+    product.media_url ||
+    product.thumbnail_url ||
+    product.media_preview;
+  const img = normalizeMediaSrc(primaryImage);
   
   const showAdCoinButton = isAd && !!canShowCollectCoin?.(mergedForCallback) && !displayCoinCollected;
 
@@ -159,6 +166,17 @@ export const SharedProductCard = memo(({
       return [];
     }
   }, [product.variants]);
+  const displayPrice = useMemo(() => {
+    const promoCandidate = product.promo_price;
+    if (promoCandidate !== null && promoCandidate !== undefined && promoCandidate !== "") {
+      const parsedPromo = Number(promoCandidate);
+      if (Number.isFinite(parsedPromo)) return parsedPromo;
+    }
+
+    const mainCandidate = product.price ?? product.main_price ?? product.product_price;
+    const parsedMain = Number(mainCandidate);
+    return Number.isFinite(parsedMain) ? parsedMain : 0;
+  }, [product.main_price, product.price, product.product_price, product.promo_price]);
 
   return (
     <div className="relative group flex flex-col transition-all duration-500 hover:z-10 w-full">
@@ -218,13 +236,13 @@ export const SharedProductCard = memo(({
             <div className="flex flex-col min-w-0">
               <span
                 onClick={handleProfileClick}
-                className="text-[7px] md:text-[10px] text-white font-black uppercase tracking-tight truncate leading-none group-hover/profile:text-blue-400 transition-colors cursor-pointer"
+                className="text-[7px] md:text-[10px] text-white font-black normal-case tracking-tight truncate leading-none group-hover/profile:text-blue-400 transition-colors cursor-pointer"
               >
                 {sellerName}
               </span>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="text-[5px] md:text-[7px] text-slate-500 font-bold tracking-widest">
-                  {timeLabel}
+                  <RelativeTime timestamp={product.created_at || (product as any).createdAt} />
                 </span>
                 {isAd && (
                   <span className="text-[6px] md:text-[8px] font-bold text-white px-1">
@@ -407,7 +425,7 @@ export const SharedProductCard = memo(({
               <div className="flex items-baseline gap-1">
                 <span className="text-xs font-black text-white/40">R</span>
                 <span className="text-2xl font-black text-white tracking-tighter">
-                  {product.promo_price || product.price}
+                  {displayPrice}
                 </span>
               </div>
               {canUseProductActions && (
@@ -451,7 +469,7 @@ export const SharedProductCard = memo(({
                     count={displayViewsCount}
                     color="text-white"
                     activeColor="text-white"
-                    onSingleClick={() => onLogView?.(mergedForCallback.id)}
+                    onSingleClick={() => onLogView?.(isAd ? mergedForCallback : mergedForCallback.id)}
                     onLongPress={() => onOpenSheet?.("views", mergedForCallback)}
                   />
                   <AdInteractionButton

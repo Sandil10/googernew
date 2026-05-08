@@ -10,6 +10,65 @@ const firstPresent = (...values: any[]) => {
   return undefined;
 };
 
+const safeParse = (data: any) => {
+  if (!data) return null;
+  if (typeof data !== "string") return data;
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+};
+
+const GENERIC_AD_TITLES = new Set(["photo and video", "photo & video", "product promote", "profile promote", "ads", "ad"]);
+
+const numberOrUndefined = (value: any) => {
+  if (value === null || value === undefined || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+export const normalizeAdTimestamp = (value: any): string | undefined => {
+  if (value === null || value === undefined) return undefined;
+  const raw = String(value).trim();
+  if (!raw) return undefined;
+
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(raw)
+    ? `${raw.replace(" ", "T")}Z`
+    : raw;
+
+  const date = new Date(normalized);
+  const time = date.getTime();
+  if (!Number.isFinite(time)) return undefined;
+  return date.toISOString();
+};
+
+export const resolveAdDisplayTitle = (ad: any, draftInput?: any, campaignInput?: any) => {
+  const draft = safeParse(draftInput ?? ad?.editDraft ?? ad?.edit_draft) || {};
+  const campaignType = String(campaignInput || ad?.campaign_type || ad?.campaignType || "").trim();
+  const safeCampaignFallback = GENERIC_AD_TITLES.has(campaignType.toLowerCase()) ? undefined : campaignType;
+  const directTitle = String(ad?.title || "").trim();
+  const normalizedDirectTitle = directTitle.toLowerCase();
+  const isGenericDirectTitle =
+    !directTitle ||
+    normalizedDirectTitle === campaignType.toLowerCase() ||
+    GENERIC_AD_TITLES.has(normalizedDirectTitle);
+
+  return firstPresent(
+    draft.title,
+    draft.adTitle,
+    draft.name,
+    draft.caption,
+    ad?.caption,
+    isGenericDirectTitle ? undefined : directTitle,
+    ad?.name,
+    draft.description,
+    ad?.description,
+    safeCampaignFallback,
+    "Sponsored",
+  );
+};
+
 /**
  * Normalizes any advertisement object into a strict NormalizedAd shape.
  * Supports Product Promote, Photo/Video, and Profile Promote ads.
@@ -84,16 +143,23 @@ export function normalizeAdData(ad: any): NormalizedAd {
     ad.owner?.profile_picture,
     ad.owner?.profilePicture
   );
-  const createdAt = firstPresent(ad.created_at, ad.createdAt, ad.created, ad.published_at, ad.updated_at);
+  const createdAtRaw = firstPresent(ad.created_at, ad.createdAt, ad.created, ad.published_at, ad.updated_at);
+  const createdAt = normalizeAdTimestamp(createdAtRaw) || createdAtRaw;
   const activeLink = firstPresent(ad.active_link, ad.activeLink, ad.cta_link, ad.ctaLink);
   const ctaTopic = firstPresent(ad.cta_topic, ad.ctaTopic);
   const ctaValue = firstPresent(ad.cta_value, ad.ctaValue);
+  const draft = safeParse(ad.editDraft || ad.edit_draft) || {};
+  const title = resolveAdDisplayTitle(ad, draft, ad.campaign_type || ad.campaignType);
+  const description = firstPresent(ad.description, draft.description, ad.caption, draft.caption, title);
+  const price = numberOrUndefined(ad.price ?? ad.main_price ?? ad.product_price);
+  const promoPrice = numberOrUndefined(ad.promo_price);
+  const stock = numberOrUndefined(ad.stock);
 
   // Counters
-  const likeCount = Number(ad.likes_count || ad.likeCount || ad.likes || 0);
-  const commentCount = Number(ad.comments_count || ad.commentCount || ad.comments || 0);
-  const shareCount = Number(ad.shares_count || ad.shareCount || ad.shares || 0);
-  const viewCount = Number(ad.views_count || ad.viewCount || ad.views || 0);
+  const likeCount = Number(ad.likes_count ?? ad.likeCount ?? ad.likes ?? 0);
+  const commentCount = Number(ad.comments_count ?? ad.commentCount ?? ad.comments ?? 0);
+  const shareCount = Number(ad.shares_count ?? ad.shareCount ?? ad.shares ?? 0);
+  const viewCount = Number(ad.views_count ?? ad.viewCount ?? ad.views ?? ad.impressions ?? 0);
 
   // Status
   const liked = !!(ad.user_liked || ad.isLiked || ad.liked);
@@ -125,7 +191,8 @@ export function normalizeAdData(ad: any): NormalizedAd {
     cta_topic: ctaTopic,
     cta_value: ctaValue,
     media_type: normalizedMediaType,
-    title: ad.title || ad.name || ad.description || "Sponsored",
+    title,
+    description,
     image,
     video,
     liked,
@@ -140,6 +207,11 @@ export function normalizeAdData(ad: any): NormalizedAd {
     views_count: viewCount,
     coinCollected,
     ad_coin_collected: coinCollected,
+    price,
+    main_price: price,
+    product_price: price,
+    promo_price: promoPrice,
+    stock,
     raw: {
       ...ad,
       user_id: userId || ad.user_id,
@@ -153,6 +225,21 @@ export function normalizeAdData(ad: any): NormalizedAd {
       cta_topic: ctaTopic || ad.cta_topic,
       cta_value: ctaValue || ad.cta_value,
       media_type: normalizedMediaType || ad.media_type,
+      title,
+      description,
+      likes_count: likeCount,
+      likeCount,
+      comments_count: commentCount,
+      commentCount,
+      shares_count: shareCount,
+      shareCount,
+      views_count: viewCount,
+      viewCount,
+      price,
+      main_price: price,
+      product_price: price,
+      promo_price: promoPrice,
+      stock,
       user: {
         ...(ad.user || {}),
         id: userId || ad.user?.id,

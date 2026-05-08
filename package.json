@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "dev:all": "concurrently \"npm run dev\" \"cd backend && npm run dev\"",
+    "migrate:local-media": "node backend/scripts/migrate-base64-media-to-local.js",
     "tunnel:frontend": "cloudflared tunnel --url http://localhost:3000",
     "tunnel:backend": "cloudflared tunnel --url http://localhost:5000"
   },

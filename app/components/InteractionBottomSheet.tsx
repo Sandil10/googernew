@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useMemo } from "react";
 import IonIcon from "./IonIcon";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
+import { RelativeTime } from "@/app/components/RelativeTime";
 
 type SheetType = "likes" | "comments" | "shares" | "views";
 
@@ -325,7 +326,7 @@ export default function InteractionBottomSheet({
                                 {item.username || "Anonymous"}
                             </span>
                             <span className="text-[7px] text-slate-600 font-bold uppercase tracking-widest ml-auto shrink-0">
-                                {new Date(item.created_at || Date.now()).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                                <RelativeTime timestamp={item.created_at} />
                             </span>
                         </div>
                         {item.text && (
@@ -537,7 +538,7 @@ export default function InteractionBottomSheet({
                                                             {item.username || "Anonymous"}
                                                         </span>
                                                         <span className="text-[8px] text-slate-600 font-bold uppercase tracking-widest ml-auto shrink-0">
-                                                            {new Date(item.created_at || Date.now()).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                                                            <RelativeTime timestamp={item.created_at} />
                                                         </span>
                                                     </div>
                                                 </div>

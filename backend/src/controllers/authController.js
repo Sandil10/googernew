@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
+const { saveUploadedFile } = require('../utils/localUpload');
 
 let usersTableHasShippingAddressColumn = null;
 let subscriptionsTableEnsured = false;
@@ -689,10 +690,8 @@ exports.updateProfile = async (req, res) => {
         let finalProfilePicture = profilePicture;
         const includeShippingAddress = await hasUsersTableColumn('shipping_address');
 
-        // MemoryStorage uploads do not have a filename, so persist the image as a data URL.
         if (req.file) {
-            const base64 = req.file.buffer.toString('base64');
-            finalProfilePicture = `data:${req.file.mimetype};base64,${base64}`;
+            finalProfilePicture = await saveUploadedFile(req.file, 'profiles');
         }
 
         const normalizedFirstName = typeof firstName === 'string' ? firstName.trim() : null;

@@ -42,14 +42,6 @@ const nextConfig = {
         source: '/shop/:id/:reseller',
         destination: '/dashboard/shop?id=:id&reseller=:reseller',
       },
-      {
-        source: '/product/:id',
-        destination: '/dashboard/shop?id=:id',
-      },
-      {
-        source: '/product/:id/:reseller',
-        destination: '/dashboard/shop?id=:id&reseller=:reseller',
-      },
     ];
   },
 };

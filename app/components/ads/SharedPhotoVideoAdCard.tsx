@@ -3,7 +3,7 @@
 import Image from "next/image";
 import React from "react";
 import IonIcon from "@/app/components/IonIcon";
-import { useRelativeTime } from "@/app/lib/relativeTime";
+import { RelativeTime } from "@/app/components/RelativeTime";
 import SubscribeButton from "@/app/components/SubscribeButton";
 import { AdInteractionButton, AdInteractionType } from "./AdInteractionButton";
 import {
@@ -59,6 +59,7 @@ export function SharedPhotoVideoAdCard({
     canShowCollectCoin,
 }: SharedPhotoVideoAdCardProps) {
     const raw = ad.raw || {};
+    const campaignType = String(ad.campaign_type || raw.campaign_type || "").trim().toLowerCase();
     const activeLink = normalizeExternalUrl(ad.active_link || raw.active_link || "");
     const previewType = getSponsoredLinkPreviewType(activeLink);
     const ctaTopic = ad.cta_topic || raw.cta_topic;
@@ -80,13 +81,53 @@ export function SharedPhotoVideoAdCard({
     const advertiserName = ad.username || ad.owner_username || raw.username || raw.owner_username || raw.ownerUsername || raw.user?.username || raw.user?.name || "Advertiser";
     const advertiserImage = ad.profile_picture || raw.profile_picture || raw.profilePicture || raw.owner_profile_picture || raw.ownerProfilePicture || raw.user?.profile_picture || raw.user?.profilePicture || getItemProfilePicture(raw);
     const advertiserId = ad.userId || ad.user_id || raw.user_id || raw.userId || raw.owner_user_id || raw.ownerUserId || raw.user?.id;
-    const timeLabel = useRelativeTime(ad.createdAt || ad.created_at || raw.created_at || raw.createdAt, "just now");
+    const displayTitle = String(ad.title || raw.title || raw.caption || "").trim();
+    const isGenericTitle = /^(Sponsored(?: post)?|Ad)$/i.test(displayTitle);
+
+    const likeCount = Number(ad.likeCount ?? ad.likes_count ?? raw.likes_count ?? raw.likeCount ?? 0);
+    const viewCount = Number(ad.viewCount ?? ad.views_count ?? raw.views_count ?? raw.viewCount ?? 0);
+    const commentCount = Number(ad.commentCount ?? ad.comments_count ?? raw.comments_count ?? raw.commentCount ?? 0);
+    const shareCount = Number(ad.shareCount ?? ad.shares_count ?? raw.shares_count ?? raw.shareCount ?? 0);
+    const rawVideoSource = String(
+        ad.video ||
+        (ad as any).video_url ||
+        (ad as any).media_url ||
+        ad.media_preview ||
+        raw.video_url ||
+        raw.media_url ||
+        raw.video ||
+        ((secondViewKind === "video" && previewType === "video") ? activeLink : "") ||
+        ((secondViewKind === "video" && raw.media_preview) ? raw.media_preview : "") ||
+        "",
+    ).trim();
+    const videoPreviewSrc = rawVideoSource ? normalizeMediaSrc(rawVideoSource) : "";
+    const canRenderVideoPreview = secondViewKind === "video" && !!videoPreviewSrc;
+
+    const playOverlay = (secondViewKind === "video" || secondViewKind === "embed") ? (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <span
+                className="flex h-14 w-14 items-center justify-center rounded-full bg-white/92 text-black shadow-[0_18px_45px_rgba(0,0,0,0.45)]"
+                aria-label="Play sponsored media"
+            >
+                <IonIcon name="play" className="ml-1 text-2xl" />
+            </span>
+        </div>
+    ) : null;
 
     const handleSponsoredLinkOpen = (event: React.MouseEvent) => {
         event.stopPropagation();
         const href = ctaHref || activeLink;
         if (!href) return;
         window.open(href, "_blank", "noopener,noreferrer");
+    };
+
+    const handleMessageClick = (event: React.MouseEvent) => {
+        event.stopPropagation();
+        const participantId = String(advertiserId || "").trim();
+        if (!participantId) return;
+        if (typeof window !== "undefined") {
+            window.location.href = `/dashboard/chats?user=${encodeURIComponent(participantId)}`;
+        }
     };
 
     const handleLikeClick = () => {
@@ -149,7 +190,7 @@ export function SharedPhotoVideoAdCard({
                         <button
                             type="button"
                             onClick={(event) => onNavigateToProfile(event, ad)}
-                            className="block truncate text-left font-black uppercase tracking-tight text-white transition hover:text-blue-400 text-[7px] md:text-[10px] leading-none"
+                            className="block truncate text-left font-black normal-case tracking-tight text-white transition hover:text-blue-400 text-[7px] md:text-[10px] leading-none"
                         >
                             {advertiserName}
                         </button>
@@ -159,7 +200,7 @@ export function SharedPhotoVideoAdCard({
                             </span>
                             <div className="w-0.5 h-0.5 rounded-full bg-slate-700 shrink-0" />
                             <span className="block font-bold text-slate-500 text-[5px] md:text-[7px] tracking-widest">
-                                {timeLabel}
+                                <RelativeTime timestamp={ad.createdAt || ad.created_at || raw.created_at || raw.createdAt} />
                             </span>
                         </div>
                     </div>
@@ -236,29 +277,30 @@ export function SharedPhotoVideoAdCard({
                     <div className="relative h-full w-full">
                         {showSponsoredLinkPreview ? (
                             <div className="relative h-full w-full bg-[#0f1115]">
-                                <Image
-                                    src={previewImage}
-                                    alt={ad.title || "Sponsored media"}
-                                    fill
-                                    sizes={AD_CARD_IMAGE_SIZES}
-                                    quality={58}
-                                    loading="lazy"
-                                    placeholder="blur"
-                                    blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
-                                    className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-500"
-                                    unoptimized={shouldBypassNextImageOptimization(previewImage)}
-                                />
-                                <div className="absolute inset-0 bg-gradient-to-t from-black/45 via-black/5 to-transparent" />
-                                {(secondViewKind === "video" || secondViewKind === "embed") && (
-                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                        <span
-                                            className="flex h-14 w-14 items-center justify-center rounded-full bg-white/92 text-black shadow-[0_18px_45px_rgba(0,0,0,0.45)]"
-                                            aria-label="Play sponsored media"
-                                        >
-                                            <IonIcon name="play" className="ml-1 text-2xl" />
-                                        </span>
-                                    </div>
+                                {canRenderVideoPreview ? (
+                                    <video
+                                        src={videoPreviewSrc}
+                                        muted
+                                        playsInline
+                                        preload="metadata"
+                                        className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                    />
+                                ) : (
+                                    <Image
+                                        src={previewImage}
+                                        alt={ad.title || "Sponsored media"}
+                                        fill
+                                        sizes={AD_CARD_IMAGE_SIZES}
+                                        quality={58}
+                                        loading="lazy"
+                                        placeholder="blur"
+                                        blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
+                                        className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-500"
+                                        unoptimized={shouldBypassNextImageOptimization(previewImage)}
+                                    />
                                 )}
+                                <div className="absolute inset-0 bg-gradient-to-t from-black/45 via-black/5 to-transparent" />
+                                {playOverlay}
                                 {!!activeLink && (
                                     <div className="absolute bottom-0 left-0 right-0 border-t border-white/10 bg-[#dff0d6]/95 px-3 py-2 backdrop-blur-sm">
                                         <p className="overflow-hidden text-[10px] md:text-xs font-black leading-4 text-[#18220f] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] break-words">
@@ -271,18 +313,31 @@ export function SharedPhotoVideoAdCard({
                                 )}
                             </div>
                         ) : (
-                            <Image
-                                src={previewImage}
-                                alt={ad.title || "Sponsored media"}
-                                fill
-                                sizes={AD_CARD_IMAGE_SIZES}
-                                quality={58}
-                                loading="lazy"
-                                placeholder="blur"
-                                blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
-                                className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-500"
-                                unoptimized={shouldBypassNextImageOptimization(previewImage)}
-                            />
+                            <>
+                                {canRenderVideoPreview ? (
+                                    <video
+                                        src={videoPreviewSrc}
+                                        muted
+                                        playsInline
+                                        preload="metadata"
+                                        className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                    />
+                                ) : (
+                                    <Image
+                                        src={previewImage}
+                                        alt={ad.title || "Sponsored media"}
+                                        fill
+                                        sizes={AD_CARD_IMAGE_SIZES}
+                                        quality={58}
+                                        loading="lazy"
+                                        placeholder="blur"
+                                        blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
+                                        className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-500"
+                                        unoptimized={shouldBypassNextImageOptimization(previewImage)}
+                                    />
+                                )}
+                                {playOverlay}
+                            </>
                         )}
                     </div>
                 </div>
@@ -290,7 +345,7 @@ export function SharedPhotoVideoAdCard({
 
             <div className="px-4 pb-2 pt-4 md:px-6">
                 <h2 className="overflow-hidden text-[13px] font-black leading-5 text-white [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] break-words md:text-[14px]">
-                    {ad.title || "Sponsored post"}
+                    {isGenericTitle ? "" : displayTitle}
                 </h2>
 
                 {ctaTopic !== "No Button" && (
@@ -307,6 +362,15 @@ export function SharedPhotoVideoAdCard({
                                 disabled={!callHref}
                             >
                                 Call Now
+                            </button>
+                        ) : ctaTopic === "Message" ? (
+                            <button
+                                type="button"
+                                onClick={handleMessageClick}
+                                className="cursor-pointer rounded-full bg-white px-3 py-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-black transition hover:bg-slate-200 active:scale-95 md:px-4 md:py-2 md:text-[10px]"
+                                disabled={!advertiserId}
+                            >
+                                Message
                             </button>
                         ) : hasSecondaryCta ? (
                             <button
@@ -328,7 +392,7 @@ export function SharedPhotoVideoAdCard({
                             icon="heart-outline"
                             activeIcon="heart"
                             isActive={ad.liked}
-                            count={ad.likeCount}
+                            count={likeCount}
                             color="text-white/80"
                             activeColor="text-white"
                             onSingleClick={handleLikeClick}
@@ -339,7 +403,7 @@ export function SharedPhotoVideoAdCard({
                             type="views"
                             icon="eye-outline"
                             activeIcon="eye"
-                            count={ad.viewCount}
+                            count={viewCount}
                             color="text-white/80"
                             activeColor="text-white"
                             onSingleClick={() => onOpenSheet("views", ad.raw || ad)}
@@ -350,7 +414,7 @@ export function SharedPhotoVideoAdCard({
                             type="comments"
                             icon="chatbubble-outline"
                             activeIcon="chatbubble"
-                            count={ad.commentCount}
+                            count={commentCount}
                             color="text-white/80"
                             activeColor="text-white"
                             onSingleClick={() => onOpenSheet("comments", ad.raw || ad)}
@@ -361,7 +425,7 @@ export function SharedPhotoVideoAdCard({
                             type="shares"
                             icon="share-social-outline"
                             activeIcon="share-social"
-                            count={ad.shareCount}
+                            count={shareCount}
                             color="text-white/80"
                             activeColor="text-white"
                             onSingleClick={() => onShare(ad.raw || ad)}

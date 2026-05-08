@@ -9,6 +9,9 @@ export const AVATAR_IMAGE_SIZES = "32px";
 export const normalizeMediaSrc = (src?: string | null) => {
   const value = String(src || "").trim();
   if (!value) return "";
+  if (value.startsWith("/uploads/") || /^https?:\/\//i.test(value) || value.startsWith("data:")) {
+    return value;
+  }
   return value.includes("uploads") || value.includes("\\")
     ? `/uploads/${value.split(/[\\/]/).pop()}`
     : value;
@@ -23,4 +26,3 @@ export const shouldBypassNextImageOptimization = (src?: string | null) => {
     /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/.test(value)
   );
 };
-

@@ -32,11 +32,12 @@ export function AdInteractionButton({
 }: AdInteractionButtonProps) {
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const didLongPressRef = useRef(false);
+    const isLikeButton = type === "likes";
 
     const handlePointerDown = (event: React.PointerEvent) => {
         event.stopPropagation();
         didLongPressRef.current = false;
-        if (!onLongPress) return;
+        if (isLikeButton || !onLongPress) return;
         timerRef.current = setTimeout(() => {
             didLongPressRef.current = true;
             onLongPress();
@@ -63,7 +64,6 @@ export function AdInteractionButton({
         }
     };
 
-    const isLikeButton = type === "likes";
     const currentIcon = isLikeButton
         ? (isActive ? activeIcon || "heart" : "heart-outline")
         : (isActive && activeIcon ? activeIcon : icon);

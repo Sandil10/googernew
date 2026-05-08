@@ -99,6 +99,7 @@ const getDeliveryDateText = (daysValue: string) => {
 
 const normalizeImageSrc = (src?: string) => {
   if (!src) return "https://picsum.photos/400/400";
+  if (src.startsWith("/uploads/") || /^https?:\/\//i.test(src) || src.startsWith("data:")) return src;
   return src.includes("uploads") || src.includes("\\") ? `/uploads/${src.split(/[\\/]/).pop()}` : src;
 };
 
@@ -320,7 +321,7 @@ export function ShopProductSecondViewModal({
                     )}
                   </div>
                   <div className="flex flex-col items-start">
-                    <span className="mb-0.5 text-[11px] font-black uppercase leading-none tracking-tight text-white transition-colors group-hover/profile:text-blue-400">
+                    <span className="mb-0.5 text-[11px] font-black normal-case leading-none tracking-tight text-white transition-colors group-hover/profile:text-blue-400">
                       {sellerName}
                     </span>
                     <span className="text-[7px] font-black text-white/50 tracking-[0.2em]">

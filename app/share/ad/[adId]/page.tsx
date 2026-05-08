@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Image from "next/image";
 import IonIcon from "@/app/components/IonIcon";
 import { marketService } from "@/services/marketService";
+import { authService } from "@/services/authService";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondViewModal";
 import ShareModal from "@/app/components/ShareModal";
@@ -30,12 +31,15 @@ export default function ShareAdPage() {
     const [sheetData, setSheetData] = useState<any[]>([]);
     const [isSheetLoading, setIsSheetLoading] = useState(false);
     const [currentUser, setCurrentUser] = useState<any>(null);
+    const [isViewerReady, setIsViewerReady] = useState(false);
     const [notification, setNotification] = useState<{ type: "success" | "error"; title?: string; message: string } | null>(null);
     const syncAds = useAdStore((state) => state.syncAds);
     const updateAdState = useAdStore((state) => state.updateAdState);
+    const setViewerContext = useAdStore((state) => state.setViewerContext);
 
     const adActions = useAdActions(ad, {
         currentUser,
+        viewerReady: isViewerReady,
         onShare: () => setShowShareModal(true),
         onOpenSheet: (type, item) => openAdSheet(type, item.raw || item),
         onNeedCoinConfirmation: (target) => {
@@ -53,6 +57,38 @@ export default function ShareAdPage() {
         return () => clearTimeout(t);
     }, [notification]);
 
+
+    useEffect(() => {
+        let cancelled = false;
+        const syncCurrentUser = async () => {
+            try {
+                const user = await authService.resolveActiveUser();
+                if (!cancelled) {
+                    setCurrentUser(user);
+                    setViewerContext(user);
+                }
+            } catch {
+                if (!cancelled) {
+                    setCurrentUser(null);
+                    setViewerContext(null);
+                }
+            } finally {
+                if (!cancelled) setIsViewerReady(true);
+            }
+        };
+        void syncCurrentUser();
+        const handleAuthChanged = (event: Event) => {
+            const nextUser = (event as CustomEvent)?.detail?.user || null;
+            setCurrentUser(nextUser);
+            setViewerContext(nextUser);
+            setIsViewerReady(true);
+        };
+        window.addEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+        return () => {
+            cancelled = true;
+            window.removeEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+        };
+    }, [setViewerContext]);
 
     useEffect(() => {
         const loadAd = async () => {
@@ -77,7 +113,7 @@ export default function ShareAdPage() {
         };
 
         loadAd();
-    }, [adId]);
+    }, [adId, syncAds]);
 
     const openAdSheet = async (type: AdInteractionType, targetAd: any) => {
         setSheetType(type);

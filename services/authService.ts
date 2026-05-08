@@ -18,6 +18,15 @@ const storage = {
     }
 };
 
+const emitAuthChanged = (user: any) => {
+    if (!isClient) return;
+    try {
+        window.dispatchEvent(new CustomEvent('googer-auth-changed', { detail: { user: user || null } }));
+    } catch {
+        // ignore event dispatch issues
+    }
+};
+
 // Helper to safely parse JSON from a response
 const safeJson = async (response: Response) => {
     const contentType = response.headers.get("content-type");
@@ -25,6 +34,44 @@ const safeJson = async (response: Response) => {
         return await response.json();
     }
     return null;
+};
+
+const getStoredToken = () => storage.get('token');
+
+const resolveActiveUserSession = async () => {
+    const token = getStoredToken();
+    if (!token) {
+        storage.remove('user');
+        emitAuthChanged(null);
+        return null;
+    }
+
+    const response = await fetch(`${API_URL}/auth/profile`, {
+        method: 'GET',
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+    });
+
+    const result = await safeJson(response);
+    if (!response.ok) {
+        if (response.status === 401) {
+            storage.remove('token');
+            storage.remove('user');
+            emitAuthChanged(null);
+        }
+        throw new Error(result?.message || 'Failed to fetch profile');
+    }
+
+    const user = result?.user || null;
+    if (user) {
+        storage.set('user', JSON.stringify(user));
+    } else {
+        storage.remove('user');
+    }
+    emitAuthChanged(user);
+    return user;
 };
 
 export const authService = {
@@ -56,6 +103,7 @@ export const authService = {
             if (result?.token) {
                 storage.set('token', result.token);
                 storage.set('user', JSON.stringify(result.user));
+                emitAuthChanged(result.user);
             }
             return result;
         } catch (error: any) {
@@ -88,6 +136,7 @@ export const authService = {
             if (result?.token) {
                 storage.set('token', result.token);
                 storage.set('user', JSON.stringify(result.user));
+                emitAuthChanged(result.user);
             }
             return result;
         } catch (error: any) {
@@ -96,32 +145,20 @@ export const authService = {
     },
 
     isAuthenticated: () => !!storage.get('token'),
+    getToken: () => getStoredToken(),
+    resolveActiveUser: async () => {
+        try {
+            return await resolveActiveUserSession();
+        } catch (error: any) {
+            throw error;
+        }
+    },
 
     getProfile: async () => {
         try {
-            const token = storage.get('token');
-            if (!token) throw new Error('No session found');
-
-            const response = await fetch(`${API_URL}/auth/profile`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
-            });
-
-            const result = await safeJson(response);
-            if (!response.ok) {
-                // If token is invalid/expired, clear storage and force re-login
-                if (response.status === 401) {
-                    storage.remove('token');
-                    storage.remove('user');
-                }
-                throw new Error(result?.message || 'Failed to fetch profile');
-            }
-
-            if (result?.user) storage.set('user', JSON.stringify(result.user));
-            return result?.user;
+            const user = await resolveActiveUserSession();
+            if (!user) throw new Error('No session found');
+            return user;
         } catch (error: any) {
             throw error;
         }
@@ -369,6 +406,7 @@ export const authService = {
             if (!response.ok) throw new Error(result?.message || 'Failed to update profile');
 
             if (result?.user) storage.set('user', JSON.stringify(result.user));
+            if (result?.user) emitAuthChanged(result.user);
             return result;
         } catch (error: any) {
             throw error;
@@ -457,6 +495,7 @@ export const authService = {
     logout: () => {
         storage.remove('token');
         storage.remove('user');
+        emitAuthChanged(null);
         if (isClient) window.location.href = '/';
     }
 };

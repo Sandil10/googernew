@@ -3,6 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { authService } from "@/services/authService";
+import { marketService } from "@/services/marketService";
 import { PublicProfileView } from "@/app/components/profile/PublicProfileView";
 import IonIcon from "@/app/components/IonIcon";
 
@@ -19,6 +20,13 @@ export default function ProfileRedirectPage() {
             try {
                 if (!userParam) {
                     router.push("/");
+                    return;
+                }
+
+                const result = await marketService.getUnifiedShareItem(userParam);
+                if (result?.success && result?.type === "profile" && result?.data) {
+                    setUser(result.data);
+                    setLoading(false);
                     return;
                 }
 

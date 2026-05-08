@@ -4,7 +4,7 @@ export interface NormalizedProductAd {
   title?: string;
   name: string;
   price: number;
-  promo_price?: number;
+  promo_price?: number | null;
   image_url?: string;
   media_preview?: string;
   images: string[];
@@ -35,14 +35,48 @@ export interface NormalizedProductAd {
   linked_product_id?: string | number;
   shareCode?: string;
   share_code?: string;
+  adId?: string | number;
+  ad_id?: string | number;
+  raw?: any;
 }
 
 const normalizeUploadPath = (src: any) => {
   const value = String(src || "").trim();
   if (!value) return "";
+  if (value.startsWith("/uploads/") || /^https?:\/\//i.test(value) || value.startsWith("data:")) return value;
   return value.includes("uploads") || value.includes("\\")
     ? `/uploads/${value.split(/[\\/]/).pop()}`
     : value;
+};
+
+const safeParseArray = (value: any): any[] => {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const numberOrZero = (value: any, fallback?: any) => {
+  const candidates = [value, fallback];
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined || candidate === "") continue;
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+};
+
+const numberOrNull = (...values: any[]) => {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 };
 
 /**
@@ -50,109 +84,146 @@ const normalizeUploadPath = (src: any) => {
  * into a consistent format for the shared components.
  */
 export function normalizeProductAd(rawItem: any): NormalizedProductAd {
+  const source = rawItem?.raw?.raw || rawItem?.raw || rawItem;
+  const sourceVariants = safeParseArray(source.variants);
+  const sourceImages = safeParseArray(source.images);
+  const sourceMediaGallery = safeParseArray(source.media_gallery);
+  const primaryImageCandidate =
+    source.image_url ||
+    source.main_image ||
+    source.media_url ||
+    source.thumbnail_url ||
+    source.media_preview ||
+    sourceImages[0] ||
+    sourceMediaGallery[0] ||
+    sourceVariants[0]?.image_url ||
+    sourceVariants[0]?.url ||
+    sourceVariants[0]?.image;
+
   // Handle shop products
-  if (rawItem.title && rawItem.price !== undefined) {
-    const imageUrl = normalizeUploadPath(rawItem.image_url || rawItem.media_preview);
+  if (source.title && source.price !== undefined) {
+    const variants = sourceVariants;
+    const imageUrl = normalizeUploadPath(primaryImageCandidate);
+    const price = numberOrZero(source.price, source.main_price ?? source.product_price);
+    const promoPrice = numberOrNull(source.promo_price);
     return {
-      id: rawItem.id,
-      productId: rawItem.id,
-      title: rawItem.title,
-      name: rawItem.title,
-      price: Number(rawItem.promo_price || rawItem.price || 0),
-      promo_price: rawItem.promo_price,
+      id: source.id,
+      productId: source.product_id || source.productId || source.linked_product_id || source.id,
+      title: source.title,
+      name: source.title,
+      price,
+      promo_price: promoPrice,
       image_url: imageUrl,
       media_preview: imageUrl,
       images: [
-        rawItem.image_url,
-        ...(Array.isArray(rawItem.variants)
-          ? rawItem.variants.map((v: any) => v.url || v.image_url).filter(Boolean)
-          : typeof rawItem.variants === "string"
-          ? JSON.parse(rawItem.variants || "[]").map((v: any) => v.url || v.image_url).filter(Boolean)
-          : []
-        )
+        source.image_url,
+        source.main_image,
+        source.media_url,
+        source.thumbnail_url,
+        source.media_preview,
+        ...sourceImages.map((img: any) => (typeof img === "string" ? img : img?.url || img?.image_url || img?.image)),
+        ...sourceMediaGallery.map((img: any) => (typeof img === "string" ? img : img?.url || img?.image_url || img?.image)),
+        ...variants.map((v: any) => v.url || v.image_url).filter(Boolean),
       ].map(normalizeUploadPath).filter(Boolean),
-      seller: rawItem.user?.username || rawItem.username || rawItem.owner_username || "Seller",
-      profileImage: normalizeUploadPath(rawItem.user?.profile_picture || rawItem.profile_picture),
-      isAd: rawItem.is_sponsored || rawItem.campaign_type === "Product Promote",
-      variants: Array.isArray(rawItem.variants)
-        ? rawItem.variants
-        : typeof rawItem.variants === "string"
-        ? JSON.parse(rawItem.variants || "[]")
-        : [],
-      likes_count: rawItem.likes_count || 0,
-      views_count: rawItem.views_count || 0,
-      comments_count: rawItem.comments_count || 0,
-      shares_count: rawItem.shares_count || 0,
-      user_liked: rawItem.user_liked,
-      user_id: rawItem.user_id ?? rawItem.owner_user_id,
-      user: rawItem.user,
-      username: rawItem.user?.username || rawItem.username,
-      profile_picture: rawItem.user?.profile_picture || rawItem.profile_picture,
-      campaign_type: rawItem.campaign_type,
-      is_sponsored: rawItem.is_sponsored,
-      stock: rawItem.stock,
-      shipping_info: rawItem.shipping_info,
-      payment_methods: rawItem.payment_methods,
-      commission_info: rawItem.commission_info,
-      created_at: rawItem.created_at,
-      product_code: rawItem.product_code,
-      linked_product_code: rawItem.linked_product_code,
-      product_id: rawItem.product_id,
-      linked_product_id: rawItem.linked_product_id,
-      shareCode: rawItem.shareCode,
-      share_code: rawItem.share_code,
+      seller: source.user?.username || source.username || source.owner_username || "Seller",
+      profileImage: normalizeUploadPath(source.user?.profile_picture || source.profile_picture),
+      isAd: source.is_sponsored || source.campaign_type === "Product Promote",
+      variants,
+      likes_count: source.likes_count ?? source.likeCount ?? 0,
+      views_count: source.views_count ?? source.viewCount ?? 0,
+      comments_count: source.comments_count ?? source.commentCount ?? 0,
+      shares_count: source.shares_count ?? source.shareCount ?? 0,
+      user_liked: source.user_liked,
+      user_id: source.user_id ?? source.owner_user_id,
+      user: source.user,
+      username: source.user?.username || source.username,
+      profile_picture: source.user?.profile_picture || source.profile_picture,
+      campaign_type: source.campaign_type,
+      is_sponsored: source.is_sponsored,
+      stock: source.stock,
+      shipping_info: source.shipping_info,
+      payment_methods: source.payment_methods,
+      commission_info: source.commission_info,
+      created_at: source.created_at,
+      product_code: source.product_code,
+      linked_product_code: source.linked_product_code,
+      product_id: source.product_id,
+      linked_product_id: source.linked_product_id,
+      shareCode: source.shareCode,
+      share_code: source.share_code,
+      adId: source.adId,
+      ad_id: source.ad_id,
+      raw: {
+        ...source,
+        price,
+        main_price: price,
+        product_price: price,
+        promo_price: promoPrice,
+      },
     };
   }
 
   // Handle home feed ads (similar structure but might have different field names)
+  const mediaGallery = sourceMediaGallery;
+  const variants = sourceVariants;
+  const price = numberOrZero(source.price, source.main_price ?? source.product_price);
+  const promoPrice = numberOrNull(source.promo_price);
   return {
-    ...rawItem,
-    id: rawItem.id || rawItem.adId,
-    productId: rawItem.productId || rawItem.linked_product_id || rawItem.id,
-    title: rawItem.title || rawItem.name,
-    name: rawItem.title || rawItem.name,
-    price: Number(rawItem.promo_price || rawItem.price || 0),
-    promo_price: rawItem.promo_price,
-    image_url: normalizeUploadPath(rawItem.image_url || rawItem.media_preview),
-    media_preview: normalizeUploadPath(rawItem.media_preview || rawItem.image_url),
+    ...source,
+    id: source.id || source.adId,
+    productId: source.productId || source.linked_product_id || source.product_id || source.id,
+    title: source.title || source.name,
+    name: source.title || source.name,
+    price,
+    promo_price: promoPrice,
+    main_price: price,
+    product_price: price,
+    image_url: normalizeUploadPath(primaryImageCandidate),
+    media_preview: normalizeUploadPath(source.media_preview || primaryImageCandidate),
     images: [
-      rawItem.image_url || rawItem.media_preview,
-      ...(Array.isArray(rawItem.media_gallery)
-        ? rawItem.media_gallery
-        : typeof rawItem.media_gallery === "string"
-        ? JSON.parse(rawItem.media_gallery || "[]")
-        : []
-      ).map((img: any) => typeof img === "string" ? img : img.url || img.image_url).filter(Boolean)
+      source.image_url,
+      source.main_image,
+      source.media_url,
+      source.thumbnail_url,
+      source.media_preview,
+      ...sourceImages.map((img: any) => typeof img === "string" ? img : img?.url || img?.image_url || img?.image).filter(Boolean),
+      ...mediaGallery.map((img: any) => typeof img === "string" ? img : img?.url || img?.image_url || img?.image).filter(Boolean),
+      ...variants.map((v: any) => v.url || v.image_url).filter(Boolean),
     ].map(normalizeUploadPath).filter(Boolean),
-    seller: rawItem.user?.username || rawItem.username || rawItem.owner_username || "Advertiser",
-    profileImage: normalizeUploadPath(rawItem.user?.profile_picture || rawItem.profile_picture || rawItem.profileImage),
+    seller: source.user?.username || source.username || source.owner_username || "Advertiser",
+    profileImage: normalizeUploadPath(source.user?.profile_picture || source.profile_picture || source.profileImage),
     isAd: true,
-    variants: Array.isArray(rawItem.variants)
-      ? rawItem.variants
-      : typeof rawItem.variants === "string"
-      ? JSON.parse(rawItem.variants || "[]")
-      : [],
-    likes_count: rawItem.likes_count || 0,
-    views_count: rawItem.views_count || 0,
-    comments_count: rawItem.comments_count || 0,
-    shares_count: rawItem.shares_count || 0,
-    user_liked: rawItem.user_liked,
-    user_id: rawItem.user_id ?? rawItem.owner_user_id,
-    user: rawItem.user,
-    username: rawItem.user?.username || rawItem.username,
-    profile_picture: rawItem.user?.profile_picture || rawItem.profile_picture,
-    campaign_type: rawItem.campaign_type,
-    is_sponsored: rawItem.is_sponsored,
-    stock: rawItem.stock,
-    shipping_info: rawItem.shipping_info,
-    payment_methods: rawItem.payment_methods,
-    commission_info: rawItem.commission_info,
-    created_at: rawItem.created_at,
-    product_code: rawItem.product_code,
-    linked_product_code: rawItem.linked_product_code,
-    product_id: rawItem.product_id,
-    linked_product_id: rawItem.linked_product_id,
-    shareCode: rawItem.shareCode,
-    share_code: rawItem.share_code,
+    variants,
+    likes_count: source.likes_count ?? source.likeCount ?? 0,
+    views_count: source.views_count ?? source.viewCount ?? 0,
+    comments_count: source.comments_count ?? source.commentCount ?? 0,
+    shares_count: source.shares_count ?? source.shareCount ?? 0,
+    user_liked: source.user_liked,
+    user_id: source.user_id ?? source.owner_user_id,
+    user: source.user,
+    username: source.user?.username || source.username,
+    profile_picture: source.user?.profile_picture || source.profile_picture,
+    campaign_type: source.campaign_type,
+    is_sponsored: source.is_sponsored,
+    stock: source.stock,
+    shipping_info: source.shipping_info,
+    payment_methods: source.payment_methods,
+    commission_info: source.commission_info,
+    created_at: source.created_at,
+    product_code: source.product_code,
+    linked_product_code: source.linked_product_code,
+    product_id: source.product_id,
+    linked_product_id: source.linked_product_id,
+    shareCode: source.shareCode,
+    share_code: source.share_code,
+    adId: source.adId,
+    ad_id: source.ad_id,
+    raw: {
+      ...source,
+      price,
+      main_price: price,
+      product_price: price,
+      promo_price: promoPrice,
+    },
   };
 }

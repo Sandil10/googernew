@@ -15,6 +15,7 @@ import { ProfilePromoteCarousel } from "@/app/components/ads/ProfilePromoteCarou
 import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondViewModal";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { canShowCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
+import { resolveProductPromoteProduct } from "@/app/lib/ads/resolveProductPromoteProduct";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
@@ -51,6 +52,32 @@ type TrendingPost = {
     source: "write" | "ad";
     payload: any;
 };
+
+const TRENDING_IMAGE_FALLBACK = "/assets/images/googer.png";
+
+function TrendingPostThumb({ src, alt }: { src?: string; alt: string }) {
+    const [imageSrc, setImageSrc] = useState(() => normalizeMediaSrc(src) || TRENDING_IMAGE_FALLBACK);
+
+    useEffect(() => {
+        setImageSrc(normalizeMediaSrc(src) || TRENDING_IMAGE_FALLBACK);
+    }, [src]);
+
+    return (
+        <Image
+            src={imageSrc}
+            alt={alt}
+            fill
+            sizes="74px"
+            className="object-cover transition duration-300 group-hover:scale-105"
+            unoptimized
+            onError={() => {
+                if (imageSrc !== TRENDING_IMAGE_FALLBACK) {
+                    setImageSrc(TRENDING_IMAGE_FALLBACK);
+                }
+            }}
+        />
+    );
+}
 
 const safeParse = (data: any) => {
     if (!data) return null;
@@ -206,6 +233,25 @@ const getAdPreviewImage = (ad: any, previewType: string | null) => {
     return image.includes("uploads") || image.includes("\\") ? `/uploads/${image.split(/[\\/]/).pop()}` : image;
 };
 
+const getTrendingWritePostImage = (post: any) => {
+    const explicitImage = [
+        post?.image_url,
+        post?.media_url,
+        post?.thumbnail_url,
+        post?.image,
+    ].find((value) => String(value || "").trim());
+
+    if (explicitImage) return normalizeMediaSrc(explicitImage) || "";
+
+    const textMatch = String(post?.text || "").match(/(https?:\/\/[^\s]+|www\.[^\s]+)/i);
+    const linkedUrl = textMatch?.[0] ? normalizeExternalUrl(textMatch[0]) : "";
+    if (linkedUrl && /\.(png|jpe?g|gif|webp|avif)(\?.*)?$/i.test(linkedUrl)) {
+        return normalizeMediaSrc(linkedUrl) || "";
+    }
+
+    return TRENDING_IMAGE_FALLBACK;
+};
+
 function shuffleItems<T>(items: T[]) {
     return [...items].sort(() => Math.random() - 0.5);
 }
@@ -308,8 +354,19 @@ const mapPublicActiveAdToHomeAd = (ad: any) => {
     const draft = ad?.editDraft || ad?.edit_draft || {};
     const adId = ad?.adId || ad?.ad_id || String(ad?.id || "").replace(/^ad-/, "");
     const campaignType = ad?.campaign_type || ad?.campaignType || "Ads";
+    const isProductPromote = String(campaignType).trim().toLowerCase() === "product promote";
     const mediaPreview = ad?.media_preview || ad?.mediaPreview || "";
+    const price = isProductPromote
+        ? Number(ad?.price ?? ad?.main_price ?? ad?.product_price ?? 0)
+        : Number(ad?.budget || 0);
+    const productCode = isProductPromote
+        ? (ad?.linked_product_share_code || ad?.linked_product_code || ad?.product_code || "")
+        : adId;
+    const shareCode = isProductPromote
+        ? (ad?.linked_product_share_code || ad?.share_code || ad?.shareCode || "")
+        : `ad-${adId}`;
     return {
+        ...ad,
         id: String(ad?.id || "").startsWith("ad-") ? ad.id : `ad-${adId || ad?.id}`,
         adId,
         user_id: ad?.user_id ?? ad?.userId,
@@ -320,7 +377,7 @@ const mapPublicActiveAdToHomeAd = (ad: any) => {
         title: ad?.title || ad?.description || campaignType,
         description: ad?.description || "",
         category: campaignType,
-        price: Number(ad?.budget || 0),
+        price,
         image_url: mediaPreview,
         media_preview: mediaPreview,
         media_gallery: ad?.media_gallery || ad?.mediaGallery || [],
@@ -332,14 +389,15 @@ const mapPublicActiveAdToHomeAd = (ad: any) => {
         views_count: Number(ad?.views_count || ad?.impressions || 0),
         created_at: ad?.created_at || ad?.createdAt,
         profile_picture: ad?.profile_picture || ad?.user?.profile_picture || null,
-        product_code: adId,
-        share_code: `ad-${adId}`,
+        product_code: productCode,
+        share_code: shareCode,
         campaign_type: campaignType,
         active_link: draft.activeLink || ad?.active_link || "",
         cta_topic: draft.ctaTopic || ad?.cta_topic || "Visit",
         cta_value: draft.ctaValue || ad?.cta_value || "",
-        linked_product_id: draft.linkedProductId ?? ad?.linked_product_id ?? null,
-        linked_product_code: draft.linkedProductCode || ad?.linked_product_code || null,
+        linked_product_id: ad?.linked_product_id ?? null,
+        linked_product_share_code: ad?.linked_product_share_code || ad?.linked_product_code || null,
+        linked_product_code: ad?.linked_product_share_code || ad?.linked_product_code || null,
         is_sponsored: true,
         user_liked: !!ad?.user_liked,
         ad_coin_collected: !!ad?.ad_coin_collected,
@@ -490,7 +548,7 @@ export default function DashboardPage() {
             id: `write-${post.id}`,
             title: post.text.length > 48 ? `${post.text.slice(0, 48)}...` : post.text,
             description: `By ${post.user.name}`,
-            image: post.user.img,
+            image: getTrendingWritePostImage(post),
             views: post.views || 0,
             likes: post.likes,
             source: "write" as const,
@@ -859,8 +917,9 @@ export default function DashboardPage() {
     const getProductPromoteShareItem = (item: any) => {
         if (item?.campaign_type !== "Product Promote") return item;
 
-        const promotedProductId = item.product_id ?? item.productId ?? item.linked_product_id ?? item.id;
-        const promotedProductCode = item.product_code ?? item.linked_product_code ?? promotedProductId;
+        const promotedProductId = item.linked_product_id ?? item.product_id ?? item.productId;
+        const promotedProductCode = item.linked_product_share_code ?? item.linked_product_code ?? item.share_code ?? item.shareCode;
+        if (promotedProductId == null && !promotedProductCode) return item;
 
         return {
             ...item,
@@ -868,9 +927,11 @@ export default function DashboardPage() {
             productId: promotedProductId,
             product_id: promotedProductId,
             linked_product_id: promotedProductId,
+            linked_product_share_code: promotedProductCode,
             product_code: promotedProductCode,
             linked_product_code: promotedProductCode,
             shareCode: promotedProductCode,
+            share_code: promotedProductCode,
             is_sponsored: true,
             campaign_type: "Product Promote",
         };
@@ -1009,6 +1070,10 @@ export default function DashboardPage() {
 
     const openAdInShop = (ad: any, previewType: string | null) => {
         if (!ad?.id) return;
+        if (ad?.campaign_type === "Product Promote" || ad?.campaignType === "Product Promote") {
+            void openProductAdInShopSecondView(ad);
+            return;
+        }
         const kind = getSponsoredSecondViewKind(ad, previewType);
         setAdPreviewModal({ ad, kind });
         void viewFeedItem(ad);
@@ -1021,80 +1086,15 @@ export default function DashboardPage() {
         setProductAdModal(null);
     };
 
-    const resolveProductPromoteOriginalProduct = async (product: any) => {
-        if (product?.campaign_type !== "Product Promote") return product;
-
-        const extractProductTargetFromLink = (link: any) => {
-            const raw = String(link || "").trim();
-            if (!raw) return { id: null as string | number | null, code: null as string | null };
-            try {
-                const url = new URL(raw.startsWith("http") ? raw : `https://googer.local${raw.startsWith("/") ? raw : `/${raw}`}`);
-                const parts = url.pathname.split("/").filter(Boolean);
-                const index = parts.findIndex((part) => ["product", "share", "shop"].includes(part.toLowerCase()));
-                const value = index >= 0 ? parts[index + 1] : "";
-                if (!value) return { id: null, code: null };
-                const decoded = decodeURIComponent(value);
-                return /^\d+$/.test(decoded) ? { id: decoded, code: null } : { id: null, code: decoded };
-            } catch {
-                return { id: null, code: null };
-            }
-        };
-
-        const linkTarget = extractProductTargetFromLink(product?.active_link);
-        const isAdShell = String(product?.id || "").startsWith("ad-") || product?.adId || product?.ad_id;
-        const linkedId = product?.linked_product_id ?? product?.product_id ?? product?.productId;
-        const linkedCode =
-            product?.linked_product_code ??
-            linkTarget.code ??
-            (!isAdShell ? (product?.product_code ?? product?.share_code ?? product?.shareCode) : null);
-        const fallbackId = String(product?.id || "").startsWith("ad-") ? null : product?.id;
-        const targetId = linkedId ?? linkTarget.id ?? fallbackId;
-
-        let originalProduct = null;
-        if (targetId != null) {
-            try {
-                originalProduct = await marketService.getItemById(targetId);
-            } catch (error) {
-                console.error("Failed to fetch promoted product by id:", error);
-            }
-        }
-
-        if (!originalProduct && linkedCode) {
-            try {
-                originalProduct = await marketService.getItemByCode(String(linkedCode));
-            } catch (error) {
-                console.error("Failed to fetch promoted product by code:", error);
-            }
-        }
-
-        return {
-            ...(originalProduct || product),
-            id: originalProduct?.id ?? targetId ?? product?.id,
-            product_id: originalProduct?.id ?? targetId ?? product?.product_id,
-            linked_product_id: originalProduct?.id ?? targetId ?? product?.linked_product_id,
-            linked_product_code: originalProduct?.product_code ?? linkedCode ?? product?.linked_product_code,
-            is_sponsored: false,
-            isAd: false,
-            campaign_type: product.campaign_type,
-            user_liked: product.user_liked,
-            likes_count: product.likes_count,
-            comments_count: product.comments_count,
-            shares_count: product.shares_count,
-            views_count: product.views_count,
-            ad_coin_collected: product.ad_coin_collected,
-            ad_like_locked: product.ad_like_locked,
-            ad_coin_value: product.ad_coin_value,
-            adId: product.adId || product.ad_id,
-            ad_id: product.ad_id || product.adId,
-            isProductPromoteSecondView: true,
-            share_code: product.share_code,
-        };
-    };
-
     const openProductAdInShopSecondView = async (product: any) => {
         if (!product?.id) return;
         setProductAdSizeError(false);
-        setProductAdModal(await resolveProductPromoteOriginalProduct(product));
+        const originalProduct = await resolveProductPromoteProduct(product);
+        if (!originalProduct) {
+            setNotification({ type: "error", title: "Product unavailable", message: "The promoted product could not be loaded." });
+            return;
+        }
+        setProductAdModal(originalProduct);
         void viewFeedItem(product);
     };
 
@@ -1102,7 +1102,12 @@ export default function DashboardPage() {
         if (!product?.id) return;
         setProductAdSizeError(true);
         setNotification({ type: "error", title: "Size is required", message: "Size is required" });
-        setProductAdModal(await resolveProductPromoteOriginalProduct(product));
+        const originalProduct = await resolveProductPromoteProduct(product);
+        if (!originalProduct) {
+            setNotification({ type: "error", title: "Product unavailable", message: "The promoted product could not be loaded." });
+            return;
+        }
+        setProductAdModal(originalProduct);
         void viewFeedItem(product);
     };
 
@@ -1194,6 +1199,7 @@ export default function DashboardPage() {
                                     <ProfilePromoteCarousel
                                         key="profile-promote-carousel"
                                         ads={item.ads}
+                                        cardsPerView={2}
                                         onProductClick={openProductAdInShopSecondView}
                                         onProfileClick={(clickedAd) => {
                                             if (clickedAd.user_id) {
@@ -1275,7 +1281,7 @@ export default function DashboardPage() {
                                         className="group grid grid-cols-[74px_minmax(0,1fr)] gap-3 rounded-xl border border-white/8 bg-white/[0.035] p-2.5 text-left shadow-[0_8px_24px_rgba(0,0,0,0.12)] transition duration-200 hover:-translate-y-0.5 hover:border-white/16 hover:bg-white/[0.055] hover:shadow-[0_16px_34px_rgba(0,0,0,0.22)]"
                                     >
                                         <div className="relative h-[74px] overflow-hidden rounded-lg bg-black/30">
-                                            <Image src={post.image} alt={post.title} fill sizes="74px" className="object-cover transition duration-300 group-hover:scale-105" unoptimized />
+                                            <TrendingPostThumb src={post.image} alt={post.title} />
                                         </div>
                                         <div className="min-w-0 py-0.5">
                                             <h3 className="line-clamp-2 text-[12px] font-black leading-4 text-white">{post.title}</h3>

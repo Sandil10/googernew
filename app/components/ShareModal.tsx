@@ -107,32 +107,19 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
     const providedUrl = shareUrl || url || "";
     const isProductPromote = product?.campaign_type === "Product Promote";
     const isSponsoredAd = !!product?.is_sponsored && !isProductPromote;
-
-    // Helper: Generate stable 10-char alphanumeric share code
-    const generateProductCode = (seed?: string) => {
-        const source = String(seed || title || providedUrl || "share").toUpperCase();
-        const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-        let hash = 0;
-
-        for (let index = 0; index < source.length; index += 1) {
-            hash = (hash * 31 + source.charCodeAt(index)) >>> 0;
-        }
-
-        let output = "";
-        for (let index = 0; index < 10; index += 1) {
-            hash = (hash * 1664525 + 1013904223) >>> 0;
-            output += alphabet[hash % alphabet.length];
-        }
-
-        return output;
-    };
+    const isGoogShareItem =
+        String(product?.id || "").startsWith("goog-") ||
+        (!product?.is_sponsored && !product?.campaign_type && typeof product?.text === "string");
+    const canShowResellFlow = !!product && !isSponsoredAd && !isGoogShareItem;
 
     // Animate in/out
     useEffect(() => {
         if (isOpen) {
             setTimeout(() => setIsVisible(true), 10);
-            setProductCode(generateProductCode(isProductPromote ? (product?.product_code || product?.id || title) : (product?.adId || product?.product_code || product?.id || title)));
-            setView(isSponsoredAd ? "share" : initialView);
+            const canonicalUrl = product ? getShareUrlForItem(product) : providedUrl;
+            const canonicalCode = String(canonicalUrl || "").split("/").filter(Boolean).pop() || "";
+            setProductCode(canonicalCode);
+            setView(canShowResellFlow ? initialView : "share");
             setCopied(false);
             setResellId("");
             setResellLink("");
@@ -141,7 +128,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
         } else {
             setIsVisible(false);
         }
-    }, [isOpen, initialView, isProductPromote, isSponsoredAd, product, title, providedUrl]);
+    }, [isOpen, initialView, isProductPromote, isSponsoredAd, canShowResellFlow, product, title, providedUrl]);
 
     // Construct final share URL with requested public path format.
     const getShareLinks = () => {
@@ -393,7 +380,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                             </div>
 
                             {/* Resell CTA */}
-                            {product && !isSponsoredAd && (
+                            {canShowResellFlow && (
                                 <button
                                     onClick={() => setView("resell")}
                                     className="w-full flex items-center gap-4 p-4 rounded-2xl border border-amber-500/20 bg-gradient-to-r from-amber-500/10 via-orange-500/5 to-transparent hover:from-amber-500/15 hover:border-amber-500/30 transition-all duration-200 group active:scale-[0.98]"
@@ -415,7 +402,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                                 </button>
                             )}
 
-                            {!isSponsoredAd && (
+                            {canShowResellFlow && (
                                 <p className="text-center text-[10px] text-white/15 font-medium pb-2">
                                     Googer Marketplace · Share & Earn
                                 </p>

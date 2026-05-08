@@ -36,6 +36,7 @@ export function SharedProfilePromoteAdCard({
   const [loadingProducts, setLoadingProducts] = useState(true);
   const raw = ad.raw || {};
 
+
   useEffect(() => {
     const ownerId = ad.userId;
     if (!ownerId) {
@@ -128,11 +129,13 @@ export function SharedProfilePromoteAdCard({
           <button
             type="button"
             onClick={() => onProfileClick(ad.raw || ad)}
-            className="block truncate text-left text-[10px] font-black uppercase tracking-tight text-white hover:text-blue-400 transition-colors"
+            className="block truncate text-left text-[10px] font-black normal-case tracking-tight text-white hover:text-blue-400 transition-colors"
           >
             {username}
           </button>
-          <span className="block text-[8px] font-bold tracking-[0.14em] text-slate-500">Ad</span>
+          <div className="flex items-center gap-1.5">
+            <span className="block text-[8px] font-bold tracking-[0.14em] text-slate-500">Ad</span>
+          </div>
         </div>
         <SubscribeButton userId={ad.userId} initialIsSubscribed={false} size="small" />
       </div>
@@ -140,7 +143,14 @@ export function SharedProfilePromoteAdCard({
       <div className="grid grid-cols-3 gap-1 p-1.5">
         {displayProducts.map((product: any) => {
           const isPlaceholder = !!product._placeholder;
-          const img = normalizeMediaSrc(product.image_url || product.media_preview);
+          const primaryPreview =
+            product.image_url ||
+            product.main_image ||
+            (Array.isArray(product.images) ? product.images[0] : undefined) ||
+            product.thumbnail_url ||
+            product.media_preview ||
+            product.media_url;
+          const img = normalizeMediaSrc(primaryPreview);
           const price = product.promo_price || product.price;
           return (
             <button

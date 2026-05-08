@@ -1,9 +1,20 @@
 
 const isClient = typeof window !== 'undefined';
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+const getStoredToken = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null);
+
+const buildApiError = (response: Response, data: any, fallbackMessage: string) => {
+    const error = new Error(data?.message + (data?.error ? `: ${data.error}` : '') || fallbackMessage) as Error & {
+        status?: number;
+        unauthorized?: boolean;
+    };
+    error.status = response.status;
+    error.unauthorized = response.status === 401;
+    return error;
+};
 
 const getAuthHeaders = () => {
-    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+    const token = getStoredToken();
     return {
         'Content-Type': 'application/json',
         'Authorization': token ? `Bearer ${token}` : ''
@@ -81,17 +92,47 @@ export const marketService = {
 
     // Get item by ID
     getItemById: async (id: string | number) => {
-        const numericId = String(id).replace(/^ad-/, "");
+        const rawId = String(id ?? "");
+        // Support common prefixes used across the app: "ad-<id>", "item-<id>", "product-<id>"
+        const numericId = rawId
+            .trim()
+            .replace(/^(ad|item|product|market|promo)-/i, "");
+
+        if (!numericId || !/^\d+$/.test(numericId)) {
+            const error = new Error(`Invalid market item id: ${rawId}`);
+            console.error("Error fetching market item:", error);
+            throw error;
+        }
+
         try {
             const response = await fetch(`${API_URL}/market/${numericId}`, {
-                method: 'GET',
+                method: "GET",
                 headers: getAuthHeaders(),
             });
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.message || 'Failed to fetch item');
-            return data.data;
+
+            // Try to parse JSON error bodies, but still handle non-JSON gracefully.
+            let data: unknown = null;
+            try {
+                data = await response.json();
+            } catch {
+                // leave data as null; we'll build an error message from status
+            }
+
+            if (!response.ok) {
+                const message =
+                    (data as any)?.message ||
+                    (data as any)?.data?.message ||
+                    (data as any)?.error ||
+                    `Failed to fetch item (HTTP ${response.status})`;
+                const error = new Error(message) as Error & { status?: number };
+                error.status = response.status;
+                console.warn("Error fetching market item:", { numericId, status: response.status, data });
+                throw error;
+            }
+
+            return (data as any)?.data;
         } catch (error) {
-            console.error('Error fetching market item:', error);
+            console.warn("Error fetching market item:", error);
             throw error;
         }
     },
@@ -135,6 +176,20 @@ export const marketService = {
             const data = await response.json();
             if (!response.ok) return null;
             return data.product;
+        } catch {
+            return null;
+        }
+    },
+
+    getUnifiedShareItem: async (shareCode: string) => {
+        try {
+            const response = await fetch(`${API_URL}/market/share-unified/${encodeURIComponent(shareCode)}`, {
+                method: 'GET',
+                cache: 'no-store',
+            });
+            const data = await response.json();
+            if (!response.ok) return null;
+            return data;
         } catch {
             return null;
         }
@@ -210,7 +265,7 @@ export const marketService = {
                 headers: getAuthHeaders(),
             });
             const data = await response.json();
-            if (!response.ok) throw new Error(data.message || 'Failed to like item');
+            if (!response.ok) throw buildApiError(response, data, 'Failed to like item');
             return data.liked;
         } catch (error) {
             console.error('Error liking market item:', error);
@@ -226,7 +281,7 @@ export const marketService = {
                 headers: getAuthHeaders(),
             });
             const data = await response.json();
-            if (!response.ok) throw new Error(data.message || 'Failed to collect ad coin');
+            if (!response.ok) throw buildApiError(response, data, 'Failed to collect ad coin');
             return data;
         } catch (error) {
             console.error('Error collecting ad coin:', error);
@@ -398,5 +453,7 @@ export const marketService = {
             const data = await response.json();
             return data.data || [];
         } catch (error) { console.error(error); return []; }
-    }
+    },
+
+    hasAuthToken: () => !!getStoredToken(),
 };

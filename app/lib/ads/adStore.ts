@@ -8,11 +8,16 @@ export interface AdLiveState {
     user_liked?: boolean;
     likes_count?: number;
     like_count?: number;
+    likeCount?: number;
+    like_pending?: boolean;
     ad_coin_collected?: boolean;
     ad_like_locked?: boolean;
     views_count?: number;
+    viewCount?: number;
     comments_count?: number;
+    commentCount?: number;
     shares_count?: number;
+    shareCount?: number;
     is_subscribed?: boolean;
     // New fields for Product Promote ads
     selected_size?: string | null;
@@ -20,8 +25,15 @@ export interface AdLiveState {
     quantity?: number;
 }
 
+const numberOrUndefined = (value: any) => {
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : undefined;
+};
+
 interface AdStore {
     adStates: Record<string, AdLiveState>;
+    adStatesByViewer: Record<string, Record<string, AdLiveState>>;
+    viewerKey: string | null;
     
     /**
      * Updates the live state of an ad by its identity.
@@ -37,28 +49,48 @@ interface AdStore {
      * Initializes or merges multiple ads into the store.
      */
     syncAds: (ads: any[]) => void;
+    setViewer: (viewer: any) => void;
+    setViewerContext: (viewer: any) => void;
+    resetAdState: () => void;
+    resetViewerState: () => void;
+    clearAdStore: () => void;
 }
 
 export const useAdStore = create<AdStore>((set, get) => ({
     adStates: {},
+    adStatesByViewer: {},
+    viewerKey: null,
     
     updateAdState: (item, updates) => {
         const id = getAdInteractionId(item);
         if (!id) return;
         
         set((state) => {
-            const current = state.adStates[id] || {};
+            const viewerKey = state.viewerKey || "__guest__";
+            const viewerStates = state.adStatesByViewer[viewerKey] || {};
+            const current = viewerStates[id] || {};
             const next = typeof updates === 'function' ? updates(current) : updates;
             const normalizedNext = {
                 ...next,
-                ...(next.like_count !== undefined && next.likes_count === undefined ? { likes_count: next.like_count } : {}),
-                ...(next.likes_count !== undefined && next.like_count === undefined ? { like_count: next.likes_count } : {}),
+                ...((next.like_count !== undefined || next.likeCount !== undefined) && next.likes_count === undefined ? { likes_count: next.like_count ?? next.likeCount } : {}),
+                ...(next.likes_count !== undefined && next.like_count === undefined ? { like_count: next.likes_count, likeCount: next.likes_count } : {}),
+                ...(next.comments_count !== undefined && next.commentCount === undefined ? { commentCount: next.comments_count } : {}),
+                ...(next.commentCount !== undefined && next.comments_count === undefined ? { comments_count: next.commentCount } : {}),
+                ...(next.shares_count !== undefined && next.shareCount === undefined ? { shareCount: next.shares_count } : {}),
+                ...(next.shareCount !== undefined && next.shares_count === undefined ? { shares_count: next.shareCount } : {}),
+                ...(next.views_count !== undefined && next.viewCount === undefined ? { viewCount: next.views_count } : {}),
+                ...(next.viewCount !== undefined && next.views_count === undefined ? { views_count: next.viewCount } : {}),
+            };
+            const nextViewerStates = {
+                ...viewerStates,
+                [id]: { ...current, ...normalizedNext }
             };
             return {
-                adStates: {
-                    ...state.adStates,
-                    [id]: { ...current, ...normalizedNext }
-                }
+                adStates: nextViewerStates,
+                adStatesByViewer: {
+                    ...state.adStatesByViewer,
+                    [viewerKey]: nextViewerStates,
+                },
             };
         });
     },
@@ -66,14 +98,17 @@ export const useAdStore = create<AdStore>((set, get) => ({
     getAdState: (item) => {
         const id = getAdInteractionId(item);
         if (!id) return {};
-        return get().adStates[id] || {};
+        const state = get();
+        const viewerKey = state.viewerKey || "__guest__";
+        return state.adStatesByViewer[viewerKey]?.[id] || state.adStates[id] || {};
     },
 
     syncAds: (ads) => {
         if (!ads || !Array.isArray(ads)) return;
         
         set((state) => {
-            const nextStates = { ...state.adStates };
+            const viewerKey = state.viewerKey || "__guest__";
+            const nextStates = { ...(state.adStatesByViewer[viewerKey] || {}) };
             let hasChanges = false;
 
             ads.forEach(ad => {
@@ -84,17 +119,24 @@ export const useAdStore = create<AdStore>((set, get) => ({
                 const incoming: AdLiveState = {};
                 
                 // Seed missing values from API data while preserving live interaction state.
-                if (current.user_liked === undefined && ad.user_liked !== undefined) incoming.user_liked = ad.user_liked;
-                if (current.likes_count === undefined && ad.likes_count !== undefined) incoming.likes_count = ad.likes_count;
-                if (current.likes_count === undefined && ad.like_count !== undefined && incoming.likes_count === undefined) incoming.likes_count = ad.like_count;
+                if (!current.like_pending && ad.user_liked !== undefined) incoming.user_liked = ad.user_liked;
+                const nextLikesCount = numberOrUndefined(ad.likes_count ?? ad.like_count ?? ad.likeCount);
+                if (!current.like_pending && nextLikesCount !== current.likes_count) incoming.likes_count = nextLikesCount;
                 if ((current.like_count === undefined || incoming.likes_count !== undefined) && (incoming.likes_count ?? current.likes_count) !== undefined) {
                     incoming.like_count = incoming.likes_count ?? current.likes_count;
+                    incoming.likeCount = incoming.likes_count ?? current.likes_count;
                 }
-                if (current.ad_coin_collected === undefined && ad.ad_coin_collected !== undefined) incoming.ad_coin_collected = ad.ad_coin_collected;
-                if (current.ad_like_locked === undefined && ad.ad_like_locked !== undefined) incoming.ad_like_locked = ad.ad_like_locked;
-                if (current.views_count === undefined && ad.views_count !== undefined) incoming.views_count = ad.views_count;
-                if (current.comments_count === undefined && ad.comments_count !== undefined) incoming.comments_count = ad.comments_count;
-                if (current.shares_count === undefined && ad.shares_count !== undefined) incoming.shares_count = ad.shares_count;
+                if (ad.ad_coin_collected !== undefined) incoming.ad_coin_collected = !!ad.ad_coin_collected;
+                if (ad.ad_like_locked !== undefined) incoming.ad_like_locked = !!ad.ad_like_locked;
+                const nextViewsCount = numberOrUndefined(ad.views_count ?? ad.viewCount);
+                if (nextViewsCount !== current.views_count) incoming.views_count = nextViewsCount;
+                if (incoming.views_count !== undefined) incoming.viewCount = incoming.views_count;
+                const nextCommentsCount = numberOrUndefined(ad.comments_count ?? ad.commentCount);
+                if (nextCommentsCount !== current.comments_count) incoming.comments_count = nextCommentsCount;
+                if (incoming.comments_count !== undefined) incoming.commentCount = incoming.comments_count;
+                const nextSharesCount = numberOrUndefined(ad.shares_count ?? ad.shareCount);
+                if (nextSharesCount !== current.shares_count) incoming.shares_count = nextSharesCount;
+                if (incoming.shares_count !== undefined) incoming.shareCount = incoming.shares_count;
 
                 // Simple shallow comparison to avoid unnecessary state updates
                 const merged = { ...current, ...incoming };
@@ -104,7 +146,61 @@ export const useAdStore = create<AdStore>((set, get) => ({
                 }
             });
 
-            return hasChanges ? { adStates: nextStates } : state;
+            return hasChanges ? {
+                adStates: nextStates,
+                adStatesByViewer: {
+                    ...state.adStatesByViewer,
+                    [viewerKey]: nextStates,
+                },
+            } : state;
         });
-    }
+    },
+
+    setViewer: (viewer) => {
+        const nextViewerKey =
+            viewer === null || viewer === undefined || viewer === ""
+                ? null
+                : String(viewer?.id ?? viewer?.user_id ?? viewer);
+
+        set((state) => (
+            state.viewerKey === nextViewerKey
+                ? state
+                : {
+                    viewerKey: nextViewerKey,
+                    adStates: state.adStatesByViewer[nextViewerKey || "__guest__"] || {},
+                }
+        ));
+    },
+
+    setViewerContext: (viewer) => {
+        get().setViewer(viewer);
+    },
+
+    resetAdState: () => {
+        const viewerKey = get().viewerKey || "__guest__";
+        set((state) => ({
+            adStates: {},
+            adStatesByViewer: {
+                ...state.adStatesByViewer,
+                [viewerKey]: {},
+            },
+        }));
+    },
+
+    resetViewerState: () => {
+        const viewerKey = get().viewerKey || "__guest__";
+        set((state) => ({
+            adStates: {},
+            adStatesByViewer: {
+                ...state.adStatesByViewer,
+                [viewerKey]: {},
+            },
+        }));
+    },
+
+    clearAdStore: () => set({
+        adStates: {},
+        adStatesByViewer: {},
+        viewerKey: null,
+    }),
 }));

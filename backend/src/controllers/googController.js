@@ -1,7 +1,163 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
+const crypto = require('crypto');
 
 let schemaReady = false;
+let googShareCodesReady = false;
+
+const SHARE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+const DIGITS = '0123456789';
+const UPPERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const LOWERS = 'abcdefghijklmnopqrstuvwxyz';
+const SHARE_CODE_PATTERN = /^[0-9A-Za-z]{8}$/;
+const GOOG_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnopqrstuvwxyz';
+
+const hash32 = (input, seed = 0x811c9dc5) => {
+    let hash = seed >>> 0;
+    const value = String(input || '');
+    for (let index = 0; index < value.length; index += 1) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return hash >>> 0;
+};
+
+const positiveModulo = (value, modulus) => {
+    const normalized = Number(value) >>> 0;
+    return normalized % modulus;
+};
+
+const buildShortShareCode = (type, target, length = 8) => {
+    const normalizedTarget = String(target || '').trim();
+    if (!normalizedTarget) return '';
+    const payload = `${type}:${normalizedTarget}`;
+    let stateA = hash32(payload, 0x9e3779b9);
+    let stateB = hash32(payload, 0x85ebca6b);
+
+    const chars = [];
+    for (let index = 0; index < length; index += 1) {
+        stateA = (Math.imul(stateA ^ (stateA >>> 15), 2246822519) + stateB + index) >>> 0;
+        stateB = (Math.imul(stateB ^ (stateB >>> 13), 3266489917) + stateA + index * 17) >>> 0;
+        const nextIndex = positiveModulo(stateA ^ stateB, SHARE_ALPHABET.length);
+        chars.push(SHARE_ALPHABET[nextIndex]);
+    }
+
+    const codeChars = [...chars];
+    const hasDigit = codeChars.some((char) => DIGITS.includes(char));
+    const hasUpper = codeChars.some((char) => UPPERS.includes(char));
+    const hasLower = codeChars.some((char) => LOWERS.includes(char));
+
+    if (!hasDigit) codeChars[positiveModulo(stateA + 1, length)] = DIGITS[positiveModulo(stateB, DIGITS.length)];
+    if (!hasUpper) codeChars[positiveModulo(stateB + 3, length)] = UPPERS[positiveModulo(stateA, UPPERS.length)];
+    if (!hasLower) codeChars[positiveModulo(stateA + stateB + 5, length)] = LOWERS[positiveModulo(stateA ^ stateB, LOWERS.length)];
+
+    return codeChars.join('');
+};
+
+const generateRandomGoogShareCode = (length = 8) => {
+    const bytes = crypto.randomBytes(length);
+    let code = '';
+    for (let index = 0; index < length; index += 1) {
+        code += GOOG_CODE_ALPHABET[bytes[index] % GOOG_CODE_ALPHABET.length];
+    }
+    return code;
+};
+
+const getCanonicalGoogShareCode = (row) => {
+    const storedCode = String(row?.share_code || '').trim();
+    if (SHARE_CODE_PATTERN.test(storedCode)) return storedCode;
+    return buildShortShareCode('g', row?.id, 8);
+};
+
+const pickGoogShareCode = async (postId) => {
+    const deterministic = buildShortShareCode('g', postId, 8);
+    const deterministicResult = await pool.query(
+        'SELECT id FROM goog_posts WHERE LOWER(share_code) = LOWER($1) LIMIT 1',
+        [deterministic]
+    );
+    if (!deterministicResult.rows.length || Number(deterministicResult.rows[0].id) === Number(postId)) {
+        return deterministic;
+    }
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+        const candidate = generateRandomGoogShareCode(8);
+        const existsResult = await pool.query(
+            'SELECT id FROM goog_posts WHERE LOWER(share_code) = LOWER($1) LIMIT 1',
+            [candidate]
+        );
+        if (!existsResult.rows.length) return candidate;
+    }
+
+    throw new Error('Unable to generate unique Goog share code');
+};
+
+const ensureGoogShareCodes = async () => {
+    if (googShareCodesReady) return;
+
+    await pool.query(`ALTER TABLE goog_posts ADD COLUMN IF NOT EXISTS share_code VARCHAR(32);`);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS goog_share_aliases (
+            id SERIAL PRIMARY KEY,
+            alias_code VARCHAR(32) UNIQUE NOT NULL,
+            goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
+    await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_goog_share_aliases_alias_code
+        ON goog_share_aliases(alias_code);
+    `);
+
+    const rememberGoogShareAlias = async (aliasCode, googId) => {
+        const normalizedAlias = String(aliasCode || '').trim();
+        if (!normalizedAlias || SHARE_CODE_PATTERN.test(normalizedAlias) || !googId) return;
+
+        await pool.query(
+            `INSERT INTO goog_share_aliases (alias_code, goog_id)
+             VALUES ($1, $2)
+             ON CONFLICT (alias_code) DO UPDATE SET goog_id = EXCLUDED.goog_id`,
+            [normalizedAlias, googId]
+        );
+    };
+
+    const invalidResult = await pool.query(`
+        SELECT id, share_code
+        FROM goog_posts
+        WHERE share_code IS NULL
+           OR share_code = ''
+           OR share_code !~ '^[0-9A-Za-z]{8}$'
+    `);
+
+    for (const row of invalidResult.rows || []) {
+        await rememberGoogShareAlias(row.share_code, row.id);
+        const code = await pickGoogShareCode(row.id);
+        await pool.query('UPDATE goog_posts SET share_code = $1 WHERE id = $2', [code, row.id]);
+    }
+
+    const duplicateResult = await pool.query(`
+        SELECT id
+        FROM (
+            SELECT id,
+                   ROW_NUMBER() OVER (PARTITION BY LOWER(share_code) ORDER BY id) AS rn
+            FROM goog_posts
+            WHERE share_code ~ '^[0-9A-Za-z]{8}$'
+        ) ranked
+        WHERE rn > 1
+    `);
+
+    for (const row of duplicateResult.rows || []) {
+        const code = await pickGoogShareCode(row.id);
+        await pool.query('UPDATE goog_posts SET share_code = $1 WHERE id = $2', [code, row.id]);
+    }
+
+    await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_goog_posts_share_code_unique
+        ON goog_posts (LOWER(share_code))
+        WHERE share_code IS NOT NULL AND share_code <> ''
+    `);
+
+    googShareCodesReady = true;
+};
 
 const ensureGoogSchema = async () => {
     if (schemaReady) return;
@@ -12,6 +168,7 @@ const ensureGoogSchema = async () => {
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             text VARCHAR(75) NOT NULL,
             text_color VARCHAR(20) DEFAULT '#FFFFFF',
+            share_code VARCHAR(32),
             likes_count INTEGER DEFAULT 0,
             comments_count INTEGER DEFAULT 0,
             views_count INTEGER DEFAULT 0,
@@ -95,6 +252,8 @@ const ensureGoogSchema = async () => {
         CREATE INDEX IF NOT EXISTS idx_goog_reports_post ON goog_reports(goog_id);
     `);
 
+    await ensureGoogShareCodes();
+
     schemaReady = true;
 };
 
@@ -114,12 +273,30 @@ const getOptionalUserId = (req) => {
     }
 };
 
+const toUtcIso = (value) => {
+    if (!value) return null;
+    const raw = String(value).trim();
+    if (!raw) return null;
+    const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(raw)
+        ? `${raw.replace(' ', 'T')}Z`
+        : raw;
+    const date = new Date(normalized);
+    const time = date.getTime();
+    return Number.isFinite(time) ? date.toISOString() : null;
+};
+
 const normalizePost = (row) => ({
     id: Number(row.id),
+    share_code: getCanonicalGoogShareCode(row),
+    shareCode: getCanonicalGoogShareCode(row),
+    canonical_share_code: getCanonicalGoogShareCode(row),
+    canonical_share_path: `/share/${getCanonicalGoogShareCode(row)}`,
     text: row.text,
     textColor: row.text_color || '#FFFFFF',
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: toUtcIso(row.created_at),
+    created_at: toUtcIso(row.created_at),
+    updatedAt: toUtcIso(row.updated_at),
+    updated_at: toUtcIso(row.updated_at),
     likes: Number(row.likes_count || 0),
     comments: Number(row.comments_count || 0),
     views: Number(row.views_count || 0),
@@ -172,10 +349,14 @@ exports.createPost = async (req, res) => {
         if (!text) return res.status(400).json({ success: false, message: 'Post text is required' });
 
         const created = await pool.query(
-            `INSERT INTO goog_posts (user_id, text, text_color)
-             VALUES ($1, $2, $3)
+            `INSERT INTO goog_posts (user_id, text, text_color, share_code, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC')
              RETURNING *`,
-            [userId, text, textColor]
+            [userId, text, textColor, await pickGoogShareCode(`new:${userId}:${Date.now()}:${Math.random()}`)]
+        );
+        await pool.query(
+            'UPDATE goog_posts SET share_code = $1 WHERE id = $2',
+            [await pickGoogShareCode(created.rows[0].id), created.rows[0].id]
         );
         const result = await pool.query(`${selectPostsSql} WHERE gp.id = $2`, [userId, created.rows[0].id]);
         res.status(201).json({ success: true, data: normalizePost(result.rows[0]) });
@@ -197,7 +378,7 @@ exports.updatePost = async (req, res) => {
 
         const updated = await pool.query(
             `UPDATE goog_posts
-             SET text = $1, text_color = $2, updated_at = CURRENT_TIMESTAMP
+             SET text = $1, text_color = $2, updated_at = NOW() AT TIME ZONE 'UTC'
              WHERE id = $3 AND user_id = $4
              RETURNING *`,
             [text, textColor, id, userId]
@@ -372,16 +553,20 @@ exports.addComment = async (req, res) => {
         const result = await pool.query(
             `INSERT INTO goog_comments (goog_id, user_id, comment, parent_id)
              VALUES ($1, $2, $3, $4)
-             RETURNING id, goog_id, user_id, comment as text, parent_id, likes, dislikes, reports, created_at`,
+              RETURNING id, goog_id, user_id, comment as text, parent_id, likes, dislikes, reports, created_at`,
             [id, userId, text, Number.isFinite(parentId) ? parentId : null]
         );
+        const comment = result.rows[0];
+        if (comment && comment.created_at) {
+            comment.created_at = toUtcIso(comment.created_at);
+        }
         await pool.query('UPDATE goog_posts SET comments_count = COALESCE(comments_count, 0) + 1 WHERE id = $1', [id]);
 
         const user = await pool.query('SELECT username, profile_picture FROM users WHERE id = $1', [userId]);
         res.status(201).json({
             success: true,
             data: {
-                ...result.rows[0],
+                ...comment,
                 market_id: `goog-${id}`,
                 username: user.rows[0]?.username || 'You',
                 profile_picture: user.rows[0]?.profile_picture,
@@ -407,7 +592,11 @@ exports.getComments = async (req, res) => {
              ORDER BY gc.created_at ASC`,
             [id]
         );
-        res.status(200).json({ success: true, data: result.rows });
+        const normalizedComments = result.rows.map(row => ({
+            ...row,
+            created_at: toUtcIso(row.created_at)
+        }));
+        res.status(200).json({ success: true, data: normalizedComments });
     } catch (error) {
         console.error('Error fetching Goog comments:', error);
         res.status(500).json({ success: false, message: 'Server error fetching Goog comments' });
@@ -543,7 +732,11 @@ exports.getLikes = async (req, res) => {
              ORDER BY gl.created_at DESC`,
             [parseInt(req.params.id, 10)]
         );
-        res.status(200).json({ success: true, data: result.rows });
+        const normalizedLikes = result.rows.map(row => ({
+            ...row,
+            created_at: toUtcIso(row.created_at)
+        }));
+        res.status(200).json({ success: true, data: normalizedLikes });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server error fetching Goog likes' });
     }
@@ -560,7 +753,11 @@ exports.getShares = async (req, res) => {
              ORDER BY gs.created_at DESC`,
             [parseInt(req.params.id, 10)]
         );
-        res.status(200).json({ success: true, data: result.rows });
+        const normalizedShares = result.rows.map(row => ({
+            ...row,
+            created_at: toUtcIso(row.created_at)
+        }));
+        res.status(200).json({ success: true, data: normalizedShares });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server error fetching Goog shares' });
     }
@@ -577,7 +774,11 @@ exports.getViews = async (req, res) => {
              ORDER BY gv.last_viewed_at DESC`,
             [parseInt(req.params.id, 10)]
         );
-        res.status(200).json({ success: true, data: result.rows });
+        const normalizedViews = result.rows.map(row => ({
+            ...row,
+            created_at: toUtcIso(row.created_at)
+        }));
+        res.status(200).json({ success: true, data: normalizedViews });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server error fetching Goog views' });
     }

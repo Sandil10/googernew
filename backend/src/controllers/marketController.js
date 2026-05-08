@@ -1,5 +1,7 @@
 const pool = require('../config/database');
 const jwt = require('jsonwebtoken');
+const { saveUploadedFile } = require('../utils/localUpload');
+const crypto = require('crypto');
 
 let marketFeedSchemaReady = false;
 const tableColumnCache = new Map();
@@ -131,11 +133,117 @@ const safeJsonParse = (value, fallback = null) => {
     }
 };
 
+const BASE64_IMAGE_DATA_URL_PATTERN = /^data:image\/[a-zA-Z0-9.+-]+;base64,/i;
+const stripDataUrl = (value) => {
+    const text = String(value || '').trim();
+    return BASE64_IMAGE_DATA_URL_PATTERN.test(text) ? '' : text;
+};
+
+const getMediaUrl = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') return stripDataUrl(value);
+    if (typeof value === 'object') {
+        return stripDataUrl(value.url || value.image_url || value.image || value.src || value.path || '');
+    }
+    return '';
+};
+
+const getRawMediaValue = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'object') {
+        return String(value.url || value.image_url || value.image || value.src || value.path || '').trim();
+    }
+    return '';
+};
+
+const getDataUrlFallback = (...sources) => {
+    for (const source of sources) {
+        const parsed = safeJsonParse(source, source);
+        const values = Array.isArray(parsed) ? parsed : [parsed];
+        for (const value of values) {
+            const raw = getRawMediaValue(value);
+            if (raw.startsWith('data:')) return raw;
+        }
+    }
+    return '';
+};
+
+const normalizeFeedMediaList = (...sources) => {
+    const output = [];
+    for (const source of sources) {
+        const parsed = safeJsonParse(source, source);
+        const values = Array.isArray(parsed) ? parsed : [parsed];
+        for (const value of values) {
+            const url = getMediaUrl(value);
+            if (url && !output.includes(url)) output.push(url);
+        }
+    }
+    return output;
+};
+
+const stripFeedMediaPayload = (item) => {
+    if (!item) return item;
+    const variants = safeJsonParse(item.variants, item.variants);
+    const variantImages = Array.isArray(variants)
+        ? variants.flatMap((variant) => [variant?.url, variant?.image_url, variant?.image])
+        : [];
+    const mediaGallery = normalizeFeedMediaList(
+        item.images,
+        item.media_gallery,
+        item.image_url,
+        item.main_image,
+        item.media_url,
+        item.thumbnail_url,
+        item.media_preview,
+        variantImages,
+    );
+    const dataUrlFallback = getDataUrlFallback(
+        item.image_url,
+        item.main_image,
+        item.media_url,
+        item.thumbnail_url,
+        item.media_preview,
+        item.media_gallery,
+        item.images,
+        variantImages,
+    );
+    const primaryImage = mediaGallery[0] || dataUrlFallback || '/assets/images/googer.png';
+
+    return {
+        ...item,
+        image_url: getMediaUrl(item.image_url) || getRawMediaValue(item.image_url) || primaryImage,
+        main_image: getMediaUrl(item.main_image) || getMediaUrl(item.image_url) || getRawMediaValue(item.main_image) || primaryImage,
+        media_url: getMediaUrl(item.media_url) || getMediaUrl(item.media_preview) || getRawMediaValue(item.media_url) || primaryImage,
+        thumbnail_url: getMediaUrl(item.thumbnail_url) || getRawMediaValue(item.thumbnail_url) || primaryImage,
+        media_preview: getMediaUrl(item.media_preview) || getMediaUrl(item.image_url) || getRawMediaValue(item.media_preview) || primaryImage,
+        media_gallery: mediaGallery,
+        images: mediaGallery.length ? mediaGallery : (dataUrlFallback ? [dataUrlFallback] : []),
+        profile_picture: getMediaUrl(item.profile_picture),
+        variants: Array.isArray(variants)
+            ? variants.map((variant) => ({
+                ...variant,
+                image: getMediaUrl(variant?.image) || getRawMediaValue(variant?.image),
+                image_url: getMediaUrl(variant?.image_url) || getMediaUrl(variant?.url) || getMediaUrl(variant?.image) || getRawMediaValue(variant?.image_url),
+                url: getMediaUrl(variant?.url) || getMediaUrl(variant?.image_url) || getMediaUrl(variant?.image) || getRawMediaValue(variant?.url),
+            }))
+            : variants,
+        user: item.user
+            ? {
+                ...item.user,
+                profile_picture: getMediaUrl(item.user.profile_picture),
+            }
+            : item.user,
+    };
+};
+
 const attachCurrentUser = (row) => {
     const username = row.owner_username_joined || row.owner_username || row.username || 'User';
     const profilePicture = row.profile_picture || null;
     return {
         ...row,
+        createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+        created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
         username,
         owner_username: username,
         profile_picture: profilePicture,
@@ -185,6 +293,14 @@ const getSeededRandom = (seedInput) => {
     const normalized = Math.abs(hash % 10000) / 10000;
     return normalized * 20;
 };
+
+const shuffleItemsWithSeed = (items, seed, getKey) => (
+    [...items].sort((first, second) => {
+        const firstScore = getSeededRandom(`${seed}:${getKey(first)}`);
+        const secondScore = getSeededRandom(`${seed}:${getKey(second)}`);
+        return firstScore - secondScore;
+    })
+);
 
 const buildUserInterestProfile = (userRow, options = {}) => {
     const viewedCategories = unique((options.viewRows || []).map((row) => normalizeText(row.category)));
@@ -287,6 +403,181 @@ const parseLastShownOrder = (rawValue) => {
         .filter(Boolean);
 };
 
+const SHARE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+const DIGITS = '0123456789';
+const UPPERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const LOWERS = 'abcdefghijklmnopqrstuvwxyz';
+const SHARE_CODE_PATTERN = /^[0-9A-Za-z]{8}$/;
+
+const hash32 = (input, seed = 0x811c9dc5) => {
+    let hash = seed >>> 0;
+    const value = String(input || '');
+    for (let index = 0; index < value.length; index += 1) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return hash >>> 0;
+};
+
+const positiveModulo = (value, modulus) => {
+    const normalized = Number(value) >>> 0;
+    return normalized % modulus;
+};
+
+const buildShortShareCode = (type, target, length = 8) => {
+    const normalizedTarget = String(target || '').trim();
+    if (!normalizedTarget) return '';
+    const payload = `${type}:${normalizedTarget}`;
+    let stateA = hash32(payload, 0x9e3779b9);
+    let stateB = hash32(payload, 0x85ebca6b);
+
+    const chars = [];
+    for (let index = 0; index < length; index += 1) {
+        stateA = (Math.imul(stateA ^ (stateA >>> 15), 2246822519) + stateB + index) >>> 0;
+        stateB = (Math.imul(stateB ^ (stateB >>> 13), 3266489917) + stateA + index * 17) >>> 0;
+        const nextIndex = positiveModulo(stateA ^ stateB, SHARE_ALPHABET.length);
+        chars.push(SHARE_ALPHABET[nextIndex]);
+    }
+
+    const codeChars = [...chars];
+    const hasDigit = codeChars.some((char) => DIGITS.includes(char));
+    const hasUpper = codeChars.some((char) => UPPERS.includes(char));
+    const hasLower = codeChars.some((char) => LOWERS.includes(char));
+
+    if (!hasDigit) codeChars[positiveModulo(stateA + 1, length)] = DIGITS[positiveModulo(stateB, DIGITS.length)];
+    if (!hasUpper) codeChars[positiveModulo(stateB + 3, length)] = UPPERS[positiveModulo(stateA, UPPERS.length)];
+    if (!hasLower) codeChars[positiveModulo(stateA + stateB + 5, length)] = LOWERS[positiveModulo(stateA ^ stateB, LOWERS.length)];
+
+    return codeChars.join('');
+};
+
+const getCanonicalProductShareCode = (productRow) => {
+    if (!productRow) return '';
+    const productCode = String(productRow.product_code || '').trim();
+    if (SHARE_CODE_PATTERN.test(productCode)) return productCode;
+    const target = String(productRow.id || '').trim();
+    return target ? buildShortShareCode('p', target, 8) : '';
+};
+
+const PRODUCT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const PRODUCT_CODE_LENGTH = 8;
+
+const generateProductCode = (length = PRODUCT_CODE_LENGTH) => {
+    const bytes = crypto.randomBytes(length);
+    let code = '';
+    for (let index = 0; index < length; index += 1) {
+        code += PRODUCT_CODE_ALPHABET[bytes[index] % PRODUCT_CODE_ALPHABET.length];
+    }
+    return code;
+};
+
+const generateUniqueProductCode = async () => {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+        const candidate = generateProductCode(PRODUCT_CODE_LENGTH);
+        const existsResult = await pool.query(
+            'SELECT 1 FROM market WHERE LOWER(product_code) = LOWER($1) LIMIT 1',
+            [candidate]
+        );
+        if (existsResult.rows.length === 0) return candidate;
+    }
+    throw new Error('Unable to generate unique product code');
+};
+
+let productShareCodesReady = false;
+let productShareCodeColumnReady = false;
+const ensureMarketProductCodeColumn = async () => {
+    if (productShareCodeColumnReady) return;
+
+    await pool.query(`ALTER TABLE market ADD COLUMN IF NOT EXISTS product_code VARCHAR(32);`);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS product_share_aliases (
+            id SERIAL PRIMARY KEY,
+            alias_code VARCHAR(32) UNIQUE NOT NULL,
+            product_id INTEGER NOT NULL REFERENCES market(id) ON DELETE CASCADE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
+    await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_market_product_code
+        ON market(product_code);
+    `);
+    await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_product_share_aliases_alias_code
+        ON product_share_aliases(alias_code);
+    `);
+
+    productShareCodeColumnReady = true;
+};
+
+const rememberProductShareAlias = async (aliasCode, productId) => {
+    const normalizedAlias = String(aliasCode || '').trim();
+    if (!normalizedAlias || SHARE_CODE_PATTERN.test(normalizedAlias) || !productId) return;
+
+    await ensureMarketProductCodeColumn();
+    await pool.query(
+        `INSERT INTO product_share_aliases (alias_code, product_id)
+         VALUES ($1, $2)
+         ON CONFLICT (alias_code) DO UPDATE SET product_id = EXCLUDED.product_id`,
+        [normalizedAlias, productId]
+    );
+};
+
+const ensureMarketProductShareCodes = async () => {
+    if (productShareCodesReady) return;
+
+    await ensureMarketProductCodeColumn();
+
+    const invalidResult = await pool.query(`
+        SELECT id
+        FROM market
+        WHERE product_code IS NULL
+           OR product_code = ''
+           OR product_code !~ '^[0-9A-Za-z]{8}$'
+    `);
+
+    for (const row of invalidResult.rows || []) {
+        const oldCodeResult = await pool.query('SELECT product_code FROM market WHERE id = $1', [row.id]);
+        await rememberProductShareAlias(oldCodeResult.rows[0]?.product_code, row.id);
+        const code = await generateUniqueProductCode();
+        await pool.query('UPDATE market SET product_code = $1 WHERE id = $2', [code, row.id]);
+    }
+
+    const duplicateResult = await pool.query(`
+        SELECT id
+        FROM (
+            SELECT id,
+                   ROW_NUMBER() OVER (PARTITION BY LOWER(product_code) ORDER BY id) AS rn
+            FROM market
+            WHERE product_code ~ '^[0-9A-Za-z]{8}$'
+        ) ranked
+        WHERE rn > 1
+    `);
+
+    for (const row of duplicateResult.rows || []) {
+        const code = await generateUniqueProductCode();
+        await pool.query('UPDATE market SET product_code = $1 WHERE id = $2', [code, row.id]);
+    }
+
+    productShareCodesReady = true;
+};
+
+const ensureProductRowHasCanonicalShareCode = async (productRow) => {
+    if (!productRow?.id) return productRow;
+    const currentCode = String(productRow.product_code || '').trim();
+    if (SHARE_CODE_PATTERN.test(currentCode)) return productRow;
+
+    await rememberProductShareAlias(currentCode, productRow.id);
+    const code = await generateUniqueProductCode();
+    const updatedResult = await pool.query(
+        `UPDATE market
+         SET product_code = $1
+         WHERE id = $2
+         RETURNING *`,
+        [code, productRow.id]
+    );
+    return updatedResult.rows[0] || { ...productRow, product_code: code };
+};
+
 const isSponsoredFeedItemId = (value) => typeof value === 'string' && value.startsWith('ad-');
 const normalizeSponsoredAdId = (value) => isSponsoredFeedItemId(value) ? value.slice(3) : String(value || '').trim();
 const normalizeSponsoredMediaGallery = (value, fallback = []) => {
@@ -318,6 +609,8 @@ const normalizeSponsoredMediaGallery = (value, fallback = []) => {
     return safeFallback;
 };
 
+const toUtcIso = (value) => (value ? new Date(value).toISOString() : null);
+
 let sponsoredAdsEngagementReady = false;
 const AD_LIKE_COIN_REWARD = 1;
 const DIRECT_VIDEO_PATTERN = /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i;
@@ -346,7 +639,11 @@ const ensureSponsoredAdsEngagementSchema = async () => {
         ALTER TABLE ads
         ADD COLUMN IF NOT EXISTS likes_count INTEGER DEFAULT 0,
         ADD COLUMN IF NOT EXISTS comments_count INTEGER DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS shares_count INTEGER DEFAULT 0;
+        ADD COLUMN IF NOT EXISTS shares_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS linked_product_id INTEGER,
+        ADD COLUMN IF NOT EXISTS linked_product_share_code VARCHAR(32),
+        ADD COLUMN IF NOT EXISTS original_product_id INTEGER,
+        ADD COLUMN IF NOT EXISTS original_product_code VARCHAR(32);
     `);
 
     await pool.query(`
@@ -579,6 +876,13 @@ const smartFeedMix = (products, requestSeed) => {
 
 const mapActiveAdToMarketCard = (row) => {
     const draft = safeJsonParse(row.edit_draft, row.edit_draft) || {};
+    const mediaPreview = row.media_preview || draft.mediaPreview || draft.media_preview || draft.video_url || '';
+    const canonicalShareCode = buildShortShareCode('a', row.ad_id || '', 8);
+    const isProductPromote = String(row.campaign_type || '').trim().toLowerCase() === 'product promote';
+    const originalProductId = row.original_product_id ?? row.linked_product_id ?? null;
+    const originalProductCode = row.original_product_code ?? row.linked_product_share_code ?? null;
+    const linkedProductId = row.linked_product_id ?? originalProductId ?? null;
+    const linkedProductShareCode = row.linked_product_share_code ?? originalProductCode ?? null;
 
     return {
         id: `ad-${row.ad_id}`,
@@ -594,10 +898,14 @@ const mapActiveAdToMarketCard = (row) => {
         stock: null,
         price: Number(row.budget || 0),
         promo_price: null,
-        image_url: row.media_preview || '',
+        image_url: mediaPreview,
+        main_image: mediaPreview,
+        media_url: row.media_url || draft.mediaUrl || draft.media_url || draft.video_url || mediaPreview,
+        thumbnail_url: mediaPreview,
+        video_url: row.video_url || draft.video_url || row.media_url || mediaPreview,
         media_gallery: normalizeSponsoredMediaGallery(
             row.media_gallery,
-            normalizeSponsoredMediaGallery(draft.mediaGallery, row.media_preview ? [row.media_preview] : []),
+            normalizeSponsoredMediaGallery(draft.mediaGallery, mediaPreview ? [mediaPreview] : []),
         ),
         status: 'approved',
         likes_count: Number(row.likes_count || 0),
@@ -607,9 +915,13 @@ const mapActiveAdToMarketCard = (row) => {
         variants: [],
         shipping_info: null,
         commission_info: null,
-        created_at: row.created_at,
-        product_code: row.ad_id,
-        share_code: `ad-${row.ad_id}`,
+        createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+        created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+        product_code: isProductPromote ? (linkedProductShareCode || row.product_code || null) : row.ad_id,
+        share_code: isProductPromote ? (linkedProductShareCode || row.share_code || null) : canonicalShareCode,
+        shareCode: isProductPromote ? (linkedProductShareCode || row.share_code || null) : canonicalShareCode,
+        canonical_share_code: canonicalShareCode,
+        canonical_share_path: `/share/${canonicalShareCode}`,
         profile_picture: row.profile_picture || null,
         user: {
             id: row.user_id,
@@ -630,14 +942,17 @@ const mapActiveAdToMarketCard = (row) => {
         ad_coin_collected: !!row.ad_coin_collected,
         ad_like_locked: !!row.ad_coin_collected,
         ad_coin_value: Number(row.ad_coin_value || AD_LIKE_COIN_REWARD),
-        media_preview: row.media_preview || '',
+        media_preview: mediaPreview,
         campaign_type: row.campaign_type || 'Ads',
         media_type: row.media_type || '',
         active_link: draft.activeLink || '',
         cta_topic: draft.ctaTopic || 'Visit',
         cta_value: draft.ctaValue || '',
-        linked_product_id: draft.linkedProductId ?? null,
-        linked_product_code: draft.linkedProductCode || null,
+        original_product_id: originalProductId,
+        original_product_code: originalProductCode,
+        linked_product_id: linkedProductId,
+        linked_product_share_code: linkedProductShareCode,
+        linked_product_code: linkedProductShareCode,
         is_sponsored: true,
         sponsored_label: 'Ads',
     };
@@ -691,6 +1006,137 @@ const lightlyShuffleRankedProducts = (products, requestSeed) => {
     return shuffled;
 };
 
+const normalizeProductPromotePriceFields = (linkedProduct, fallbackAd = {}) => {
+    const resolvedPrice = Number(
+        linkedProduct?.price ??
+        linkedProduct?.main_price ??
+        linkedProduct?.product_price ??
+        fallbackAd?.price ??
+        fallbackAd?.main_price ??
+        fallbackAd?.product_price ??
+        0
+    );
+    const resolvedPromoPrice = linkedProduct?.promo_price ?? fallbackAd?.promo_price ?? null;
+
+    return {
+        price: Number.isFinite(resolvedPrice) ? resolvedPrice : 0,
+        promo_price: resolvedPromoPrice !== null && resolvedPromoPrice !== undefined && resolvedPromoPrice !== ""
+            ? Number(resolvedPromoPrice)
+            : null,
+    };
+};
+
+const deriveVariantSizes = (variants) => {
+    if (!Array.isArray(variants)) return [];
+    return Array.from(new Set(variants.map((variant) => String(variant?.size || variant?.value || variant?.label || "").trim()).filter(Boolean)));
+};
+
+const deriveVariantColors = (variants) => {
+    if (!Array.isArray(variants)) return [];
+    return Array.from(new Set(variants.map((variant) => String(variant?.color || variant?.name || "").trim()).filter(Boolean)));
+};
+
+let googShareLookupReady = false;
+const ensureGoogShareLookupReady = async () => {
+    if (googShareLookupReady) return;
+
+    await pool.query(`ALTER TABLE goog_posts ADD COLUMN IF NOT EXISTS share_code VARCHAR(32);`);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS goog_share_aliases (
+            id SERIAL PRIMARY KEY,
+            alias_code VARCHAR(32) UNIQUE NOT NULL,
+            goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
+    await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_goog_share_aliases_alias_code
+        ON goog_share_aliases(alias_code);
+    `);
+    await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_goog_posts_share_code_unique
+        ON goog_posts (LOWER(share_code))
+        WHERE share_code IS NOT NULL AND share_code <> ''
+    `);
+
+    const rememberGoogAlias = async (aliasCode, googId) => {
+        const normalizedAlias = String(aliasCode || '').trim();
+        if (!normalizedAlias || /^[0-9A-Za-z]{8}$/.test(normalizedAlias) || !googId) return;
+        await pool.query(
+            `INSERT INTO goog_share_aliases (alias_code, goog_id)
+             VALUES ($1, $2)
+             ON CONFLICT (alias_code) DO UPDATE SET goog_id = EXCLUDED.goog_id`,
+            [normalizedAlias, googId]
+        );
+    };
+
+    const invalidResult = await pool.query(`
+        SELECT id, share_code
+        FROM goog_posts
+        WHERE share_code IS NULL
+           OR share_code = ''
+           OR share_code !~ '^[0-9A-Za-z]{8}$'
+    `);
+
+    for (const row of invalidResult.rows || []) {
+        await rememberGoogAlias(row.share_code, row.id);
+        const canonicalCode = buildShortShareCode('g', row.id, 8);
+        await pool.query('UPDATE goog_posts SET share_code = $1 WHERE id = $2', [canonicalCode, row.id]);
+    }
+
+    const duplicateResult = await pool.query(`
+        SELECT id, share_code
+        FROM (
+            SELECT id, share_code,
+                   ROW_NUMBER() OVER (PARTITION BY LOWER(share_code) ORDER BY id) AS rn
+            FROM goog_posts
+            WHERE share_code ~ '^[0-9A-Za-z]{8}$'
+        ) ranked
+        WHERE rn > 1
+    `);
+
+    for (const row of duplicateResult.rows || []) {
+        await rememberGoogAlias(row.share_code, row.id);
+        const canonicalCode = buildShortShareCode('g', `dup:${row.id}`, 8);
+        await pool.query('UPDATE goog_posts SET share_code = $1 WHERE id = $2', [canonicalCode, row.id]);
+    }
+
+    googShareLookupReady = true;
+};
+
+const mapGoogShareResponse = (row) => {
+    const storedCode = String(row?.share_code || '').trim();
+    const canonicalShareCode = /^[0-9A-Za-z]{8}$/.test(storedCode)
+        ? storedCode
+        : buildShortShareCode('g', row?.id);
+
+    return {
+        id: Number(row.id),
+        text: row.text,
+        textColor: row.text_color || '#FFFFFF',
+        createdAt: toUtcIso(row.created_at),
+        created_at: toUtcIso(row.created_at),
+        updatedAt: toUtcIso(row.updated_at),
+        updated_at: toUtcIso(row.updated_at),
+        likes: Number(row.likes_count || 0),
+        comments: Number(row.comments_count || 0),
+        views: Number(row.views_count || 0),
+        reposts: 0,
+        shares: Number(row.shares_count || 0),
+        liked: false,
+        user: {
+            id: row.user_id,
+            username: row.username || '',
+            name: row.full_name || row.username || 'User',
+            img: row.profile_picture || '/assets/images/avatars/avatar-default.jpg',
+        },
+        share_code: canonicalShareCode,
+        shareCode: canonicalShareCode,
+        canonical_share_code: canonicalShareCode,
+        canonical_share_path: `/share/${canonicalShareCode}`,
+    };
+};
+
 // Create a new market item
 exports.createMarketItem = async (req, res) => {
     try {
@@ -735,7 +1181,8 @@ exports.createMarketItem = async (req, res) => {
         let fileIndex = 0;
         let gallery = [];
 
-        variants = variants.map((v, index) => {
+        const createdVariants = [];
+        for (const v of variants) {
             const needsUploadedImage = v.image_url && v.image_url.startsWith('blob:');
             const needsUploadedVideo = v.media_type === 'video' && v.video_url && v.video_url.startsWith('blob:');
 
@@ -743,8 +1190,7 @@ exports.createMarketItem = async (req, res) => {
             if (needsUploadedImage || needsUploadedVideo) {
                 if (req.files && req.files[fileIndex]) {
                     const file = req.files[fileIndex];
-                    const base64 = file.buffer.toString('base64');
-                    const url = `data:${file.mimetype};base64,${base64}`;
+                    const url = await saveUploadedFile(file, needsUploadedVideo ? 'product-videos' : 'products');
                     const updatedV = {
                         ...v,
                         ...(needsUploadedImage ? { url, image_url: url } : {}),
@@ -752,15 +1198,17 @@ exports.createMarketItem = async (req, res) => {
                     };
                     gallery.push({ url: updatedV.image_url || url, color: v.color || null });
                     fileIndex++;
-                    return updatedV;
+                    createdVariants.push(updatedV);
+                    continue;
                 }
             }
             // If it's already a data: or http URL, keep it
             if (v.image_url) {
                 gallery.push({ url: v.image_url, color: v.color || null });
             }
-            return v;
-        });
+            createdVariants.push(v);
+        }
+        variants = createdVariants;
 
         const imageUrl = gallery.length > 0 ? gallery[0].url : (variants[0]?.image_url || null);
 
@@ -772,6 +1220,8 @@ exports.createMarketItem = async (req, res) => {
             return res.status(400).json({ success: false, message: 'At least one image is required' });
         }
 
+        await ensureMarketProductShareCodes();
+
         const parsedVariants = Array.isArray(variants) ? variants : [];
         const aggregateStock = parsedVariants.reduce((acc, v) => {
             const subSelections = v.selections || [];
@@ -781,7 +1231,7 @@ exports.createMarketItem = async (req, res) => {
             return acc + (parseInt(v.stock || v.quantity) || 0);
         }, 0);
 
-        const productCode = Math.random().toString(36).substring(2, 12).toUpperCase();
+        const productCode = await generateUniqueProductCode();
         const numericPrice = parseFloat(price);
         const numericPromoPrice = promo_price ? parseFloat(promo_price) : null;
 
@@ -863,7 +1313,8 @@ exports.updateMarketItem = async (req, res) => {
         let fileIndex = 0;
         let gallery = [];
         if (variants) {
-            variants = variants.map((v, index) => {
+            const updatedVariants = [];
+            for (const v of variants) {
                 const needsUploadedImage = v.image_url && v.image_url.startsWith('blob:');
                 const needsUploadedVideo = v.media_type === 'video' && v.video_url && v.video_url.startsWith('blob:');
 
@@ -871,8 +1322,7 @@ exports.updateMarketItem = async (req, res) => {
                 if (needsUploadedImage || needsUploadedVideo) {
                     if (req.files && req.files[fileIndex]) {
                         const file = req.files[fileIndex];
-                        const base64 = file.buffer.toString('base64');
-                        const url = `data:${file.mimetype};base64,${base64}`;
+                        const url = await saveUploadedFile(file, needsUploadedVideo ? 'product-videos' : 'products');
                         const updatedV = {
                             ...v,
                             ...(needsUploadedImage ? { url, image_url: url } : {}),
@@ -880,15 +1330,17 @@ exports.updateMarketItem = async (req, res) => {
                         };
                         gallery.push({ url: updatedV.image_url || url, color: v.color || null });
                         fileIndex++;
-                        return updatedV;
+                        updatedVariants.push(updatedV);
+                        continue;
                     }
                 }
                 // If it's already a data: or http URL, keep it
                 if (v.image_url) {
                     gallery.push({ url: v.image_url, color: v.color || null });
                 }
-                return v;
-            });
+                updatedVariants.push(v);
+            }
+            variants = updatedVariants;
         }
 
         const imageUrl = gallery.length > 0 ? gallery[0].url : (variants?.[0]?.image_url || item.image_url);
@@ -1027,6 +1479,11 @@ exports.getMarketProducts = async (req, res) => {
         const authUser = req.user || getOptionalAuthUser(req);
         const viewerId = authUser?.id ? Number(authUser.id) : null;
         const { category, user_id, status } = req.query;
+        const seenProductIds = parseSeenProductIds(req.query._seen);
+        const lastShownOrder = parseLastShownOrder(req.query._lastOrder);
+        const feedSession = typeof req.query._feedSession === 'string' && req.query._feedSession.trim()
+            ? req.query._feedSession.trim()
+            : `${Date.now()}:${Math.random()}`;
         const searchTerm = normalizeText(req.query.search);
         const limitRaw = Number.parseInt(req.query.limit, 10);
         const offsetRaw = Number.parseInt(req.query.offset, 10);
@@ -1036,6 +1493,7 @@ exports.getMarketProducts = async (req, res) => {
             hasTableColumn('users', 'country'),
             hasTableColumn('users', 'shipping_address'),
         ]);
+        const isPersonalizedWall = !user_id && (!status || String(status).includes('approved') || String(status).includes('active'));
 
         const params = [viewerId];
         let where = `WHERE 1=1`;
@@ -1072,7 +1530,12 @@ exports.getMarketProducts = async (req, res) => {
             )`;
         }
 
-        params.push(limit + 1, offset);
+        const candidateLimit = isPersonalizedWall
+            ? Math.min(Math.max(limit * 4, offset + (limit * 3), 60), 240)
+            : limit + 1;
+        const candidateOffset = isPersonalizedWall ? 0 : offset;
+
+        params.push(candidateLimit, candidateOffset);
         const result = await pool.query(
             `SELECT m.id, m.user_id, m.username, m.title, m.description, m.price, m.promo_price,
                     m.category, m.sub_category, m.manual_category, m.stock, m.image_url, m.status,
@@ -1082,11 +1545,11 @@ exports.getMarketProducts = async (req, res) => {
                     u.username AS owner_username, u.profile_picture,
                     ${hasUsersCountry ? 'u.country AS seller_country,' : 'NULL::text AS seller_country,'}
                     ${hasUsersShippingAddress
-                        ? `CASE
+                ? `CASE
                                 WHEN jsonb_typeof(u.shipping_address) = 'object' THEN COALESCE(u.shipping_address->>'country', '')
                                 ELSE ''
                            END AS seller_shipping_country,`
-                        : 'NULL::text AS seller_shipping_country,'}
+                : 'NULL::text AS seller_shipping_country,'}
                     CASE
                         WHEN $1::int IS NULL THEN FALSE
                         ELSE EXISTS(SELECT 1 FROM market_likes ml WHERE ml.market_id = m.id AND ml.user_id = $1)
@@ -1100,9 +1563,248 @@ exports.getMarketProducts = async (req, res) => {
             params
         );
 
-        const rows = result.rows || [];
-        const hasMore = rows.length > limit;
-        const data = rows.slice(0, limit).map(attachCurrentUser);
+        let rows = (result.rows || []).map(attachCurrentUser);
+
+        if (isPersonalizedWall) {
+            let userInterestProfile = buildUserInterestProfile(null, {
+                viewRows: [],
+                followingRows: [],
+                blockedRows: [],
+                searchQuery: req.query.search,
+                searchKeyword: req.query.keyword,
+            });
+
+            if (viewerId) {
+                const [userProfileResult, viewHistoryResult, followingResult, blockedResult] = await Promise.all([
+                    pool.query(
+                        `SELECT id,
+                                ${hasUsersCountry ? 'country,' : 'NULL::text AS country,'}
+                                ${hasUsersShippingAddress
+                            ? `CASE
+                                            WHEN jsonb_typeof(shipping_address) = 'object' THEN COALESCE(shipping_address->>'country', '')
+                                            ELSE ''
+                                       END AS shipping_country`
+                            : `NULL::text AS shipping_country`}
+                         FROM users
+                         WHERE id = $1
+                         LIMIT 1`,
+                        [viewerId]
+                    ),
+                    pool.query(
+                        `SELECT DISTINCT m.category, m.title
+                         FROM market_views mv
+                         JOIN market m ON m.id = mv.market_id
+                         WHERE mv.user_id = $1
+                         ORDER BY m.category, m.title`,
+                        [viewerId]
+                    ),
+                    pool.query(
+                        `SELECT subscribed_to_id
+                         FROM user_subscriptions
+                         WHERE subscriber_id = $1`,
+                        [viewerId]
+                    ),
+                    pool.query(
+                        `SELECT blocked_user_id
+                         FROM user_blocks
+                         WHERE blocker_id = $1`,
+                        [viewerId]
+                    ),
+                ]);
+
+                userInterestProfile = buildUserInterestProfile(userProfileResult.rows[0], {
+                    viewRows: viewHistoryResult.rows,
+                    followingRows: followingResult.rows,
+                    blockedRows: blockedResult.rows,
+                    searchQuery: req.query.search,
+                    searchKeyword: req.query.keyword,
+                });
+            }
+
+            const requestShuffleSeed = `${feedSession}:${Date.now()}:${Math.random()}`;
+            rows = rows
+                .filter((product) => !userInterestProfile.blockedSellerIds.has(Number(product.user_id)))
+                .map((product) => {
+                    const score = calculateProductScore(
+                        product,
+                        userInterestProfile,
+                        `${requestShuffleSeed}:${viewerId}:${product.id}`
+                    );
+                    const seenPenalty = getSeenPenalty(product.id, seenProductIds);
+                    return {
+                        ...product,
+                        relevance_score: score.relevance,
+                        engagement_score: score.engagement,
+                        freshness_score: score.freshness,
+                        seller_quality_score: score.sellerQuality,
+                        random_boost: Number(score.randomBoost.toFixed(4)),
+                        seen_penalty: Number(seenPenalty.toFixed(4)),
+                        feed_score: Number((score.finalScore - seenPenalty).toFixed(4)),
+                    };
+                })
+                .sort((first, second) => {
+                    if (second.feed_score !== first.feed_score) {
+                        return second.feed_score - first.feed_score;
+                    }
+                    return new Date(second.created_at).getTime() - new Date(first.created_at).getTime();
+                });
+
+            const matchingRows = searchTerm ? rows.filter((item) => searchMatchesItem(item, searchTerm)) : rows;
+            const nonMatchingRows = searchTerm ? rows.filter((item) => !searchMatchesItem(item, searchTerm)) : [];
+
+            rows = [
+                ...applyDiversityRules(
+                    lightlyShuffleRankedProducts(
+                        smartFeedMix(matchingRows, `${requestShuffleSeed}:match`),
+                        `${requestShuffleSeed}:match`
+                    )
+                ),
+                ...applyDiversityRules(
+                    lightlyShuffleRankedProducts(
+                        smartFeedMix(nonMatchingRows, `${requestShuffleSeed}:rest`),
+                        `${requestShuffleSeed}:rest`
+                    )
+                ),
+            ];
+
+            if (hasSameOrder(rows, lastShownOrder) && rows.length > 1) {
+                const antiRepeatOffset = (Math.floor(getSeededRandom(`${requestShuffleSeed}:anti-repeat`) * (rows.length - 1)) + 1) % rows.length;
+                rows = rotateItems(rows, antiRepeatOffset || 1);
+            }
+        }
+
+        const hasMore = rows.length > offset + limit;
+        const dataSlice = rows.slice(offset, offset + limit);
+        let data = dataSlice;
+
+        if (!user_id && (!status || String(status).includes('approved') || String(status).includes('active')) && await hasTable('ads')) {
+            await ensureSponsoredAdsEngagementSchema();
+            const sponsoredResult = await pool.query(
+                `SELECT a.ad_id, a.user_id, a.owner_user_id, a.owner_username, a.campaign_type,
+                        a.linked_product_id, a.linked_product_share_code, a.original_product_id, a.original_product_code,
+                        a.title, a.description, a.media_preview, a.media_gallery, a.media_type,
+                        a.edit_draft, a.impressions, a.clicks, a.likes_count, a.comments_count,
+                        a.shares_count, a.created_at,
+                        u.profile_picture, u.username AS owner_username_joined,
+                        ${hasUsersCountry ? 'u.country AS seller_country,' : 'NULL::text AS seller_country,'}
+                        ${hasUsersShippingAddress
+                    ? `CASE
+                                    WHEN jsonb_typeof(u.shipping_address) = 'object' THEN COALESCE(u.shipping_address->>'country', '')
+                                    ELSE ''
+                               END AS seller_shipping_country`
+                    : `NULL::text AS seller_shipping_country`},
+                        CASE WHEN $1::int IS NULL THEN FALSE
+                             ELSE EXISTS(SELECT 1 FROM ad_like_coin_rewards acr WHERE acr.ad_id = a.ad_id AND acr.user_id = $1)
+                        END AS ad_coin_collected,
+                        ${AD_LIKE_COIN_REWARD}::numeric AS ad_coin_value,
+                        CASE WHEN $1::int IS NULL THEN FALSE
+                             ELSE EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1)
+                        END AS user_liked
+                 FROM ads a
+                 LEFT JOIN users u ON u.id = a.user_id
+                 WHERE a.status = 'Active'
+                 ORDER BY a.created_at DESC`,
+                [viewerId]
+            );
+            let sponsoredRows = sponsoredResult.rows.map(mapActiveAdToMarketCard);
+            const productPromoteAds = sponsoredRows.filter(
+                (ad) => ad.campaign_type === 'Product Promote' && (ad.linked_product_id != null || ad.linked_product_share_code)
+            );
+
+            if (productPromoteAds.length > 0) {
+                const linkedIds = Array.from(
+                    new Set(productPromoteAds.map((ad) => parseInt(ad.linked_product_id, 10)).filter((value) => Number.isFinite(value)))
+                );
+                const linkedCodes = Array.from(
+                    new Set(productPromoteAds.map((ad) => ad.linked_product_share_code).filter(Boolean))
+                );
+
+                const linkedResult = await pool.query(
+                    `SELECT m.id, m.user_id, m.username, m.title, m.description, m.price, m.promo_price,
+                            m.category, m.sub_category, m.manual_category, m.stock, m.image_url, m.status,
+                            m.likes_count, m.comments_count, m.shares_count, m.views_count,
+                            m.variants, m.shipping_info, m.payment_methods, m.commission_info, m.created_at, m.product_code,
+                            u.username AS owner_username, u.profile_picture,
+                            ${hasUsersCountry ? 'u.country AS seller_country,' : 'NULL::text AS seller_country,'}
+                            ${hasUsersShippingAddress
+                        ? `CASE
+                                        WHEN jsonb_typeof(u.shipping_address) = 'object' THEN COALESCE(u.shipping_address->>'country', '')
+                                        ELSE ''
+                                   END AS seller_shipping_country,`
+                        : 'NULL::text AS seller_shipping_country,'}
+                            EXISTS(SELECT 1 FROM market_likes ml WHERE ml.market_id = m.id AND ml.user_id = $1) AS user_liked
+                     FROM market m
+                     INNER JOIN users u ON m.user_id = u.id
+                     WHERE (m.id = ANY($2::int[]) OR m.product_code = ANY($3::text[]))
+                       AND m.status IN ('approved', 'active')`,
+                    [viewerId, linkedIds.length ? linkedIds : [0], linkedCodes.length ? linkedCodes : ['']]
+                );
+
+                const productById = new Map(linkedResult.rows.map((row) => [Number(row.id), attachCurrentUser(row)]));
+                const productByCode = new Map(linkedResult.rows.map((row) => [String(row.product_code || ''), attachCurrentUser(row)]));
+                sponsoredRows = sponsoredRows.map((ad) => {
+                    if (ad.campaign_type !== 'Product Promote') return ad;
+                    const linked =
+                        (ad.linked_product_id != null && productById.get(Number(ad.linked_product_id))) ||
+                        (ad.linked_product_share_code && productByCode.get(String(ad.linked_product_share_code)));
+                    if (!linked) {
+                        console.warn("Failed to hydrate Product Promote market card", {
+                            adId: ad.adId || ad.ad_id,
+                            productId: ad.linked_product_id ?? null,
+                            productCode: ad.linked_product_share_code ?? null,
+                        });
+                        return null;
+                    }
+                    const { price, promo_price } = normalizeProductPromotePriceFields(linked, ad);
+                    const linkedVariants = Array.isArray(linked.variants) ? linked.variants : [];
+                    const sizes = Array.isArray(linked.sizes) ? linked.sizes : deriveVariantSizes(linkedVariants);
+                    const colors = Array.isArray(linked.colors) ? linked.colors : deriveVariantColors(linkedVariants);
+                    return {
+                        ...linked,
+                        id: ad.id,
+                        adId: ad.adId,
+                        ad_id: ad.adId,
+                        price,
+                        main_price: price,
+                        product_price: price,
+                        promo_price,
+                        sizes,
+                        colors,
+                        product_id: linked.id,
+                        linked_product_id: linked.id,
+                        linked_product_share_code: linked.product_code,
+                        linked_product_code: linked.product_code,
+                        share_code: linked.product_code || String(linked.id),
+                        user_liked: !!ad.user_liked,
+                        likes_count: Number(ad.likes_count || 0),
+                        comments_count: Number(ad.comments_count || 0),
+                        shares_count: Number(ad.shares_count || 0),
+                        views_count: Number(ad.views_count || 0),
+                        ad_coin_collected: !!ad.ad_coin_collected,
+                        ad_like_locked: !!ad.ad_coin_collected,
+                        ad_coin_value: Number(ad.ad_coin_value || AD_LIKE_COIN_REWARD),
+                        is_sponsored: true,
+                        sponsored_label: 'Ads',
+                        campaign_type: 'Product Promote',
+                        active_link: ad.active_link,
+                        cta_topic: ad.cta_topic,
+                        cta_value: ad.cta_value,
+                    };
+                }).filter(Boolean);
+            }
+
+            if (sponsoredRows.length > 1) {
+                const adShuffleSeed = `${feedSession}:ads:${Date.now()}`;
+                sponsoredRows = shuffleItemsWithSeed(
+                    sponsoredRows,
+                    adShuffleSeed,
+                    (ad) => String(ad?.adId || ad?.ad_id || ad?.id || '')
+                );
+            }
+            data = [...data, ...sponsoredRows].map(stripFeedMediaPayload);
+        } else {
+            data = data.map(stripFeedMediaPayload);
+        }
 
         res.status(200).json({
             success: true,
@@ -1110,7 +1812,7 @@ exports.getMarketProducts = async (req, res) => {
             pagination: {
                 limit,
                 offset,
-                nextOffset: offset + data.length,
+                nextOffset: offset + dataSlice.length,
                 hasMore,
             },
         });
@@ -1267,8 +1969,8 @@ exports.getMarketItems = async (req, res) => {
                             FALSE AS seller_fast_response,
                             CASE WHEN u.user_type = 'admin' THEN TRUE ELSE FALSE END AS seller_verified,
                             ${hasOrdersReports
-                                ? `EXISTS(SELECT 1 FROM orders o WHERE o.seller_id = m.user_id AND o.seller_report IS NOT NULL) AS seller_reported,`
-                                : `FALSE AS seller_reported,`}
+                    ? `EXISTS(SELECT 1 FROM orders o WHERE o.seller_id = m.user_id AND o.seller_report IS NOT NULL) AS seller_reported,`
+                    : `FALSE AS seller_reported,`}
                             EXISTS(SELECT 1 FROM market_likes ml WHERE ml.market_id = m.id AND ml.user_id = $1) as user_liked
                      FROM limited_market m
                      INNER JOIN users u ON m.user_id = u.id
@@ -1390,11 +2092,11 @@ exports.getMarketItems = async (req, res) => {
                         `SELECT id,
                                 ${hasUsersCountry ? 'country,' : 'NULL::text AS country,'}
                                 ${hasUsersShippingAddress
-                                    ? `CASE
+                            ? `CASE
                                             WHEN jsonb_typeof(shipping_address) = 'object' THEN COALESCE(shipping_address->>'country', '')
                                             ELSE ''
                                        END AS shipping_country`
-                                    : `NULL::text AS shipping_country`}
+                            : `NULL::text AS shipping_country`}
                          FROM users
                          WHERE id = $1
                          LIMIT 1`,
@@ -1437,16 +2139,17 @@ exports.getMarketItems = async (req, res) => {
             if (await hasTable('ads')) {
                 await ensureSponsoredAdsEngagementSchema();
                 const sponsoredResult = await pool.query(
-                    `SELECT a.ad_id, a.user_id, a.owner_username, a.campaign_type, a.title, a.description,
+                    `SELECT a.ad_id, a.user_id, a.owner_username, a.campaign_type, a.linked_product_id, a.linked_product_share_code,
+                            a.original_product_id, a.original_product_code, a.title, a.description,
                             a.media_preview, a.media_gallery, a.media_type, a.edit_draft, a.impressions, a.clicks, a.likes_count, a.comments_count, a.shares_count, a.created_at,
                             u.profile_picture, u.username AS owner_username_joined,
                             ${hasUsersCountry ? 'u.country AS seller_country,' : 'NULL::text AS seller_country,'}
                             ${hasUsersShippingAddress
-                                ? `CASE
+                        ? `CASE
                                         WHEN jsonb_typeof(u.shipping_address) = 'object' THEN COALESCE(u.shipping_address->>'country', '')
                                         ELSE ''
                                    END AS seller_shipping_country`
-                                : `NULL::text AS seller_shipping_country`},
+                        : `NULL::text AS seller_shipping_country`},
                             CASE
                                 WHEN $1::int IS NULL THEN FALSE
                                 ELSE EXISTS(SELECT 1 FROM ad_like_coin_rewards acr WHERE acr.ad_id = a.ad_id AND acr.user_id = $1)
@@ -1460,47 +2163,19 @@ exports.getMarketItems = async (req, res) => {
                      LEFT JOIN users u ON u.id = a.user_id
                      WHERE a.status = 'Active'
                      ORDER BY a.created_at DESC`
-                , [viewerId]);
+                    , [viewerId]);
 
                 sponsoredRows = sponsoredResult.rows.map(mapActiveAdToMarketCard);
 
-                // For Product Promote ads, hydrate with the original product's data
-                // so the card behaves exactly like a normal product (cart, buy, variants, real price, etc.).
-                // Extract product id/code from active_link URL path as a fallback for ads created
-                // before linkedProductId was explicitly saved in edit_draft.
-                const extractTargetFromLink = (link) => {
-                    if (!link) return { id: null, code: null };
-                    try {
-                        const raw = String(link).trim();
-                        const url = new URL(raw.startsWith('http') ? raw : `https://x.local${raw.startsWith('/') ? raw : `/${raw}`}`);
-                        const parts = url.pathname.split('/').filter(Boolean);
-                        const idx = parts.findIndex((p) => ['product', 'share', 'shop'].includes(p.toLowerCase()));
-                        if (idx !== -1 && parts[idx + 1]) {
-                            const val = decodeURIComponent(parts[idx + 1]);
-                            if (/^\d+$/.test(val)) return { id: parseInt(val, 10), code: null };
-                            return { id: null, code: val };
-                        }
-                    } catch { /* ignore */ }
-                    return { id: null, code: null };
-                };
-                for (const ad of sponsoredRows) {
-                    if (ad.campaign_type !== 'Product Promote') continue;
-                    if (ad.linked_product_id == null) {
-                        const target = extractTargetFromLink(ad.active_link);
-                        if (target.id) ad.linked_product_id = target.id;
-                        else if (target.code) ad.linked_product_code = target.code;
-                    }
-                }
-
                 const productPromoteAds = sponsoredRows.filter(
-                    (ad) => ad.campaign_type === 'Product Promote' && (ad.linked_product_id != null || ad.linked_product_code)
+                    (ad) => ad.campaign_type === 'Product Promote' && (ad.linked_product_id != null || ad.linked_product_share_code)
                 );
                 if (productPromoteAds.length > 0) {
                     const linkedIds = Array.from(
                         new Set(productPromoteAds.map((ad) => parseInt(ad.linked_product_id, 10)).filter((n) => Number.isFinite(n)))
                     );
                     const linkedCodes = Array.from(
-                        new Set(productPromoteAds.map((ad) => ad.linked_product_code).filter(Boolean))
+                        new Set(productPromoteAds.map((ad) => ad.linked_product_share_code).filter(Boolean))
                     );
                     if (linkedIds.length > 0 || linkedCodes.length > 0) {
                         const linkedResult = await pool.query(
@@ -1511,11 +2186,11 @@ exports.getMarketItems = async (req, res) => {
                                     u.username AS owner_username, u.profile_picture,
                                     ${hasUsersCountry ? 'u.country AS seller_country,' : 'NULL::text AS seller_country,'}
                                     ${hasUsersShippingAddress
-                                        ? `CASE
+                                ? `CASE
                                                 WHEN jsonb_typeof(u.shipping_address) = 'object' THEN COALESCE(u.shipping_address->>'country', '')
                                                 ELSE ''
                                            END AS seller_shipping_country,`
-                                        : 'NULL::text AS seller_shipping_country,'}
+                                : 'NULL::text AS seller_shipping_country,'}
                                     EXISTS(SELECT 1 FROM market_likes ml WHERE ml.market_id = m.id AND ml.user_id = $1) AS user_liked
                              FROM market m
                              INNER JOIN users u ON m.user_id = u.id
@@ -1529,8 +2204,19 @@ exports.getMarketItems = async (req, res) => {
                             if (ad.campaign_type !== 'Product Promote') return ad;
                             const linked =
                                 (ad.linked_product_id != null && productById.get(Number(ad.linked_product_id))) ||
-                                (ad.linked_product_code && productByCode.get(String(ad.linked_product_code)));
-                            if (!linked) return null; // drop ads whose product was removed/unapproved
+                                (ad.linked_product_share_code && productByCode.get(String(ad.linked_product_share_code)));
+                            if (!linked) {
+                                console.warn("Failed to hydrate Product Promote market item", {
+                                    adId: ad.adId || ad.ad_id,
+                                    productId: ad.linked_product_id ?? null,
+                                    productCode: ad.linked_product_share_code ?? null,
+                                });
+                                return null;
+                            }
+                            const { price, promo_price } = normalizeProductPromotePriceFields(linked, ad);
+                            const linkedVariants = Array.isArray(linked.variants) ? linked.variants : [];
+                            const sizes = Array.isArray(linked.sizes) ? linked.sizes : deriveVariantSizes(linkedVariants);
+                            const colors = Array.isArray(linked.colors) ? linked.colors : deriveVariantColors(linkedVariants);
                             return {
                                 ...ad,
                                 // Overlay real product fields so the card renders as a normal product.
@@ -1549,9 +2235,17 @@ exports.getMarketItems = async (req, res) => {
                                 sub_category: linked.sub_category || null,
                                 manual_category: linked.manual_category || null,
                                 stock: linked.stock,
-                                price: linked.price,
-                                promo_price: linked.promo_price,
+                                price,
+                                main_price: price,
+                                product_price: price,
+                                promo_price,
+                                sizes,
+                                colors,
                                 image_url: linked.image_url || ad.image_url,
+                                main_image: linked.image_url || ad.image_url,
+                                media_url: linked.image_url || ad.media_preview || ad.image_url,
+                                thumbnail_url: linked.image_url || ad.media_preview || ad.image_url,
+                                images: normalizeFeedMediaList(linked.image_url, linked.variants, ad.media_gallery),
                                 media_preview: linked.image_url || ad.media_preview,
                                 status: 'approved',
                                 likes_count: Number(linked.likes_count || 0),
@@ -1564,6 +2258,7 @@ exports.getMarketItems = async (req, res) => {
                                 commission_info: linked.commission_info || null,
                                 created_at: linked.created_at || ad.created_at,
                                 product_code: linked.product_code || ad.product_code,
+                                linked_product_share_code: linked.product_code || ad.product_code,
                                 linked_product_code: linked.product_code || ad.product_code,
                                 share_code: linked.product_code || String(linked.id),
                                 profile_picture: linked.profile_picture || ad.profile_picture,
@@ -1575,7 +2270,7 @@ exports.getMarketItems = async (req, res) => {
                                 sponsored_label: 'Ads',
                                 campaign_type: 'Product Promote',
                                 adId: ad.adId,
-                                linked_product_id: ad.linked_product_id,
+                                linked_product_id: linked.id,
                             };
                         }).filter(Boolean);
                     }
@@ -1658,6 +2353,7 @@ exports.getMarketItemById = async (req, res) => {
         const { id } = req.params;
         const numericId = parseInt(id, 10);
         let result;
+        const marketHasProductCode = await hasTableColumn('market', 'product_code');
 
         if (!isNaN(numericId)) {
             // Primary lookup by numeric id
@@ -1671,7 +2367,7 @@ exports.getMarketItemById = async (req, res) => {
         }
 
         // Fallback: lookup by product_code (alphanumeric share codes)
-        if (!result || result.rows.length === 0) {
+        if (marketHasProductCode && (!result || result.rows.length === 0)) {
             result = await pool.query(
                 `SELECT m.*, u.username as owner_username, u.profile_picture 
                  FROM market m 
@@ -1681,7 +2377,7 @@ exports.getMarketItemById = async (req, res) => {
             );
         }
 
-        if (result.rows.length === 0) {
+        if (!result || result.rows.length === 0) {
             // Check ads table
             const adId = isSponsoredFeedItemId(id) ? normalizeSponsoredAdId(id) : id;
             const adResult = await pool.query(
@@ -1711,13 +2407,17 @@ exports.getMarketItemByCode = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Code is required' });
         }
 
-        const result = await pool.query(
-            `SELECT m.*, u.username as owner_username, u.profile_picture 
-             FROM market m 
-             LEFT JOIN users u ON m.user_id = u.id 
-             WHERE m.product_code = $1`,
-            [code]
-        );
+        const marketHasProductCode = await hasTableColumn('market', 'product_code');
+        const result = marketHasProductCode
+            ? await pool.query(
+                `SELECT m.*, u.username as owner_username, u.profile_picture 
+                 FROM market m 
+                 LEFT JOIN users u ON m.user_id = u.id 
+                 WHERE m.product_code = $1`,
+                [code]
+            )
+            : { rows: [] };
+
         if (result.rows.length === 0) {
             // Check ads table
             const adId = isSponsoredFeedItemId(code) ? normalizeSponsoredAdId(code) : code;
@@ -2426,6 +3126,7 @@ exports.getComments = async (req, res) => {
                     id: `ad-comment-${row.id}`,
                     parent_id: row.parent_id ? `ad-comment-${row.parent_id}` : null,
                     market_id: id,
+                    created_at: toUtcIso(row.created_at),
                 })),
             });
         }
@@ -2437,7 +3138,13 @@ exports.getComments = async (req, res) => {
              ORDER BY c.created_at DESC`,
             [parseInt(id)]
         );
-        res.status(200).json({ success: true, data: result.rows });
+        res.status(200).json({
+            success: true,
+            data: result.rows.map((row) => ({
+                ...row,
+                created_at: toUtcIso(row.created_at),
+            })),
+        });
     } catch (error) {
         console.error('❌ [getComments] Database Error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching comments', error: error.message });
@@ -2458,7 +3165,13 @@ exports.getLikes = async (req, res) => {
                  ORDER BY l.created_at DESC`,
                 [adId]
             );
-            return res.status(200).json({ success: true, data: result.rows });
+            return res.status(200).json({
+                success: true,
+                data: result.rows.map((row) => ({
+                    ...row,
+                    created_at: toUtcIso(row.created_at),
+                })),
+            });
         }
         const result = await pool.query(
             `SELECT l.*, u.username, u.profile_picture 
@@ -2468,7 +3181,13 @@ exports.getLikes = async (req, res) => {
              ORDER BY l.created_at DESC`,
             [id]
         );
-        res.status(200).json({ success: true, data: result.rows });
+        res.status(200).json({
+            success: true,
+            data: result.rows.map((row) => ({
+                ...row,
+                created_at: toUtcIso(row.created_at),
+            })),
+        });
     } catch (error) {
         console.error('Error fetching likes:', error);
         res.status(500).json({ success: false, message: 'Server error' });
@@ -2490,7 +3209,13 @@ exports.getShares = async (req, res) => {
                  ORDER BY s.created_at DESC`,
                 [adId]
             );
-            return res.status(200).json({ success: true, data: result.rows });
+            return res.status(200).json({
+                success: true,
+                data: result.rows.map((row) => ({
+                    ...row,
+                    created_at: toUtcIso(row.created_at),
+                })),
+            });
         }
         const result = await pool.query(
             `SELECT s.*, u.username, u.profile_picture 
@@ -2500,7 +3225,13 @@ exports.getShares = async (req, res) => {
              ORDER BY s.created_at DESC`,
             [id]
         );
-        res.status(200).json({ success: true, data: result.rows });
+        res.status(200).json({
+            success: true,
+            data: result.rows.map((row) => ({
+                ...row,
+                created_at: toUtcIso(row.created_at),
+            })),
+        });
     } catch (error) {
         console.error('Error fetching shares:', error);
         res.status(500).json({ success: false, message: 'Server error' });
@@ -2522,7 +3253,13 @@ exports.getViews = async (req, res) => {
                  ORDER BY v.last_viewed_at DESC`,
                 [adId]
             );
-            return res.status(200).json({ success: true, data: result.rows });
+            return res.status(200).json({
+                success: true,
+                data: result.rows.map((row) => ({
+                    ...row,
+                    created_at: toUtcIso(row.last_viewed_at || row.created_at),
+                })),
+            });
         }
         const result = await pool.query(
             `SELECT v.*, u.username, u.profile_picture 
@@ -2532,7 +3269,13 @@ exports.getViews = async (req, res) => {
              ORDER BY v.last_viewed_at DESC`,
             [id]
         );
-        res.status(200).json({ success: true, data: result.rows });
+        res.status(200).json({
+            success: true,
+            data: result.rows.map((row) => ({
+                ...row,
+                created_at: toUtcIso(row.last_viewed_at || row.created_at),
+            })),
+        });
     } catch (error) {
         console.error('Error fetching views:', error);
         res.status(500).json({ success: false, message: 'Server error' });
@@ -2560,20 +3303,108 @@ exports.getAdPublic = async (req, res) => {
 
 exports.getProductByCodePublic = async (req, res) => {
     try {
+        await ensureMarketProductCodeColumn();
         const { shareCode } = req.params;
+        const normalizedShareCode = decodeURIComponent(String(shareCode || '')).trim();
+        let resolvedCode = normalizedShareCode;
+
+        if (/^[0-9A-Za-z]{8}$/.test(normalizedShareCode)) {
+            const candidateResult = await pool.query(
+                `SELECT m.id, m.product_code
+                 FROM market m
+                 WHERE m.status IN ('approved', 'active')`
+            );
+            const matched = (candidateResult.rows || []).find((row) => {
+                const codeByProductCode = buildShortShareCode('p', row.product_code || '');
+                const codeById = buildShortShareCode('p', row.id);
+                return codeByProductCode === normalizedShareCode || codeById === normalizedShareCode;
+            });
+            if (matched?.product_code) {
+                resolvedCode = String(matched.product_code);
+            }
+        }
+
         const result = await pool.query(
             `SELECT m.*, u.username as owner_username, u.profile_picture 
              FROM market m 
              LEFT JOIN users u ON m.user_id = u.id 
-             WHERE m.product_code = $1 OR m.id::text = $1`,
-            [shareCode]
+             WHERE m.product_code = $1 OR LOWER(m.product_code) = LOWER($1) OR m.id::text = $1`,
+            [resolvedCode]
         );
-        
-        if (result.rows.length === 0) {
+
+        let productRow = result.rows[0] || null;
+
+        if (!productRow) {
+            const aliasResult = await pool.query(
+                `SELECT m.*, u.username as owner_username, u.profile_picture
+                 FROM product_share_aliases psa
+                 JOIN market m ON m.id = psa.product_id
+                 LEFT JOIN users u ON m.user_id = u.id
+                 WHERE LOWER(psa.alias_code) = LOWER($1)
+                 LIMIT 1`,
+                [normalizedShareCode]
+            );
+            productRow = aliasResult.rows[0] || null;
+        }
+
+        if (!productRow) {
+            const adsHasLinkedProductId = await hasTableColumn('ads', 'linked_product_id');
+            const adsHasLinkedProductShareCode = await hasTableColumn('ads', 'linked_product_share_code');
+            const adsHasLinkedProductCode = await hasTableColumn('ads', 'linked_product_code');
+            if (adsHasLinkedProductId || adsHasLinkedProductShareCode || adsHasLinkedProductCode) {
+                const linkedClauses = [];
+                if (adsHasLinkedProductId) linkedClauses.push('(a.linked_product_id IS NOT NULL AND m.id = a.linked_product_id)');
+                if (adsHasLinkedProductShareCode) linkedClauses.push('(a.linked_product_share_code IS NOT NULL AND LOWER(m.product_code) = LOWER(a.linked_product_share_code))');
+                if (adsHasLinkedProductCode) linkedClauses.push('(a.linked_product_code IS NOT NULL AND LOWER(m.product_code) = LOWER(a.linked_product_code))');
+                const whereClauses = [];
+                if (adsHasLinkedProductShareCode) whereClauses.push('LOWER(a.linked_product_share_code) = LOWER($1)');
+                if (adsHasLinkedProductCode) whereClauses.push('LOWER(a.linked_product_code) = LOWER($1)');
+                whereClauses.push('a.edit_draft::text ILIKE $2');
+
+                const linkedAdResult = await pool.query(
+                    `SELECT m.*, u.username as owner_username, u.profile_picture
+                     FROM ads a
+                     JOIN market m ON (${linkedClauses.join(' OR ')})
+                     LEFT JOIN users u ON m.user_id = u.id
+                     WHERE (${whereClauses.join(' OR ')})
+                       AND m.status IN ('approved', 'active', 'reviewing')
+                     LIMIT 1`,
+                    [normalizedShareCode, `%${normalizedShareCode}%`]
+                );
+                productRow = linkedAdResult.rows[0] || null;
+            }
+        }
+
+        if (!productRow) {
+            const linkedAdResult = await pool.query(
+                `SELECT m.*, u.username as owner_username, u.profile_picture
+                 FROM ads a
+                 JOIN market m ON a.edit_draft::text ILIKE ('%' || m.product_code || '%')
+                 LEFT JOIN users u ON m.user_id = u.id
+                 WHERE a.edit_draft::text ILIKE $1
+                   AND m.status IN ('approved', 'active', 'reviewing')
+                 LIMIT 1`,
+                [`%${normalizedShareCode}%`]
+            );
+            productRow = linkedAdResult.rows[0] || null;
+        }
+
+        if (!productRow) {
             return res.status(404).json({ success: false, message: 'Product not found' });
         }
-        
-        res.status(200).json({ success: true, product: attachCurrentUser(result.rows[0]) });
+
+        productRow = await ensureProductRowHasCanonicalShareCode(productRow);
+        const mappedProduct = attachCurrentUser(productRow);
+        const canonicalShareCode = getCanonicalProductShareCode(productRow);
+        const canonicalSharePath = canonicalShareCode ? `/product/${canonicalShareCode}` : '';
+        res.status(200).json({
+            success: true,
+            product: {
+                ...mappedProduct,
+                canonical_share_code: canonicalShareCode,
+                canonical_share_path: canonicalSharePath,
+            },
+        });
     } catch (error) {
         console.error('Error fetching public product:', error);
         res.status(500).json({ success: false, message: 'Server error' });
@@ -2585,65 +3416,145 @@ exports.getUnifiedShareItem = async (req, res) => {
         const { shareCode } = req.params;
         if (!shareCode) return res.status(400).json({ success: false, message: 'Missing share code' });
         const decodedShareCode = decodeURIComponent(String(shareCode)).trim();
-        const googMatch = decodedShareCode.match(/^goog-(\d+)$/i);
-        const adMatch = decodedShareCode.match(/^ad-(.+)$/i);
-        const marketCode = decodedShareCode.replace(/^product-/i, '');
+        await ensureGoogShareLookupReady();
+        let normalizedShareCode = decodedShareCode;
+        const resolveSharedProfile = async (userTarget) => {
+            const isNumericId = /^\d+$/.test(userTarget);
+            let userResult = null;
 
+            if (isNumericId) {
+                userResult = await pool.query(
+                    `SELECT id, user_id, username, full_name, bio, profile_picture, email, created_at
+                     FROM users
+                     WHERE id = $1 OR user_id = $2
+                     LIMIT 1`,
+                    [Number(userTarget), userTarget]
+                );
+            }
+
+            if (!userResult || !userResult.rows.length) {
+                userResult = await pool.query(
+                    `SELECT id, user_id, username, full_name, bio, profile_picture, email, created_at
+                     FROM users
+                     WHERE LOWER(username) = LOWER($1)
+                     LIMIT 1`,
+                    [userTarget]
+                );
+            }
+
+            if (userResult?.rows?.length) {
+                return res.status(200).json({
+                    success: true,
+                    type: 'profile',
+                    data: userResult.rows[0],
+                });
+            }
+            return null;
+        };
+
+        if (/^[0-9A-Za-z]{4,16}$/.test(decodedShareCode)) {
+            const profileByCode = await pool.query(
+                `SELECT id, user_id, username, full_name, bio, profile_picture, email, created_at
+                 FROM users`
+            );
+            for (const profile of profileByCode.rows || []) {
+                const usernameCode = buildShortShareCode('u', profile.username || '');
+                const userIdCode = buildShortShareCode('u', profile.user_id || '');
+                const idCode = buildShortShareCode('u', profile.id);
+                if ([usernameCode, userIdCode, idCode].includes(decodedShareCode)) {
+                    return res.status(200).json({
+                        success: true,
+                        type: 'profile',
+                        data: profile,
+                    });
+                }
+            }
+
+            await pool.query(`ALTER TABLE goog_posts ADD COLUMN IF NOT EXISTS share_code VARCHAR(32);`);
+            const googByCode = await pool.query(`SELECT id, share_code FROM goog_posts`);
+            const matchedGoog = (googByCode.rows || []).find((row) => {
+                const storedCode = String(row.share_code || '').trim();
+                return storedCode === decodedShareCode || buildShortShareCode('g', row.id) === decodedShareCode;
+            });
+            let matchedGoogId = matchedGoog?.id ?? null;
+            if (matchedGoogId == null) {
+                await pool.query(`
+                    CREATE TABLE IF NOT EXISTS goog_share_aliases (
+                        id SERIAL PRIMARY KEY,
+                        alias_code VARCHAR(32) UNIQUE NOT NULL,
+                        goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                `);
+                const googAliasResult = await pool.query(
+                    `SELECT goog_id
+                     FROM goog_share_aliases
+                     WHERE LOWER(alias_code) = LOWER($1)
+                     LIMIT 1`,
+                    [decodedShareCode]
+                );
+                matchedGoogId = googAliasResult.rows[0]?.goog_id ?? null;
+            }
+            if (matchedGoogId != null) {
+                const googResult = await pool.query(
+                    `SELECT gp.*, u.username, u.full_name, u.profile_picture, gp.share_code
+                     FROM goog_posts gp
+                     JOIN users u ON u.id = gp.user_id
+                     WHERE gp.id = $1`,
+                    [Number(matchedGoogId)]
+                );
+                if (googResult.rows.length > 0) {
+                    return res.status(200).json({
+                        success: true,
+                        type: 'goog',
+                        data: mapGoogShareResponse(googResult.rows[0]),
+                    });
+                }
+            }
+
+            const adByCode = await pool.query(`SELECT ad_id FROM ads`);
+            const matchedAd = (adByCode.rows || []).find((row) => buildShortShareCode('a', row.ad_id || '') === decodedShareCode);
+            if (matchedAd?.ad_id) {
+                const adResult = await pool.query(
+                    `SELECT a.*, u.username as owner_username, u.profile_picture 
+                     FROM ads a 
+                     LEFT JOIN users u ON a.user_id = u.id 
+                     WHERE a.ad_id = $1`,
+                    [matchedAd.ad_id]
+                );
+                if (adResult.rows.length > 0) {
+                    return res.status(200).json({
+                        success: true,
+                        type: 'ad',
+                        data: mapActiveAdToMarketCard(adResult.rows[0]),
+                    });
+                }
+            }
+
+            const profileLegacy = await resolveSharedProfile(decodedShareCode);
+            if (profileLegacy) return profileLegacy;
+        }
+        const googMatch = normalizedShareCode.match(/^goog-(\d+)$/i);
+        const adMatch = normalizedShareCode.match(/^ad-(.+)$/i);
         if (googMatch) {
             const googResult = await pool.query(
-                `SELECT gp.*, u.username, u.full_name, u.profile_picture
+                `SELECT gp.*, u.username, u.full_name, u.profile_picture, gp.share_code
                  FROM goog_posts gp
                  JOIN users u ON u.id = gp.user_id
                  WHERE gp.id = $1`,
                 [parseInt(googMatch[1], 10)]
             );
             if (googResult.rows.length > 0) {
-                const row = googResult.rows[0];
                 return res.status(200).json({
                     success: true,
                     type: 'goog',
-                    data: {
-                        id: Number(row.id),
-                        text: row.text,
-                        textColor: row.text_color || '#FFFFFF',
-                        createdAt: row.created_at,
-                        updatedAt: row.updated_at,
-                        likes: Number(row.likes_count || 0),
-                        comments: Number(row.comments_count || 0),
-                        views: Number(row.views_count || 0),
-                        reposts: 0,
-                        shares: Number(row.shares_count || 0),
-                        liked: false,
-                        user: {
-                            id: row.user_id,
-                            username: row.username || '',
-                            name: row.full_name || row.username || 'User',
-                            img: row.profile_picture || '/assets/images/avatars/avatar-default.jpg',
-                        },
-                    },
-                });
-            }
-        }
-
-        if (!googMatch && !adMatch) {
-            const marketResult = await pool.query(
-                `SELECT m.*, u.username as owner_username, u.profile_picture 
-                 FROM market m 
-                 LEFT JOIN users u ON m.user_id = u.id 
-                 WHERE m.product_code = $1 OR m.id::text = $1`,
-                [marketCode]
-            );
-            if (marketResult.rows.length > 0) {
-                return res.status(200).json({
-                    success: true,
-                    type: 'product',
-                    data: attachCurrentUser(marketResult.rows[0])
+                    data: mapGoogShareResponse(googResult.rows[0]),
                 });
             }
         }
 
         if (!googMatch) {
-            const adId = adMatch ? adMatch[1] : decodedShareCode;
+            const adId = adMatch ? adMatch[1] : normalizedShareCode;
             const adResult = await pool.query(
                 `SELECT a.*, u.username as owner_username, u.profile_picture 
                  FROM ads a 
@@ -2661,73 +3572,39 @@ exports.getUnifiedShareItem = async (req, res) => {
         }
 
         if (!adMatch && !googMatch) {
-            const adResult = await pool.query(
-                `SELECT a.*, u.username as owner_username, u.profile_picture 
-                 FROM ads a 
-                 LEFT JOIN users u ON a.user_id = u.id 
-                 WHERE a.product_code IS NOT NULL AND a.product_code = $1`,
-                [decodedShareCode]
-            );
-            if (adResult.rows.length > 0) {
-                return res.status(200).json({
-                    success: true,
-                    type: 'ad',
-                    data: mapActiveAdToMarketCard(adResult.rows[0])
-                });
+            const adsHasProductCode = await hasTableColumn('ads', 'product_code');
+            if (adsHasProductCode) {
+                const adResult = await pool.query(
+                    `SELECT a.*, u.username as owner_username, u.profile_picture 
+                     FROM ads a 
+                     LEFT JOIN users u ON a.user_id = u.id 
+                     WHERE a.product_code IS NOT NULL AND (a.product_code = $1 OR LOWER(a.product_code) = LOWER($1))`,
+                    [normalizedShareCode]
+                );
+                if (adResult.rows.length > 0) {
+                    return res.status(200).json({
+                        success: true,
+                        type: 'ad',
+                        data: mapActiveAdToMarketCard(adResult.rows[0])
+                    });
+                }
             }
         }
 
         // Legacy support for old numeric Goog links; new links use goog-:id to avoid product collisions.
-        if (!adMatch && !googMatch && !isNaN(parseInt(decodedShareCode, 10))) {
+        if (!adMatch && !googMatch && /^\d+$/.test(normalizedShareCode)) {
             const googResult = await pool.query(
-                `SELECT gp.*, u.username, u.full_name, u.profile_picture
+                `SELECT gp.*, u.username, u.full_name, u.profile_picture, gp.share_code
                  FROM goog_posts gp
                  JOIN users u ON u.id = gp.user_id
                  WHERE gp.id = $1`,
-                [parseInt(decodedShareCode, 10)]
+                [parseInt(normalizedShareCode, 10)]
             );
             if (googResult.rows.length > 0) {
-                const row = googResult.rows[0];
-                const normalizedGoog = {
-                    id: Number(row.id),
-                    text: row.text,
-                    textColor: row.text_color || '#FFFFFF',
-                    createdAt: row.created_at,
-                    updatedAt: row.updated_at,
-                    likes: Number(row.likes_count || 0),
-                    comments: Number(row.comments_count || 0),
-                    views: Number(row.views_count || 0),
-                    reposts: 0,
-                    shares: Number(row.shares_count || 0),
-                    liked: false,
-                    user: {
-                        id: row.user_id,
-                        username: row.username || '',
-                        name: row.full_name || row.username || 'User',
-                        img: row.profile_picture || '/assets/images/avatars/avatar-default.jpg',
-                    },
-                };
                 return res.status(200).json({
                     success: true,
                     type: 'goog',
-                    data: normalizedGoog
-                });
-            }
-        }
-
-        if (!adMatch && !googMatch) {
-            const marketResult = await pool.query(
-                `SELECT m.*, u.username as owner_username, u.profile_picture 
-                 FROM market m 
-                 LEFT JOIN users u ON m.user_id = u.id 
-                 WHERE m.product_code = $1 OR m.id::text = $1`,
-                [marketCode]
-            );
-            if (marketResult.rows.length > 0) {
-                return res.status(200).json({
-                    success: true,
-                    type: 'product',
-                    data: attachCurrentUser(marketResult.rows[0])
+                    data: mapGoogShareResponse(googResult.rows[0])
                 });
             }
         }
@@ -2735,6 +3612,10 @@ exports.getUnifiedShareItem = async (req, res) => {
         res.status(404).json({ success: false, message: 'Item not found' });
     } catch (error) {
         console.error('Error in getUnifiedShareItem:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
+        res.status(500).json({
+            success: false,
+            message: 'Server error',
+            error: String(error?.message || error),
+        });
     }
 };

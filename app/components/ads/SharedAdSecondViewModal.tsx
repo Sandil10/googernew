@@ -4,7 +4,7 @@ import Image from "next/image";
 import React, { useRef, useState } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import SubscribeButton from "@/app/components/SubscribeButton";
-import { useRelativeTime } from "@/app/lib/relativeTime";
+import { RelativeTime } from "@/app/components/RelativeTime";
 import { AdInteractionButton, AdInteractionType } from "./AdInteractionButton";
 import {
     getSponsoredAdImages,
@@ -39,6 +39,7 @@ export type SharedAdSecondViewModalProps = AdSecondViewHandlers & {
 
 const normalizeMediaUrl = (value: string) => {
     if (!value) return "";
+    if (value.startsWith("/uploads/") || /^https?:\/\//i.test(value) || value.startsWith("data:")) return value;
     return value.includes("uploads") || value.includes("\\")
         ? `/uploads/${value.split(/[\\/]/).pop()}`
         : value;
@@ -65,7 +66,7 @@ export function SharedAdSecondViewModal({
     const advertiserName = normalizedAd?.username || normalizedAd?.owner_username || raw.username || raw.owner_username || raw.ownerUsername || raw.user?.username || raw.user?.name || "Advertiser";
     const advertiserImage = normalizedAd?.profile_picture || raw.profile_picture || raw.profilePicture || raw.owner_profile_picture || raw.ownerProfilePicture || raw.user?.profile_picture || raw.user?.profilePicture || "";
     const advertiserId = normalizedAd?.userId || normalizedAd?.user_id || raw.user_id || raw.userId || raw.owner_user_id || raw.ownerUserId || raw.user?.id;
-    const timeLabel = useRelativeTime(normalizedAd?.createdAt || normalizedAd?.created_at || raw.created_at || raw.createdAt, "just now");
+
     const images = React.useMemo(() => {
         if (providedImages && providedImages.length) return providedImages;
         return getSponsoredAdImages(normalizedAd);
@@ -76,16 +77,41 @@ export function SharedAdSecondViewModal({
     const liveState = useAdStore((state) => state.adStates[interactionId] || {});
     const videoWatchEligibleSentRef = useRef(false);
 
-    // Merged ad object for reactive UI
-    const mergedAd = {
-        ...normalizedAd,
-        user_liked: liveState.user_liked ?? normalizedAd.user_liked ?? normalizedAd.liked,
-        likes_count: liveState.likes_count ?? normalizedAd.likes_count ?? normalizedAd.likeCount,
-        ad_coin_collected: liveState.ad_coin_collected ?? normalizedAd.ad_coin_collected ?? normalizedAd.coinCollected,
-        views_count: liveState.views_count ?? normalizedAd.views_count ?? normalizedAd.viewCount,
-        comments_count: liveState.comments_count ?? normalizedAd.comments_count ?? normalizedAd.commentCount,
-        shares_count: liveState.shares_count ?? normalizedAd.shares_count ?? normalizedAd.shareCount,
-    };
+    // Fully merged live ad object for reactive second-view UI and collect-coin eligibility.
+    const mergedAd = React.useMemo(() => {
+        const liked = !!(liveState.user_liked ?? normalizedAd.user_liked ?? normalizedAd.liked);
+        const likesCount = Number(liveState.likes_count ?? normalizedAd.likes_count ?? normalizedAd.likeCount ?? 0);
+        const viewsCount = Number(liveState.views_count ?? normalizedAd.views_count ?? normalizedAd.viewCount ?? 0);
+        const commentsCount = Number(liveState.comments_count ?? normalizedAd.comments_count ?? normalizedAd.commentCount ?? 0);
+        const sharesCount = Number(liveState.shares_count ?? normalizedAd.shares_count ?? normalizedAd.shareCount ?? 0);
+        const coinCollected = !!(liveState.ad_coin_collected ?? normalizedAd.ad_coin_collected ?? normalizedAd.coinCollected);
+
+        return {
+            ...normalizedAd,
+            liked,
+            user_liked: liked,
+            likeCount: likesCount,
+            likes_count: likesCount,
+            views_count: viewsCount,
+            viewCount: viewsCount,
+            comments_count: commentsCount,
+            commentCount: commentsCount,
+            shares_count: sharesCount,
+            shareCount: sharesCount,
+            coinCollected,
+            ad_coin_collected: coinCollected,
+            raw: {
+                ...(normalizedAd.raw || {}),
+                user_liked: liked,
+                likes_count: likesCount,
+                views_count: viewsCount,
+                comments_count: commentsCount,
+                shares_count: sharesCount,
+                ad_coin_collected: coinCollected,
+            },
+        };
+    }, [liveState, normalizedAd]);
+    const canShowCollectCoinButton = canShowCollectCoin(mergedAd);
 
     const [currentIndex, setCurrentIndex] = useState(0);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -100,7 +126,23 @@ export function SharedAdSecondViewModal({
     };
 
     if (kind !== "image") {
-        const uploadedVideoUrl = (/video/i.test(String(mergedAd?.media_type || "")) && mergedAd?.media_preview) ? normalizeMediaUrl(String(mergedAd.media_preview)) : "";
+        const uploadedVideoCandidate = String(
+            (mergedAd as any)?.media_url ||
+            (mergedAd as any)?.video_url ||
+            (mergedAd as any)?.video ||
+            (mergedAd as any)?.media_preview ||
+            raw?.media_preview ||
+            raw?.media_url ||
+            raw?.video_url ||
+            raw?.video ||
+            "",
+        ).trim();
+        const isUploadedVideo =
+            /video/i.test(String(mergedAd?.media_type || raw?.media_type || "")) ||
+            /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(uploadedVideoCandidate);
+        const uploadedVideoUrl = (isUploadedVideo && uploadedVideoCandidate)
+            ? normalizeMediaUrl(uploadedVideoCandidate)
+            : "";
         const videoUrl = uploadedVideoUrl || (kind === "video" ? link : "");
         const embedUrl = kind === "embed" ? (getSponsoredSocialEmbedUrl(link) || link) : "";
 
@@ -145,7 +187,9 @@ export function SharedAdSecondViewModal({
                                 <div className="mt-1 flex items-center gap-1.5">
                                     <span className="text-[9px] font-bold tracking-widest text-white/45">Ad</span>
                                     <div className="h-0.5 w-0.5 rounded-full bg-white/25" />
-                                    <span className="text-[9px] font-bold tracking-widest text-white/45">{timeLabel}</span>
+                                    <span className="text-[9px] font-bold tracking-widest text-white/45">
+                                        <RelativeTime timestamp={normalizedAd?.createdAt || normalizedAd?.created_at || raw.created_at || raw.createdAt} />
+                                    </span>
                                 </div>
                             </div>
                             {mergedAd?.title && (
@@ -166,18 +210,7 @@ export function SharedAdSecondViewModal({
                             )}
                         </div>
                         <div className="flex items-center gap-2">
-                            <button
-                                type="button"
-                                onClick={onClose}
-                                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white/70 transition hover:bg-white/10 hover:text-white"
-                            >
-                                <IonIcon name="close" className="text-xl" />
-                            </button>
-                        </div>
-                    </div>
-                    <div className="relative aspect-video bg-black">
-                        {canShowCollectCoin(mergedAd) && (
-                            <div className="absolute right-3 top-[55px] z-20 md:right-4 md:top-[60px]">
+                            {canShowCollectCoinButton && (
                                 <button
                                     type="button"
                                     onClick={(e) => {
@@ -198,8 +231,17 @@ export function SharedAdSecondViewModal({
                                     </span>
                                     <span className="leading-none">Ruppier</span>
                                 </button>
-                            </div>
-                        )}
+                            )}
+                            <button
+                                type="button"
+                                onClick={onClose}
+                                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white/70 transition hover:bg-white/10 hover:text-white"
+                            >
+                                <IonIcon name="close" className="text-xl" />
+                            </button>
+                        </div>
+                    </div>
+                    <div className="relative aspect-video bg-black">
                         {kind === "embed" && embedUrl ? (
                             <iframe
                                 src={embedUrl}
@@ -223,6 +265,53 @@ export function SharedAdSecondViewModal({
                                 className="h-full w-full object-cover"
                             />
                         ) : null}
+                        <div className="absolute right-3 top-1/2 z-20 flex -translate-y-1/2 flex-col gap-4 rounded-[1.4rem] border border-white/10 bg-black/45 px-2 py-3 backdrop-blur-md">
+                            <AdInteractionButton
+                                type="likes"
+                                icon="heart-outline"
+                                activeIcon="heart"
+                                isActive={!!mergedAd.user_liked}
+                                count={Number(mergedAd.likes_count || 0)}
+                                color="text-white"
+                                activeColor="text-white"
+                                onSingleClick={() => onToggleLike(mergedAd)}
+                                onLongPress={() => onOpenSheet("likes", mergedAd)}
+                                iconSize="text-base md:text-xl"
+                            />
+                            <AdInteractionButton
+                                type="views"
+                                icon="eye-outline"
+                                activeIcon="eye"
+                                count={Number(mergedAd.views_count || 0)}
+                                color="text-white"
+                                activeColor="text-white"
+                                onSingleClick={() => onOpenSheet("views", mergedAd)}
+                                onLongPress={() => onOpenSheet("views", mergedAd)}
+                                iconSize="text-base md:text-xl"
+                            />
+                            <AdInteractionButton
+                                type="comments"
+                                icon="chatbubble"
+                                activeIcon="chatbubble"
+                                count={Number(mergedAd.comments_count || 0)}
+                                color="text-white"
+                                activeColor="text-white"
+                                onSingleClick={() => onOpenSheet("comments", mergedAd)}
+                                onLongPress={() => onOpenSheet("comments", mergedAd)}
+                                iconSize="text-base md:text-xl"
+                            />
+                            <AdInteractionButton
+                                type="shares"
+                                icon="share-social"
+                                activeIcon="share-social"
+                                count={Number(mergedAd.shares_count || 0)}
+                                color="text-white"
+                                activeColor="text-white"
+                                onSingleClick={() => onShare(mergedAd)}
+                                onLongPress={() => onOpenSheet("shares", mergedAd)}
+                                iconSize="text-sm md:text-lg opacity-90"
+                            />
+                        </div>
                     </div>
                 </div>
             </div>
@@ -277,7 +366,9 @@ export function SharedAdSecondViewModal({
                             <div className="mt-1 flex items-center gap-1.5">
                                 <span className="text-[9px] font-bold tracking-widest text-white/45">Ad</span>
                                 <div className="h-0.5 w-0.5 rounded-full bg-white/25" />
-                                <span className="text-[9px] font-bold tracking-widest text-white/45">{timeLabel}</span>
+                                <span className="text-[9px] font-bold tracking-widest text-white/45">
+                                    <RelativeTime timestamp={normalizedAd?.createdAt || normalizedAd?.created_at || raw.created_at || raw.createdAt} />
+                                </span>
                             </div>
                         </div>
                         {advertiserId && (
@@ -286,7 +377,7 @@ export function SharedAdSecondViewModal({
                     </div>
 
                     <div className="flex items-center gap-2">
-                        {canShowCollectCoin(mergedAd) && (
+                        {canShowCollectCoinButton && (
                             <button
                                 type="button"
                                 onClick={(e) => {

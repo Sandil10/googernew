@@ -1,5 +1,11 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 require('dotenv').config();
+
+// IMPORTANT:
+// Postgres TIMESTAMP WITHOUT TIME ZONE (OID 1114) is parsed by node-postgres as local-time Date by default.
+// That causes ~5h shifts in relative time in non-UTC environments.
+// Keep it as raw text so controllers can normalize explicitly as UTC.
+types.setTypeParser(1114, (value) => value);
 
 const dbConfig = {};
 const localSslEnabled = ['true', '1', 'require', 'enabled'].includes(String(process.env.DB_SSL || '').toLowerCase());

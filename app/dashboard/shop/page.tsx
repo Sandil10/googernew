@@ -18,14 +18,13 @@ import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { ProfilePromoteCarousel } from "@/app/components/ads/ProfilePromoteCarousel";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { SharedProductCard } from "@/app/components/market/SharedProductCard";
-import { normalizeAd } from "@/app/lib/ads/adSystem";
-import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
+import { normalizeAdData, resolveAdDisplayTitle } from "@/app/lib/ads/adNormalizer";
 import { getAdInteractionId, matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { canShowCollectCoinButton as canShowAdCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
+import { resolveProductPromoteProduct } from "@/app/lib/ads/resolveProductPromoteProduct";
 import { useAdStore } from "@/app/lib/ads/adStore";
-import { normalizeProductAd } from "@/app/lib/market/adProductAdapter";
-import { formatRelativeTime } from "@/app/lib/relativeTime";
-import { getShareUrlForItem } from "@/app/lib/shareLinks";
+import { RelativeTime } from "@/app/components/RelativeTime";
+import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
 import {
   AD_CARD_IMAGE_SIZES,
@@ -189,55 +188,17 @@ const getSponsoredLinkPreviewType = (value: string) => {
 };
 
 const getSponsoredSecondViewKind = (ad: any, previewType: string | null): "image" | "video" | "embed" => {
+  const campaignType = String(ad?.campaign_type || ad?.campaignType || "").trim().toLowerCase();
+  const isPhotoVideoPromoteCampaign = campaignType.includes("photo") && campaignType.includes("video");
   const mediaPreview = String(ad?.media_preview || ad?.video_url || "").trim();
   const hasUploadedVideo =
     /video/i.test(String(ad?.media_type || "")) ||
     /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(mediaPreview);
 
+  if (!isPhotoVideoPromoteCampaign) return "image";
   if (previewType === "embed") return "embed";
   if (previewType === "video" || hasUploadedVideo) return "video";
   return "image";
-};
-
-const getSponsoredCtaHref = (ctaTopic?: string, ctaValue?: string) => {
-  const trimmedValue = String(ctaValue || "").trim();
-  if (!trimmedValue || ctaTopic === "No Button" || ctaTopic === "Message") return "";
-
-  if (ctaTopic === "Call Now") {
-    return `tel:${trimmedValue.replace(/[^\d+]/g, "")}`;
-  }
-
-  if (ctaTopic === "WhatsApp") {
-    if (/^https?:\/\//i.test(trimmedValue)) return trimmedValue;
-    const digits = trimmedValue.replace(/[^\d]/g, "");
-    return digits ? `https://wa.me/${digits}` : "";
-  }
-
-  if (trimmedValue.includes("@") && !/^https?:\/\//i.test(trimmedValue) && ctaTopic === "Contact Us") {
-    return `mailto:${trimmedValue}`;
-  }
-
-  return normalizeExternalUrl(trimmedValue);
-};
-
-const getSponsoredAdImages = (product: any, fallbackImage?: string) => {
-  const gallery = Array.isArray(product?.media_gallery)
-    ? product.media_gallery
-    : Array.isArray(safeParse(product?.media_gallery))
-      ? safeParse(product?.media_gallery)
-      : [];
-
-  const activeLink = normalizeExternalUrl(product?.active_link || "");
-  const linkPreviewType = getSponsoredLinkPreviewType(activeLink);
-  const linkImage = linkPreviewType === "image" ? activeLink : "";
-
-  return Array.from(
-    new Set(
-      [fallbackImage, product?.image_url, product?.media_preview, linkImage, ...gallery]
-        .map((item) => String(item || "").trim())
-        .filter(Boolean),
-    ),
-  );
 };
 
 const getDeliveryDateText = (daysValue: string) => {
@@ -945,7 +906,7 @@ function renderDescription(text: string, router?: any): React.ReactNode[] {
 
 function getProfileImageSrc(profilePicture?: string | null, name?: string) {
   if (profilePicture) {
-    if (profilePicture.startsWith("http") || profilePicture.startsWith("data:")) {
+    if (profilePicture.startsWith("/uploads/") || profilePicture.startsWith("http") || profilePicture.startsWith("data:")) {
       return profilePicture;
     }
     return `/uploads/${profilePicture.split(/[\\/]/).pop()}`;
@@ -953,8 +914,21 @@ function getProfileImageSrc(profilePicture?: string | null, name?: string) {
   return `https://ui-avatars.com/api/?name=${encodeURIComponent(name || "User")}&background=111827&color=ffffff`;
 }
 
-function shuffleItems<T>(items: T[]) {
-  return [...items].sort(() => Math.random() - 0.5);
+function getSeededRandom(seed: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 1000000) / 1000000;
+}
+
+function shuffleItemsWithSeed<T>(items: T[], seed: string, getKey: (item: T) => string) {
+  return [...items].sort((first, second) => {
+    const firstScore = getSeededRandom(`${seed}:${getKey(first)}`);
+    const secondScore = getSeededRandom(`${seed}:${getKey(second)}`);
+    return firstScore - secondScore;
+  });
 }
 
 function getRecentAdIds(storageKey: string) {
@@ -978,10 +952,115 @@ function getShopAdRotationKey(ad: any) {
   return getAdInteractionId(ad) || String(ad?.id || ad?.adId || ad?.ad_id || "");
 }
 
+function getShopAdInsertionType(ad: any) {
+  const campaignType = getCampaignType(ad).toLowerCase();
+  const mediaType = String(ad?.media_type || ad?.mediaType || "").trim().toLowerCase();
+  const activeLink = String(ad?.active_link || ad?.activeLink || ad?.cta_value || ad?.ctaValue || "").trim().toLowerCase();
+  const title = String(ad?.title || "").trim().toLowerCase();
+
+  if (campaignType === "product promote") return "product-promote";
+  if (campaignType === "profile promote") return "profile-promote";
+
+  if (campaignType.includes("photo") && campaignType.includes("video")) return "photo-video";
+  if (campaignType.includes("image") && campaignType.includes("link")) return "image-link";
+  if (campaignType.includes("video") && campaignType.includes("link")) return "video-link";
+  if (campaignType.includes("photo")) return "photo";
+  if (campaignType.includes("video")) return "video";
+  if (campaignType.includes("image")) return "image";
+  if (campaignType.includes("link")) {
+    if (/\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(activeLink) || mediaType.includes("video")) return "video-link";
+    if (mediaType.includes("image") || /\.(png|jpe?g|gif|webp|avif)(\?.*)?$/i.test(activeLink)) return "image-link";
+    return "image-link";
+  }
+
+  if (mediaType.includes("video") || /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(activeLink) || /\bvideo\b/.test(title)) return "video";
+  if (mediaType.includes("image") || /\.(png|jpe?g|gif|webp|avif)(\?.*)?$/i.test(activeLink)) return "photo";
+
+  return "standard";
+}
+
+function getShuffledShopAdCycle(
+  ads: any[],
+  storageKey: string,
+  shuffleSeed: string,
+) {
+  const recentAdIds = new Set(getRecentAdIds(storageKey));
+  const uniqueAds = Array.from(
+    ads.reduce<Map<string, any>>((map, ad) => {
+      const key = getShopAdRotationKey(ad);
+      if (key && !map.has(key)) map.set(key, ad);
+      return map;
+    }, new Map<string, any>()).values(),
+  );
+
+  const groupedAds = uniqueAds.reduce<Map<string, any[]>>((map, ad) => {
+    const key = getShopAdInsertionType(ad);
+    const bucket = map.get(key) || [];
+    bucket.push(ad);
+    map.set(key, bucket);
+    return map;
+  }, new Map<string, any[]>());
+
+  const orderedGroupKeys = shuffleItemsWithSeed(
+    Array.from(groupedAds.keys()),
+    `${shuffleSeed}:group-order`,
+    (key) => key,
+  );
+
+  const roundRobinGroups: Array<{ type: string; items: any[] }> = orderedGroupKeys
+    .map((groupKey) => {
+      const items = groupedAds.get(groupKey) || [];
+      const freshAds = shuffleItemsWithSeed(
+        items.filter((ad) => !recentAdIds.has(getShopAdRotationKey(ad))),
+        `${shuffleSeed}:${groupKey}:fresh`,
+        getShopAdRotationKey,
+      );
+      const repeatedAds = shuffleItemsWithSeed(
+        items.filter((ad) => recentAdIds.has(getShopAdRotationKey(ad))),
+        `${shuffleSeed}:${groupKey}:repeat`,
+        getShopAdRotationKey,
+      );
+      return {
+        type: groupKey,
+        items: [...freshAds, ...repeatedAds],
+      };
+    })
+    .filter((group) => group.items.length > 0);
+
+  const shuffledAds: any[] = [];
+  let hasRemaining = true;
+  while (hasRemaining) {
+    hasRemaining = false;
+    for (const group of roundRobinGroups) {
+      const nextAd = group.items.shift();
+      if (nextAd) {
+        shuffledAds.push(nextAd);
+        hasRemaining = true;
+      }
+    }
+  }
+
+  if (shuffledAds.length <= 1) return shuffledAds;
+
+  const firstType = getShopAdInsertionType(shuffledAds[0]);
+  const lastType = getShopAdInsertionType(shuffledAds[shuffledAds.length - 1]);
+  if (firstType !== lastType) return shuffledAds;
+
+  for (let offset = 1; offset < shuffledAds.length; offset += 1) {
+    const rotated = [...shuffledAds.slice(offset), ...shuffledAds.slice(0, offset)];
+    if (getShopAdInsertionType(rotated[0]) !== getShopAdInsertionType(rotated[rotated.length - 1])) {
+      return rotated;
+    }
+  }
+
+  return shuffledAds;
+}
+
 function interleaveShopProductsWithAds(
   products: any[],
   ads: any[],
   storageKey: string,
+  shuffleSeed: string,
   productRatio = 6,
 ) {
   if (!ads.length || products.length < productRatio) return products;
@@ -998,10 +1077,7 @@ function interleaveShopProductsWithAds(
   );
   if (!uniqueAds.length) return products;
 
-  const recentAdIds = new Set(getRecentAdIds(storageKey));
-  const freshAds = shuffleItems(uniqueAds.filter((ad) => !recentAdIds.has(getShopAdRotationKey(ad))));
-  const repeatedAds = shuffleItems(uniqueAds.filter((ad) => recentAdIds.has(getShopAdRotationKey(ad))));
-  const rotatedAds = [...freshAds, ...repeatedAds];
+  const rotatedAds = getShuffledShopAdCycle(uniqueAds, storageKey, shuffleSeed);
   const shownAdIds: Array<string | number> = [];
   const output: any[] = [];
   let adIndex = 0;
@@ -1022,15 +1098,59 @@ function interleaveShopProductsWithAds(
   return output;
 }
 
+function insertProfilePromoteCarouselRows(items: any[], profilePromoteAds: any[]) {
+  if (!profilePromoteAds.length) return items;
+
+  const output: any[] = [];
+  let gridSlotsSinceCarousel = 0;
+  let carouselCount = 0;
+  const firstCarouselSlots = 8;
+  const repeatCarouselSlots = 32;
+  let nextCarouselAfterSlots = firstCarouselSlots;
+
+  items.forEach((item) => {
+    output.push(item);
+    if (item?.type === "profilePromoteCarousel") return;
+
+    gridSlotsSinceCarousel += 1;
+
+    if (gridSlotsSinceCarousel === nextCarouselAfterSlots) {
+      carouselCount += 1;
+      output.push({
+        type: "profilePromoteCarousel",
+        id: `shop-profile-promote-carousel-${carouselCount}`,
+        ads: profilePromoteAds,
+      });
+      gridSlotsSinceCarousel = 0;
+      nextCarouselAfterSlots = repeatCarouselSlots;
+    }
+  });
+
+  return output;
+}
+
 const mapPublicActiveAdToShopAd = (ad: any) => {
   const draft = safeParse(ad?.editDraft || ad?.edit_draft) || {};
   const adId = ad?.adId || ad?.ad_id || String(ad?.id || "").replace(/^ad-/, "");
   const campaignType = ad?.campaign_type || ad?.campaignType || "Ads";
-  const mediaPreview = ad?.media_preview || ad?.mediaPreview || "";
-  const linkedProductId = draft.linkedProductId ?? draft.linked_product_id ?? ad?.linked_product_id ?? ad?.linkedProductId ?? ad?.product_id ?? ad?.productId ?? null;
-  const linkedProductCode = draft.linkedProductCode || draft.linked_product_code || ad?.linked_product_code || ad?.linkedProductCode || ad?.product_code || ad?.shareCode || null;
+  const isProductPromote = String(campaignType).trim().toLowerCase() === "product promote";
+  const mediaPreview = ad?.media_preview || ad?.mediaPreview || ad?.media_url || ad?.video_url || ad?.video || "";
+  const price = isProductPromote
+    ? Number(ad?.price ?? ad?.main_price ?? ad?.product_price ?? 0)
+    : Number(ad?.budget || 0);
+  const productCode = isProductPromote
+    ? (ad?.linked_product_share_code || ad?.linked_product_code || ad?.product_code || "")
+    : adId;
+  const shareCode = isProductPromote
+    ? (ad?.linked_product_share_code || ad?.share_code || ad?.shareCode || "")
+    : `ad-${adId}`;
+  const likesCount = Number(ad?.likes_count ?? ad?.likeCount ?? ad?.likes ?? 0);
+  const commentsCount = Number(ad?.comments_count ?? ad?.commentCount ?? ad?.comments ?? 0);
+  const sharesCount = Number(ad?.shares_count ?? ad?.shareCount ?? ad?.shares ?? 0);
+  const viewsCount = Number(ad?.views_count ?? ad?.viewCount ?? ad?.views ?? ad?.impressions ?? 0);
 
   return {
+    ...ad,
     id: String(ad?.id || "").startsWith("ad-") ? ad.id : `ad-${adId || ad?.id}`,
     adId,
     user_id: ad?.user_id ?? ad?.userId,
@@ -1038,31 +1158,40 @@ const mapPublicActiveAdToShopAd = (ad: any) => {
     username: ad?.owner_username || ad?.ownerUsername || ad?.user?.username || "Ads",
     owner_username: ad?.owner_username || ad?.ownerUsername || ad?.user?.username || "Ads",
     user: ad?.user,
-    title: ad?.title || ad?.description || campaignType,
-    description: ad?.description || "",
+    title: resolveAdDisplayTitle(ad, draft, campaignType),
+    description: draft.description || ad?.description || "",
     category: campaignType,
-    price: Number(ad?.budget || 0),
+    price,
     image_url: mediaPreview,
     media_preview: mediaPreview,
+    media_url: ad?.media_url || ad?.video_url || mediaPreview,
+    video_url: ad?.video_url || ad?.media_url || mediaPreview,
     media_gallery: ad?.media_gallery || ad?.mediaGallery || [],
     media_type: ad?.media_type || ad?.mediaType || "",
     status: "approved",
-    likes_count: Number(ad?.likes_count || 0),
-    comments_count: Number(ad?.comments_count || 0),
-    shares_count: Number(ad?.shares_count || 0),
-    views_count: Number(ad?.views_count || ad?.impressions || 0),
+    likes_count: likesCount,
+    likeCount: likesCount,
+    comments_count: commentsCount,
+    commentCount: commentsCount,
+    shares_count: sharesCount,
+    shareCount: sharesCount,
+    views_count: viewsCount,
+    viewCount: viewsCount,
     created_at: ad?.created_at || ad?.createdAt,
     profile_picture: ad?.profile_picture || ad?.user?.profile_picture || null,
-    product_code: adId,
-    share_code: `ad-${adId}`,
+    product_code: productCode,
+    share_code: shareCode,
     campaign_type: campaignType,
+    editDraft: draft,
+    edit_draft: draft,
     active_link: draft.activeLink || draft.active_link || ad?.active_link || ad?.activeLink || "",
     cta_topic: draft.ctaTopic || draft.cta_topic || ad?.cta_topic || ad?.ctaTopic || "Visit",
     cta_value: draft.ctaValue || draft.cta_value || ad?.cta_value || ad?.ctaValue || "",
-    linked_product_id: linkedProductId,
-    linked_product_code: linkedProductCode,
-    product_id: linkedProductId,
-    productId: linkedProductId,
+    linked_product_id: ad?.linked_product_id ?? null,
+    linked_product_share_code: ad?.linked_product_share_code || ad?.linked_product_code || null,
+    linked_product_code: ad?.linked_product_share_code || ad?.linked_product_code || null,
+    product_id: ad?.product_id ?? null,
+    productId: ad?.productId ?? null,
     is_sponsored: true,
     user_liked: !!ad?.user_liked,
     ad_coin_collected: !!ad?.ad_coin_collected,
@@ -1073,47 +1202,6 @@ const mapPublicActiveAdToShopAd = (ad: any) => {
 const getCampaignType = (item: any) => String(item?.campaign_type || item?.campaignType || "").trim();
 const isProductPromoteItem = (item: any) => getCampaignType(item).toLowerCase() === "product promote";
 const isProfilePromoteItem = (item: any) => getCampaignType(item).toLowerCase() === "profile promote" || item?.media_type === "profile";
-
-const hydrateProductPromoteShopAd = async (ad: any) => {
-  if (!isProductPromoteItem(ad)) return ad;
-
-  const linkedId = ad.linked_product_id || ad.product_id || ad.productId;
-  const linkedCode = ad.linked_product_code || ad.shareCode;
-  let linkedProduct: any = null;
-
-  try {
-    if (linkedId) linkedProduct = await marketService.getItemById(linkedId);
-    else if (linkedCode) linkedProduct = await marketService.getItemByCode(String(linkedCode));
-  } catch (error) {
-    console.error("Failed to hydrate Product Promote ad for shop feed:", error);
-  }
-
-  if (!linkedProduct) return ad;
-
-  return {
-    ...linkedProduct,
-    id: ad.id,
-    adId: ad.adId,
-    ad_id: ad.ad_id || ad.adId,
-    linked_product_id: linkedProduct.id,
-    product_id: linkedProduct.id,
-    linked_product_code: linkedProduct.product_code || ad.linked_product_code,
-    product_code: linkedProduct.product_code || ad.product_code,
-    share_code: ad.share_code,
-    campaign_type: ad.campaign_type,
-    is_sponsored: true,
-    sponsored_label: "Ad",
-    user_liked: ad.user_liked,
-    likes_count: ad.likes_count,
-    comments_count: ad.comments_count,
-    shares_count: ad.shares_count,
-    views_count: ad.views_count,
-    ad_coin_collected: ad.ad_coin_collected,
-    ad_like_locked: ad.ad_like_locked,
-    ad_coin_value: ad.ad_coin_value,
-    created_at: ad.created_at || linkedProduct.created_at,
-  };
-};
 
 export default function ShopPage() {
   const MARKET_FEED_HISTORY_KEY = "googer-market-feed-history-v2";
@@ -1162,27 +1250,6 @@ export default function ShopPage() {
   const [, setRelativeTimeTick] = useState(0);
   const [isBottomSheetOpen, setIsBottomSheetOpen] = useState(false);
   const [interactionProduct, setInteractionProduct] = useState<any>(null);
-  const [sponsoredPreviewModal, setSponsoredPreviewModal] = useState<{
-    product: any;
-    title: string;
-    embedUrl?: string;
-    videoUrl?: string;
-    externalUrl: string;
-  } | null>(null);
-  const [sponsoredImageModal, setSponsoredImageModal] = useState<{
-    product: any;
-    images: string[];
-    currentIndex: number;
-  } | null>(null);
-  const [sponsoredActionModal, setSponsoredActionModal] = useState<{
-    title: string;
-    ctaLabel: string;
-    href?: string;
-    mode: "iframe" | "call" | "whatsapp" | "message" | "contact";
-    description?: string;
-  } | null>(null);
-  const [isSponsoredImageMenuOpen, setIsSponsoredImageMenuOpen] = useState(false);
-  const sponsoredImageSwipeStartX = useRef<number | null>(null);
   const [bottomSheetType, setBottomSheetType] = useState<
     "likes" | "comments" | "shares" | "views"
   >("comments");
@@ -1204,11 +1271,14 @@ export default function ShopPage() {
   const [marketAds, setMarketAds] = useState<any[]>([]);
   const syncAds = useAdStore((state) => state.syncAds);
   const updateAdState = useAdStore((state) => state.updateAdState);
+  const setViewerContext = useAdStore((state) => state.setViewerContext);
   const [marketHasMore, setMarketHasMore] = useState(false);
   const [marketNextOffset, setMarketNextOffset] = useState(0);
   const [isLoadingMoreProducts, setIsLoadingMoreProducts] = useState(false);
+  const [shopAdShuffleSeed, setShopAdShuffleSeed] = useState(() => `${Date.now()}-${Math.random()}`);
+  const marketFeedSessionRef = useRef<string>("");
+  const marketShuffleTokenRef = useRef<string>("");
   const ordersPageSize = 8;
-  const marketLoadMoreRef = useRef<HTMLDivElement | null>(null);
   const visibleMarketplaceProducts = useMemo(() => {
     const filteredProducts = products
       .filter((p) => !hiddenProductIds.includes(p.id))
@@ -1221,32 +1291,34 @@ export default function ShopPage() {
       });
 
     const approvedAds = activeTab === "market"
-      ? [
-        ...products.filter((p) => !!p?.is_sponsored && !hiddenProductIds.includes(p.id)),
-        ...marketAds.filter((ad) => !hiddenProductIds.includes(ad.id)),
-      ]
+      ? Array.from(
+        [
+          ...products.filter((p) => !!p?.is_sponsored && !hiddenProductIds.includes(p.id)),
+          ...marketAds.filter((ad) => !hiddenProductIds.includes(ad.id)),
+        ]
+          .reduce((map, ad) => {
+            const key = getShopAdRotationKey(ad);
+            if (key && !map.has(key)) map.set(key, ad);
+            return map;
+          }, new Map<string, any>())
+          .values(),
+      )
       : [];
 
     if (activeTab !== "market") return filteredProducts;
 
     const profilePromoteAds = approvedAds.filter(isProfilePromoteItem);
-    const nonProfilePromoteAds = approvedAds.filter((ad) => !isProfilePromoteItem(ad));
+    const interleavableAds = approvedAds.filter((ad) => !isProfilePromoteItem(ad));
     const interleavedItems = interleaveShopProductsWithAds(
       filteredProducts,
-      nonProfilePromoteAds,
+      interleavableAds,
       "googer-marketplace-ad-rotation-v2",
+      shopAdShuffleSeed,
       6,
     );
 
-    if (!profilePromoteAds.length) return interleavedItems;
-
-    const insertIndex = Math.min(6, interleavedItems.length);
-    return [
-      ...interleavedItems.slice(0, insertIndex),
-      { type: "profilePromoteCarousel", id: "shop-profile-promote-carousel", ads: profilePromoteAds },
-      ...interleavedItems.slice(insertIndex),
-    ];
-  }, [activeTab, hiddenProductIds, marketAds, myListingsTab, products]);
+    return insertProfilePromoteCarouselRows(interleavedItems, profilePromoteAds);
+  }, [activeTab, hiddenProductIds, marketAds, myListingsTab, products, shopAdShuffleSeed]);
   const lastClosedProductId = useRef<string | null>(null);
   const productsCacheRef = useRef<Record<string, any[]>>({});
   const productLoadRequestRef = useRef(0);
@@ -1298,6 +1370,37 @@ export default function ShopPage() {
     };
   };
 
+  useEffect(() => {
+    if (activeTab !== "market") return;
+    let cancelled = false;
+
+    const loadProductPromoteAds = async () => {
+      try {
+        const response = await fetch("/api/ads/active-public?limit=50", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.message || "Failed to load active ads");
+
+        const productPromoteAds = (Array.isArray(data?.ads) ? data.ads : [])
+          .map(mapPublicActiveAdToShopAd)
+          .filter(isProductPromoteItem);
+        const hydratedAds = (await Promise.all(productPromoteAds.map(resolveProductPromoteProduct)))
+          .filter(isProductPromoteItem);
+
+        if (cancelled) return;
+        setMarketAds(hydratedAds);
+        if (hydratedAds.length > 0) syncAds(hydratedAds);
+      } catch (error) {
+        console.error("Failed to load Product Promote ads for shop feed:", error);
+      }
+    };
+
+    void loadProductPromoteAds();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, syncAds]);
+
   const liveSelectedProduct = useMemo(() => {
     if (!selectedProduct) return null;
     const lookupId = selectedProduct.adId || selectedProduct.ad_id || selectedProduct.id;
@@ -1328,10 +1431,13 @@ export default function ShopPage() {
       linked_product_id: selectedProduct.linked_product_id || selectedProduct.product_id || live.linked_product_id,
       linked_product_code: selectedProduct.linked_product_code || live.linked_product_code,
       share_code: selectedProduct.share_code || live.share_code,
-      user_liked: selectedProduct.user_liked ?? live.user_liked,
-      likes_count: selectedProduct.likes_count ?? live.likes_count,
-      ad_coin_collected: selectedProduct.ad_coin_collected ?? live.ad_coin_collected,
-      ad_like_locked: selectedProduct.ad_like_locked ?? live.ad_like_locked,
+      user_liked: live.user_liked ?? selectedProduct.user_liked,
+      likes_count: live.likes_count ?? selectedProduct.likes_count,
+      comments_count: live.comments_count ?? selectedProduct.comments_count,
+      shares_count: live.shares_count ?? selectedProduct.shares_count,
+      views_count: live.views_count ?? selectedProduct.views_count,
+      ad_coin_collected: live.ad_coin_collected ?? selectedProduct.ad_coin_collected,
+      ad_like_locked: live.ad_like_locked ?? selectedProduct.ad_like_locked,
     };
   }, [selectedProduct, products, marketAds]);
 
@@ -1364,6 +1470,9 @@ export default function ShopPage() {
   const isSponsoredVideoAdProduct = (product: any) => {
     if (!product?.is_sponsored) return false;
     if (isProductPromoteItem(product)) return false;
+    const campaignType = String(product?.campaign_type || product?.campaignType || "").trim().toLowerCase();
+    const isPhotoVideoPromoteCampaign = campaignType.includes("photo") && campaignType.includes("video");
+    if (!isPhotoVideoPromoteCampaign) return false;
     const externalUrl = normalizeExternalUrl(product?.active_link || "");
     const previewType = getSponsoredLinkPreviewType(externalUrl);
     return previewType === "video" || previewType === "embed" || /video/i.test(String(product?.media_type || ""));
@@ -1375,104 +1484,15 @@ export default function ShopPage() {
   };
 
   const canShowCollectCoinButton = (product: any) => {
-    if (!canShowAdCollectCoinButton(product, currentUser)) return false;
-
-    // If it's a video ad, we only enforce the watch timer in the second-view modal.
-    // In the grid (first view), we allow the button to appear immediately after like.
-    const isViewingInModal = 
-      (liveSelectedProduct && matchesAdIdentity(liveSelectedProduct, product.id)) || 
-      (liveSharedAdPreviewModal && matchesAdIdentity(liveSharedAdPreviewModal.ad, product.id));
-
-    if (isViewingInModal && isSponsoredVideoAdProduct(product)) {
-      const eligibilityKey = getAdCoinEligibilityKey(product);
-      return !!adVideoCoinEligibility[eligibilityKey];
-    }
-
-    return true;
-  };
-
-  const resolveProductPromoteOriginalProduct = async (product: any) => {
-    if (!isProductPromoteItem(product)) return product;
-
-    const extractProductTargetFromLink = (link: any) => {
-      const raw = String(link || "").trim();
-      if (!raw) return { id: null as string | number | null, code: null as string | null };
-      try {
-        const url = new URL(raw.startsWith("http") ? raw : `https://googer.local${raw.startsWith("/") ? raw : `/${raw}`}`);
-        const parts = url.pathname.split("/").filter(Boolean);
-        const index = parts.findIndex((part) => ["product", "share", "shop"].includes(part.toLowerCase()));
-        const value = index >= 0 ? parts[index + 1] : "";
-        if (!value) return { id: null, code: null };
-        const decoded = decodeURIComponent(value);
-        return /^\d+$/.test(decoded) ? { id: decoded, code: null } : { id: null, code: decoded };
-      } catch {
-        return { id: null, code: null };
-      }
-    };
-
-    const linkTarget = extractProductTargetFromLink(product?.active_link);
-    const isAdShell = String(product?.id || "").startsWith("ad-") || product?.adId || product?.ad_id;
-    const linkedId = product?.linked_product_id ?? product?.product_id ?? product?.productId;
-    const linkedCode = product?.linked_product_code ?? linkTarget.code ?? (!isAdShell ? (product?.product_code ?? product?.share_code ?? product?.shareCode) : null);
-    const fallbackId = String(product?.id || "").startsWith("ad-") ? null : product?.id;
-    const targetId = linkedId ?? linkTarget.id ?? fallbackId;
-
-    const localProduct = products.find((item) => {
-      if (item?.is_sponsored) return false;
-      const matchesId =
-        targetId != null && String(item.id) === String(targetId);
-      const matchesCode =
-        linkedCode &&
-        [item.product_code, item.share_code, item.shareCode]
-          .filter(Boolean)
-          .some((code) => String(code) === String(linkedCode));
-      return matchesId || matchesCode;
-    });
-    let originalProduct = localProduct;
-
-    if (!originalProduct && targetId != null) {
-      try {
-        originalProduct = await marketService.getItemById(targetId);
-      } catch (error) {
-        console.error("Failed to fetch promoted product by id:", error);
-      }
-    }
-
-    if (!originalProduct && linkedCode) {
-      try {
-        originalProduct = await marketService.getItemByCode(String(linkedCode));
-      } catch (error) {
-        console.error("Failed to fetch promoted product by code:", error);
-      }
-    }
-
-    return {
-      ...(originalProduct || product),
-      id: originalProduct?.id ?? targetId ?? product?.id,
-      product_id: originalProduct?.id ?? targetId ?? product?.product_id,
-      linked_product_id: originalProduct?.id ?? targetId ?? product?.linked_product_id,
-      linked_product_code: originalProduct?.product_code ?? linkedCode ?? product?.linked_product_code,
-      is_sponsored: false,
-      isAd: false,
-      campaign_type: product.campaign_type,
-      user_liked: product.user_liked,
-      likes_count: product.likes_count,
-      comments_count: product.comments_count,
-      shares_count: product.shares_count,
-      views_count: product.views_count,
-      ad_coin_collected: product.ad_coin_collected,
-      ad_like_locked: product.ad_like_locked,
-      ad_coin_value: product.ad_coin_value,
-      adId: product.adId || product.ad_id,
-      ad_id: product.ad_id || product.adId,
-      isProductPromoteSecondView: true,
-      share_code: product.share_code,
-    };
+    return canShowAdCollectCoinButton(product, currentUser);
   };
 
   const openProductPromoteSecondView = async (product: any) => {
-    const originalProduct = await resolveProductPromoteOriginalProduct(product);
-    if (!originalProduct) return;
+    const originalProduct = await resolveProductPromoteProduct(product);
+    if (!originalProduct) {
+      setNotification({ type: "error", title: "Product unavailable", message: "The promoted product could not be loaded." });
+      return;
+    }
     setSelectedProduct(originalProduct);
     setSelectedVariantIndex(null);
     setActivePreviewIndex(0);
@@ -1784,40 +1804,7 @@ export default function ShopPage() {
       }
     }
 
-    if (sponsoredImageModal?.product?.id) {
-      const latestSponsoredProduct = products.find((item) => String(item.id) === String(sponsoredImageModal.product.id));
-      if (latestSponsoredProduct && latestSponsoredProduct !== sponsoredImageModal.product) {
-        setSponsoredImageModal((prev: any) =>
-          prev
-            ? {
-              ...prev,
-              product: {
-                ...prev.product,
-                ...latestSponsoredProduct,
-              },
-            }
-            : prev,
-        );
-      }
-    }
-
-    if (sponsoredPreviewModal?.product?.id) {
-      const latestSponsoredPreviewProduct = products.find((item) => String(item.id) === String(sponsoredPreviewModal.product.id));
-      if (latestSponsoredPreviewProduct && latestSponsoredPreviewProduct !== sponsoredPreviewModal.product) {
-        setSponsoredPreviewModal((prev: any) =>
-          prev
-            ? {
-              ...prev,
-              product: {
-                ...prev.product,
-                ...latestSponsoredPreviewProduct,
-              },
-            }
-            : prev,
-        );
-      }
-    }
-  }, [products, selectedProduct?.id, selectedProduct?.campaign_type, sponsoredImageModal?.product?.id, sponsoredPreviewModal?.product?.id]);
+  }, [products, selectedProduct?.id, selectedProduct?.campaign_type]);
 
   const loadComments = async (id: string | number) => {
     try {
@@ -1888,19 +1875,6 @@ export default function ShopPage() {
           prev ? { ...prev, comments_count: (prev.comments_count || 0) + 1 } : prev,
         );
       }
-      if (sponsoredImageModal?.product?.id === targetProduct.id) {
-        setSponsoredImageModal((prev: any) =>
-          prev
-            ? {
-              ...prev,
-              product: {
-                ...prev.product,
-                comments_count: (prev.product?.comments_count || 0) + 1,
-              },
-            }
-            : prev,
-        );
-      }
     } catch (e) {
       console.error(e);
     }
@@ -1936,19 +1910,6 @@ export default function ShopPage() {
             ...prev,
             comments_count: Math.max((prev.comments_count || 0) - deletedCount, 0)
           }));
-        }
-        if (sponsoredImageModal?.product?.id === targetProduct.id) {
-          setSponsoredImageModal((prev: any) =>
-            prev
-              ? {
-                ...prev,
-                product: {
-                  ...prev.product,
-                  comments_count: Math.max((prev.product?.comments_count || 0) - deletedCount, 0),
-                },
-              }
-              : prev,
-          );
         }
       }
     } catch (e) {
@@ -1998,6 +1959,7 @@ export default function ShopPage() {
 
   const adActions = useAdActions(null, {
     currentUser,
+    viewerReady: isUserResolved,
     canShowCollectCoin: canShowCollectCoinButton,
     // Removed local sync callbacks - useAdActions now updates useAdStore globally
     onShare: (ad) => {
@@ -2032,18 +1994,6 @@ export default function ShopPage() {
     }
   };
 
-  useEffect(() => {
-    if (!sponsoredPreviewModal?.product || sponsoredPreviewModal.videoUrl || !sponsoredPreviewModal.embedUrl) return;
-    if (adVideoCoinEligibility[getAdCoinEligibilityKey(sponsoredPreviewModal.product)]) return;
-
-    const timerId = window.setTimeout(() => {
-      void confirmAdVideoWatchEligible(sponsoredPreviewModal.product, 5);
-    }, 5000);
-
-    return () => window.clearTimeout(timerId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sponsoredPreviewModal, adVideoCoinEligibility]);
-
   const collectAdCoin = async (product: any) => {
     try {
       const result = await adActions.collectAdCoin(product);
@@ -2067,7 +2017,7 @@ export default function ShopPage() {
     try {
       const id = typeof item === 'object' ? item.id : item;
       await adActions.like(item);
-      
+
       // If bottom sheet is open for likes, refresh it
       if (isBottomSheetOpen && bottomSheetType === "likes" && String(interactionProduct?.id) === String(id)) {
         const likes = (await marketService.getLikes?.(id)) || [];
@@ -2100,6 +2050,13 @@ export default function ShopPage() {
       } else if (type === "views") {
         data = (await marketService.getViews?.(product.id)) || [];
       }
+      const nextCount = Array.isArray(data) ? data.length : 0;
+      if (product?.is_sponsored || product?.campaign_type || String(product?.id || "").startsWith("ad-")) {
+        if (type === "comments") updateAdState(product, { comments_count: nextCount });
+        if (type === "likes") updateAdState(product, { likes_count: nextCount });
+        if (type === "shares") updateAdState(product, { shares_count: nextCount });
+        if (type === "views") updateAdState(product, { views_count: nextCount });
+      }
       setBottomSheetData(data || []);
     } catch (e) {
       console.error(e);
@@ -2115,6 +2072,9 @@ export default function ShopPage() {
     try {
       const data = await marketService.getComments(targetProduct.id);
       setBottomSheetData(data || []);
+      if (targetProduct?.is_sponsored || targetProduct?.campaign_type || String(targetProduct?.id || "").startsWith("ad-")) {
+        updateAdState(targetProduct, { comments_count: Array.isArray(data) ? data.length : 0 });
+      }
     } catch (error) {
       console.error(error);
     }
@@ -2135,19 +2095,6 @@ export default function ShopPage() {
       if (selectedProduct?.id === id) {
         setSelectedProduct((prev: any) =>
           prev ? { ...prev, shares_count: (prev.shares_count || 0) + 1 } : prev,
-        );
-      }
-      if (sponsoredImageModal?.product?.id === id) {
-        setSponsoredImageModal((prev: any) =>
-          prev
-            ? {
-              ...prev,
-              product: {
-                ...prev.product,
-                shares_count: (prev.product?.shares_count || 0) + 1,
-              },
-            }
-            : prev,
         );
       }
     } catch (e) {
@@ -2195,8 +2142,7 @@ export default function ShopPage() {
 
   const handlePromoteProduct = (product: any) => {
     if (!product?.id) return;
-    const shareCode = product.product_code || product.id;
-    const productShareLink = getShareUrlForItem({ ...product, product_code: shareCode }, "product");
+    const productShareLink = getShareUrlForItem(product, "product");
     router.push(
       `/dashboard/ad-campaign/product-promote?productId=${encodeURIComponent(String(product.id))}&link=${encodeURIComponent(productShareLink)}`,
     );
@@ -2237,76 +2183,12 @@ export default function ShopPage() {
     window.open(externalUrl, "_blank", "noopener,noreferrer");
   };
 
-  const handleSponsoredPreviewOpen = (event: React.MouseEvent, product: any, previewType: string | null) => {
-    event.stopPropagation();
-    openSponsoredPreviewModal(product, previewType);
-  };
-
-  const handleSponsoredExternalOpen = (event: React.MouseEvent, url: string) => {
-    event.stopPropagation();
-    if (!url) return;
-    window.open(url, "_blank", "noopener,noreferrer");
-  };
-
-  const handleSponsoredCtaClick = (event: React.MouseEvent, product: any) => {
-    event.stopPropagation();
-
-    const ctaTopic = product?.cta_topic || "Visit";
-    const ctaHref = getSponsoredCtaHref(product?.cta_topic, product?.cta_value);
-
-    if (ctaTopic === "Message") {
-      router.push("/dashboard/chats");
-      return;
-    }
-
-    if (!ctaHref) return;
-    window.location.href = ctaHref;
-  };
-
-  const handleSponsoredActionContinue = () => {
-    if (!sponsoredActionModal) return;
-
-    if (sponsoredActionModal.mode === "message") {
-      setSponsoredActionModal(null);
-      router.push("/dashboard/chats");
-      return;
-    }
-
-    if (sponsoredActionModal.href) {
-      window.location.href = sponsoredActionModal.href;
-    }
-  };
-
-  const handleSponsoredImageOpen = (product: any, imageSrc: string) => {
+  const handleSponsoredImageOpen = (product: any) => {
     setSharedAdPreviewModal({
       ad: product,
       kind: "image",
     });
     handleLogView(product.id);
-  };
-
-  const moveSponsoredImageSlide = (direction: "prev" | "next") => {
-    setSponsoredImageModal((prev: any) => {
-      if (!prev?.images?.length) return prev;
-      const total = prev.images.length;
-      const nextIndex =
-        direction === "next"
-          ? (prev.currentIndex + 1) % total
-          : (prev.currentIndex - 1 + total) % total;
-
-      return {
-        ...prev,
-        currentIndex: nextIndex,
-      };
-    });
-  };
-
-  const handleSponsoredProfileNavigate = (event: React.MouseEvent, profileId?: string | number | null) => {
-    event.stopPropagation();
-    if (!profileId) return;
-    setSponsoredImageModal(null);
-    setIsSponsoredImageMenuOpen(false);
-    router.push(`/dashboard/profile?id=${profileId}`);
   };
 
   // InteractionButton is now outside ShopPage
@@ -2332,6 +2214,18 @@ export default function ShopPage() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleAuthChanged = (event: Event) => {
+      const nextUser = (event as CustomEvent)?.detail?.user || null;
+      setCurrentUser(nextUser);
+      setViewerContext(nextUser);
+      setIsUserResolved(true);
+    };
+    window.addEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+    return () => window.removeEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+  }, [setViewerContext]);
+
+  useEffect(() => {
     const intervalId = window.setInterval(() => setRelativeTimeTick((tick) => tick + 1), 60 * 1000);
     return () => window.clearInterval(intervalId);
   }, []);
@@ -2352,55 +2246,8 @@ export default function ShopPage() {
   ]);
 
   useEffect(() => {
-    let mounted = true;
-    const loadMarketAds = async () => {
-      try {
-        const response = await fetch("/api/ads/active-public", { cache: "no-store" });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data?.message || "Failed to fetch active ads");
-        if (mounted) {
-          const ads = Array.isArray(data?.ads) ? data.ads : [];
-          const mappedAds = await Promise.all(
-            ads
-              .map(mapPublicActiveAdToShopAd)
-              .map((ad: any) => hydrateProductPromoteShopAd(ad)),
-          );
-          setMarketAds(mappedAds);
-          syncAds(mappedAds);
-        }
-      } catch (error) {
-        console.error("Failed to load market ads", error);
-        if (mounted) setMarketAds([]);
-      }
-    };
-
-    loadMarketAds();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  useEffect(() => {
     loadOrderBadgeCounts();
   }, [currentUser?.id]);
-
-  useEffect(() => {
-    if (activeTab !== "market") return;
-    const node = marketLoadMoreRef.current;
-    if (!node) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) {
-          loadMoreMarketProducts();
-        }
-      },
-      { rootMargin: "800px 0px" },
-    );
-
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [activeTab, marketHasMore, marketNextOffset, isLoadingMoreProducts, selectedCategory, marketSearchQuery]);
 
   useEffect(() => {
     const handleRefresh = (e: any) => {
@@ -2490,9 +2337,7 @@ export default function ShopPage() {
           !isProfilePromoteItem(product);
 
         if (isSponsoredMediaAd && adView === "image") {
-          const fallbackImage = product.image_url || product.media_preview || "";
-          const images = getSponsoredAdImages(product, fallbackImage);
-          handleSponsoredImageOpen(product, images[0] || fallbackImage);
+          handleSponsoredImageOpen(product);
           router.replace("/dashboard/shop", { scroll: false });
           return;
         }
@@ -2560,12 +2405,6 @@ export default function ShopPage() {
       ));
       setProducts((prev) => prev.map((item) => syncProductOwnerProfile(item, updatedUser)));
       setSelectedProduct((prev: any) => syncProductOwnerProfile(prev, updatedUser));
-      setSponsoredImageModal((prev: any) => (
-        prev ? { ...prev, product: syncProductOwnerProfile(prev.product, updatedUser) } : prev
-      ));
-      setSponsoredPreviewModal((prev: any) => (
-        prev ? { ...prev, product: syncProductOwnerProfile(prev.product, updatedUser) } : prev
-      ));
       setSharedAdPreviewModal((prev: any) => (
         prev ? { ...prev, ad: syncProductOwnerProfile(prev.ad, updatedUser) } : prev
       ));
@@ -2582,6 +2421,7 @@ export default function ShopPage() {
     try {
       const user = await authService.getProfile();
       setCurrentUser(user);
+      setViewerContext(user);
       if (user?.id) {
         const following = await authService.getFollowingUsers(user.id);
         const followingIds = new Set(
@@ -2593,6 +2433,8 @@ export default function ShopPage() {
       }
     } catch (e) {
       console.error("Not logged in");
+      setCurrentUser(null);
+      setViewerContext(null);
     } finally {
       setIsUserResolved(true);
     }
@@ -2731,6 +2573,9 @@ export default function ShopPage() {
         }
         filters._shuffle = Date.now().toString();
         filters._feedSession = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        marketFeedSessionRef.current = filters._feedSession;
+        marketShuffleTokenRef.current = filters._shuffle;
+        setShopAdShuffleSeed(filters._feedSession);
         filters.limit = String(MARKET_PAGE_SIZE);
         filters.offset = "0";
         if (seenProductIds.length > 0) {
@@ -2740,7 +2585,7 @@ export default function ShopPage() {
           filters._lastOrder = lastShownOrderIds.join(",");
         }
         const result = await marketService.getProducts(filters);
-        data = result.data;
+        data = Array.isArray(result.data) ? result.data : [];
         setMarketHasMore(!!result.pagination?.hasMore);
         setMarketNextOffset(Number(result.pagination?.nextOffset || data.length || 0));
       } else if (activeTab === "my-products") {
@@ -2777,6 +2622,10 @@ export default function ShopPage() {
       }
 
       const finalData = data || [];
+      if (isMarketFeed) {
+        const sponsoredRows = finalData.filter((item: any) => item?.is_sponsored);
+        if (sponsoredRows.length > 0) syncAds(sponsoredRows);
+      }
       if (isMarketFeed) {
         try {
           const nextSeenIds = finalData
@@ -2826,9 +2675,35 @@ export default function ShopPage() {
 
       if (selectedCategory) filters.category = selectedCategory;
       if (marketSearchQuery.trim()) filters.search = marketSearchQuery.trim();
+      if (marketFeedSessionRef.current) filters._feedSession = marketFeedSessionRef.current;
+      if (marketShuffleTokenRef.current) filters._shuffle = marketShuffleTokenRef.current;
+
+      try {
+        const storedSeenIds = sessionStorage.getItem(MARKET_FEED_HISTORY_KEY);
+        const parsedSeenIds = storedSeenIds ? JSON.parse(storedSeenIds) : [];
+        const seenProductIds = Array.isArray(parsedSeenIds)
+          ? parsedSeenIds.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0).slice(-60)
+          : [];
+        if (seenProductIds.length > 0) filters._seen = seenProductIds.join(",");
+      } catch {
+        // ignore session storage issues
+      }
+
+      try {
+        const storedLastOrder = sessionStorage.getItem(MARKET_FEED_LAST_ORDER_KEY);
+        const parsedLastOrder = storedLastOrder ? JSON.parse(storedLastOrder) : [];
+        const lastShownOrderIds = Array.isArray(parsedLastOrder)
+          ? parsedLastOrder.map((value) => String(value).trim()).filter(Boolean).slice(-80)
+          : [];
+        if (lastShownOrderIds.length > 0) filters._lastOrder = lastShownOrderIds.join(",");
+      } catch {
+        // ignore session storage issues
+      }
 
       const result = await marketService.getProducts(filters);
       const nextProducts = Array.isArray(result.data) ? result.data : [];
+      const sponsoredRows = nextProducts.filter((item: any) => item?.is_sponsored);
+      if (sponsoredRows.length > 0) syncAds(sponsoredRows);
 
       setProducts((current) => {
         const existingIds = new Set(current.map((item: any) => String(item?.id)));
@@ -2836,6 +2711,22 @@ export default function ShopPage() {
       });
       setMarketHasMore(!!result.pagination?.hasMore);
       setMarketNextOffset(Number(result.pagination?.nextOffset || marketNextOffset + nextProducts.length));
+
+      try {
+        const nextSeenIds = nextProducts
+          .map((item: any) => Number(item?.id))
+          .filter((value: number) => Number.isFinite(value) && value > 0);
+        const nextOrderIds = nextProducts
+          .map((item: any) => String(item?.id || "").trim())
+          .filter((value: string) => Boolean(value));
+        const existingSeenIdsRaw = sessionStorage.getItem(MARKET_FEED_HISTORY_KEY);
+        const existingSeenIds = existingSeenIdsRaw ? JSON.parse(existingSeenIdsRaw) : [];
+        const mergedSeenIds = [...(Array.isArray(existingSeenIds) ? existingSeenIds : []), ...nextSeenIds].slice(-120);
+        sessionStorage.setItem(MARKET_FEED_HISTORY_KEY, JSON.stringify(mergedSeenIds));
+        sessionStorage.setItem(MARKET_FEED_LAST_ORDER_KEY, JSON.stringify(nextOrderIds));
+      } catch {
+        // ignore session storage issues
+      }
     } catch (error) {
       console.error("Failed to load more market products", error);
     } finally {
@@ -4319,15 +4210,14 @@ export default function ShopPage() {
                   key={product.id}
                   ads={product.ads}
                   className="col-span-2 sm:col-span-2 lg:col-span-4 px-4 py-4 transition-colors sm:px-7"
+                  cardsPerView={4}
                   onProductClick={(previewProduct) => {
                     void openProductPromoteSecondView(previewProduct);
                   }}
                   onProfileClick={(profileAd) => {
-                    if (profileAd.user_id) {
-                      router.push(`/dashboard/profile?id=${profileAd.user_id}`);
-                      return;
-                    }
-                    router.push(`/dashboard/profile?user=${encodeURIComponent(getItemUsername(profileAd, "Advertiser"))}`);
+                    const profileUrl = getProfileShareUrl(profileAd);
+                    if (!profileUrl) return;
+                    window.open(profileUrl, "_blank", "noopener,noreferrer");
                   }}
                 />
               );
@@ -4346,7 +4236,7 @@ export default function ShopPage() {
                 <Fragment key={`${product.adId ? `ad-${product.adId}` : ''}:${product.id || index}`}>
                   <MarketItemWrapper product={product} onView={handleLogView} activeTab={activeTab}>
                     <PromotedAdCard
-                      ad={normalizeAdData(product)}
+                      ad={product}
                       source="shop"
                       isMenuOpen={openMenuProductId === product.id}
                       onToggleMenu={(id) => setOpenMenuProductId(openMenuProductId === id ? null : id)}
@@ -4435,13 +4325,16 @@ export default function ShopPage() {
         </div>
       )}
 
-      {activeTab === "market" && (
-        <div ref={marketLoadMoreRef} className="h-8 w-full">
-          {isLoadingMoreProducts && (
-            <div className="flex items-center justify-center pb-8 text-[10px] font-black uppercase tracking-[0.18em] text-white/35">
-              Loading more
-            </div>
-          )}
+      {activeTab === "market" && marketHasMore && (
+        <div className="flex w-full justify-center pb-8 pt-2">
+          <button
+            type="button"
+            onClick={loadMoreMarketProducts}
+            disabled={isLoadingMoreProducts}
+            className="rounded-full border border-white/10 bg-white/5 px-5 py-2.5 text-[10px] font-black uppercase tracking-[0.18em] text-white/70 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {isLoadingMoreProducts ? "Loading..." : "See more"}
+          </button>
         </div>
       )}
 
@@ -4494,420 +4387,6 @@ export default function ShopPage() {
             void confirmAdVideoWatchEligible(ad, watchedSeconds);
           }}
         />
-      )}
-
-      {sponsoredPreviewModal && (
-        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/82 p-4 backdrop-blur-sm">
-          <button
-            type="button"
-            onClick={() => setSponsoredPreviewModal(null)}
-            className="absolute inset-0"
-            aria-label="Close sponsored media preview"
-          />
-          <div className="relative z-10 w-full max-w-4xl overflow-hidden rounded-[2rem] border border-white/10 bg-[#101114] shadow-[0_30px_90px_rgba(0,0,0,0.45)]">
-            <div className="flex items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-black uppercase tracking-[0.18em] text-white/88">
-                  {sponsoredPreviewModal.title}
-                </p>
-                <button
-                  type="button"
-                  onClick={(e) => handleSponsoredExternalOpen(e, sponsoredPreviewModal.externalUrl)}
-                  className="mt-1 truncate text-xs font-bold text-blue-400 hover:underline"
-                >
-                  {sponsoredPreviewModal.externalUrl}
-                </button>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSponsoredPreviewModal(null)}
-                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white/70 transition hover:bg-white/10 hover:text-white"
-                >
-                  <IonIcon name="close" className="text-xl" />
-                </button>
-              </div>
-            </div>
-            <div className="relative aspect-video bg-black">
-              {canShowCollectCoinButton(sponsoredPreviewModal.product) && (
-                <div className="absolute right-3 top-[55px] z-20 md:right-4 md:top-[60px]">
-                  <button
-                    type="button"
-                    onClick={(e) => handleAdCoinClick(e, sponsoredPreviewModal.product)}
-                    className={`flex items-center gap-1.5 ${collectCoinButtonClass}`}
-                  >
-                    <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
-                      <Image
-                        src="/assets/images/rupee.png"
-                        alt="Ruppier coin"
-                        width={28}
-                        height={28}
-                        className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
-                        unoptimized
-                      />
-                    </span>
-                    <span className="leading-none">Ruppier</span>
-                  </button>
-                </div>
-              )}
-              {sponsoredPreviewModal.embedUrl ? (
-                <iframe
-                  src={sponsoredPreviewModal.embedUrl}
-                  title={sponsoredPreviewModal.title}
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                  allowFullScreen
-                  className="h-full w-full"
-                />
-              ) : sponsoredPreviewModal.videoUrl ? (
-                <video
-                  src={sponsoredPreviewModal.videoUrl}
-                  controls
-                  autoPlay
-                  playsInline
-                  onTimeUpdate={(event) => {
-                    const watchedSeconds = Math.floor(event.currentTarget.currentTime || 0);
-                    if (watchedSeconds >= 5) {
-                      void confirmAdVideoWatchEligible(sponsoredPreviewModal.product, watchedSeconds);
-                    }
-                  }}
-                  className="h-full w-full object-cover"
-                />
-              ) : null}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {sponsoredActionModal && (
-        <div className="fixed inset-0 z-[141] flex items-center justify-center bg-black/82 p-4 backdrop-blur-sm">
-          <button
-            type="button"
-            onClick={() => setSponsoredActionModal(null)}
-            className="absolute inset-0"
-            aria-label="Close sponsored action modal"
-          />
-          <div className="relative z-10 w-full max-w-3xl overflow-hidden rounded-[2rem] border border-white/10 bg-[#101114] shadow-[0_30px_90px_rgba(0,0,0,0.45)]">
-            <div className="flex items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-black uppercase tracking-[0.18em] text-white/88">
-                  {sponsoredActionModal.title}
-                </p>
-                <p className="mt-1 text-xs font-bold text-white/50">
-                  {sponsoredActionModal.ctaLabel}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSponsoredActionModal(null)}
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white/70 transition hover:bg-white/10 hover:text-white"
-              >
-                <IonIcon name="close" className="text-xl" />
-              </button>
-            </div>
-
-            <div className="p-5">
-              {sponsoredActionModal.mode === "iframe" && sponsoredActionModal.href ? (
-                <div className="overflow-hidden rounded-[1.25rem] border border-white/10 bg-black">
-                  <iframe
-                    src={sponsoredActionModal.href}
-                    title={sponsoredActionModal.title}
-                    className="h-[60vh] w-full"
-                  />
-                </div>
-              ) : (
-                <div className="rounded-[1.25rem] border border-white/10 bg-white/[0.03] p-5">
-                  <p className="text-sm font-semibold text-white/78">
-                    {sponsoredActionModal.description || "Continue this action."}
-                  </p>
-                </div>
-              )}
-
-              <div className="mt-5 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setSponsoredActionModal(null)}
-                  className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-white/70 transition hover:bg-white/10 hover:text-white"
-                >
-                  Close
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSponsoredActionContinue}
-                  className="rounded-full bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-black transition hover:bg-slate-200 active:scale-95"
-                >
-                  Continue
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {sponsoredImageModal && (
-        <div className="fixed inset-0 z-[142] flex items-center justify-center bg-black/88 p-4 backdrop-blur-sm">
-          <button
-            type="button"
-            onClick={() => {
-              setSponsoredImageModal(null);
-              setIsSponsoredImageMenuOpen(false);
-            }}
-            className="absolute inset-0"
-            aria-label="Close sponsored image modal"
-          />
-          <div
-            className="relative z-10 w-full max-w-[760px] overflow-hidden rounded-[1.6rem] border border-white/10 bg-[#0f1013] shadow-[0_30px_90px_rgba(0,0,0,0.5)]"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
-              <div className="flex min-w-0 items-center gap-3">
-                <button
-                  type="button"
-                  onClick={(e) => handleSponsoredProfileNavigate(e, sponsoredImageModal.product?.user_id)}
-                  className="relative h-10 w-10 overflow-hidden rounded-full border border-white/10 bg-white/5 transition hover:border-blue-400/60"
-                >
-                  {getItemProfilePicture(sponsoredImageModal.product) ? (
-                    <Image
-                      src={getProfileImageSrc(getItemProfilePicture(sponsoredImageModal.product), getItemUsername(sponsoredImageModal.product, "User"))}
-                      alt={getItemUsername(sponsoredImageModal.product, "User")}
-                      fill
-                      className="object-cover"
-                      unoptimized
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-white/45">
-                      <IonIcon name="person" className="text-lg" />
-                    </div>
-                  )}
-                </button>
-                <div className="min-w-0">
-                  <button
-                    type="button"
-                    onClick={(e) => handleSponsoredProfileNavigate(e, sponsoredImageModal.product?.user_id)}
-                    className="truncate text-sm font-black uppercase tracking-[0.16em] text-white/88 transition hover:text-blue-400"
-                  >
-                    {getItemUsername(sponsoredImageModal.product, "Ad")}
-                  </button>
-                </div>
-                {showSubscribeForProduct(sponsoredImageModal.product) && (
-                  <button
-                    onClick={(e) => handleSubscribeSeller(e, sponsoredImageModal.product)}
-                    className={`${subscribeButtonClass} bg-white text-black hover:bg-slate-100`}
-                  >
-                    {justSubscribedSellerId === getSellerId(sponsoredImageModal.product) ? "Subscribed" : "Subscribe"}
-                  </button>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2">
-                {canShowCollectCoinButton(sponsoredImageModal.product) && (
-                  <button
-                    type="button"
-                    onClick={(e) => handleAdCoinClick(e, sponsoredImageModal.product)}
-                    className={`flex items-center gap-1.5 ${collectCoinButtonClass}`}
-                  >
-                    <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
-                      <Image
-                        src="/assets/images/rupee.png"
-                        alt="Ruppier coin"
-                        width={28}
-                        height={28}
-                        className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
-                        unoptimized
-                      />
-                    </span>
-                    <span className="leading-none">Ruppier</span>
-                  </button>
-                )}
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setIsSponsoredImageMenuOpen((current) => !current);
-                    }}
-                    className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
-                  >
-                    <div className="flex flex-col gap-1 p-1">
-                      <div className="h-1 w-1 rounded-full bg-white" />
-                      <div className="h-1 w-1 rounded-full bg-white" />
-                    </div>
-                  </button>
-                  {isSponsoredImageMenuOpen && (
-                    <div
-                      className="absolute right-0 top-full z-[120] mt-2 w-56 overflow-hidden rounded-2xl border border-white/10 bg-[#1a1a1a] py-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] animate-in zoom-in-95 fade-in duration-200"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        onClick={() => {
-                          handleShareClick(sponsoredImageModal.product, "share");
-                          setIsSponsoredImageMenuOpen(false);
-                        }}
-                        className="flex w-full items-center gap-3 px-5 py-4 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"
-                      >
-                        <IonIcon name="share-social-outline" className="text-lg text-blue-400" />
-                        Share Link
-                      </button>
-                      <button
-                        onClick={() => {
-                          setReportingProduct(sponsoredImageModal.product);
-                          setIsSponsoredImageMenuOpen(false);
-                        }}
-                        className="flex w-full items-center gap-3 border-t border-white/5 px-5 py-4 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"
-                      >
-                        <IonIcon name="alert-circle-outline" className="text-lg text-yellow-500" />
-                        Report
-                      </button>
-                      <button
-                        onClick={() => {
-                          handleNotInterested(sponsoredImageModal.product.id);
-                          setIsSponsoredImageMenuOpen(false);
-                          setSponsoredImageModal(null);
-                        }}
-                        className="flex w-full items-center gap-3 border-t border-white/5 px-5 py-4 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"
-                      >
-                        <IonIcon name="eye-off-outline" className="text-lg text-slate-500" />
-                        Not Interested
-                      </button>
-                    </div>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSponsoredImageModal(null);
-                    setIsSponsoredImageMenuOpen(false);
-                  }}
-                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-white transition hover:bg-white/10"
-                >
-                  <IonIcon name="close-outline" className="text-2xl" />
-                </button>
-              </div>
-            </div>
-
-            <div
-              className="relative h-[68vh] min-h-[360px] w-full bg-black"
-              onTouchStart={(e) => {
-                sponsoredImageSwipeStartX.current = e.touches[0]?.clientX ?? null;
-              }}
-              onTouchEnd={(e) => {
-                const startX = sponsoredImageSwipeStartX.current;
-                const endX = e.changedTouches[0]?.clientX ?? null;
-                sponsoredImageSwipeStartX.current = null;
-                if (startX === null || endX === null || !sponsoredImageModal.images?.length || sponsoredImageModal.images.length < 2) return;
-                const deltaX = endX - startX;
-                if (Math.abs(deltaX) < 40) return;
-                moveSponsoredImageSlide(deltaX < 0 ? "next" : "prev");
-              }}
-            >
-              <Image
-                src={sponsoredImageModal.images?.[sponsoredImageModal.currentIndex] || ""}
-                alt={sponsoredImageModal.product?.title || "Ad image"}
-                fill
-                className="object-contain"
-                unoptimized
-              />
-              {sponsoredImageModal.images?.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      moveSponsoredImageSlide("prev");
-                    }}
-                    className="absolute left-3 top-1/2 z-20 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-black/45 text-white transition hover:bg-black/65"
-                  >
-                    <IonIcon name="chevron-back-outline" className="text-xl" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      moveSponsoredImageSlide("next");
-                    }}
-                    className="absolute left-16 top-1/2 z-20 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-black/45 text-white transition hover:bg-black/65"
-                  >
-                    <IonIcon name="chevron-forward-outline" className="text-xl" />
-                  </button>
-                  <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/40 px-3 py-1.5 backdrop-blur-sm">
-                    {sponsoredImageModal.images.map((_: string, index: number) => (
-                      <button
-                        key={`sponsored-dot-${index}`}
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSponsoredImageModal((prev: any) => prev ? { ...prev, currentIndex: index } : prev);
-                        }}
-                        className={`h-2.5 w-2.5 rounded-full transition ${index === sponsoredImageModal.currentIndex ? "bg-white" : "bg-white/35 hover:bg-white/60"}`}
-                        aria-label={`View ad image ${index + 1}`}
-                      />
-                    ))}
-                  </div>
-                </>
-              )}
-              <div className="absolute right-3 top-1/2 z-20 flex -translate-y-1/2 flex-col gap-4 rounded-[1.4rem] border border-white/10 bg-black/45 px-2 py-3 backdrop-blur-md">
-                <InteractionButton
-                  type="likes"
-                  icon="heart-outline"
-                  activeIcon="heart"
-                  isActive={!!sponsoredImageModal.product?.user_liked}
-                  count={sponsoredImageModal.product?.likes_count}
-                  color="text-white"
-                  activeColor="text-white"
-                  onSingleClick={() => handleToggleLike(sponsoredImageModal.product.id)}
-                  onLongReach={() => openBottomSheet("likes", sponsoredImageModal.product)}
-                  product={sponsoredImageModal.product}
-                  orientation="vertical"
-                  iconSize="text-base md:text-xl"
-                />
-                <InteractionButton
-                  type="views"
-                  icon="eye-outline"
-                  activeIcon="eye"
-                  count={sponsoredImageModal.product?.views_count}
-                  color="text-white"
-                  activeColor="text-white"
-                  onSingleClick={() => {
-                    handleLogView(sponsoredImageModal.product.id);
-                    openBottomSheet("views", sponsoredImageModal.product);
-                  }}
-                  onLongReach={() => openBottomSheet("views", sponsoredImageModal.product)}
-                  product={sponsoredImageModal.product}
-                  orientation="vertical"
-                  iconSize="text-base md:text-xl"
-                />
-                <InteractionButton
-                  type="comments"
-                  icon="chatbubble"
-                  activeIcon="chatbubble"
-                  count={sponsoredImageModal.product?.comments_count}
-                  color="text-white"
-                  activeColor="text-white"
-                  onSingleClick={() => {
-                    setInteractionProduct(sponsoredImageModal.product);
-                    openBottomSheet("comments", sponsoredImageModal.product);
-                  }}
-                  onLongReach={() => openBottomSheet("comments", sponsoredImageModal.product)}
-                  product={sponsoredImageModal.product}
-                  orientation="vertical"
-                  iconSize="text-base md:text-xl"
-                />
-                <InteractionButton
-                  type="shares"
-                  icon="share-social"
-                  activeIcon="share-social"
-                  count={sponsoredImageModal.product?.shares_count || 0}
-                  color="text-white"
-                  activeColor="text-white"
-                  onSingleClick={() => handleShareClick(sponsoredImageModal.product)}
-                  onLongReach={() => openBottomSheet("shares", sponsoredImageModal.product)}
-                  product={sponsoredImageModal.product}
-                  orientation="vertical"
-                  iconSize="text-sm md:text-lg opacity-90"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
       )}
 
       {liveSelectedProduct && (
@@ -5000,7 +4479,7 @@ export default function ShopPage() {
                               {getItemUsername(selectedProduct, "Seller")}
                             </span>
                             <span className="text-[7px] font-black text-white/50 tracking-[0.2em]">
-                              {formatRelativeTime(selectedProduct.created_at)}
+                              <RelativeTime timestamp={selectedProduct.created_at} />
                             </span>
                           </div>
                         </button>
@@ -5116,13 +4595,7 @@ export default function ShopPage() {
                         }}
                       >
                         <Image
-                          src={
-                            currentImg &&
-                              (currentImg.includes("uploads") ||
-                                currentImg.includes("\\"))
-                              ? `/uploads/${currentImg.split(/[\\/]/).pop()}`
-                              : currentImg || "https://picsum.photos/400/400"
-                          }
+                          src={normalizeMediaSrc(currentImg) || "https://picsum.photos/400/400"}
                           alt={selectedProduct.title}
                           fill
                           className="object-cover transition-all duration-500 group-hover:opacity-80 rounded-b-[1.2rem] md:rounded-[2rem]"
@@ -5247,11 +4720,7 @@ export default function ShopPage() {
                       className={`relative w-12 h-12 md:w-16 md:h-16 rounded-lg md:rounded-xl overflow-hidden cursor-pointer border-2 transition-all shrink-0 ${activePreviewIndex === idx ? "border-white scale-105 shadow-lg shadow-black/40" : "border-transparent opacity-50 hover:opacity-100"}`}
                     >
                       <Image
-                        src={
-                          img && (img.includes("uploads") || img.includes("\\"))
-                            ? `/uploads/${img.split(/[\\/]/).pop()}`
-                            : img || "https://picsum.photos/400/400"
-                        }
+                        src={normalizeMediaSrc(img) || "https://picsum.photos/400/400"}
                         alt="Thumb"
                         fill
                         className="object-cover"
@@ -5455,11 +4924,7 @@ export default function ShopPage() {
                                 >
                                   {variant.image_url || variant.url || variant.image ? (
                                     <Image
-                                      src={
-                                        (variant.image_url || variant.url || variant.image).includes("uploads") || (variant.image_url || variant.url || variant.image).includes("\\")
-                                          ? `/uploads/${(variant.image_url || variant.url || variant.image).split(/[\\/]/).pop()}`
-                                          : variant.image_url || variant.url || variant.image
-                                      }
+                                      src={normalizeMediaSrc(variant.image_url || variant.url || variant.image)}
                                       alt=""
                                       fill
                                       className="object-cover"
@@ -6164,12 +5629,7 @@ export default function ShopPage() {
                 )}
                 <div className="relative w-72 h-72 md:w-[500px] md:h-[500px] max-w-[90vw] max-h-[70vh] flex items-center justify-center pointer-events-auto shadow-2xl rounded-[3rem] overflow-hidden border border-white/10" onClick={(e) => e.stopPropagation()}>
                   <Image
-                    src={
-                      currentImg &&
-                        (currentImg.includes("uploads") || currentImg.includes("\\"))
-                        ? `/uploads/${currentImg.split(/[\\/]/).pop()}`
-                        : currentImg || "https://picsum.photos/400/400"
-                    }
+                    src={normalizeMediaSrc(currentImg) || "https://picsum.photos/400/400"}
                     alt="Preview"
                     fill
                     className="object-cover transition-all duration-300"
@@ -6201,7 +5661,7 @@ export default function ShopPage() {
                 {viewingOrderGroup.map((orderItem: any) => (
                   <div key={orderItem.id} className="flex items-center gap-4 bg-[#1a1a1a] p-3 rounded-2xl border border-white/5">
                     <div className="w-14 h-14 rounded-xl overflow-hidden bg-black relative shrink-0">
-                      <Image src={orderItem.image_url ? (orderItem.image_url.includes("uploads") || orderItem.image_url.includes("\\") ? `/uploads/${orderItem.image_url.split(/[\\/]/).pop()}` : orderItem.image_url) : "https://picsum.photos/400/400"} alt="Item" fill className="object-cover" />
+                      <Image src={normalizeMediaSrc(orderItem.image_url) || "https://picsum.photos/400/400"} alt="Item" fill className="object-cover" />
                     </div>
                     <div className="flex-1 min-w-0">
                       <h3 className="text-[11px] font-black text-white uppercase truncate">{orderItem.title}</h3>

@@ -3,6 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const dns = require('dns');
+const path = require('path');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
@@ -46,6 +47,10 @@ app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 // Body Parsers
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use('/uploads', express.static(path.resolve(__dirname, '../../public/uploads'), {
+    maxAge: '30d',
+    immutable: true,
+}));
 
 // Route Imports
 const authRoutes = require('./routes/auth');
@@ -56,6 +61,7 @@ const orderRoutes = require('./routes/order');
 const chatRoutes = require('./routes/chat');
 const cartRoutes = require('./routes/cart');
 const googRoutes = require('./routes/googs');
+const feedRoutes = require('./routes/feed');
 
 // API Versioning & Routing (Compatible with existing web app)
 const apiRoutes = express.Router();
@@ -68,6 +74,7 @@ apiRoutes.use('/googs', googRoutes);
 apiRoutes.use('/orders', orderRoutes);
 apiRoutes.use('/chat', chatRoutes);
 apiRoutes.use('/cart', cartRoutes);
+apiRoutes.use('/feed', feedRoutes);
 
 // Mount API routes
 app.use('/api', apiRoutes);
@@ -81,6 +88,7 @@ app.use('/googs', googRoutes);
 app.use('/orders', orderRoutes);
 app.use('/chat', chatRoutes);
 app.use('/cart', cartRoutes);
+app.use('/feed', feedRoutes);
 
 app.get('/api/test', (req, res) => {
     res.json({ success: true, message: 'New routes are live' });

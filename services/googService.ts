@@ -36,21 +36,29 @@ export const googService = {
         return data.data;
     },
 
-    updatePost: async (id: number, payload: { text: string; textColor: string }) => {
-        const data = await requestJson(`/googs/${id}`, {
+    updatePost: async (id: any, payload: { text: string; textColor: string }) => {
+        const cleanId = String(id).replace(/^(goog-|write-)/, "");
+        const data = await requestJson(`/googs/${cleanId}`, {
             method: 'PUT',
             body: JSON.stringify(payload),
         });
         return data.data;
     },
 
-    deletePost: async (id: number) => {
-        await requestJson(`/googs/${id}`, { method: 'DELETE' });
+    deletePost: async (idOrPost: any) => {
+        // Handle both raw ID or full post object
+        const rawId = typeof idOrPost === 'object' ? (idOrPost.id ?? idOrPost.goog_id) : idOrPost;
+        if (!rawId) throw new Error('No post ID provided for deletion');
+
+        // Remove common prefixes like "goog-" or "write-" if they exist
+        const cleanId = String(rawId).replace(/^(goog-|write-)/, "");
+        await requestJson(`/googs/${cleanId}`, { method: 'DELETE' });
         return true;
     },
 
-    toggleLike: async (id: number) => {
-        const data = await requestJson(`/googs/${id}/like`, { method: 'POST' });
+    toggleLike: async (id: any) => {
+        const cleanId = String(id).replace(/^(goog-|write-)/, "");
+        const data = await requestJson(`/googs/${cleanId}/like`, { method: 'POST' });
         return data.liked;
     },
 

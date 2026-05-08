@@ -8,7 +8,7 @@ import { authService } from "@/services/authService";
 import { walletService } from "@/services/walletService";
 import { adsService } from "@/services/adsService";
 import { marketService } from "@/services/marketService";
-import { getProfileShareUrl } from "@/app/lib/shareLinks";
+import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { addAdWalletRefund, getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
 
 type PreviewMode = "mobile" | "desktop";
@@ -355,6 +355,7 @@ function getProductImageSrc(product: any) {
         .map((value) => String(value || "").trim())
         .filter(Boolean);
     const selected = candidates[0] || "https://picsum.photos/400/400";
+    if (selected.startsWith("/uploads/") || /^https?:\/\//i.test(selected) || selected.startsWith("data:")) return selected;
     return selected.includes("uploads") || selected.includes("\\")
         ? `/uploads/${selected.split(/[\\/]/).pop()}`
         : selected;
@@ -1812,9 +1813,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         if (incomingLink) {
                             setActiveLink(normalizeUrl(incomingLink));
                         } else {
-                            const origin = typeof window !== "undefined" ? window.location.origin : "";
-                            const shareCode = product.product_code || product.id;
-                            const fallbackLink = `${origin}/product/${encodeURIComponent(String(shareCode))}`;
+                            const fallbackLink = getShareUrlForItem(product, "product");
                             setLinkInput(fallbackLink);
                             setActiveLink(fallbackLink);
                         }

@@ -132,9 +132,16 @@ export const getSponsoredCallHref = (ad: any) => {
 
 const normalizeUploadPath = (src: string) => {
     if (!src) return "";
+    if (src.startsWith("/uploads/") || /^https?:\/\//i.test(src) || src.startsWith("data:")) return src;
     return src.includes("uploads") || src.includes("\\")
         ? `/uploads/${src.split(/[\\/]/).pop()}`
         : src;
+};
+
+const extractMediaValue = (item: any) => {
+    if (!item) return "";
+    if (typeof item === "string") return item;
+    return item.url || item.image_url || item.image || item.src || "";
 };
 
 export const getAdPreviewImage = (ad: any, previewType: string | null) => {
@@ -147,7 +154,15 @@ export const getAdPreviewImage = (ad: any, previewType: string | null) => {
             ? safeParse(ad?.media_gallery)
             : [];
 
-    const value = [ad?.image_url, ad?.media_preview, ...gallery].find((item) => String(item || "").trim());
+    const value = [
+        ad?.image_url,
+        ad?.main_image,
+        ad?.thumbnail_url,
+        ad?.media_preview,
+        ad?.media_url,
+        ad?.video_url,
+        ...gallery.map(extractMediaValue),
+    ].find((item) => String(item || "").trim());
     const image = String(value || "https://picsum.photos/400/400").trim();
     return normalizeUploadPath(image);
 };
@@ -165,7 +180,16 @@ export const getSponsoredAdImages = (ad: any, fallbackImage?: string): string[] 
 
     return Array.from(
         new Set(
-            [fallbackImage, ad?.image_url, ad?.media_preview, linkImage, ...gallery]
+            [
+                fallbackImage,
+                ad?.image_url,
+                ad?.main_image,
+                ad?.thumbnail_url,
+                ad?.media_preview,
+                ad?.media_url,
+                linkImage,
+                ...gallery.map(extractMediaValue),
+            ]
                 .map((item) => normalizeUploadPath(String(item || "").trim()))
                 .filter(Boolean) as string[],
         ),

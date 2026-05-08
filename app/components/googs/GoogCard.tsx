@@ -3,7 +3,7 @@
 import Image from "next/image";
 import { useRef } from "react";
 import IonIcon from "@/app/components/IonIcon";
-import { formatRelativeTime, useRelativeTime } from "@/app/lib/relativeTime";
+import { RelativeTime } from "@/app/components/RelativeTime";
 import SubscribeButton from "@/app/components/SubscribeButton";
 
 export type WritePost = {
@@ -259,7 +259,7 @@ export function GoogCard({
     showSubscribe = true,
 }: GoogCardProps) {
     const preview = getGoogLinkPreview(post.text);
-    const timeLabel = useRelativeTime(post.createdAt, "just now");
+
 
     return (
         <article className="border-b border-white/10 last:border-b-0 px-5 py-5 transition-colors hover:bg-white/[0.025] sm:px-7">
@@ -282,7 +282,9 @@ export function GoogCard({
                             >
                                 {post.user.name}
                             </button>
-                            <span className="text-xs text-white/35">{timeLabel}</span>
+                            <span className="text-xs text-white/35">
+                                <RelativeTime timestamp={post.createdAt || (post as any).created_at} />
+                            </span>
                         </div>
                         <div
                             className="mt-1.5 whitespace-pre-wrap break-words text-[14px] leading-6"

@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { authService } from "@/services/authService";
 import { marketService } from "@/services/marketService";
@@ -9,9 +9,9 @@ import { googService } from "@/services/googService";
 import IonIcon from "@/app/components/IonIcon";
 import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
-import { formatRelativeTime } from "@/app/lib/relativeTime";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { GoogCard, type WritePost } from "@/app/components/googs/GoogCard";
+import { SharedProductCard } from "@/app/components/market/SharedProductCard";
 
 type UserRecord = {
     id?: number;
@@ -85,30 +85,6 @@ function renderBioText(text: string): ReactNode[] {
     });
 }
 
-const InteractionButton = memo(({ icon, activeIcon, count, activeColor, isActive, onSingleClick, onLongReach, type, iconSize = "text-[13px] md:text-xl" }: any) => {
-    const timerRef = useRef<any>(null);
-    const longPressedRef = useRef(false);
-    const handleStart = (e: React.PointerEvent) => {
-        e.stopPropagation();
-        longPressedRef.current = false;
-        timerRef.current = setTimeout(() => { longPressedRef.current = true; onLongReach(); }, 600);
-    };
-    const handleEnd = (e: React.PointerEvent) => {
-        e.stopPropagation();
-        if (timerRef.current) clearTimeout(timerRef.current);
-        if (!longPressedRef.current) onSingleClick();
-    };
-    const currentIcon = isActive && activeIcon ? activeIcon : icon;
-    const hasCount = typeof count === "number" ? count > 0 : !!count;
-    return (
-        <button onPointerDown={handleStart} onPointerUp={handleEnd} className={`${isActive ? activeColor : "text-white/40 hover:text-white"} inline-flex min-w-[42px] items-center justify-center gap-1.5 px-1.5 py-1.5 transition-all active:scale-75 select-none cursor-pointer touch-none`}>
-            <IonIcon name={currentIcon} className={iconSize} />
-            {hasCount && <span className="text-[8px] font-black md:text-[10px]">{count}</span>}
-        </button>
-    );
-});
-InteractionButton.displayName = "InteractionButton";
-
 export function PublicProfileView({ user: initialUser, isPublic = true }: { user: UserRecord; isPublic?: boolean }) {
     const router = useRouter();
     const [activeTab, setActiveTab] = useState<"products" | "googs">("products");
@@ -120,6 +96,7 @@ export function PublicProfileView({ user: initialUser, isPublic = true }: { user
     const [subscriberCount, setSubscriberCount] = useState(Number(initialUser.subscriber_count || 0));
     const [showShareModal, setShowShareModal] = useState(false);
     const [shareUrl, setShareUrl] = useState("");
+    const [shareTitle, setShareTitle] = useState("Share Profile");
     const [isBottomSheetOpen, setIsBottomSheetOpen] = useState(false);
     const [bottomSheetType, setBottomSheetType] = useState<any>("comments");
     const [bottomSheetData, setBottomSheetData] = useState<any[]>([]);
@@ -146,6 +123,17 @@ export function PublicProfileView({ user: initialUser, isPublic = true }: { user
         try {
             const serverLiked = await marketService.toggleLike(id);
             setPosts(prev => prev.map(p => p.id === id ? { ...p, user_liked: serverLiked, likes_count: (p.likes_count || 0) + (serverLiked ? 1 : -1) } : p));
+        } catch {}
+    };
+
+    const handleLogView = async (id: number) => {
+        try {
+            await marketService.logView(id);
+            setPosts((prev) => prev.map((post) => (
+                post.id === id
+                    ? { ...post, views_count: (Number(post.views_count || 0) + 1) }
+                    : post
+            )));
         } catch {}
     };
 
@@ -217,7 +205,7 @@ export function PublicProfileView({ user: initialUser, isPublic = true }: { user
                     }} className={`flex-1 rounded-xl py-3 text-sm font-black uppercase tracking-widest transition active:scale-95 ${isSubscribed ? "bg-zinc-800 text-white hover:bg-zinc-700" : "bg-white text-black hover:bg-zinc-200"}`}>
                         {isSubscribed ? "Subscribed" : "Subscribe"}
                     </button>
-                    <button onClick={() => { setShareUrl(getProfileShareUrl(user)); setShowShareModal(true); }} className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/5 text-white transition hover:bg-white/10 active:scale-95">
+                    <button onClick={() => { setShareTitle("Share Profile"); setShareUrl(getProfileShareUrl(user)); setShowShareModal(true); }} className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/5 text-white transition hover:bg-white/10 active:scale-95">
                         <IonIcon name="share-social-outline" className="text-xl" />
                     </button>
                 </div>
@@ -234,18 +222,25 @@ export function PublicProfileView({ user: initialUser, isPublic = true }: { user
                         posts.length > 0 ? (
                             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
                                 {posts.map((post) => (
-                                    <div key={post.id} className="group relative overflow-hidden rounded-2xl border border-white/5 bg-zinc-900/50 p-2 transition hover:border-white/20">
-                                        <div className="relative aspect-square overflow-hidden rounded-xl bg-black" onClick={() => router.push(`/dashboard/shop?id=${post.id}`)}>
-                                            <Image src={post.image_url ? (post.image_url.startsWith("http") ? post.image_url : `/uploads/${post.image_url.split(/[\\/]/).pop()}`) : ""} alt={post.title || ""} fill className="object-cover transition duration-500 group-hover:scale-110" unoptimized />
-                                        </div>
-                                        <div className="p-2">
-                                            <h3 className="truncate text-[11px] font-black uppercase text-white">{post.title}</h3>
-                                            <div className="mt-2 flex items-center gap-3">
-                                                <InteractionButton type="likes" icon="heart-outline" activeIcon="heart" isActive={post.user_liked} count={post.likes_count} activeColor="text-red-500" onSingleClick={() => handleToggleLike(post.id)} onLongReach={() => openBottomSheet("likes", post)} iconSize="text-base" />
-                                                <InteractionButton type="comments" icon="chatbubble-outline" count={post.comments_count} activeColor="text-blue-400" onSingleClick={() => openBottomSheet("comments", post)} onLongReach={() => openBottomSheet("comments", post)} iconSize="text-base" />
-                                            </div>
-                                        </div>
-                                    </div>
+                                    <SharedProductCard
+                                        key={post.id}
+                                        product={post}
+                                        currentUser={user}
+                                        onProductClick={(product) => router.push(`/dashboard/shop?id=${product.id}`)}
+                                        onAddToBagClick={(product) => router.push(`/dashboard/shop?id=${product.id}`)}
+                                        onToggleLike={(product) => handleToggleLike(product.id)}
+                                        onOpenSheet={(type, product) => openBottomSheet(type, product)}
+                                        onShare={(product) => {
+                                            setShareTitle(product?.title ? `Share ${product.title}` : "Share Product");
+                                            setShareUrl(getShareUrlForItem(product, "product"));
+                                            setShowShareModal(true);
+                                        }}
+                                        onLogView={(id) => handleLogView(Number(id))}
+                                        onNavigateToProfile={() => {
+                                            const username = String((post as any)?.user?.username || (post as any)?.username || user.username || "").trim();
+                                            if (username) router.push(`/profile/${encodeURIComponent(username)}`);
+                                        }}
+                                    />
                                 ))}
                             </div>
                         ) : <div className="py-20 text-center text-zinc-500 font-bold">No products listed yet.</div>
@@ -253,7 +248,19 @@ export function PublicProfileView({ user: initialUser, isPublic = true }: { user
                         googs.length > 0 ? (
                             <div className="flex flex-col gap-4">
                                 {googs.map((goog) => (
-                                    <GoogCard key={goog.id} post={goog} showSubscribe={false} onNavigateToProfile={() => {}} onToggleLike={() => {}} onOpenSheet={(type, g) => openBottomSheet(type, g, true)} onSharePost={() => { setShareUrl(getShareUrlForItem(goog, "goog")); setShowShareModal(true); }} />
+                                    <GoogCard
+                                        key={goog.id}
+                                        post={goog}
+                                        showSubscribe={false}
+                                        onNavigateToProfile={() => {}}
+                                        onToggleLike={() => {}}
+                                        onOpenSheet={(type, g) => openBottomSheet(type, g, true)}
+                                        onSharePost={() => {
+                                            setShareTitle("Share Goog");
+                                            setShareUrl(getShareUrlForItem(goog, "goog"));
+                                            setShowShareModal(true);
+                                        }}
+                                    />
                                 ))}
                             </div>
                         ) : <div className="py-20 text-center text-zinc-500 font-bold">No Googs posted yet.</div>
@@ -262,7 +269,7 @@ export function PublicProfileView({ user: initialUser, isPublic = true }: { user
             </div>
 
             {showShareModal && (
-                <ShareModal isOpen={showShareModal} onClose={() => setShowShareModal(false)} shareUrl={shareUrl} title={activeTab === "products" ? "Share Profile" : "Share Goog"} />
+                <ShareModal isOpen={showShareModal} onClose={() => setShowShareModal(false)} shareUrl={shareUrl} title={shareTitle} />
             )}
 
             <InteractionBottomSheet isOpen={isBottomSheetOpen} onClose={() => setIsBottomSheetOpen(false)} type={bottomSheetType} product={interactionItem} data={bottomSheetData} isLoading={isBottomSheetLoading} />

@@ -11,11 +11,10 @@ import { GoogCard } from "@/app/components/googs/GoogCard";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { SharedAdSecondViewModal, AdSecondViewKind } from "@/app/components/ads/SharedAdSecondViewModal";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
-import { normalizeAd } from "@/app/lib/ads/adSystem";
 import { normalizeProductAd } from "@/app/lib/market/adProductAdapter";
 import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
-import { buildPublicUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
+import { getShareUrlForItem } from "@/app/lib/shareLinks";
 import { useCart } from "@/app/context/CartContext";
 import {
     getSponsoredLinkPreviewType,
@@ -42,12 +41,12 @@ export default function UnifiedSharePage() {
     const params = useParams();
     const router = useRouter();
     const shareCode = params?.shareCode as string;
-    
+
     const [loading, setLoading] = useState(true);
     const [item, setItem] = useState<any>(null);
-    const [type, setType] = useState<"goog" | "ad" | "product" | null>(null);
+    const [type, setType] = useState<"goog" | "ad" | "product" | "profile" | null>(null);
     const [notFound, setNotFound] = useState(false);
-    
+
     const [previewModal, setPreviewModal] = useState<any>(null);
     const [showShareModal, setShowShareModal] = useState(false);
     const [isSheetOpen, setIsSheetOpen] = useState(false);
@@ -59,16 +58,38 @@ export default function UnifiedSharePage() {
     const [notification, setNotification] = useState<{ type: "success" | "error"; title?: string; message: string } | null>(null);
     const syncAds = useAdStore((state) => state.syncAds);
     const updateAdState = useAdStore((state) => state.updateAdState);
+    const setViewerContext = useAdStore((state) => state.setViewerContext);
 
     const { addToCart } = useCart();
 
     useEffect(() => {
         let cancelled = false;
         if (authService.isAuthenticated()) {
-            authService.getProfile().then((u: any) => { if (!cancelled) setCurrentUser(u); }).catch(() => {});
+            authService.getProfile().then((u: any) => {
+                if (!cancelled) {
+                    setCurrentUser(u);
+                    setViewerContext(u);
+                }
+            }).catch(() => {
+                if (!cancelled) {
+                    setCurrentUser(null);
+                    setViewerContext(null);
+                }
+            });
+        } else {
+            setViewerContext(null);
         }
-        return () => { cancelled = true; };
-    }, []);
+        const handleAuthChanged = (event: Event) => {
+            const nextUser = (event as CustomEvent)?.detail?.user || null;
+            setCurrentUser(nextUser);
+            setViewerContext(nextUser);
+        };
+        window.addEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+        return () => {
+            cancelled = true;
+            window.removeEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+        };
+    }, [setViewerContext]);
 
     useEffect(() => {
         if (!notification) return;
@@ -90,8 +111,56 @@ export default function UnifiedSharePage() {
                 const data = await response.json();
 
                 if (data.success) {
+                    if (data.type === "product" && data?.data?.canonical_redirect && data?.data?.canonical_share_path) {
+                        const targetPath = String(data.data.canonical_share_path).trim();
+                        if (targetPath && targetPath !== window.location.pathname) {
+                            window.location.replace(targetPath);
+                            return;
+                        }
+                    }
+
+                    if (data.type === "profile") {
+                        const profileHandle = data.data?.username || data.data?.user_id || data.data?.id;
+                        if (profileHandle) {
+                            router.replace(`/profile/${encodeURIComponent(String(profileHandle))}`);
+                            return;
+                        }
+                    }
                     setItem(data.data);
                     setType(data.type);
+                    if (typeof window !== "undefined" && (data.type === "product" || data.type === "ad" || data.type === "goog")) {
+                        const canonicalCodeCandidates = [
+                            data?.data?.canonical_share_code,
+                            data?.data?.share_code,
+                            data?.data?.shareCode,
+                        ].map((value: any) => String(value || "").trim()).filter((value: string) => /^[0-9A-Za-z]{8}$/.test(value));
+                        const canonicalCode = canonicalCodeCandidates[0] || "";
+                        let canonicalUrl = "";
+                        const canonicalPathFromServer = String(data?.data?.canonical_share_path || "").trim();
+                        if (canonicalPathFromServer) {
+                            canonicalUrl = `${window.location.origin}${canonicalPathFromServer}`;
+                        } else if (canonicalCode) {
+                            canonicalUrl = `${window.location.origin}/share/${canonicalCode}`;
+                        } else {
+                            canonicalUrl = getShareUrlForItem(data.data, data.type);
+                        }
+                        if (canonicalUrl) {
+                            try {
+                                const parsed = new URL(canonicalUrl);
+                                const canonicalPath = parsed.pathname;
+                                const currentPath = window.location.pathname;
+                                const requestedCode = String(shareCode || "").trim();
+                                const shouldForceCanonicalReplace =
+                                    !!canonicalCode &&
+                                    canonicalCode !== requestedCode &&
+                                    canonicalPath === `/share/${canonicalCode}`;
+                                if ((canonicalPath && canonicalPath !== currentPath) || shouldForceCanonicalReplace) {
+                                    window.location.replace(canonicalPath);
+                                    return;
+                                }
+                            } catch { }
+                        }
+                    }
                     if (data.type === "ad" || data.type === "product") {
                         syncAds([data.data]);
                     }
@@ -107,7 +176,7 @@ export default function UnifiedSharePage() {
                                 }
                             }
                         }
-                    } catch {}
+                    } catch { }
                 } else {
                     setNotFound(true);
                 }
@@ -120,7 +189,7 @@ export default function UnifiedSharePage() {
         };
 
         loadItem();
-    }, [shareCode]);
+    }, [router, shareCode, syncAds, updateAdState]);
 
     // Removed manual updateAdLocalState in favor of useAdStore global reactivity
 
@@ -143,7 +212,7 @@ export default function UnifiedSharePage() {
         try {
             let data: any[] = [];
             const id = targetItem.id || targetItem.adId || targetItem.productId;
-            
+
             if (type === "goog") {
                 if (sheetKind === "comments") data = await googService.getComments(id);
                 else if (sheetKind === "likes") data = await googService.getLikes(id);
@@ -363,11 +432,11 @@ export default function UnifiedSharePage() {
                             onOpenSheet={openSheet}
                             onViewPost={(id) => handleLogView({ id })}
                             onSharePost={(id) => handleShare({ id })}
-                            onToggleMenu={() => {}}
+                            onToggleMenu={() => { }}
                             showSubscribe={false}
                         />
                     )}
-                    
+
                     {type === "ad" && (
                         <div className={item.campaign_type === "Profile Promote" ? "flex justify-center p-4" : ""}>
                             <PromotedAdCard
@@ -381,13 +450,13 @@ export default function UnifiedSharePage() {
                                 canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                                 onProfileClick={(profileAd) => router.push(`/profile/${profileAd.user?.username || profileAd.owner_username || profileAd.user_id}`)}
                                 onOpenSecondView={(targetAd) => setPreviewModal({ ad: targetAd, type: "ad", kind: getAdSecondViewKind(targetAd) })}
-                                onReport={() => {}}
-                                onNotInterested={() => {}}
+                                onReport={() => { }}
+                                onNotInterested={() => { }}
                                 onNavigateToProfile={() => router.push(`/profile/${item.user?.username || item.owner_user_id}`)}
                             />
                         </div>
                     )}
-                    
+
                     {type === "product" && (
                         <PromotedAdCard
                             ad={normalizeAdData({ ...item, type: "product" })}
@@ -415,14 +484,14 @@ export default function UnifiedSharePage() {
                     onToggleLike={(id) => handleToggleLike(id)}
                     onOpenSheet={openSheet}
                     onShare={(ad) => handleShare(ad)}
-                    onReport={() => {}}
-                    onNotInterested={() => {}}
+                    onReport={() => { }}
+                    onNotInterested={() => { }}
                     onCollectCoin={handleCollectCoin}
                     onNavigateToProfile={() => router.push(`/profile/${item.user?.username || item.owner_user_id}`)}
                     canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                 />
             )}
-            
+
             {previewModal && previewModal.type === "product" && (
                 <ShopProductSecondViewModal
                     onClose={() => setPreviewModal(null)}
@@ -445,7 +514,7 @@ export default function UnifiedSharePage() {
                 <ShareModal
                     isOpen={showShareModal}
                     onClose={() => setShowShareModal(false)}
-                    shareUrl={shareCode ? buildPublicUrl(`/share/${encodeURIComponent(shareCode)}`) : getShareUrlForItem(item, type || undefined)}
+                    shareUrl={getShareUrlForItem(item, type === "profile" ? undefined : (type || undefined))}
                     title={item.text || item.title || "Googer Shared Item"}
                     product={type === "product" ? normalizeProductAd(item) : item}
                 />

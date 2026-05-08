@@ -8,7 +8,7 @@ import { marketService } from "@/services/marketService";
 import IonIcon from "@/app/components/IonIcon";
 import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
-import { formatRelativeTime } from "@/app/lib/relativeTime";
+
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import SubscribeButton from "@/app/components/SubscribeButton";
@@ -200,6 +200,8 @@ export default function ProfilePage() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const profileId = searchParams ? searchParams.get("id") : null;
+    const profileUser = searchParams ? searchParams.get("user") : null;
+    const profileShareCode = searchParams ? searchParams.get("share") : null;
 
     const [activeTab, setActiveTab] = useState<"threads" | "replies">("threads");
     const [showMenu, setShowMenu] = useState(false);
@@ -208,6 +210,7 @@ export default function ProfilePage() {
     const [marketAds, setMarketAds] = useState<any[]>([]);
     const syncAds = useAdStore((state) => state.syncAds);
     const updateAdState = useAdStore((state) => state.updateAdState);
+    const setViewerContext = useAdStore((state) => state.setViewerContext);
     const [currentUser, setCurrentUser] = useState<any>(null);
     const [isOwnProfile, setIsOwnProfile] = useState(false);
     const [subscriberCount, setSubscriberCount] = useState(0);
@@ -232,7 +235,7 @@ export default function ProfilePage() {
     const [isContactModalOpen, setIsContactModalOpen] = useState(false);
     const [isProfileShareModalOpen, setIsProfileShareModalOpen] = useState(false);
     const [posts, setPosts] = useState<PostRecord[]>([]);
-    const [, setRelativeTimeTick] = useState(0);
+
     const [openMenuProductId, setOpenMenuProductId] = useState<number | null>(null);
     const [hiddenPostIds, setHiddenPostIds] = useState<number[]>([]);
     const [notification, setNotification] = useState<{ type: "success" | "error"; title?: string; message: string } | null>(null);
@@ -290,17 +293,66 @@ export default function ProfilePage() {
         return () => clearTimeout(timer);
     }, [notification]);
 
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const handleAuthChanged = (event: Event) => {
+            const nextUser = (event as CustomEvent)?.detail?.user || null;
+            setCurrentUser(nextUser);
+            setViewerContext(nextUser);
+            if (profileId) setIsOwnProfile(!!nextUser?.id && nextUser.id === Number(profileId));
+            if (profileUser || profileShareCode) setIsOwnProfile(false);
+            if (profileShareCode) setIsOwnProfile(false);
+        };
+        window.addEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+        return () => window.removeEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+    }, [profileId, profileShareCode, profileUser, setViewerContext]);
+
     const CONNECTIONS_PAGE_SIZE = 5;
 
     const fetchProfile = useCallback(async () => {
         try {
             setLoading(true);
             let profileData: UserRecord;
-            if (profileId) {
+            if (profileUser) {
+                const isNumericId = /^\d+$/.test(profileUser);
+                profileData = isNumericId
+                    ? await authService.getUserProfile(profileUser)
+                    : await authService.getUserByUsername(profileUser);
+
+                const localUser = JSON.parse(localStorage.getItem("user") || "{}");
+                const nextUser = localUser?.id ? localUser : null;
+                setCurrentUser(nextUser);
+                setViewerContext(nextUser);
+                setIsOwnProfile(false);
+
+                const userProducts = await marketService.getItems({ user_id: profileData.id, status: "active,approved" });
+                const filtered = (userProducts || []).filter(isLiveMarketPost);
+                setPosts(filtered);
+                syncAds(filtered.filter((p: any) => p.is_sponsored || p.campaign_type));
+            } else if (profileShareCode) {
+                const shared = await marketService.getUnifiedShareItem(profileShareCode);
+                if (!shared?.success || shared?.type !== "profile" || !shared?.data) {
+                    throw new Error("Profile not found");
+                }
+
+                profileData = shared.data;
+                const localUser = JSON.parse(localStorage.getItem("user") || "{}");
+                const nextUser = localUser?.id ? localUser : null;
+                setCurrentUser(nextUser);
+                setViewerContext(nextUser);
+                setIsOwnProfile(false);
+
+                const userProducts = await marketService.getItems({ user_id: profileData.id, status: "active,approved" });
+                const filtered = (userProducts || []).filter(isLiveMarketPost);
+                setPosts(filtered);
+                syncAds(filtered.filter((p: any) => p.is_sponsored || p.campaign_type));
+            } else if (profileId) {
                 profileData = await authService.getUserProfile(profileId);
                 const localUser = JSON.parse(localStorage.getItem("user") || "{}");
-                setCurrentUser(localUser?.id ? localUser : null);
-                setIsOwnProfile(localUser?.id === Number(profileId));
+                const nextUser = localUser?.id ? localUser : null;
+                setCurrentUser(nextUser);
+                setViewerContext(nextUser);
+                setIsOwnProfile(nextUser?.id === Number(profileId));
                 const userProducts = await marketService.getItems({ user_id: profileId, status: "active,approved" });
                 const filtered = (userProducts || []).filter(isLiveMarketPost);
                 setPosts(filtered);
@@ -312,6 +364,7 @@ export default function ProfilePage() {
                 }
                 profileData = await authService.getProfile();
                 setCurrentUser(profileData);
+                setViewerContext(profileData);
                 setIsOwnProfile(true);
                 const myProducts = await marketService.getItems({ user_id: profileData.id, status: "active,approved" });
                 const filtered = (myProducts || []).filter(isLiveMarketPost);
@@ -325,18 +378,16 @@ export default function ProfilePage() {
             setFollowingCount(Number(profileData?.following_count || 0));
         } catch (error) {
             console.error("Error fetching profile:", error);
-            if (!profileId) router.push("/");
+            setViewerContext(null);
+            if (!profileId && !profileUser && !profileShareCode) router.push("/");
         } finally {
             setLoading(false);
         }
-    }, [profileId, router]);
+    }, [profileId, profileShareCode, profileUser, router, setViewerContext, syncAds]);
 
     useEffect(() => { fetchProfile(); }, [fetchProfile]);
 
-    useEffect(() => {
-        const intervalId = window.setInterval(() => setRelativeTimeTick((tick) => tick + 1), 60 * 1000);
-        return () => window.clearInterval(intervalId);
-    }, []);
+
 
     useEffect(() => {
         const handleProfileUpdated = (event: Event) => {
@@ -348,10 +399,10 @@ export default function ProfilePage() {
             }
 
             // Apply immediately so Bio/link refresh in real-time after save.
-            if (!profileId || Number(profileId) === Number(updatedUser.id)) {
+            if ((!profileId && !profileUser && !profileShareCode) || Number(profileId) === Number(updatedUser.id)) {
                 setUser((prev) => ({ ...prev, ...updatedUser }));
             }
-            if (!profileId) {
+            if (!profileId && !profileUser && !profileShareCode) {
                 setCurrentUser((prev: any) => ({ ...prev, ...updatedUser }));
             }
 
@@ -361,7 +412,7 @@ export default function ProfilePage() {
 
         window.addEventListener("userProfileUpdated", handleProfileUpdated as EventListener);
         return () => window.removeEventListener("userProfileUpdated", handleProfileUpdated as EventListener);
-    }, [fetchProfile, profileId]);
+    }, [fetchProfile, profileId, profileShareCode, profileUser]);
 
     useEffect(() => {
         if (!openMenuProductId) return;
@@ -854,6 +905,36 @@ export default function ProfilePage() {
         .filter(Boolean);
     const canShowMail = Boolean((isOwnProfile && (user?.contact_email || user?.email)) || (!isOwnProfile && user?.contact_email && user?.contact_email_visibility !== "only_me"));
     const canShowContact = Boolean((isOwnProfile && (user?.contact_phone || user?.shipping_address?.phone || user?.shipping_address?.phone2)) || (!isOwnProfile && user?.contact_phone && user?.contact_phone_visibility !== "only_me"));
+    const visiblePosts = useMemo(
+        () => posts.filter((post) => !hiddenPostIds.includes(post.id)),
+        [hiddenPostIds, posts],
+    );
+    const renderPosts = useMemo(() => {
+        const profilePromotePosts = visiblePosts.filter((post) => {
+            const campaignType = String(post.campaign_type || (post as any).campaignType || "").trim().toLowerCase();
+            return campaignType === "profile promote";
+        });
+
+        if (profilePromotePosts.length <= 1) {
+            return visiblePosts;
+        }
+
+        const shuffledProfilePromotePosts = [...profilePromotePosts]
+            .map((post) => ({ post, sort: Math.random() }))
+            .sort((a, b) => a.sort - b.sort)
+            .map((entry) => entry.post);
+
+        let profilePromoteIndex = 0;
+        return visiblePosts.map((post) => {
+            const campaignType = String(post.campaign_type || (post as any).campaignType || "").trim().toLowerCase();
+            if (campaignType !== "profile promote") {
+                return post;
+            }
+            const nextPost = shuffledProfilePromotePosts[profilePromoteIndex];
+            profilePromoteIndex += 1;
+            return nextPost || post;
+        });
+    }, [visiblePosts]);
 
     if (loading) return <div className="flex min-h-[60vh] items-center justify-center text-zinc-400">Loading profile</div>;
     if (!user) return null;
@@ -1109,9 +1190,9 @@ export default function ProfilePage() {
 
                 <div className="border-t border-white/6 bg-[#101010]">
                     {activeTab === "threads" ? (
-                        posts.filter(p => !hiddenPostIds.includes(p.id)).length > 0 ? (
+                        visiblePosts.length > 0 ? (
                             <div className="grid grid-cols-2 gap-2 px-3 py-4 sm:grid-cols-2 sm:px-4 md:gap-6 md:px-6 lg:grid-cols-4">
-                                {posts.filter(p => !hiddenPostIds.includes(p.id)).map((post, index) => {
+                                {renderPosts.map((post, index) => {
                                     const isAd = !!(post.is_sponsored || post.campaign_type);
                                     if (isAd) {
                                         const normalizedAd = normalizeAdData(post);

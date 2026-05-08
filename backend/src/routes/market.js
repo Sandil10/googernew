@@ -19,6 +19,7 @@ router.get('/public/:id', marketController.getAdPublic);
 
 // GET public product by code
 router.get('/product/public/:shareCode', marketController.getProductByCodePublic);
+router.get('/product/:shareCode', marketController.getProductByCodePublic);
 
 // Unified share lookup
 router.get('/share-unified/:shareCode', marketController.getUnifiedShareItem);

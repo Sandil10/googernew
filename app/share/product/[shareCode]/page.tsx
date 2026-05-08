@@ -5,8 +5,9 @@ import { useParams, useRouter } from "next/navigation";
 import Image from "next/image";
 import IonIcon from "@/app/components/IonIcon";
 import { marketService } from "@/services/marketService";
-import { PromotedProductCard } from "@/app/components/market/PromotedProductCard";
+import { authService } from "@/services/authService";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
+import { SharedProductCard } from "@/app/components/market/SharedProductCard";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { normalizeProductAd } from "@/app/lib/market/adProductAdapter";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
@@ -30,12 +31,15 @@ export default function ShareProductPage() {
     const [sheetData, setSheetData] = useState<any[]>([]);
     const [isSheetLoading, setIsSheetLoading] = useState(false);
     const [currentUser, setCurrentUser] = useState<any>(null);
+    const [isViewerReady, setIsViewerReady] = useState(false);
     const [notification, setNotification] = useState<{ type: "success" | "error"; title?: string; message: string } | null>(null);
     const syncAds = useAdStore((state) => state.syncAds);
     const updateAdState = useAdStore((state) => state.updateAdState);
+    const setViewerContext = useAdStore((state) => state.setViewerContext);
 
     const adActions = useAdActions(product, {
         currentUser,
+        viewerReady: isViewerReady,
         onShare: () => setShowShareModal(true),
         onOpenSheet: (kind, ad) => openProductSheet(kind, ad.raw || ad),
         onNeedCoinConfirmation: (target) => {
@@ -55,6 +59,38 @@ export default function ShareProductPage() {
     }, [notification]);
 
     useEffect(() => {
+        let cancelled = false;
+        const syncCurrentUser = async () => {
+            try {
+                const user = await authService.resolveActiveUser();
+                if (!cancelled) {
+                    setCurrentUser(user);
+                    setViewerContext(user);
+                }
+            } catch {
+                if (!cancelled) {
+                    setCurrentUser(null);
+                    setViewerContext(null);
+                }
+            } finally {
+                if (!cancelled) setIsViewerReady(true);
+            }
+        };
+        void syncCurrentUser();
+        const handleAuthChanged = (event: Event) => {
+            const nextUser = (event as CustomEvent)?.detail?.user || null;
+            setCurrentUser(nextUser);
+            setViewerContext(nextUser);
+            setIsViewerReady(true);
+        };
+        window.addEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+        return () => {
+            cancelled = true;
+            window.removeEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+        };
+    }, [setViewerContext]);
+
+    useEffect(() => {
         const loadProduct = async () => {
             try {
                 if (!shareCode) {
@@ -65,6 +101,23 @@ export default function ShareProductPage() {
                 if (data) {
                     setProduct(data);
                     syncAds([data]);
+                    const canonicalPathFromServer = String(data?.canonical_share_path || "").trim();
+                    const canonicalUrl = getShareUrlForItem(data, "product");
+                    if (typeof window !== "undefined") {
+                        let canonicalPath = canonicalPathFromServer;
+                        if (!canonicalPath && canonicalUrl) {
+                            try {
+                                const parsed = new URL(canonicalUrl);
+                                canonicalPath = parsed.pathname;
+                            } catch {
+                                canonicalPath = "";
+                            }
+                        }
+                        const currentPath = window.location.pathname;
+                        if (canonicalPath && canonicalPath !== currentPath) {
+                            window.history.replaceState(null, "", canonicalPath);
+                        }
+                    }
                 } else {
                     setNotFound(true);
                 }
@@ -77,7 +130,7 @@ export default function ShareProductPage() {
         };
 
         loadProduct();
-    }, [shareCode]);
+    }, [shareCode, syncAds]);
 
     const openProductSheet = async (type: any, targetProduct: any) => {
         setSheetType(type);
@@ -154,18 +207,17 @@ export default function ShareProductPage() {
                             onNavigateToProfile={() => router.push(`/profile/${product.user?.username || product.owner_user_id}`)}
                         />
                     ) : (
-                        <PromotedProductCard
-                            item={({
+                        <SharedProductCard
+                            product={({
                                 ...normalizedProduct,
                                 user_liked: product.user_liked,
                                 ad_coin_collected: product.ad_coin_collected
                             } as any)}
-                            source="home"
-                            onClick={(item: any) => setPreviewModal(item)}
-                            onToggleLike={() => adActions.like()}
+                            onProductClick={(item: any) => setPreviewModal(item)}
+                            onToggleLike={(item) => adActions.like(item)}
                             onOpenSheet={(type, item) => openProductSheet(type, item)}
-                            onShare={() => adActions.share()}
-                            onCollectCoin={(e) => adActions.handleAdCoinClick(e)}
+                            onShare={(item) => adActions.share(item)}
+                            onCollectCoin={(e, item) => adActions.handleAdCoinClick(e, item)}
                             canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                             onNavigateToProfile={() => router.push(`/profile/${product.user?.username || product.owner_user_id}`)}
                         />

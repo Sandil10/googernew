@@ -12,6 +12,7 @@ type Notification = { type: "error" | "success"; title?: string; message: string
 
 type UseAdActionsOptions = {
   currentUser?: any;
+  viewerReady?: boolean;
   onBeforeLike?: (ad: NormalizedAd, liked: boolean) => void;
   onLikeConfirmed?: (ad: NormalizedAd, liked: boolean, expectedLiked: boolean) => void;
   onLikeReverted?: (ad: NormalizedAd, liked: boolean) => void;
@@ -67,7 +68,7 @@ export const canShowCollectCoinButton = (target: NormalizedAd | any, currentUser
   const currentUserId = currentUser?.id;
   const isOwn = !!currentUserId && !!ownerId && String(currentUserId) === String(ownerId);
 
-  return isSponsored && isLiked && !isCollected && !isOwn;
+  return isSponsored && !!currentUserId && isLiked && !isCollected && !isOwn;
 };
 
 const normalizeTarget = (fallback: NormalizedAd | null, target?: any): NormalizedAd | null => {
@@ -137,6 +138,24 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
       const targetAd = normalizeTarget(normalizedAd, target);
       if (!targetAd?.id) return;
 
+      if (options.viewerReady === false) {
+        options.onNotify?.({
+          type: "error",
+          title: "Please Wait",
+          message: "Your account session is still loading.",
+        });
+        return;
+      }
+
+      if (!options.currentUser?.id || !marketService.hasAuthToken()) {
+        options.onNotify?.({
+          type: "error",
+          title: "Login Required",
+          message: "Please log in again to like ads.",
+        });
+        return;
+      }
+
       const wasLiked = targetAd.liked;
       const willBeLiked = !wasLiked;
       
@@ -152,6 +171,7 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
 
       // Optimistic update in global store
       updateAdState(targetAd, (prev) => ({
+        like_pending: true,
         user_liked: willBeLiked,
         likes_count: Math.max(0, (prev.likes_count ?? targetAd.likeCount ?? 0) + (willBeLiked ? 1 : -1))
       }));
@@ -163,7 +183,9 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
         
         // Sync with server result in store, including count correction if the server disagrees.
         updateAdState(targetAd, (prev) => ({
+          like_pending: false,
           user_liked: isLiked,
+          ad_like_locked: !!targetAd.raw?.ad_like_locked,
           likes_count: Math.max(
             0,
             (prev.likes_count ?? targetAd.likeCount ?? 0) + (isLiked === willBeLiked ? 0 : isLiked ? 1 : -1),
@@ -174,9 +196,19 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
       } catch (error) {
         // Revert in store
         updateAdState(targetAd, (prev) => ({
+          like_pending: false,
           user_liked: wasLiked,
+          ad_like_locked: (error as any)?.locked ? true : prev.ad_like_locked,
           likes_count: Math.max(0, (prev.likes_count ?? targetAd.likeCount ?? 0) + (wasLiked ? 1 : -1))
         }));
+
+        if ((error as any)?.status === 401 || (error as any)?.unauthorized) {
+          options.onNotify?.({
+            type: "error",
+            title: "Session Expired",
+            message: "Please log in again to continue.",
+          });
+        }
         
         options.onLikeReverted?.(targetAd, wasLiked);
         throw error;
@@ -210,6 +242,33 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
       event.stopPropagation();
       const targetAd = normalizeTarget(normalizedAd, target);
       if (!targetAd) return;
+
+      if (options.viewerReady === false) {
+        options.onNotify?.({
+          type: "error",
+          title: "Please Wait",
+          message: "Your account session is still loading.",
+        });
+        return;
+      }
+
+      if (!options.currentUser?.id) {
+        options.onNotify?.({
+          type: "error",
+          title: "Login Required",
+          message: "Please log in to collect ad coin rewards.",
+        });
+        return;
+      }
+
+      if (!marketService.hasAuthToken()) {
+        options.onNotify?.({
+          type: "error",
+          title: "Session Expired",
+          message: "Please log in again to collect ad coin rewards.",
+        });
+        return;
+      }
 
       if (!canShowCollectCoinButton(targetAd, options.currentUser)) return;
       if (options.canShowCollectCoin && !options.canShowCollectCoin(targetAd)) return;

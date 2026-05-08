@@ -1,12 +1,47 @@
+import { useState, useEffect, useMemo } from "react";
 
-import { useState, useEffect } from "react";
+/**
+ * Safely converts various timestamp formats into a number (ms).
+ * This version is ultra-robust against the "5h" offset issue.
+ */
+/**
+ * Safely converts various timestamp formats into a number (ms).
+ * Assumes input is a UTC ISO string, number, or Date.
+ */
+export function toSafeTimestamp(raw: any): number | null {
+  if (!raw) return null;
+  
+  try {
+    let normalized = raw;
+    if (typeof raw === "string") {
+      const value = raw.trim();
+      // Treat timezone-less DB timestamps as UTC.
+      if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(value)) {
+        normalized = `${value.replace(" ", "T")}Z`;
+      } else {
+        normalized = value;
+      }
+    }
 
+    const d = new Date(normalized);
+    const ts = d.getTime();
+    return Number.isFinite(ts) ? ts : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Formats a timestamp into a compact relative string.
+ */
 export function formatRelativeTime(timestamp?: string | number | Date | null, fallback = "") {
-  if (!timestamp) return fallback;
-  const createdTime = new Date(timestamp).getTime();
-  if (!Number.isFinite(createdTime)) return fallback;
+  const ts = toSafeTimestamp(timestamp);
+  if (ts === null) return fallback;
 
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - createdTime) / 1000));
+  const now = Date.now();
+  const elapsedSeconds = Math.floor((now - ts) / 1000);
+
+  // Clamp future or tiny negative drift to "just now".
   if (elapsedSeconds < 60) return "just now";
 
   const minutes = Math.floor(elapsedSeconds / 60);
@@ -19,28 +54,25 @@ export function formatRelativeTime(timestamp?: string | number | Date | null, fa
   if (days < 30) return `${days} D`;
 
   const months = Math.floor(days / 30);
-  if (months < 12) return `${months} M`;
-
-  const years = Math.floor(months / 12);
-  return `${years} Y`;
+  return `${Math.max(1, months)} M`;
 }
 
-export function useRelativeTime(timestamp?: string | number | Date | null, fallback = "") {
-  const [timeLabel, setTimeLabel] = useState(() => formatRelativeTime(timestamp, fallback));
+/**
+ * Hook for live-updating time labels.
+ */
+export function useRelativeTime(timestamp?: string | number | Date | null, fallback = "just now") {
+  const initialLabel = useMemo(() => formatRelativeTime(timestamp, fallback), [timestamp, fallback]);
+  const [timeLabel, setTimeLabel] = useState(initialLabel);
 
   useEffect(() => {
+    setTimeLabel(formatRelativeTime(timestamp, fallback));
     if (!timestamp) return;
 
     const interval = setInterval(() => {
       setTimeLabel(formatRelativeTime(timestamp, fallback));
-    }, 60000); // 1 minute
+    }, 30000);
 
     return () => clearInterval(interval);
-  }, [timestamp, fallback]);
-
-  // Update immediately if timestamp changes
-  useEffect(() => {
-    setTimeLabel(formatRelativeTime(timestamp, fallback));
   }, [timestamp, fallback]);
 
   return timeLabel;
