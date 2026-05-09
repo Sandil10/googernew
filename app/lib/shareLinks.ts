@@ -160,10 +160,10 @@ export const getShareUrlForItem = (item: any, type?: "goog" | "ad" | "product") 
 };
 
 export const getProfileShareUrl = (user: any) => {
-  const username = String(user?.username || "").trim();
-  if (username) return buildPublicUrl(`/profile/${encodeURIComponent(username)}`);
+  const username = String(user?.username || "").trim().toLowerCase();
+  if (username) return buildPublicUrl(`/u/${encodeURIComponent(username)}`);
 
   const target = String(user?.user_id ?? user?.id ?? "").trim();
-  if (!target) return buildPublicUrl("/profile");
-  return buildPublicUrl(`/profile/${encodeURIComponent(target)}`);
+  if (!target) return buildPublicUrl("/u");
+  return buildPublicUrl(`/u/${encodeURIComponent(target)}`);
 };

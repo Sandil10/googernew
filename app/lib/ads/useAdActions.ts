@@ -10,6 +10,35 @@ import { useAdStore } from "./adStore";
 type SheetType = "likes" | "comments" | "shares" | "views";
 type Notification = { type: "error" | "success"; title?: string; message: string };
 
+const resolveUserIdentity = (user?: any) =>
+  user?.id ??
+  user?.user_id ??
+  user?.googer_id ??
+  user?.userId ??
+  user?.owner_id ??
+  user?.ownerId ??
+  null;
+
+const resolveAdOwnerIdentity = (targetAd: NormalizedAd | any) => {
+  const raw = targetAd?.raw || targetAd || {};
+  return (
+    targetAd?.ad_owner_user_id ??
+    targetAd?.advertiser_id ??
+    raw.ad_owner_user_id ??
+    raw.adOwnerUserId ??
+    raw.advertiser_id ??
+    targetAd?.userId ??
+    targetAd?.user_id ??
+    raw.user_id ??
+    raw.userId ??
+    raw.user?.id ??
+    raw.owner_user_id ??
+    raw.owner_id ??
+    raw.seller_id ??
+    null
+  );
+};
+
 type UseAdActionsOptions = {
   currentUser?: any;
   viewerReady?: boolean;
@@ -56,17 +85,20 @@ export const canShowCollectCoinButton = (target: NormalizedAd | any, currentUser
     raw.coinCollected ??
     raw.isCollected
   );
-  const ownerId =
-    targetAd.userId ||
-    targetAd.user_id ||
-    raw.user_id ||
-    raw.userId ||
-    raw.user?.id ||
-    raw.owner_user_id ||
-    raw.owner_id ||
-    raw.seller_id;
-  const currentUserId = currentUser?.id;
-  const isOwn = !!currentUserId && !!ownerId && String(currentUserId) === String(ownerId);
+  // Only use the canonical owner identity — NOT raw.user_id which can be the
+  // product seller (not the promoter) for Product Promote ads.
+  const ownerCandidates = [
+    resolveAdOwnerIdentity(targetAd),
+  ].filter(Boolean).map(String);
+  const viewerCandidates = [
+    currentUser?.id,
+    currentUser?.user_id,
+    currentUser?.googer_id,
+    currentUser?.userId,
+  ].filter(Boolean).map(String);
+  const currentUserId = resolveUserIdentity(currentUser);
+  const isOwn = ownerCandidates.length > 0 && viewerCandidates.length > 0 &&
+    ownerCandidates.some((oid) => viewerCandidates.includes(oid));
 
   return isSponsored && !!currentUserId && isLiked && !isCollected && !isOwn;
 };
@@ -87,6 +119,11 @@ const normalizeTarget = (fallback: NormalizedAd | null, target?: any): Normalize
   const shareCount = liveState.shares_count ?? normalized.shares_count ?? normalized.shareCount;
   const viewCount = liveState.views_count ?? normalized.views_count ?? normalized.viewCount;
   const coinCollected = liveState.ad_coin_collected ?? normalized.ad_coin_collected ?? normalized.coinCollected;
+  const likeLocked =
+    liveState.ad_like_locked ??
+    normalized.ad_like_locked ??
+    normalized.raw?.ad_like_locked ??
+    coinCollected;
 
   return {
     ...normalized,
@@ -102,6 +139,7 @@ const normalizeTarget = (fallback: NormalizedAd | null, target?: any): Normalize
     views_count: Number(viewCount || 0),
     coinCollected: !!coinCollected,
     ad_coin_collected: !!coinCollected,
+    ad_like_locked: !!likeLocked,
     raw: {
       ...(normalized.raw || {}),
       user_liked: !!liked,
@@ -110,22 +148,30 @@ const normalizeTarget = (fallback: NormalizedAd | null, target?: any): Normalize
       shares_count: Number(shareCount || 0),
       views_count: Number(viewCount || 0),
       ad_coin_collected: !!coinCollected,
-      ad_like_locked: liveState.ad_like_locked ?? normalized.raw?.ad_like_locked,
+      ad_like_locked: !!likeLocked,
     },
   };
 };
 
 const getEngagementRequestId = (targetAd: NormalizedAd) => {
   const raw = targetAd.raw || {};
+  const sponsoredId =
+    raw.adId ??
+    raw.ad_id ??
+    (targetAd as any).adId ??
+    (targetAd as any).ad_id;
   const isSponsored =
     !!raw.is_sponsored ||
     !!raw.isAd ||
     !!raw.campaign_type ||
-    !!raw.adId ||
-    !!raw.ad_id ||
+    !!sponsoredId ||
     String(raw.id || "").startsWith("ad-");
 
-  if (isSponsored) return targetAd.id;
+  if (isSponsored) {
+    const id = sponsoredId ?? targetAd.id;
+    const idText = String(id || "").trim();
+    return idText.startsWith("ad-") ? idText : `ad-${idText}`;
+  }
   return raw.id ?? targetAd.targetId ?? targetAd.id;
 };
 
@@ -138,6 +184,10 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
       const targetAd = normalizeTarget(normalizedAd, target);
       if (!targetAd?.id) return;
 
+      // Block concurrent like calls — prevents double-click from toggling liked→unliked
+      const currentLiveState = useAdStore.getState().getAdState(targetAd.raw || targetAd);
+      if (currentLiveState.like_pending) return;
+
       if (options.viewerReady === false) {
         options.onNotify?.({
           type: "error",
@@ -147,7 +197,7 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
         return;
       }
 
-      if (!options.currentUser?.id || !marketService.hasAuthToken()) {
+      if (!resolveUserIdentity(options.currentUser) || !marketService.hasAuthToken()) {
         options.onNotify?.({
           type: "error",
           title: "Login Required",
@@ -158,13 +208,20 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
 
       const wasLiked = targetAd.liked;
       const willBeLiked = !wasLiked;
+      const isLikeLocked = !!(
+        targetAd.ad_like_locked ||
+        targetAd.ad_coin_collected ||
+        targetAd.coinCollected ||
+        targetAd.raw?.ad_like_locked ||
+        targetAd.raw?.ad_coin_collected
+      );
       
-      // Safety check for like locking (legacy logic)
-      if (targetAd.raw?.ad_like_locked && wasLiked && !willBeLiked) {
+      if (isLikeLocked && wasLiked && !willBeLiked) {
+        updateAdState(targetAd, { user_liked: true, ad_like_locked: true });
         options.onNotify?.({
           type: "error",
           title: "Like Locked",
-          message: "This ad cannot be unliked after the coin has been collected.",
+          message: "You already collected coins for this ad. You cannot unlike.",
         });
         return;
       }
@@ -180,12 +237,13 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
       try {
         const serverLiked = await marketService.toggleLike(getEngagementRequestId(targetAd));
         const isLiked = !!serverLiked;
+        const keepLocked = isLikeLocked || !!targetAd.raw?.ad_like_locked;
         
         // Sync with server result in store, including count correction if the server disagrees.
         updateAdState(targetAd, (prev) => ({
           like_pending: false,
           user_liked: isLiked,
-          ad_like_locked: !!targetAd.raw?.ad_like_locked,
+          ad_like_locked: keepLocked,
           likes_count: Math.max(
             0,
             (prev.likes_count ?? targetAd.likeCount ?? 0) + (isLiked === willBeLiked ? 0 : isLiked ? 1 : -1),
@@ -193,7 +251,23 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
         }));
         
         options.onLikeConfirmed?.(targetAd, isLiked, willBeLiked);
+
       } catch (error) {
+        if ((error as any)?.locked) {
+          updateAdState(targetAd, {
+            like_pending: false,
+            user_liked: true,
+            ad_like_locked: true,
+          });
+          options.onNotify?.({
+            type: "error",
+            title: "Like Locked",
+            message: "You already collected coins for this ad. You cannot unlike.",
+          });
+          options.onLikeConfirmed?.(targetAd, true, willBeLiked);
+          return;
+        }
+
         // Revert in store
         updateAdState(targetAd, (prev) => ({
           like_pending: false,
@@ -219,9 +293,18 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
       const targetAd = normalizeTarget(normalizedAd, target);
       if (!targetAd?.id) return;
 
+      const raw = targetAd.raw || {};
+      const ownerId = resolveAdOwnerIdentity(targetAd);
+      const currentUserId = resolveUserIdentity(options.currentUser);
+      const isOwn = !!currentUserId && !!ownerId && String(currentUserId) === String(ownerId);
+      if (isOwn) return;
+
       const collectionId = targetAd.id; // interaction ID is ad-123
       try {
-        const result = await marketService.collectAdCoin(getEngagementRequestId(targetAd));
+        const result = await marketService.collectAdCoin({
+          ad_id: getEngagementRequestId(targetAd),
+          ad_type: String(targetAd.raw?.campaign_type || targetAd.campaign_type || targetAd.category || "Ads").trim() || "Ads",
+        });
         
         // Update global store
         updateAdState(targetAd, { ad_coin_collected: true, ad_like_locked: true });
@@ -252,7 +335,7 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
         return;
       }
 
-      if (!options.currentUser?.id) {
+      if (!resolveUserIdentity(options.currentUser)) {
         options.onNotify?.({
           type: "error",
           title: "Login Required",
@@ -269,6 +352,12 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
         });
         return;
       }
+
+      const raw = targetAd.raw || {};
+      const ownerId = resolveAdOwnerIdentity(targetAd);
+      const currentUserId = resolveUserIdentity(options.currentUser);
+      const isOwn = !!currentUserId && !!ownerId && String(currentUserId) === String(ownerId);
+      if (isOwn) return;
 
       if (!canShowCollectCoinButton(targetAd, options.currentUser)) return;
       if (options.canShowCollectCoin && !options.canShowCollectCoin(targetAd)) return;

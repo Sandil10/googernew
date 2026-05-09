@@ -10,6 +10,7 @@ import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
 
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
+import { formatGoogerId } from "@/app/lib/userDisplay";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import SubscribeButton from "@/app/components/SubscribeButton";
 import { SharedProductCard } from "@/app/components/market/SharedProductCard";
@@ -23,6 +24,7 @@ import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductS
 type UserRecord = {
     id?: number;
     user_id?: string | number;
+    googer_id?: string | number;
     username?: string;
     full_name?: string;
     bio?: string;
@@ -1074,7 +1076,7 @@ export default function ProfilePage() {
                                             @{username}
                                         </p>
                                         <div className="mt-1 flex items-center gap-2 text-[12px] font-medium text-zinc-500">
-                                            <p className="truncate">Googer ID: {user.user_id || user.id || "N/A"}</p>
+                                            <p className="truncate">Googer ID: {formatGoogerId(user.user_id || user.googer_id || user.id)}</p>
                                             <button
                                                 type="button"
                                                 onClick={handleCopyGoogerId}

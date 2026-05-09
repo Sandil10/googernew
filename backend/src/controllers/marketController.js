@@ -612,7 +612,11 @@ const normalizeSponsoredMediaGallery = (value, fallback = []) => {
 const toUtcIso = (value) => (value ? new Date(value).toISOString() : null);
 
 let sponsoredAdsEngagementReady = false;
-const AD_LIKE_COIN_REWARD = 1;
+const DEFAULT_AD_COIN_REWARD_SETTINGS = {
+    user_reward_amount: 1.00,
+    googer_commission_amount: 0.25,
+    advertiser_charge_amount: 1.25,
+};
 const DIRECT_VIDEO_PATTERN = /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i;
 const EMBED_VIDEO_PATTERN = /(?:youtube\.com\/watch|youtu\.be\/|tiktok\.com\/|fb\.watch|facebook\.com\/.*\/videos\/|\/videos\/|\/watch\/|\?v=)/i;
 
@@ -689,6 +693,28 @@ const ensureSponsoredAdsEngagementSchema = async () => {
             UNIQUE(ad_id, user_id)
         );
 
+        CREATE TABLE IF NOT EXISTS ad_coin_reward_settings (
+            id SERIAL PRIMARY KEY,
+            user_reward_amount DECIMAL(10, 2) DEFAULT 1.00,
+            googer_commission_amount DECIMAL(10, 2) DEFAULT 0.25,
+            advertiser_charge_amount DECIMAL(10, 2) DEFAULT 1.25,
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS ad_coin_collections (
+            id SERIAL PRIMARY KEY,
+            ad_id VARCHAR(80) NOT NULL,
+            ad_type VARCHAR(80) NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            reward_amount DECIMAL(10, 2) NOT NULL DEFAULT 1.00,
+            commission DECIMAL(10, 2) NOT NULL DEFAULT 0.25,
+            advertiser_charge DECIMAL(10, 2) NOT NULL DEFAULT 1.25,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(ad_id, ad_type, user_id)
+        );
+
         CREATE TABLE IF NOT EXISTS ad_video_watch_eligibility (
             id SERIAL PRIMARY KEY,
             ad_id VARCHAR(20) NOT NULL REFERENCES ads(ad_id) ON DELETE CASCADE,
@@ -708,12 +734,168 @@ const ensureSponsoredAdsEngagementSchema = async () => {
         CREATE INDEX IF NOT EXISTS idx_ad_views_ad_id ON ad_views(ad_id);
         CREATE INDEX IF NOT EXISTS idx_ad_like_coin_rewards_ad_id ON ad_like_coin_rewards(ad_id);
         CREATE INDEX IF NOT EXISTS idx_ad_like_coin_rewards_user_id ON ad_like_coin_rewards(user_id);
+        CREATE INDEX IF NOT EXISTS idx_ad_coin_reward_settings_active ON ad_coin_reward_settings(is_active);
+        CREATE INDEX IF NOT EXISTS idx_ad_coin_collections_ad_id ON ad_coin_collections(ad_id);
+        CREATE INDEX IF NOT EXISTS idx_ad_coin_collections_user_id ON ad_coin_collections(user_id);
         CREATE INDEX IF NOT EXISTS idx_ad_video_watch_eligibility_ad_id ON ad_video_watch_eligibility(ad_id);
         CREATE INDEX IF NOT EXISTS idx_ad_video_watch_eligibility_user_id ON ad_video_watch_eligibility(user_id);
     `);
 
+    await pool.query(`
+        ALTER TABLE ad_likes ALTER COLUMN ad_id TYPE VARCHAR(80);
+        ALTER TABLE ad_comments ALTER COLUMN ad_id TYPE VARCHAR(80);
+        ALTER TABLE ad_shares ALTER COLUMN ad_id TYPE VARCHAR(80);
+        ALTER TABLE ad_views ALTER COLUMN ad_id TYPE VARCHAR(80);
+        ALTER TABLE ad_like_coin_rewards ALTER COLUMN ad_id TYPE VARCHAR(80);
+        ALTER TABLE ad_video_watch_eligibility ALTER COLUMN ad_id TYPE VARCHAR(80);
+
+        ALTER TABLE ad_coin_collections
+            ADD COLUMN IF NOT EXISTS reward_amount DECIMAL(10, 2) NOT NULL DEFAULT 1.00,
+            ADD COLUMN IF NOT EXISTS commission DECIMAL(10, 2) NOT NULL DEFAULT 0.25,
+            ADD COLUMN IF NOT EXISTS advertiser_charge DECIMAL(10, 2) NOT NULL DEFAULT 1.25;
+
+        ALTER TABLE ad_coin_reward_settings
+            ADD COLUMN IF NOT EXISTS user_reward_amount DECIMAL(10, 2) DEFAULT 1.00,
+            ADD COLUMN IF NOT EXISTS googer_commission_amount DECIMAL(10, 2) DEFAULT 0.25,
+            ADD COLUMN IF NOT EXISTS advertiser_charge_amount DECIMAL(10, 2) DEFAULT 1.25,
+            ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE,
+            ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+    `);
+
+    const activeRewardResult = await pool.query(
+        `SELECT id
+         FROM ad_coin_reward_settings
+         WHERE is_active = TRUE
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 1`
+    );
+    if (activeRewardResult.rows.length === 0) {
+        await pool.query(
+            `INSERT INTO ad_coin_reward_settings (
+                user_reward_amount,
+                googer_commission_amount,
+                advertiser_charge_amount,
+                is_active
+            ) VALUES ($1, $2, $3, TRUE)`,
+            [
+                DEFAULT_AD_COIN_REWARD_SETTINGS.user_reward_amount,
+                DEFAULT_AD_COIN_REWARD_SETTINGS.googer_commission_amount,
+                DEFAULT_AD_COIN_REWARD_SETTINGS.advertiser_charge_amount,
+            ]
+        );
+    }
+
     sponsoredAdsEngagementReady = true;
 };
+
+const normalizeAdType = (value) => {
+    const text = String(value || '').trim();
+    return text || 'Ads';
+};
+
+const parseRewardSettingAmount = (value, fallback) => {
+    if (value === null || value === undefined || value === '') return fallback;
+    const amount = Number(value);
+    return Number.isFinite(amount) ? amount : fallback;
+};
+
+const getActiveAdCoinRewardSettings = async (client = pool) => {
+    await ensureSponsoredAdsEngagementSchema();
+
+    const result = await client.query(
+        `SELECT id, user_reward_amount, googer_commission_amount, advertiser_charge_amount, is_active
+         FROM ad_coin_reward_settings
+         WHERE is_active = TRUE
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 1`
+    );
+
+    if (result.rows.length > 0) {
+        const row = result.rows[0];
+        return {
+            id: row.id,
+            user_reward_amount: parseRewardSettingAmount(row.user_reward_amount, DEFAULT_AD_COIN_REWARD_SETTINGS.user_reward_amount),
+            googer_commission_amount: parseRewardSettingAmount(row.googer_commission_amount, DEFAULT_AD_COIN_REWARD_SETTINGS.googer_commission_amount),
+            advertiser_charge_amount: parseRewardSettingAmount(row.advertiser_charge_amount, DEFAULT_AD_COIN_REWARD_SETTINGS.advertiser_charge_amount),
+            is_active: row.is_active !== false,
+        };
+    }
+
+    await client.query(
+        `INSERT INTO ad_coin_reward_settings (
+            user_reward_amount,
+            googer_commission_amount,
+            advertiser_charge_amount,
+            is_active
+        ) VALUES ($1, $2, $3, TRUE)`,
+        [
+            DEFAULT_AD_COIN_REWARD_SETTINGS.user_reward_amount,
+            DEFAULT_AD_COIN_REWARD_SETTINGS.googer_commission_amount,
+            DEFAULT_AD_COIN_REWARD_SETTINGS.advertiser_charge_amount,
+        ]
+    );
+
+    return { ...DEFAULT_AD_COIN_REWARD_SETTINGS, is_active: true };
+};
+
+const getGoogerWalletUserId = async (client = pool) => {
+    const result = await client.query(
+        `SELECT id
+         FROM users
+         WHERE LOWER(username) = 'googer'
+            OR LOWER(COALESCE(user_type, '')) = 'admin'
+            OR id = 1
+         ORDER BY
+            CASE
+                WHEN LOWER(username) = 'googer' THEN 0
+                WHEN LOWER(COALESCE(user_type, '')) = 'admin' THEN 1
+                WHEN id = 1 THEN 2
+                ELSE 3
+            END,
+            id ASC
+         LIMIT 1`
+    );
+
+    return result.rows[0]?.id || null;
+};
+
+const hasCollectedCoinForPromotedProduct = async (client, marketId, userId) => {
+    const result = await client.query(
+        `WITH product_match AS (
+            SELECT id, product_code
+            FROM market
+            WHERE id = $1
+            LIMIT 1
+        )
+        SELECT 1
+        FROM ad_coin_collections acc
+        JOIN ads a ON a.ad_id = acc.ad_id
+        LEFT JOIN product_match p ON TRUE
+        WHERE acc.user_id = $2
+          AND LOWER(COALESCE(a.campaign_type, '')) = 'product promote'
+          AND (
+                a.edit_draft::text ILIKE ('%' || $1::text || '%')
+                OR (p.product_code IS NOT NULL AND a.edit_draft::text ILIKE ('%' || p.product_code || '%'))
+                OR acc.ad_type = 'Product Promote'
+          )
+        LIMIT 1`,
+        [marketId, userId]
+    );
+
+    return result.rows.length > 0;
+};
+
+const AD_COIN_REWARD_VALUE_SQL = `COALESCE(
+    (
+        SELECT r.user_reward_amount
+        FROM ad_coin_reward_settings r
+        WHERE r.is_active = TRUE
+        ORDER BY r.updated_at DESC, r.id DESC
+        LIMIT 1
+    ),
+    ${DEFAULT_AD_COIN_REWARD_SETTINGS.user_reward_amount}
+)`;
 
 const rotateItems = (items, offset) => {
     if (!Array.isArray(items) || items.length <= 1) return [...(items || [])];
@@ -874,7 +1056,7 @@ const smartFeedMix = (products, requestSeed) => {
     return mixed;
 };
 
-const mapActiveAdToMarketCard = (row) => {
+const mapActiveAdToMarketCard = (row, adCoinValue = DEFAULT_AD_COIN_REWARD_SETTINGS.user_reward_amount) => {
     const draft = safeJsonParse(row.edit_draft, row.edit_draft) || {};
     const mediaPreview = row.media_preview || draft.mediaPreview || draft.media_preview || draft.video_url || '';
     const canonicalShareCode = buildShortShareCode('a', row.ad_id || '', 8);
@@ -941,7 +1123,7 @@ const mapActiveAdToMarketCard = (row) => {
         user_liked: !!row.user_liked,
         ad_coin_collected: !!row.ad_coin_collected,
         ad_like_locked: !!row.ad_coin_collected,
-        ad_coin_value: Number(row.ad_coin_value || AD_LIKE_COIN_REWARD),
+        ad_coin_value: Number(row.ad_coin_value || adCoinValue),
         media_preview: mediaPreview,
         campaign_type: row.campaign_type || 'Ads',
         media_type: row.media_type || '',
@@ -956,6 +1138,17 @@ const mapActiveAdToMarketCard = (row) => {
         is_sponsored: true,
         sponsored_label: 'Ads',
     };
+};
+
+const mapSponsoredAdWithCurrentReward = async (row, client = pool) => {
+    const rewardSettings = await getActiveAdCoinRewardSettings(client);
+    return mapActiveAdToMarketCard(
+        {
+            ...row,
+            ad_coin_value: rewardSettings.user_reward_amount,
+        },
+        rewardSettings.user_reward_amount
+    );
 };
 
 const applyDiversityRules = (products) => {
@@ -1694,9 +1887,15 @@ exports.getMarketProducts = async (req, res) => {
                                END AS seller_shipping_country`
                     : `NULL::text AS seller_shipping_country`},
                         CASE WHEN $1::int IS NULL THEN FALSE
-                             ELSE EXISTS(SELECT 1 FROM ad_like_coin_rewards acr WHERE acr.ad_id = a.ad_id AND acr.user_id = $1)
+                             ELSE EXISTS(
+                                SELECT 1
+                                FROM ad_coin_collections acc
+                                WHERE acc.ad_id = a.ad_id
+                                  AND acc.ad_type = COALESCE(NULLIF(a.campaign_type, ''), 'Ads')
+                                  AND acc.user_id = $1
+                             )
                         END AS ad_coin_collected,
-                        ${AD_LIKE_COIN_REWARD}::numeric AS ad_coin_value,
+                        ${AD_COIN_REWARD_VALUE_SQL}::numeric AS ad_coin_value,
                         CASE WHEN $1::int IS NULL THEN FALSE
                              ELSE EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1)
                         END AS user_liked
@@ -1764,6 +1963,8 @@ exports.getMarketProducts = async (req, res) => {
                         id: ad.id,
                         adId: ad.adId,
                         ad_id: ad.adId,
+                        ad_owner_user_id: ad.user_id,
+                        advertiser_id: ad.user_id,
                         price,
                         main_price: price,
                         product_price: price,
@@ -1782,7 +1983,7 @@ exports.getMarketProducts = async (req, res) => {
                         views_count: Number(ad.views_count || 0),
                         ad_coin_collected: !!ad.ad_coin_collected,
                         ad_like_locked: !!ad.ad_coin_collected,
-                        ad_coin_value: Number(ad.ad_coin_value || AD_LIKE_COIN_REWARD),
+                        ad_coin_value: Number(ad.ad_coin_value || DEFAULT_AD_COIN_REWARD_SETTINGS.user_reward_amount),
                         is_sponsored: true,
                         sponsored_label: 'Ads',
                         campaign_type: 'Product Promote',
@@ -2152,9 +2353,15 @@ exports.getMarketItems = async (req, res) => {
                         : `NULL::text AS seller_shipping_country`},
                             CASE
                                 WHEN $1::int IS NULL THEN FALSE
-                                ELSE EXISTS(SELECT 1 FROM ad_like_coin_rewards acr WHERE acr.ad_id = a.ad_id AND acr.user_id = $1)
+                                ELSE EXISTS(
+                                    SELECT 1
+                                    FROM ad_coin_collections acc
+                                    WHERE acc.ad_id = a.ad_id
+                                      AND acc.ad_type = COALESCE(NULLIF(a.campaign_type, ''), 'Ads')
+                                      AND acc.user_id = $1
+                                )
                             END AS ad_coin_collected,
-                            ${AD_LIKE_COIN_REWARD}::numeric AS ad_coin_value,
+                            ${AD_COIN_REWARD_VALUE_SQL}::numeric AS ad_coin_value,
                             CASE
                                 WHEN $1::int IS NULL THEN FALSE
                                 ELSE EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1)
@@ -2270,6 +2477,9 @@ exports.getMarketItems = async (req, res) => {
                                 sponsored_label: 'Ads',
                                 campaign_type: 'Product Promote',
                                 adId: ad.adId,
+                                ad_id: ad.adId,
+                                ad_owner_user_id: ad.user_id,
+                                advertiser_id: ad.user_id,
                                 linked_product_id: linked.id,
                             };
                         }).filter(Boolean);
@@ -2388,7 +2598,7 @@ exports.getMarketItemById = async (req, res) => {
                 [adId]
             );
             if (adResult.rows.length > 0) {
-                return res.status(200).json({ success: true, data: mapActiveAdToMarketCard(adResult.rows[0]) });
+                return res.status(200).json({ success: true, data: await mapSponsoredAdWithCurrentReward(adResult.rows[0]) });
             }
             return res.status(404).json({ success: false, message: 'Not found' });
         }
@@ -2429,7 +2639,7 @@ exports.getMarketItemByCode = async (req, res) => {
                 [adId]
             );
             if (adResult.rows.length > 0) {
-                return res.status(200).json({ success: true, data: mapActiveAdToMarketCard(adResult.rows[0]) });
+                return res.status(200).json({ success: true, data: await mapSponsoredAdWithCurrentReward(adResult.rows[0]) });
             }
             return res.status(404).json({ success: false, message: 'Not found' });
         }
@@ -2466,7 +2676,7 @@ exports.toggleLike = async (req, res) => {
 
             if (checkLike.rows.length > 0) {
                 const rewardCheck = await pool.query(
-                    'SELECT 1 FROM ad_like_coin_rewards WHERE ad_id = $1 AND user_id = $2',
+                    'SELECT 1 FROM ad_coin_collections WHERE ad_id = $1 AND user_id = $2 LIMIT 1',
                     [adId, userId]
                 );
                 if (rewardCheck.rows.length > 0) {
@@ -2490,6 +2700,16 @@ exports.toggleLike = async (req, res) => {
         const checkLike = await pool.query('SELECT 1 FROM market_likes WHERE market_id = $1 AND user_id = $2', [id, userId]);
 
         if (checkLike.rows.length > 0) {
+            await ensureSponsoredAdsEngagementSchema();
+            if (await hasCollectedCoinForPromotedProduct(pool, id, userId)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'This ad like is locked after coin collection.',
+                    liked: true,
+                    locked: true,
+                });
+            }
+
             await pool.query('DELETE FROM market_likes WHERE market_id = $1 AND user_id = $2', [id, userId]);
             // Decrement likes_count in market table
             await pool.query('UPDATE market SET likes_count = GREATEST(likes_count - 1, 0) WHERE id = $1', [id]);
@@ -2510,24 +2730,24 @@ exports.collectAdLikeCoin = async (req, res) => {
     const client = await pool.connect();
 
     try {
-        const { id } = req.params;
+        const rawAdId = req.body?.ad_id ?? req.params.id;
+        const adId = normalizeSponsoredAdId(String(rawAdId || ''));
         const userId = req.user?.id;
 
         if (!userId) {
             return res.status(401).json({ success: false, message: 'Authentication required' });
         }
 
-        if (!isSponsoredFeedItemId(id)) {
+        if (!adId) {
             return res.status(400).json({ success: false, message: 'Coin rewards are only available for ads.' });
         }
 
         await ensureSponsoredAdsEngagementSchema();
-        const adId = normalizeSponsoredAdId(id);
 
         await client.query('BEGIN');
 
         const adResult = await client.query(
-            'SELECT ad_id, user_id, owner_username, campaign_type, media_type, edit_draft FROM ads WHERE ad_id = $1 LIMIT 1',
+            'SELECT ad_id, user_id, campaign_type, media_type, edit_draft, remaining_budget FROM ads WHERE ad_id = $1 LIMIT 1 FOR UPDATE',
             [adId]
         );
         if (!adResult.rows.length) {
@@ -2536,10 +2756,43 @@ exports.collectAdLikeCoin = async (req, res) => {
         }
 
         const adRow = adResult.rows[0];
-        const ownerId = Number(adRow.user_id);
+        const resolvedAdType = normalizeAdType(req.body?.ad_type ?? req.body?.campaign_type ?? adRow.campaign_type ?? 'Ads');
+        const draft = safeJsonParse(adRow.edit_draft, adRow.edit_draft) || {};
+        const ownerId = Number(
+            adRow.user_id ??
+            draft.owner_user_id ??
+            draft.ownerUserId ??
+            draft.owner_id ??
+            draft.user_id ??
+            null
+        );
+
+        if (!Number.isFinite(ownerId) || ownerId <= 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'Ad owner not found' });
+        }
+
         if (ownerId === Number(userId)) {
             await client.query('ROLLBACK');
             return res.status(400).json({ success: false, message: 'You cannot collect a coin from your own ad.' });
+        }
+
+        const ownerResult = await client.query(
+            'SELECT id FROM users WHERE id = $1',
+            [ownerId]
+        );
+        if (!ownerResult.rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'Ad owner not found' });
+        }
+
+        const collectorResult = await client.query(
+            'SELECT id, wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+            [userId]
+        );
+        if (!collectorResult.rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'User not found' });
         }
 
         const likeResult = await client.query(
@@ -2548,7 +2801,6 @@ exports.collectAdLikeCoin = async (req, res) => {
         );
         let hasRequiredLike = likeResult.rows.length > 0;
         if (!hasRequiredLike && adRow.campaign_type === 'Product Promote') {
-            const draft = safeJsonParse(adRow.edit_draft, adRow.edit_draft) || {};
             const linkedProductId = draft.linkedProductId || null;
             const linkedProductCode = draft.linkedProductCode || null;
             if (linkedProductId || linkedProductCode) {
@@ -2585,39 +2837,152 @@ exports.collectAdLikeCoin = async (req, res) => {
             }
         }
 
-        const existingReward = await client.query(
-            'SELECT id, amount FROM ad_like_coin_rewards WHERE ad_id = $1 AND user_id = $2 LIMIT 1',
-            [adId, userId]
+        const rewardSettings = await getActiveAdCoinRewardSettings(client);
+
+        const adRemainingBudget = Number(adRow.remaining_budget || 0);
+        if (adRemainingBudget < rewardSettings.advertiser_charge_amount) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, message: 'Reward unavailable' });
+        }
+
+        const collectionInsertResult = await client.query(
+            `INSERT INTO ad_coin_collections (
+                ad_id,
+                ad_type,
+                user_id,
+                reward_amount,
+                commission,
+                advertiser_charge
+            ) VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (ad_id, ad_type, user_id) DO NOTHING
+            RETURNING id`,
+            [
+                adId,
+                resolvedAdType,
+                userId,
+                rewardSettings?.user_reward_amount ?? DEFAULT_AD_COIN_REWARD_SETTINGS.user_reward_amount,
+                rewardSettings?.googer_commission_amount ?? DEFAULT_AD_COIN_REWARD_SETTINGS.googer_commission_amount,
+                rewardSettings?.advertiser_charge_amount ?? DEFAULT_AD_COIN_REWARD_SETTINGS.advertiser_charge_amount,
+            ]
         );
 
-        if (!existingReward.rows.length) {
-            await client.query(
-                `INSERT INTO ad_like_coin_rewards (ad_id, user_id, ad_owner_id, amount)
-                 VALUES ($1, $2, $3, $4)`,
-                [adId, userId, ownerId, AD_LIKE_COIN_REWARD]
-            );
-
-            await client.query(
-                'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
-                [AD_LIKE_COIN_REWARD, ownerId]
-            );
-
+        if (!collectionInsertResult.rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ success: false, message: 'You already collected this coin' });
         }
+
+        await client.query(
+            'UPDATE ads SET remaining_budget = GREATEST(0, remaining_budget - $1), spend = COALESCE(spend, 0) + $1 WHERE ad_id = $2',
+            [rewardSettings.advertiser_charge_amount, adId]
+        );
+        await client.query(
+            'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
+            [rewardSettings.user_reward_amount, userId]
+        );
+        const googerUserId = await getGoogerWalletUserId(client);
+        if (!googerUserId) {
+            await client.query('ROLLBACK');
+            return res.status(500).json({ success: false, message: 'Googer wallet account not found' });
+        }
+        await client.query(
+            'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
+            [rewardSettings.googer_commission_amount, googerUserId]
+        );
+
+        await client.query(
+            `INSERT INTO wallet_transfers (
+                sender_id,
+                receiver_id,
+                amount,
+                status,
+                type,
+                note,
+                commission,
+                commission_percentage
+            ) VALUES ($1, $2, $3, 'accepted', 'ad_coin', $4, $5, 0)`,
+            [
+                ownerId,
+                userId,
+                rewardSettings.user_reward_amount,
+                `Ad coin reward for ${adId} (${resolvedAdType})`,
+                0,
+            ]
+        );
+
+        await client.query(
+            `INSERT INTO wallet_transfers (
+                sender_id,
+                receiver_id,
+                amount,
+                status,
+                type,
+                note,
+                commission,
+                commission_percentage
+            ) VALUES ($1, $1, $2, 'accepted', 'ad_coin_ad_credit', $3, 0, 0)`,
+            [
+                ownerId,
+                rewardSettings.advertiser_charge_amount,
+                `Advertiser ad coin credit for ${adId} (${resolvedAdType})`,
+            ]
+        );
+
+        await client.query(
+            `INSERT INTO wallet_transfers (
+                sender_id,
+                receiver_id,
+                amount,
+                status,
+                type,
+                note,
+                commission,
+                commission_percentage
+            ) VALUES ($1, $2, $3, 'accepted', 'ad_coin_commission', $4, $3, 0)`,
+            [
+                ownerId,
+                googerUserId,
+                rewardSettings.googer_commission_amount,
+                `Googer commission for ${adId} (${resolvedAdType})`,
+            ]
+        );
+
+        await client.query(
+            `UPDATE wallet_transfers
+             SET status = 'accepted',
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE sender_id = $1
+               AND receiver_id = $2
+               AND type = 'ad_coin'
+               AND note = $3`,
+            [
+                ownerId,
+                userId,
+                `Ad coin reward for ${adId} (${resolvedAdType})`,
+            ]
+        );
 
         await client.query('COMMIT');
 
         return res.status(200).json({
             success: true,
+            message: 'Coin collected successfully',
             collected: true,
             locked: true,
-            amount: AD_LIKE_COIN_REWARD,
+            amount: rewardSettings.user_reward_amount,
+            commission: rewardSettings.googer_commission_amount,
+            advertiserCharge: rewardSettings.advertiser_charge_amount,
             adId,
-            ownerId,
-        });
+            adType: resolvedAdType,
+        }
+        );
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('Error collecting ad like coin:', error);
-        return res.status(500).json({ success: false, message: 'Server error collecting ad like coin' });
+        return res.status(500).json({
+            success: false,
+            message: 'Server error collecting ad like coin',
+            error: error.message,
+        });
     } finally {
         client.release();
     }
@@ -3294,7 +3659,7 @@ exports.getAdPublic = async (req, res) => {
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'Ad not found' });
         }
-        res.status(200).json({ success: true, ad: mapActiveAdToMarketCard(result.rows[0]) });
+        res.status(200).json({ success: true, ad: await mapSponsoredAdWithCurrentReward(result.rows[0]) });
     } catch (error) {
         console.error('Error fetching public ad:', error);
         res.status(500).json({ success: false, message: 'Server error' });
@@ -3526,7 +3891,7 @@ exports.getUnifiedShareItem = async (req, res) => {
                     return res.status(200).json({
                         success: true,
                         type: 'ad',
-                        data: mapActiveAdToMarketCard(adResult.rows[0]),
+                    data: await mapSponsoredAdWithCurrentReward(adResult.rows[0]),
                     });
                 }
             }
@@ -3566,7 +3931,7 @@ exports.getUnifiedShareItem = async (req, res) => {
                 return res.status(200).json({
                     success: true,
                     type: 'ad',
-                    data: mapActiveAdToMarketCard(adResult.rows[0])
+                    data: await mapSponsoredAdWithCurrentReward(adResult.rows[0])
                 });
             }
         }
@@ -3585,7 +3950,7 @@ exports.getUnifiedShareItem = async (req, res) => {
                     return res.status(200).json({
                         success: true,
                         type: 'ad',
-                        data: mapActiveAdToMarketCard(adResult.rows[0])
+                        data: await mapSponsoredAdWithCurrentReward(adResult.rows[0])
                     });
                 }
             }

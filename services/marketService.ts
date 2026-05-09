@@ -4,12 +4,21 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
 const getStoredToken = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null);
 
 const buildApiError = (response: Response, data: any, fallbackMessage: string) => {
-    const error = new Error(data?.message + (data?.error ? `: ${data.error}` : '') || fallbackMessage) as Error & {
+    const message = data?.message
+        ? data.message + (data?.error ? `: ${data.error}` : '')
+        : fallbackMessage;
+    const error = new Error(message) as Error & {
         status?: number;
         unauthorized?: boolean;
+        locked?: boolean;
+        liked?: boolean;
+        data?: any;
     };
     error.status = response.status;
     error.unauthorized = response.status === 401;
+    error.locked = !!data?.locked;
+    error.liked = data?.liked;
+    error.data = data;
     return error;
 };
 
@@ -268,17 +277,27 @@ export const marketService = {
             if (!response.ok) throw buildApiError(response, data, 'Failed to like item');
             return data.liked;
         } catch (error) {
-            console.error('Error liking market item:', error);
+            // Locked errors are handled gracefully upstream — don't pollute the console
+            if (!(error as any)?.locked) console.error('Error liking market item:', error);
             throw error;
         }
     },
 
-    collectAdCoin: async (id: string | number) => {
-        const numericId = String(id);
+    collectAdCoin: async (id: string | number | Record<string, any>) => {
+        const payload = typeof id === 'object' && id !== null
+            ? {
+                ad_id: String((id as any).ad_id ?? (id as any).adId ?? (id as any).id ?? '').trim(),
+                ad_type: String((id as any).ad_type ?? (id as any).campaign_type ?? (id as any).type ?? 'Ads').trim() || 'Ads',
+            }
+            : {
+                ad_id: String(id).trim(),
+                ad_type: 'Ads',
+            };
         try {
-            const response = await fetch(`${API_URL}/market/${numericId}/collect-coin`, {
+            const response = await fetch(`${API_URL}/market/collect-coin`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
+                body: JSON.stringify(payload),
             });
             const data = await response.json();
             if (!response.ok) throw buildApiError(response, data, 'Failed to collect ad coin');

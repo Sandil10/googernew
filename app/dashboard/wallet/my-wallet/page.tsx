@@ -12,6 +12,7 @@ import ConfirmTransferModal from '@/app/components/ConfirmTransferModal';
 import SecurityVerificationModal from '@/app/components/SecurityVerificationModal';
 import ReceiptModal from '@/app/components/ReceiptModal';
 import CancelTransactionModal from '@/app/components/CancelTransactionModal';
+import { formatGoogerId } from '@/app/lib/userDisplay';
 import { generateTransactionReceipt } from '@/utils/pdfGenerator';
 import { getCurrentUserIdentityKey, readAdWalletAdjustments } from '@/utils/adWallet';
 
@@ -61,6 +62,9 @@ const isGoogerPaymentOrderHold = (tx: any) => {
 const isAdCampaignPayment = (tx: any) => {
     return /ad campaign budget|ad promote/i.test(String(tx?.note || ''));
 };
+
+const AD_COIN_TYPES = new Set(['ad_coin', 'ad_coin_ad_credit', 'ad_coin_commission']);
+const isAdCoinRewardTx = (tx: any) => AD_COIN_TYPES.has(String(tx?.type || '').toLowerCase());
 
 const getAdPaymentMeta = (tx: any) => {
     const note = String(tx?.note || '');
@@ -606,7 +610,7 @@ export default function MyWallet() {
 
             {/* Googer ID Header */}
             <div className="bg-white rounded-xl p-4 mb-6 shadow-sm flex flex-col items-center justify-center gap-1">
-                <h1 className="text-black font-bold text-lg text-center tracking-wide">( My Googer ID - {user?.user_id || user?.googer_id || user?.username || "..."} )</h1>
+                <h1 className="text-black font-bold text-lg text-center tracking-wide">( My Googer ID - {formatGoogerId(user?.user_id || user?.googer_id || user?.id)} )</h1>
             </div>
 
             {/* Total Balance Card */}
@@ -770,8 +774,8 @@ export default function MyWallet() {
                                 Recent Activity
                             </p>
 
-                            {transactions.length > 0 ? (
-                                transactions.map((tx) => {
+                            {transactions.filter((tx) => !isAdCoinRewardTx(tx)).length > 0 ? (
+                                transactions.filter((tx) => !isAdCoinRewardTx(tx)).map((tx) => {
                                     const isSent = tx.sender_id === user?.id;
                                     const adCampaignPayment = isAdCampaignPayment(tx);
                                     const otherUserName = isSent
@@ -967,16 +971,53 @@ export default function MyWallet() {
                     )}
 
                     {activeTab === 'rewards' && (
-                        <div className="flex flex-col items-center justify-center py-10 text-center">
-                            <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mb-6 animate-pulse">
-                                <IonIcon name="gift-outline" className="text-4xl text-white/65" />
-                            </div>
-                            <h3 className="text-xl font-bold text-white mb-2">Rewards Center</h3>
-                            <p className="text-gray-400 text-sm max-w-xs mb-8">
-                                Check back soon for exclusive rewards and bonuses!
+                        <div className="space-y-4">
+                            <p className="font-bold text-white mb-5 text-xs uppercase tracking-widest flex items-center gap-2">
+                                <IonIcon name="ribbon-outline" className="text-base text-amber-400" />
+                                Ad Coin Rewards
                             </p>
+                            {(() => {
+                                const rewardTxs = transactions.filter((tx) => String(tx?.type || '').toLowerCase() === 'ad_coin' && tx.receiver_id === user?.id);
+                                if (rewardTxs.length === 0) return (
+                                    <div className="py-16 text-center">
+                                        <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
+                                            <IonIcon name="gift-outline" className="text-3xl text-white/40" />
+                                        </div>
+                                        <p className="text-gray-500 font-bold uppercase tracking-widest text-[10px]">No ad coin rewards yet</p>
+                                        <p className="text-gray-600 text-[10px] mt-2">Like a sponsored ad and collect the Ruppier coin reward</p>
+                                    </div>
+                                );
+                                return rewardTxs.map((tx) => (
+                                    <div key={tx.id} className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
+                                        <div className="flex items-center gap-4">
+                                            <div className="w-12 h-12 bg-amber-500/10 text-amber-400 rounded-xl flex items-center justify-center text-xl shrink-0 font-black">
+                                                R
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex justify-between items-center mb-0.5">
+                                                    <h5 className="font-bold text-white text-sm">Ad Coin Reward</h5>
+                                                    <span className="text-sm font-bold tracking-tight text-amber-400">
+                                                        + R {parseFloat(tx.amount || 0).toFixed(2)}
+                                                    </span>
+                                                </div>
+                                                <div className="flex justify-between items-center">
+                                                    <p className="text-[10px] text-gray-400 font-semibold">
+                                                        {new Date(tx.created_at).toLocaleDateString('en-GB')} • {new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                    </p>
+                                                    <span className="text-[9px] uppercase font-black px-2 py-1 rounded-md bg-amber-500/10 text-amber-400">
+                                                        Collected
+                                                    </span>
+                                                </div>
+                                                {tx.note && (
+                                                    <p className="text-[10px] text-gray-500 font-medium italic mt-1 truncate">{tx.note}</p>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ));
+                            })()}
 
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-sm px-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-6">
                                 <button
                                     onClick={() => router.push('/dashboard/rewards')}
                                     className="px-4 py-4 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-xl transition-all active:scale-95 shadow-md border border-white/5 text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"
@@ -1013,8 +1054,8 @@ export default function MyWallet() {
                         </div>
 
                         <div className="space-y-2">
-                            {transactions.slice(0, 3).length > 0 ? (
-                                transactions.slice(0, 3).map((tx) => {
+                            {transactions.filter((tx) => !isAdCoinRewardTx(tx)).slice(0, 3).length > 0 ? (
+                                transactions.filter((tx) => !isAdCoinRewardTx(tx)).slice(0, 3).map((tx) => {
                                     const isSent = tx.sender_id === user?.id;
                                     const adCampaignPayment = isAdCampaignPayment(tx);
                                     const counterpartyLine = adCampaignPayment ? 'Photo & Video Promotion' : formatWalletCounterparty(tx, user?.id);

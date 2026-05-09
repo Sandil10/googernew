@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import IonIcon from "./IonIcon";
 import { marketService } from "@/services/marketService";
+import { categoryService } from "@/services/categoryService";
 
 interface AddProductModalProps {
     onClose: () => void;
@@ -11,44 +12,32 @@ interface AddProductModalProps {
     initialData?: any;
 }
 
-const CATEGORIES_HIERARCHY: any = {
-    "FASHION": {
-        "Women’s Clothing": ["Dresses", "Tops & Blouses", "T-Shirts", "Jeans", "Pants & Trousers", "Skirts", "Shorts", "Jackets & Coats", "Activewear", "Formal Wear"],
-        "Men’s Clothing": ["T-Shirts", "Shirts", "Jeans", "Trousers", "Shorts", "Jackets", "Suits & Blazers", "Sportswear"],
-        "Kids’ Clothing": ["Boys Wear", "Girls Wear", "School Wear", "Sleepwear", "Sportswear"],
-        "Shoes": ["Men’s Shoes", "Women’s Shoes", "Kids’ Shoes", "Sneakers", "Sandals", "Boots", "Formal Shoes"],
-        "Bags & Accessories": ["Handbags", "Backpacks", "Wallets", "Luggage", "Sunglasses", "Watches", "Jewelry"]
-    },
-    "ELECTRONICS": {
-        "Mobile Phones": ["Smartphones", "Feature Phones", "Phone Cases", "Chargers", "Power Banks", "Screen Protectors"],
-        "Computers": ["Laptops", "Desktop PCs", "Monitors", "Keyboards", "Mice", "Storage Devices"],
-        "TV & Entertainment": ["Smart TVs", "Speakers", "Home Theatre", "Streaming Devices"],
-        "Gaming": ["Consoles", "Controllers", "Games", "Gaming Accessories"]
-    },
-    "HOME & LIVING": {
-        "Kitchen & Dining": ["Cookware", "Dinner Sets", "Kitchen Tools", "Storage Containers"],
-        "Home Decor": ["Wall Art", "Clocks", "Curtains", "Lighting"],
-        "Furniture": ["Sofas", "Beds", "Tables", "Chairs", "Cabinets"]
-    },
-    "BEAUTY & PERSONAL CARE": {
-        "Skincare": ["Face Creams", "Face Wash", "Serums", "Sunscreen"],
-        "Makeup": ["Foundation", "Lipstick", "Eye Makeup", "Makeup Tools"],
-        "Haircare": ["Shampoo", "Conditioner", "Hair Oil", "Styling Tools"]
-    },
-    "BABY & KIDS": {
-        "Baby Essentials": ["Diapers", "Feeding Bottles", "Baby Clothing", "Strollers"],
-        "Toys": ["Educational Toys", "Dolls", "RC Toys", "Board Games"]
-    },
-    "AUTOMOTIVE": {
-        "Car Accessories": ["Seat Covers", "Floor Mats", "Car Electronics", "Car Care"]
-    },
-    "GROCERIES": {
-        "Food Items": ["Rice", "Spices", "Snacks", "Beverages"]
-    },
-    "Custom": {}
+type ManagedCategoryNode = {
+    id?: number;
+    name: string;
+    commission_percentage?: number;
+    sort_order?: number;
+    level?: number;
+    parent_id?: number | null;
+    is_active?: boolean;
+    children?: ManagedCategoryNode[];
 };
 
-const CATEGORIES = Object.keys(CATEGORIES_HIERARCHY);
+const CATEGORY_SYNC_EVENT = "googer-categories-updated";
+const CATEGORY_SYNC_KEY = "googer-categories-sync";
+
+const getCategoryChildren = (nodes: ManagedCategoryNode[], name?: string) => {
+    if (!name) return [];
+    const matches = nodes.filter((node) => node.name === name);
+    return matches.length ? matches[matches.length - 1]?.children || [] : [];
+};
+
+const getManagedCategoryNames = (nodes: ManagedCategoryNode[]) => {
+    const names = nodes
+        .filter((node) => node.is_active !== false)
+        .map((node) => node.name);
+    return names.includes("Custom") ? names : [...names, "Custom"];
+};
 
 const SIZES = ["S", "M", "L", "XL", "XXL", "Kg", "Gram", "mm", "cm"];
 const UOMS = [
@@ -185,8 +174,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
     const [trimError, setTrimError] = useState("");
     const [isTrimmingVideo, setIsTrimmingVideo] = useState(false);
     const [isDraggingTrimWindow, setIsDraggingTrimWindow] = useState(false);
+    const [managedCategories, setManagedCategories] = useState<ManagedCategoryNode[]>([]);
+    const [categoriesLoaded, setCategoriesLoaded] = useState(false);
+    const [categoriesLoading, setCategoriesLoading] = useState(false);
+    const [manualGoogerCommissionEnabled, setManualGoogerCommissionEnabled] = useState(false);
+    const [globalGoogerCommission, setGlobalGoogerCommission] = useState("0");
     const fileInputRef = useRef<HTMLInputElement>(null);
     const trimTimelineRef = useRef<HTMLDivElement>(null);
+    const manualGoogerCommissionEnabledRef = useRef(false);
 
     const [formData, setFormData] = useState({
         description: "",
@@ -226,6 +221,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         setUploadMode(null);
         setActiveImageIndex(0);
         setFormErrors([]);
+        manualGoogerCommissionEnabledRef.current = false;
 
         if (initialData) {
             // Helper to safe-parse JSON if string, or return fallback
@@ -348,6 +344,106 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             });
         };
     }, [videoUrls]);
+
+    useEffect(() => {
+        let ignore = false;
+
+        const loadCategories = async () => {
+            setCategoriesLoading(true);
+            try {
+                const categories = await categoryService.getTree(false);
+                if (!ignore && Array.isArray(categories)) {
+                    setManagedCategories(categories);
+                }
+            } catch (error) {
+                console.error("Failed to load managed categories:", error);
+                if (!ignore) {
+                    setManagedCategories([]);
+                }
+            } finally {
+                if (!ignore) {
+                    setCategoriesLoading(false);
+                    setCategoriesLoaded(true);
+                }
+            }
+        };
+
+        const loadGlobalCommission = async () => {
+            try {
+                const [commission, manualEnabled] = await Promise.all([
+                    categoryService.getGlobalCategoryCommission(),
+                    categoryService.getManualCategoryCommissionEnabled().catch(() => false),
+                ]);
+
+                if (!ignore) {
+                    const nextCommission = String(Number.isFinite(Number(commission)) ? commission : 0);
+                    const nextManualEnabled = Boolean(manualEnabled);
+                    const toggledOn = nextManualEnabled && !manualGoogerCommissionEnabledRef.current;
+                    manualGoogerCommissionEnabledRef.current = nextManualEnabled;
+                    setGlobalGoogerCommission(nextCommission);
+                    setManualGoogerCommissionEnabled(nextManualEnabled);
+
+                    if (!initialData && nextManualEnabled && toggledOn) {
+                        setFormData((prev) => ({ ...prev, googerCommission: "" }));
+                    }
+                }
+            } catch (error) {
+                console.error("Failed to load global category commission:", error);
+            }
+        };
+
+        loadCategories();
+        loadGlobalCommission();
+
+        const handleCategorySync = () => {
+            loadCategories();
+            loadGlobalCommission();
+        };
+
+        const handleStorageSync = (event: StorageEvent) => {
+            if (event.key === CATEGORY_SYNC_KEY) {
+                loadCategories();
+                loadGlobalCommission();
+            }
+        };
+
+        const handleWindowFocus = () => {
+            loadCategories();
+            loadGlobalCommission();
+        };
+
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === "visible") {
+                loadCategories();
+                loadGlobalCommission();
+            }
+        };
+
+        const handlePageShow = (event: PageTransitionEvent) => {
+            if (event.persisted) {
+                loadCategories();
+                loadGlobalCommission();
+            }
+        };
+
+        window.addEventListener(CATEGORY_SYNC_EVENT, handleCategorySync);
+        window.addEventListener("storage", handleStorageSync);
+        window.addEventListener("focus", handleWindowFocus);
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+        window.addEventListener("pageshow", handlePageShow);
+
+        return () => {
+            ignore = true;
+            window.removeEventListener(CATEGORY_SYNC_EVENT, handleCategorySync);
+            window.removeEventListener("storage", handleStorageSync);
+            window.removeEventListener("focus", handleWindowFocus);
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+            window.removeEventListener("pageshow", handlePageShow);
+        };
+    }, []);
+
+    const activeCategoryTree = managedCategories;
+    const categoryOptions = categoriesLoaded ? getManagedCategoryNames(activeCategoryTree) : [];
 
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
@@ -981,10 +1077,11 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             if (field === 'category') {
                 updated.subCategory = "";
                 updated.level3Category = "";
+                const categoryNode = managedCategories.find(node => node.name === value);
+                const categoryCommission = Number(categoryNode?.commission_percentage ?? 0);
+                updated.googerCommission = categoryCommission > 0 ? String(categoryCommission) : "";
             } else if (field === 'subCategory') {
                 updated.level3Category = "";
-                // Automatic 5% Googer Commission when a Level 2 subcategory is chosen
-                updated.googerCommission = "5";
             }
             return updated;
         });
@@ -1480,9 +1577,10 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     <div id="field-category" className="flex-1">
                                         <label className="block text-[10px] font-black text-white uppercase tracking-widest mb-1 md:mb-1.5 flex items-center gap-1">
                                             Category <span className="text-red-500">*</span>
+                                            {categoriesLoading && <span className="text-[8px] font-bold text-white/35">Loading...</span>}
                                         </label>
                                         <div className="flex flex-col gap-2">
-                                            {formData.category === 'Custom' || (formData.category && !CATEGORIES.includes(formData.category)) ? (
+                                            {formData.category === 'Custom' || (formData.category && !categoryOptions.includes(formData.category)) ? (
                                                 <div className="relative">
                                                     <input
                                                         type="text"
@@ -1502,7 +1600,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 </div>
                                             ) : (
                                                 <div
-                                                    onClick={() => setOpenPicker({ type: 'form', field: 'category', options: CATEGORIES, title: 'Category', value: formData.category })}
+                                                    onClick={() => setOpenPicker({ type: 'form', field: 'category', options: categoryOptions, title: 'Category', value: formData.category })}
                                                     className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2.5 text-xs text-white flex items-center justify-between cursor-pointer transition-all ${formErrors.includes('category') ? 'border-red-500 ring-1 ring-red-500/50' : 'border-white/10 focus:ring-white/30'}`}
                                                 >
                                                     <span className="truncate">{formData.category || "Select Category"}</span>
@@ -1518,7 +1616,9 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         </label>
                                         <div className="flex flex-col gap-2">
                                             {(() => {
-                                                const subCatOptions = formData.category ? Object.keys(CATEGORIES_HIERARCHY[formData.category] || {}) : [];
+                                                const subCatOptions = getCategoryChildren(activeCategoryTree, formData.category)
+                                                    .filter((node) => node.is_active !== false)
+                                                    .map((node) => node.name);
                                                 const isCustom = formData.subCategory === 'Custom' || (formData.subCategory && !subCatOptions.includes(formData.subCategory));
 
                                                 if (isCustom) {
@@ -1567,7 +1667,11 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         </label>
                                         <div className="flex flex-col gap-2">
                                             {(() => {
-                                                const level3CatOptions = (formData.category && formData.subCategory) ? (CATEGORIES_HIERARCHY[formData.category]?.[formData.subCategory] || []) : [];
+                                                const subCategoryNode = getCategoryChildren(activeCategoryTree, formData.category)
+                                                    .find((node) => node.name === formData.subCategory);
+                                                const level3CatOptions = (subCategoryNode?.children || [])
+                                                    .filter((node) => node.is_active !== false)
+                                                    .map((node) => node.name);
                                                 const isCustom = formData.level3Category === 'Custom' || (formData.level3Category && !level3CatOptions.includes(formData.level3Category));
 
                                                 if (isCustom) {
@@ -2237,8 +2341,11 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                         name="googerCommission"
                                         value={formData.googerCommission || ""}
                                         onChange={handleInputChange}
-                                        className={`w-full bg-slate-800/50 border rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 transition-all font-bold ${parseFloat(formData.googerCommission) < 5 ? 'border-red-500/50 focus:ring-red-500/30' : 'border-white/10 focus:ring-white/30'}`}
-                                        placeholder="0"
+                                        readOnly={!manualGoogerCommissionEnabled}
+                                        aria-readonly={!manualGoogerCommissionEnabled}
+                                        tabIndex={manualGoogerCommissionEnabled ? 0 : -1}
+                                        className={`w-full border rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:ring-1 transition-all font-bold ${manualGoogerCommissionEnabled ? "bg-slate-900/60" : "bg-slate-800/50 cursor-not-allowed opacity-90"} ${parseFloat(formData.googerCommission) < 5 ? 'border-red-500/50 focus:ring-red-500/30' : 'border-white/10 focus:ring-white/30'}`}
+                                        placeholder={manualGoogerCommissionEnabled ? "Enter commission" : globalGoogerCommission}
                                     />
                                     {parseFloat(formData.googerCommission) < 5 && (
                                         <p className="text-[7px] text-white font-bold uppercase mt-2 leading-tight animate-pulse">
@@ -2905,3 +3012,4 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         </div >
     );
 }
+

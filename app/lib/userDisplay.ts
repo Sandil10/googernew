@@ -8,3 +8,11 @@ export const getItemProfilePicture = (item: any) =>
 
 export const getItemUserId = (item: any) =>
   getItemUser(item)?.id || item?.user_id || item?.owner_user_id || item?.userId || null;
+
+export const formatGoogerId = (value: any) => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "N/A";
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return raw;
+  return `id - ${digits.padStart(6, "0").slice(-6)}`;
+};

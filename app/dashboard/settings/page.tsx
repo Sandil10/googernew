@@ -5,10 +5,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import IonIcon from "@/app/components/IonIcon";
 import { authService } from "@/services/authService";
+import { formatGoogerId } from "@/app/lib/userDisplay";
 
 type SettingsUser = {
     id?: number;
     user_id?: string | number;
+    googer_id?: string | number;
+    user_type?: string;
     username?: string;
     full_name?: string;
     first_name?: string;
@@ -481,6 +484,7 @@ export default function SettingsPage() {
     }
 
     if (!user) return null;
+    const isAdminUser = user.user_type === "admin";
 
     return (
         <div className="mx-auto max-w-[1280px] pb-10 text-white">
@@ -523,7 +527,7 @@ export default function SettingsPage() {
                             <div className="min-w-0 flex-1">
                                 <p className="truncate text-lg font-black text-white">{displayName}</p>
                                 <p className="mt-1 truncate text-sm text-zinc-400">@{generalForm.username || user.username}</p>
-                                <p className="mt-1 truncate text-xs text-zinc-500">Googer ID: {user.user_id || user.id || "N/A"}</p>
+                                <p className="mt-1 truncate text-xs text-zinc-500">Googer ID: {formatGoogerId(user.user_id || user.googer_id || user.id)}</p>
                             </div>
                         </div>
                         <div className="flex flex-wrap gap-3">
@@ -545,6 +549,24 @@ export default function SettingsPage() {
                     </div>
 
                     <div className="space-y-4">
+                        {isAdminUser && (
+                            <div className="rounded-3xl border border-cyan-500/20 bg-cyan-500/10 p-4">
+                                <div className="flex flex-col gap-3 min-[780px]:flex-row min-[780px]:items-center min-[780px]:justify-between">
+                                    <div>
+                                        <h2 className="text-sm font-black text-white">Admin Category Manager</h2>
+                                        <p className="mt-1 text-xs text-white/45">Manage the DB-backed category tree and commissions used by Add Product.</p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => router.push("/dashboard/categories")}
+                                        className="rounded-xl bg-white px-4 py-2.5 text-[11px] font-bold uppercase tracking-[0.16em] text-black transition hover:bg-zinc-200"
+                                    >
+                                        Open Categories
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
                         <div className="overflow-hidden rounded-3xl border border-white/8 bg-white/[0.03]">
                             <div className="flex flex-nowrap items-center gap-2 overflow-x-auto border-b border-white/8 px-3 py-3 min-[960px]:px-4">
                                 {EDIT_TABS.map((tab) => (
@@ -632,7 +654,7 @@ export default function SettingsPage() {
                                 <div className="mt-4 grid gap-4 min-[860px]:grid-cols-2">
                                     <label className="space-y-2">
                                         <span className="text-[11px] font-semibold uppercase tracking-widest text-white/35">Username <span className="text-red-400">*</span></span>
-                                        <input value={generalForm.username} onChange={(e) => setGeneralForm((prev) => ({ ...prev, username: e.target.value }))} className={`w-full rounded-2xl border bg-white/[0.05] px-4 py-3 text-sm text-white placeholder:text-white/15 focus:border-blue-500/50 focus:outline-none ${generalErrors.username || usernameError ? "border-red-500/60" : "border-white/[0.08]"}`} />
+                                        <input value={generalForm.username} onChange={(e) => setGeneralForm((prev) => ({ ...prev, username: e.target.value.toLowerCase() }))} className={`w-full rounded-2xl border bg-white/[0.05] px-4 py-3 text-sm text-white placeholder:text-white/15 focus:border-blue-500/50 focus:outline-none ${generalErrors.username || usernameError ? "border-red-500/60" : "border-white/[0.08]"}`} />
                                         {isCheckingUsername && !usernameError && <p className="text-xs text-white/45">Checking username...</p>}
                                         {usernameError ? <p className="text-xs text-red-300">{usernameError}</p> : generalErrors.username ? <p className="text-xs text-red-300">{generalErrors.username}</p> : null}
                                     </label>
@@ -722,7 +744,7 @@ export default function SettingsPage() {
                                     </label>
                                     <label className="space-y-2">
                                         <span className="text-[11px] font-semibold uppercase tracking-widest text-white/35">Googer ID</span>
-                                        <input value={String(user?.user_id || user?.id || "")} readOnly className="w-full rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm text-white/70 focus:outline-none" />
+                                        <input value={formatGoogerId(user?.user_id || user?.googer_id || user?.id)} readOnly className="w-full rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm text-white/70 focus:outline-none" />
                                     </label>
                                 </div>
 

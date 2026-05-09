@@ -9,6 +9,7 @@ import { walletService } from "@/services/walletService";
 import ShareModal from "@/app/components/ShareModal";
 import { getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
 import { adsService } from "@/services/adsService";
+import { formatGoogerId } from "@/app/lib/userDisplay";
 
 export default function WalletPage() {
     const [balance, setBalance] = useState(0);
@@ -49,7 +50,7 @@ export default function WalletPage() {
                 setBalance(getWalletBalanceWithAdAdjustments(parseFloat(profile.wallet_balance) || 0, getUserIdentityKey(profile)));
 
                 // Use the numeric user_id if available, fallback to username
-                const displayId = profile.user_id || profile.googer_id || profile.username || "";
+                const displayId = profile.user_id || profile.googer_id || profile.id || "";
                 setGoogerId(displayId);
 
                 const txData = await walletService.getTransactionHistory();
@@ -170,7 +171,7 @@ export default function WalletPage() {
         <div className="pb-10 relative min-h-screen">
             {/* New Header */}
             <div className="bg-white rounded-xl p-4 mb-6 shadow-sm flex flex-col items-center justify-center gap-3">
-                <h1 className="text-black font-bold text-lg text-center tracking-wide">( My Googer ID - {googerId} )</h1>
+                <h1 className="text-black font-bold text-lg text-center tracking-wide">( My Googer ID - {formatGoogerId(googerId)} )</h1>
 
                 {/* Referral Link Section */}
                 <div className="w-full max-w-sm bg-gray-100 rounded-lg p-2 pl-3 flex items-center justify-between gap-2 border border-gray-200">

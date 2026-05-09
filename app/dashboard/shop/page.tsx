@@ -1153,6 +1153,8 @@ const mapPublicActiveAdToShopAd = (ad: any) => {
     ...ad,
     id: String(ad?.id || "").startsWith("ad-") ? ad.id : `ad-${adId || ad?.id}`,
     adId,
+    ad_owner_user_id: ad?.ad_owner_user_id ?? ad?.advertiser_id ?? ad?.user_id ?? ad?.userId,
+    advertiser_id: ad?.advertiser_id ?? ad?.ad_owner_user_id ?? ad?.user_id ?? ad?.userId,
     user_id: ad?.user_id ?? ad?.userId,
     owner_user_id: ad?.owner_user_id ?? ad?.ownerUserId,
     username: ad?.owner_username || ad?.ownerUsername || ad?.user?.username || "Ads",
@@ -1374,27 +1376,47 @@ export default function ShopPage() {
     if (activeTab !== "market") return;
     let cancelled = false;
 
-    const loadProductPromoteAds = async () => {
+    const loadActiveShopAds = async () => {
       try {
-        const response = await fetch("/api/ads/active-public?limit=50", { cache: "no-store" });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data?.message || "Failed to load active ads");
+        const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
+        const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+        const activeAds: any[] = [];
+        let offset = 0;
+        const limit = 50;
+        let hasMore = true;
 
-        const productPromoteAds = (Array.isArray(data?.ads) ? data.ads : [])
+        while (hasMore && !cancelled) {
+          const response = await fetch(`/api/ads/active-public?limit=${limit}&offset=${offset}`, {
+            cache: "no-store",
+            headers,
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data?.message || "Failed to load active ads");
+
+          const pageAds = Array.isArray(data?.ads) ? data.ads : [];
+          activeAds.push(...pageAds);
+          hasMore = !!data?.pagination?.hasMore && pageAds.length > 0;
+          offset = Number(data?.pagination?.nextOffset ?? offset + pageAds.length);
+        }
+
+        const mappedAds = activeAds
           .map(mapPublicActiveAdToShopAd)
-          .filter(isProductPromoteItem);
-        const hydratedAds = (await Promise.all(productPromoteAds.map(resolveProductPromoteProduct)))
-          .filter(isProductPromoteItem);
+          .filter((ad) => !!ad?.is_sponsored);
+
+        const hydratedAds = (await Promise.all(
+          mappedAds.map((ad) => isProductPromoteItem(ad) ? resolveProductPromoteProduct(ad) : ad),
+        ))
+          .filter((ad) => !!ad?.is_sponsored);
 
         if (cancelled) return;
         setMarketAds(hydratedAds);
         if (hydratedAds.length > 0) syncAds(hydratedAds);
       } catch (error) {
-        console.error("Failed to load Product Promote ads for shop feed:", error);
+        console.error("Failed to load active ads for shop feed:", error);
       }
     };
 
-    void loadProductPromoteAds();
+    void loadActiveShopAds();
 
     return () => {
       cancelled = true;
@@ -1483,7 +1505,48 @@ export default function ShopPage() {
     return String(product?.id || "").startsWith("ad-") ? product.id : (product?.adId ? `ad-${product.adId}` : product?.id);
   };
 
+  const getUserIdentity = (user: any) => (
+    user?.id ??
+    user?.user_id ??
+    user?.googer_id ??
+    user?.userId ??
+    user?.owner_id ??
+    user?.ownerId ??
+    null
+  );
+
+  const getAdOwnerIdentity = (product: any) => (
+    product?.ad_owner_user_id ??
+    product?.adOwnerUserId ??
+    product?.advertiser_id ??
+    product?.raw?.ad_owner_user_id ??
+    product?.raw?.advertiser_id ??
+    product?.user_id ??
+    product?.owner_user_id ??
+    product?.owner_id ??
+    product?.seller_id ??
+    product?.user?.id ??
+    product?.owner?.id ??
+    product?.advertiser_id ??
+    null
+  );
+
   const canShowCollectCoinButton = (product: any) => {
+    // Collect all possible owner IDs from the ad (ads table may store users.user_id, not users.id)
+    const ownerCandidates = [
+      getAdOwnerIdentity(product),
+      product?.raw?.user_id,
+      product?.user_id,
+    ].filter(Boolean).map(String);
+    // Collect all possible IDs for the current user
+    const viewerCandidates = [
+      currentUser?.id,
+      currentUser?.user_id,
+      currentUser?.googer_id,
+      currentUser?.userId,
+    ].filter(Boolean).map(String);
+    if (ownerCandidates.length > 0 && viewerCandidates.length > 0 &&
+        ownerCandidates.some((oid) => viewerCandidates.includes(oid))) return false;
     return canShowAdCollectCoinButton(product, currentUser);
   };
 
@@ -1977,7 +2040,15 @@ export default function ShopPage() {
         message: error?.message || "Could not collect the ad coin.",
       });
     },
-    onNeedCoinConfirmation: (ad) => setPendingAdCoinProduct(ad.raw || ad),
+    onNeedCoinConfirmation: (ad) => {
+      const warningKey = `googer-ad-coin-warning-${currentUser?.id}`;
+      const alreadySeen = typeof window !== "undefined" && localStorage.getItem(warningKey) === "1";
+      if (alreadySeen) {
+        collectAdCoin(ad.raw || ad);
+      } else {
+        setPendingAdCoinProduct(ad.raw || ad);
+      }
+    },
     onNotify: setNotification,
   });
 
@@ -1996,11 +2067,24 @@ export default function ShopPage() {
 
   const collectAdCoin = async (product: any) => {
     try {
-      const result = await adActions.collectAdCoin(product);
+      const resolvedProduct = isProductPromoteItem(product)
+        ? (await resolveProductPromoteProduct(product)) || product
+        : product;
+      const ownerCandidates = [
+        getAdOwnerIdentity(resolvedProduct),
+      ].filter(Boolean).map(String);
+      const viewerCandidates = [
+        currentUser?.id, currentUser?.user_id, currentUser?.googer_id,
+      ].filter(Boolean).map(String);
+      if (ownerCandidates.some((oid) => viewerCandidates.includes(oid))) {
+        setPendingAdCoinProduct(null);
+        return;
+      }
+      const result = await adActions.collectAdCoin(resolvedProduct);
       setNotification({
         type: "success",
         title: "Coin Collected",
-        message: `Rupieer ${Number(result?.amount || product?.ad_coin_value || 1).toFixed(2)} added to the ad owner's wallet.`,
+        message: `Rupieer ${Number(result?.amount || resolvedProduct?.ad_coin_value || 1).toFixed(2)} added to the ad owner's wallet.`,
       });
     } catch (error: any) {
       // Notification is already handled by adActions.onCoinError
@@ -2013,10 +2097,58 @@ export default function ShopPage() {
     adActions.handleAdCoinClick(event, product);
   };
 
+  const resolveLikeTarget = (item: any) => {
+    if (item && typeof item === "object") return item;
+    const candidates = [
+      selectedProduct,
+      interactionProduct,
+      pendingAdCoinProduct,
+      sharedAdPreviewModal?.ad,
+      ...products,
+      ...marketAds,
+    ].filter(Boolean);
+    return candidates.find((candidate) => matchesAdIdentity(candidate, item)) || item;
+  };
+
+  const isLikeLockedAfterCollection = (item: any) => {
+    if (!item || typeof item !== "object") return false;
+    const liveState = useAdStore.getState().getAdState(item);
+    return !!(
+      liveState.ad_like_locked ||
+      liveState.ad_coin_collected ||
+      item.ad_like_locked ||
+      item.ad_coin_collected ||
+      item.coinCollected ||
+      item.raw?.ad_like_locked ||
+      item.raw?.ad_coin_collected
+    );
+  };
+
   const handleToggleLike = async (item: any) => {
     try {
-      const id = typeof item === 'object' ? item.id : item;
-      await adActions.like(item);
+      const likeTarget = resolveLikeTarget(item);
+      const id = typeof likeTarget === 'object' ? likeTarget.id : likeTarget;
+      const liveState = typeof likeTarget === "object" ? useAdStore.getState().getAdState(likeTarget) : {};
+      const isLiked = !!(
+        liveState.user_liked ??
+        likeTarget?.user_liked ??
+        likeTarget?.liked ??
+        likeTarget?.raw?.user_liked
+      );
+
+      if (isLiked && isLikeLockedAfterCollection(likeTarget)) {
+        if (typeof likeTarget === "object") {
+          updateAdState(likeTarget, { user_liked: true, ad_like_locked: true });
+        }
+        setNotification({
+          type: "error",
+          title: "Like Locked",
+          message: "You already collected coins for this ad. You cannot unlike.",
+        });
+        return;
+      }
+
+      await adActions.like(likeTarget);
 
       // If bottom sheet is open for likes, refresh it
       if (isBottomSheetOpen && bottomSheetType === "likes" && String(interactionProduct?.id) === String(id)) {
@@ -4265,6 +4397,7 @@ export default function ShopPage() {
                       onCollectCoin={(event) => handleAdCoinClick(event, product)}
                       onNavigateToProfile={(event) => navigateToProfile(event, product.user_id)}
                       canShowCollectCoin={canShowCollectCoinButton}
+                      currentUser={currentUser}
                     />
                   </MarketItemWrapper>
                 </Fragment>
@@ -4617,7 +4750,7 @@ export default function ShopPage() {
                                 count={selectedProduct.likes_count}
                                 color="text-white"
                                 activeColor="text-white"
-                                onSingleClick={() => { handleToggleLike(selectedProduct.id); }}
+                                onSingleClick={() => { handleToggleLike(selectedProduct); }}
                                 onLongReach={() => openBottomSheet("likes", selectedProduct)}
                                 orientation="vertical"
                                 iconSize="text-base md:text-xl"
@@ -5393,7 +5526,7 @@ export default function ShopPage() {
           const targetProd = interactionProduct || selectedProduct;
           if (!targetProd) return;
 
-          if (action === "star") handleToggleLike(targetProd.id);
+          if (action === "star") handleToggleLike(targetProd);
           if (
             action === "upload" ||
             action === "forward" ||
@@ -5448,7 +5581,12 @@ export default function ShopPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => collectAdCoin(pendingAdCoinProduct)}
+                  onClick={() => {
+                    if (typeof window !== "undefined") {
+                      localStorage.setItem(`googer-ad-coin-warning-${currentUser?.id}`, "1");
+                    }
+                    collectAdCoin(pendingAdCoinProduct);
+                  }}
                   className="rounded-full bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-black transition hover:bg-slate-200 active:scale-95"
                 >
                   Collect

@@ -162,8 +162,8 @@ export function normalizeAdData(ad: any): NormalizedAd {
   const viewCount = Number(ad.views_count ?? ad.viewCount ?? ad.views ?? ad.impressions ?? 0);
 
   // Status
-  const liked = !!(ad.user_liked || ad.isLiked || ad.liked);
   const coinCollected = !!(ad.ad_coin_collected || ad.coinCollected || ad.isCollected);
+  const liked = !!(ad.user_liked || ad.isLiked || ad.liked || coinCollected);
 
   return {
     id: interactionId,
@@ -176,6 +176,8 @@ export function normalizeAdData(ad: any): NormalizedAd {
     userId: userId ? String(userId) : "",
     user_id: userId,
     owner_user_id: ad.owner_user_id || ad.ownerUserId || userId,
+    ad_owner_user_id: ad.ad_owner_user_id ?? ad.adOwnerUserId ?? ad.advertiser_id ?? null,
+    advertiser_id: ad.advertiser_id ?? ad.ad_owner_user_id ?? ad.adOwnerUserId ?? null,
     username,
     owner_username: username,
     profile_picture: profilePicture,

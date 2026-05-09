@@ -56,13 +56,49 @@ export function PromotedAdCard({
 }: PromotedAdCardProps) {
   const normalized = normalizeAdData(ad);
   const actionAd = normalized.raw || ad;
-  
+
+  // Resolve the ad promoter's identity — collect every possible owner ID from the raw ad.
+  // The ads table may store users.user_id (sequential, e.g. 5) while currentUser.id is
+  // the PK (e.g. 312495), so we must check against ALL currentUser ID fields.
+  const adOwnerCandidates: string[] = [
+    normalized.ad_owner_user_id,
+    normalized.advertiser_id,
+    (actionAd as any)?.ad_owner_user_id,
+    (actionAd as any)?.advertiser_id,
+    ad?.ad_owner_user_id,
+    ad?.advertiser_id,
+    // Also check user_id on the raw ad (Product Promote sets this to the promoter's users.user_id)
+    (actionAd as any)?.user_id,
+    ad?.user_id,
+  ]
+    .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+    .map((v) => String(v));
+
+  const currentUserCandidates: string[] = [
+    currentUser?.id,
+    currentUser?.user_id,
+    currentUser?.googer_id,
+    currentUser?.userId,
+    currentUser?.owner_id,
+  ]
+    .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+    .map((v) => String(v));
+
+  const isAdOwner =
+    adOwnerCandidates.length > 0 &&
+    currentUserCandidates.length > 0 &&
+    adOwnerCandidates.some((oid) => currentUserCandidates.includes(oid));
+
+  const guardedCanShowCollectCoin = isAdOwner
+    ? () => false
+    : canShowCollectCoin;
+
   // Connect to global reactive store
   const interactionId = getAdInteractionId(actionAd);
   const liveState = useAdStore((state) => state.adStates[interactionId] || EMPTY_OBJECT);
 
   // Merge live state into normalized object for UI parity
-  const merged = {
+  const merged: any = {
     ...normalized,
     liked: liveState.user_liked ?? normalized.liked,
     user_liked: liveState.user_liked ?? normalized.user_liked,
@@ -70,6 +106,7 @@ export function PromotedAdCard({
     likes_count: liveState.likes_count ?? liveState.likeCount ?? normalized.likes_count,
     coinCollected: liveState.ad_coin_collected ?? normalized.coinCollected,
     ad_coin_collected: liveState.ad_coin_collected ?? normalized.ad_coin_collected,
+    ad_like_locked: liveState.ad_like_locked ?? normalized.ad_like_locked ?? liveState.ad_coin_collected ?? normalized.ad_coin_collected,
     viewCount: liveState.views_count ?? liveState.viewCount ?? normalized.viewCount,
     views_count: liveState.views_count ?? liveState.viewCount ?? normalized.views_count,
     commentCount: liveState.comments_count ?? liveState.commentCount ?? normalized.commentCount,
@@ -111,7 +148,7 @@ export function PromotedAdCard({
       comments_count: merged.comments_count,
       shares_count: merged.shares_count,
       ad_coin_collected: merged.ad_coin_collected,
-      ad_like_locked: merged.ad_like_locked,
+      ad_like_locked: !!(merged.ad_like_locked ?? merged.ad_coin_collected),
     };
 
     return (
@@ -126,7 +163,7 @@ export function PromotedAdCard({
         onReport={onReport || (() => {})}
         onNotInterested={onNotInterested || (() => {})}
         onCollectCoin={onCollectCoin || (() => {})}
-        canShowCollectCoin={canShowCollectCoin || (() => false)}
+        canShowCollectCoin={guardedCanShowCollectCoin || (() => false)}
         onNavigateToProfile={(event) => onNavigateToProfile?.(event, actionAd.user_id)}
         currentUser={currentUser}
         compact={compact}
@@ -141,7 +178,7 @@ export function PromotedAdCard({
         onProductClick={(product) => onProductClick?.(product)}
         onProfileClick={() => onProfileClick?.(actionAd)}
         onCollectCoin={onCollectCoin}
-        canShowCollectCoin={canShowCollectCoin}
+        canShowCollectCoin={guardedCanShowCollectCoin}
       />
     );
   }
@@ -160,7 +197,7 @@ export function PromotedAdCard({
       onNotInterested={onNotInterested || (() => {})}
       onCollectCoin={onCollectCoin || (() => {})}
       onNavigateToProfile={onNavigateToProfile || (() => {})}
-      canShowCollectCoin={canShowCollectCoin || (() => false)}
+      canShowCollectCoin={guardedCanShowCollectCoin || (() => false)}
     />
   );
 }

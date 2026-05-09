@@ -1,5 +1,6 @@
 const pool = require('../config/database');
 const { saveUploadedFiles } = require('../utils/localUpload');
+const jwt = require('jsonwebtoken');
 
 let adsTableReady = false;
 const VALID_STATUSES = new Set(['Under Review', 'Active', 'Paused', 'Completed', 'Cancelled']);
@@ -31,6 +32,58 @@ const normalizeMediaGallery = (value, fallback = []) => {
         .filter((entry) => typeof entry === 'string')
         .map((entry) => entry.trim())
         .filter(Boolean);
+};
+
+const getOptionalViewerId = (req) => {
+    try {
+        const authHeader = req.header('Authorization');
+        const token = authHeader?.startsWith('Bearer ')
+            ? authHeader.replace('Bearer ', '')
+            : authHeader;
+        if (!token) return null;
+
+        const secret = process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET;
+        if (!secret) return null;
+
+        const decoded = jwt.verify(token, secret);
+        return decoded?.id || decoded?.userId || null;
+    } catch {
+        return null;
+    }
+};
+
+const ensureAdEngagementTables = async () => {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS ad_likes (
+            id SERIAL PRIMARY KEY,
+            ad_id VARCHAR(80) NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(ad_id, user_id)
+        );
+    `);
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS ad_coin_collections (
+            id SERIAL PRIMARY KEY,
+            ad_id VARCHAR(80) NOT NULL,
+            ad_type VARCHAR(80) NOT NULL DEFAULT 'Ads',
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            reward_amount DECIMAL(10, 2) NOT NULL DEFAULT 1.00,
+            commission DECIMAL(10, 2) NOT NULL DEFAULT 0.25,
+            advertiser_charge DECIMAL(10, 2) NOT NULL DEFAULT 1.25,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(ad_id, ad_type, user_id)
+        );
+    `);
+
+    await pool.query(`
+        ALTER TABLE ad_coin_collections
+            ADD COLUMN IF NOT EXISTS ad_type VARCHAR(80) NOT NULL DEFAULT 'Ads',
+            ADD COLUMN IF NOT EXISTS reward_amount DECIMAL(10, 2) NOT NULL DEFAULT 1.00,
+            ADD COLUMN IF NOT EXISTS commission DECIMAL(10, 2) NOT NULL DEFAULT 0.25,
+            ADD COLUMN IF NOT EXISTS advertiser_charge DECIMAL(10, 2) NOT NULL DEFAULT 1.25;
+    `);
 };
 
 const ensureAdsTable = async () => {
@@ -103,7 +156,11 @@ const mapRow = (row) => {
     return {
     id: row.id,
     adId: row.ad_id,
+    ad_id: row.ad_id,
     userId: row.user_id,
+    user_id: row.user_id,
+    ad_owner_user_id: row.user_id,
+    advertiser_id: row.user_id,
     ownerUserId: row.owner_user_id,
     ownerUsername: row.owner_username_joined || row.owner_username,
     user: {
@@ -642,23 +699,38 @@ exports.getAllAds = async (req, res) => {
 exports.getActiveAdsPublic = async (req, res) => {
     try {
         await ensureAdsTable();
+        const viewerId = getOptionalViewerId(req);
+        if (viewerId) await ensureAdEngagementTables();
         const limitRaw = Number.parseInt(req.query.limit, 10);
         const offsetRaw = Number.parseInt(req.query.offset, 10);
         const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 20;
         const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
+        const viewerSelect = viewerId
+            ? `,
+                EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $3) AS user_liked,
+                EXISTS(SELECT 1 FROM ad_coin_collections acc WHERE acc.ad_id = a.ad_id AND acc.user_id = $3) AS ad_coin_collected`
+            : `,
+                FALSE AS user_liked,
+                FALSE AS ad_coin_collected`;
+        const queryParams = viewerId ? [limit + 1, offset, viewerId] : [limit + 1, offset];
         const result = await pool.query(
-            `SELECT a.*, u.username AS owner_username_joined, u.profile_picture
+            `SELECT a.*, u.username AS owner_username_joined, u.profile_picture${viewerSelect}
              FROM ads a
              LEFT JOIN users u ON a.user_id = u.id
              WHERE a.status = 'Active'
              ORDER BY a.created_at DESC
              LIMIT $1 OFFSET $2`,
-            [limit + 1, offset]
+            queryParams
         );
 
         const rows = result.rows || [];
         const ads = rows.slice(0, limit).map((row) => {
-            const ad = mapRow(row);
+            const ad = {
+                ...mapRow(row),
+                user_liked: !!row.user_liked || !!row.ad_coin_collected,
+                ad_coin_collected: !!row.ad_coin_collected,
+                ad_like_locked: !!row.ad_coin_collected,
+            };
             const mediaGallery = (ad.mediaGallery || []).map(getMediaUrl).filter(Boolean);
             const mediaPreview = getMediaUrl(ad.mediaPreview) || mediaGallery[0] || getRawMediaValue(ad.mediaPreview) || '/assets/images/googer.png';
             const safeDraft = {
@@ -683,6 +755,9 @@ exports.getActiveAdsPublic = async (req, res) => {
                     ...ad.user,
                     profile_picture: getMediaUrl(ad.user?.profile_picture) || null,
                 },
+                user_liked: !!ad.user_liked,
+                ad_coin_collected: !!ad.ad_coin_collected,
+                ad_like_locked: !!ad.ad_coin_collected,
             };
         });
 
@@ -749,6 +824,8 @@ exports.getActiveAdsPublic = async (req, res) => {
                 id: Number(linked.id),
                 adId: ad.adId || ad.ad_id,
                 ad_id: ad.ad_id || ad.adId,
+                ad_owner_user_id: ad.user_id || ad.userId,
+                advertiser_id: ad.user_id || ad.userId,
                 title: linked.title || ad.title,
                 description: linked.description || ad.description || '',
                 category: linked.category || ad.category,
@@ -791,6 +868,17 @@ exports.getActiveAdsPublic = async (req, res) => {
                 is_sponsored: true,
                 isAd: true,
                 campaign_type: 'Product Promote',
+                likes_count: Number(ad.likes_count || 0),
+                likeCount: Number(ad.likes_count || 0),
+                comments_count: Number(ad.comments_count || 0),
+                commentCount: Number(ad.comments_count || 0),
+                shares_count: Number(ad.shares_count || 0),
+                shareCount: Number(ad.shares_count || 0),
+                views_count: Number(ad.views_count || ad.impressions || 0),
+                viewCount: Number(ad.views_count || ad.impressions || 0),
+                user_liked: !!ad.user_liked,
+                ad_coin_collected: !!ad.ad_coin_collected,
+                ad_like_locked: !!ad.ad_coin_collected,
             };
         }).filter(Boolean);
 

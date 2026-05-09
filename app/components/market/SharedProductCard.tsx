@@ -80,14 +80,17 @@ export const SharedProductCard = memo(({
   myListingsTab = "active",
 }: SharedProductCardProps) => {
   const [openMenu, setOpenMenu] = useState(false);
+  const [likeLockMessage, setLikeLockMessage] = useState(false);
   // Connect to global reactive store for both products and ads to ensure parity
   const interactionId = getAdInteractionId(product);
   const liveState = useAdStore((state) => state.adStates[interactionId] || EMPTY_OBJECT);
 
   // Merge live state (reactive) with initial product data (prop)
+  const likePending = !!liveState.like_pending;
   const displayLiked = liveState.user_liked ?? !!product.user_liked;
   const displayLikesCount = liveState.likes_count ?? liveState.likeCount ?? Number(product.likes_count || product.likeCount || 0);
   const displayCoinCollected = liveState.ad_coin_collected ?? !!product.ad_coin_collected;
+  const displayLikeLocked = !!(liveState.ad_like_locked ?? product.ad_like_locked ?? displayCoinCollected);
   const displayViewsCount = liveState.views_count ?? liveState.viewCount ?? Number(product.views_count || product.viewCount || 0);
   const displayCommentsCount = liveState.comments_count ?? liveState.commentCount ?? Number(product.comments_count || product.commentCount || 0);
   const displaySharesCount = liveState.shares_count ?? liveState.shareCount ?? Number(product.shares_count || product.shareCount || 0);
@@ -101,6 +104,7 @@ export const SharedProductCard = memo(({
     likesCount: displayLikesCount,
     ad_coin_collected: displayCoinCollected,
     coinCollected: displayCoinCollected,
+    ad_like_locked: displayLikeLocked,
     views_count: displayViewsCount,
     viewsCount: displayViewsCount,
     comments_count: displayCommentsCount,
@@ -108,7 +112,7 @@ export const SharedProductCard = memo(({
     shares_count: displaySharesCount,
     sharesCount: displaySharesCount,
     raw: product // Important for handlers that check .raw
-  }), [product, displayLiked, displayLikesCount, displayCoinCollected, displayViewsCount, displayCommentsCount, displaySharesCount]);
+  }), [product, displayLiked, displayLikesCount, displayCoinCollected, displayLikeLocked, displayViewsCount, displayCommentsCount, displaySharesCount]);
 
   const sellerName = getItemUsername(product, "Seller");
   const sellerImage = getItemProfilePicture(product);
@@ -451,17 +455,37 @@ export const SharedProductCard = memo(({
             <div className="flex items-center justify-between w-full px-0.5">
               {canUseProductActions && (
                 <>
-                  <AdInteractionButton
-                    type="likes"
-                    icon="heart-outline"
-                    activeIcon="heart"
-                    isActive={displayLiked}
-                    count={displayLikesCount}
-                    color="text-white"
-                    activeColor="text-white"
-                    onSingleClick={() => onToggleLike?.(mergedForCallback)}
-                    onLongPress={() => onOpenSheet?.("likes", mergedForCallback)}
-                  />
+                  <div className="relative flex flex-col items-center">
+                    <AdInteractionButton
+                      type="likes"
+                      icon="heart-outline"
+                      activeIcon="heart"
+                      isActive={displayLiked}
+                      count={displayLikesCount}
+                      color="text-white"
+                      activeColor="text-white"
+                      onSingleClick={() => {
+                        if (likePending) return;
+                        // Read synchronously at click time — avoids stale reactive value between
+                        // Zustand set() and React's next render
+                        const freshState = useAdStore.getState().getAdState(product);
+                        const isLocked = !!(freshState.ad_like_locked ?? freshState.ad_coin_collected ?? displayLikeLocked);
+                        const isLiked = !!(freshState.user_liked ?? displayLiked);
+                        if (isLiked && isLocked) {
+                          setLikeLockMessage(true);
+                          setTimeout(() => setLikeLockMessage(false), 3000);
+                          return;
+                        }
+                        onToggleLike?.(mergedForCallback);
+                      }}
+                      onLongPress={() => onOpenSheet?.("likes", mergedForCallback)}
+                    />
+                    {likeLockMessage && (
+                      <span className="absolute top-full mt-0.5 whitespace-nowrap rounded px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider text-red-400">
+                        Like locked
+                      </span>
+                    )}
+                  </div>
                   <AdInteractionButton
                     type="views"
                     icon="eye-outline"

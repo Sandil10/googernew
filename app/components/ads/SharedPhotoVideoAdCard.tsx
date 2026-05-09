@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import React from "react";
+import React, { useState } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import { RelativeTime } from "@/app/components/RelativeTime";
 import SubscribeButton from "@/app/components/SubscribeButton";
@@ -22,6 +22,8 @@ import {
     shouldBypassNextImageOptimization,
 } from "@/app/lib/mediaOptimization";
 import { NormalizedAd } from "@/app/lib/ads/adTypes";
+import { useAdStore } from "@/app/lib/ads/adStore";
+import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
 
 export type AdCardHandlers = {
     onOpenSecondView?: (ad: any) => void;
@@ -43,6 +45,8 @@ export type SharedPhotoVideoAdCardProps = AdCardHandlers & {
     onCloseMenu: () => void;
 };
 
+const EMPTY_OBJECT_PHOTO = {};
+
 export function SharedPhotoVideoAdCard({
     ad,
     isMenuOpen,
@@ -58,6 +62,16 @@ export function SharedPhotoVideoAdCard({
     onNavigateToProfile,
     canShowCollectCoin,
 }: SharedPhotoVideoAdCardProps) {
+    const [likeLockMessage, setLikeLockMessage] = useState(false);
+
+    // Subscribe directly to store so button state reacts immediately on first like
+    const interactionId = getAdInteractionId(ad.raw || ad);
+    const liveState = useAdStore((state) => state.adStates[interactionId] || EMPTY_OBJECT_PHOTO);
+    const likePending = !!liveState.like_pending;
+    const displayLiked = liveState.user_liked ?? !!ad.liked;
+    const displayCoinCollected = liveState.ad_coin_collected ?? !!ad.ad_coin_collected;
+    const displayLikeLocked = !!(liveState.ad_like_locked ?? ad.ad_like_locked ?? displayCoinCollected);
+
     const raw = ad.raw || {};
     const campaignType = String(ad.campaign_type || raw.campaign_type || "").trim().toLowerCase();
     const activeLink = normalizeExternalUrl(ad.active_link || raw.active_link || "");
@@ -76,7 +90,7 @@ export function SharedPhotoVideoAdCard({
     const ctaLabel = ctaTopic && ctaTopic !== "No Button" ? ctaTopic : "Visit";
     const secondaryCtaLabel = ctaTopic === "Call Now" ? "" : ctaLabel;
     const hasSecondaryCta = !!secondaryCtaLabel && ctaTopic !== "No Button";
-    const showAdCoinButton = canShowCollectCoin(ad);
+    const showAdCoinButton = displayLiked && !displayCoinCollected && canShowCollectCoin(ad);
     const showSponsoredLinkPreview = !!activeLink;
     const advertiserName = ad.username || ad.owner_username || raw.username || raw.owner_username || raw.ownerUsername || raw.user?.username || raw.user?.name || "Advertiser";
     const advertiserImage = ad.profile_picture || raw.profile_picture || raw.profilePicture || raw.owner_profile_picture || raw.ownerProfilePicture || raw.user?.profile_picture || raw.user?.profilePicture || getItemProfilePicture(raw);
@@ -131,6 +145,17 @@ export function SharedPhotoVideoAdCard({
     };
 
     const handleLikeClick = () => {
+        if (likePending) return;
+        // Read synchronously at click time — avoids stale reactive value between
+        // Zustand set() and React's next render (the window where toast appeared on home feed)
+        const freshState = useAdStore.getState().getAdState(ad.raw || ad);
+        const isLocked = !!(freshState.ad_like_locked ?? freshState.ad_coin_collected ?? displayLikeLocked);
+        const isLiked = !!(freshState.user_liked ?? displayLiked);
+        if (isLiked && isLocked) {
+            setLikeLockMessage(true);
+            setTimeout(() => setLikeLockMessage(false), 3000);
+            return;
+        }
         onToggleLike(ad);
     };
 
@@ -387,18 +412,25 @@ export function SharedPhotoVideoAdCard({
 
                 <div className="mt-4 border-t border-white/5 pt-3">
                     <div className="flex items-center text-white/80 gap-5">
-                        <AdInteractionButton
-                            type="likes"
-                            icon="heart-outline"
-                            activeIcon="heart"
-                            isActive={ad.liked}
-                            count={likeCount}
-                            color="text-white/80"
-                            activeColor="text-white"
-                            onSingleClick={handleLikeClick}
-                            onLongPress={() => onOpenSheet("likes", ad.raw || ad)}
-                            iconSize="text-[21px]"
-                        />
+                        <div className="relative flex flex-col items-center">
+                            <AdInteractionButton
+                                type="likes"
+                                icon="heart-outline"
+                                activeIcon="heart"
+                                isActive={displayLiked}
+                                count={likeCount}
+                                color="text-white/80"
+                                activeColor="text-white"
+                                onSingleClick={handleLikeClick}
+                                onLongPress={() => onOpenSheet("likes", ad.raw || ad)}
+                                iconSize="text-[21px]"
+                            />
+                            {likeLockMessage && (
+                                <span className="absolute top-full mt-0.5 whitespace-nowrap rounded px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider text-red-400">
+                                    Like locked
+                                </span>
+                            )}
+                        </div>
                         <AdInteractionButton
                             type="views"
                             icon="eye-outline"

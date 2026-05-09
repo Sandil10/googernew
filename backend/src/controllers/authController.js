@@ -9,6 +9,10 @@ let profileViewsTableEnsured = false;
 let profilePictureColumnEnsured = false;
 let extendedUserProfileSchemaEnsured = false;
 let userBlocksTableEnsured = false;
+let googerIdNormalizationPromise = null;
+
+const GOOGER_ID_MIN = 100000;
+const GOOGER_ID_MAX = 999999;
 
 const hasUsersTableColumn = async (columnName) => {
     if (columnName === 'shipping_address' && usersTableHasShippingAddressColumn !== null) {
@@ -216,25 +220,65 @@ const getSubscribedStatus = async (viewerId, profileUserId) => {
     return result.rows.length > 0;
 };
 
-// Generate unique 6-digit user ID
-const generateUserId = async () => {
-    let userId;
-    let exists = true;
+const isValidGoogerId = (value) => /^\d{6}$/.test(String(value || '').trim());
 
-    while (exists) {
-        // Generate random 4-digit number (1000-9999)
-        userId = Math.floor(1000 + Math.random() * 9000).toString();
+const generateUserId = async (db = pool, excludedIds = new Set()) => {
+    for (let attempts = 0; attempts < 40; attempts += 1) {
+        const candidate = Math.floor(GOOGER_ID_MIN + Math.random() * (GOOGER_ID_MAX - GOOGER_ID_MIN + 1)).toString();
+        if (excludedIds.has(candidate)) continue;
 
-        // Check if it already exists
-        const result = await pool.query(
-            'SELECT user_id FROM users WHERE user_id = $1',
-            [userId]
+        const result = await db.query(
+            'SELECT 1 FROM users WHERE user_id = $1 LIMIT 1',
+            [candidate]
         );
 
-        exists = result.rows.length > 0;
+        if (result.rows.length === 0) {
+            excludedIds.add(candidate);
+            return candidate;
+        }
     }
 
-    return userId;
+    throw new Error('Unable to generate a unique Googer ID');
+};
+
+const ensureGoogerIdNormalization = async () => {
+    if (googerIdNormalizationPromise) return googerIdNormalizationPromise;
+
+    googerIdNormalizationPromise = (async () => {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const result = await client.query('SELECT id, user_id FROM users ORDER BY id ASC');
+            const seenIds = new Set();
+
+            for (const row of result.rows) {
+                const currentId = String(row.user_id || '').trim();
+                const isFresh = isValidGoogerId(currentId) && !seenIds.has(currentId);
+
+                if (isFresh) {
+                    seenIds.add(currentId);
+                    continue;
+                }
+
+                const nextId = await generateUserId(client, seenIds);
+                await client.query('UPDATE users SET user_id = $1 WHERE id = $2', [nextId, row.id]);
+                seenIds.add(nextId);
+            }
+
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+    })();
+
+    try {
+        return await googerIdNormalizationPromise;
+    } finally {
+        googerIdNormalizationPromise = null;
+    }
 };
 
 // Validate password strength
@@ -312,7 +356,8 @@ exports.register = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
 
         // Generate unique user ID
-        const userId = await generateUserId();
+        await ensureGoogerIdNormalization();
+        const userId = await generateUserId(pool);
 
         // Generate Unique Referral Code for the New User
         // Format: REF-[USERNAME-3chars]-[RANDOM-4chars]
@@ -438,6 +483,8 @@ exports.login = async (req, res) => {
             throw new Error('JWT Secret is not configured in environment variables');
         }
 
+        await ensureGoogerIdNormalization();
+
         const token = jwt.sign(
             { id: user.rows[0].id, userId: user.rows[0].user_id },
             secret,
@@ -494,6 +541,7 @@ exports.getUserById = async (req, res) => {
     try {
         const { id } = req.params;
         const authUser = getOptionalAuthUser(req);
+        await ensureGoogerIdNormalization();
         await ensureSubscriptionsTable();
         await ensureExtendedUserProfileSchema();
         await ensureUserBlocksTable();
@@ -564,6 +612,7 @@ exports.getProfile = async (req, res) => {
     try {
         const userId = req.user.id;
         console.log(`[AUTH] Fetching profile for ID: ${userId}`);
+        await ensureGoogerIdNormalization();
         await ensureSubscriptionsTable();
         await ensureProfileViewsTable();
         await ensureExtendedUserProfileSchema();
@@ -701,9 +750,10 @@ exports.updateProfile = async (req, res) => {
             : [normalizedFirstName, normalizedLastName].filter(Boolean).join(' ').trim() || null;
 
         if (username) {
+            const normalizedUsername = username.trim().toLowerCase();
             const existingUsername = await pool.query(
-                'SELECT id FROM users WHERE username = $1 AND id <> $2 LIMIT 1',
-                [username.trim(), req.user.id]
+                'SELECT id FROM users WHERE LOWER(username) = $1 AND id <> $2 LIMIT 1',
+                [normalizedUsername, req.user.id]
             );
             if (existingUsername.rows.length > 0) {
                 return res.status(400).json({ success: false, message: 'Username already taken' });
@@ -743,7 +793,7 @@ exports.updateProfile = async (req, res) => {
         ];
 
         const values = [
-            username ? username.trim() : null,
+            username ? username.trim().toLowerCase() : null,
             normalizedFirstName,
             normalizedLastName,
             normalizedFullName,
@@ -863,7 +913,7 @@ exports.getUserByUsername = async (req, res) => {
         const currentUserId = getOptionalUserId(req);
 
         const query = `
-            SELECT 
+            SELECT
                 u.id, u.username, u.full_name, u.bio, u.profile_picture, u.email,
                 u.contact_email, u.contact_phone, u.contact_email_visibility, u.contact_phone_visibility,
                 u.shipping_address,
@@ -872,7 +922,7 @@ exports.getUserByUsername = async (req, res) => {
                 (SELECT COUNT(*) FROM profile_views WHERE profile_id = u.id) as profile_views_count,
                 EXISTS(SELECT 1 FROM subscriptions WHERE author_id = u.id AND subscriber_id = $1) as is_subscribed
             FROM users u
-            WHERE u.username = $2
+            WHERE LOWER(u.username) = LOWER($2)
             LIMIT 1
         `;
 

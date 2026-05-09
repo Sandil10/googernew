@@ -46,3 +46,8 @@
 [2026-05-05T05:24:50.162Z] PayOrder - User: 5, Body: {"amount":100,"orderId":"8690124140","note":"Ad Promote - 8690124140 - Video"}
 [2026-05-05T05:37:12.926Z] PayOrder - User: 5, Body: {"amount":100,"orderId":"9432695387","note":"Ad Promote - 9432695387 - Video"}
 [2026-05-05T05:55:59.923Z] PayOrder - User: 5, Body: {"amount":100,"orderId":"0558625440","note":"Ad Promote - 0558625440 - Video"}
+[2026-05-07T14:58:43.637Z] PayOrder - User: 4, Body: {"amount":800,"orderId":"5923623601","note":"Ad Promote - 5923623601 - Photo"}
+[2026-05-07T15:03:21.403Z] PayOrder - User: 4, Body: {"amount":1000,"orderId":"6198006300","note":"Ad Promote - 6198006300 - Photo"}
+[2026-05-07T15:14:29.289Z] PayOrder - User: 4, Body: {"amount":1200,"orderId":"6865898320","note":"Ad Promote - 6865898320 - Photo"}
+[2026-05-07T15:21:47.321Z] PayOrder - User: 4, Body: {"amount":100,"orderId":"7303921956","note":"Ad Promote - 7303921956 - Photo"}
+[2026-05-07T15:32:08.238Z] PayOrder - User: 4, Body: {"amount":1600,"orderId":"7924815457","note":"Ad Promote - 7924815457 - Photo"}

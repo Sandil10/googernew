@@ -126,8 +126,12 @@ export const useAdStore = create<AdStore>((set, get) => ({
                     incoming.like_count = incoming.likes_count ?? current.likes_count;
                     incoming.likeCount = incoming.likes_count ?? current.likes_count;
                 }
-                if (ad.ad_coin_collected !== undefined) incoming.ad_coin_collected = !!ad.ad_coin_collected;
-                if (ad.ad_like_locked !== undefined) incoming.ad_like_locked = !!ad.ad_like_locked;
+                // Never overwrite a collected/locked state with false — the store is the
+                // source of truth once a coin is collected, even if stale API data says false
+                // (e.g. home feed fetched without auth returns ad_coin_collected = null).
+                if (ad.ad_coin_collected !== undefined && !current.ad_coin_collected) incoming.ad_coin_collected = !!ad.ad_coin_collected;
+                if (ad.ad_like_locked !== undefined && !current.ad_like_locked) incoming.ad_like_locked = !!ad.ad_like_locked;
+                if (!current.like_pending && (incoming.ad_coin_collected || current.ad_coin_collected)) incoming.user_liked = true;
                 const nextViewsCount = numberOrUndefined(ad.views_count ?? ad.viewCount);
                 if (nextViewsCount !== current.views_count) incoming.views_count = nextViewsCount;
                 if (incoming.views_count !== undefined) incoming.viewCount = incoming.views_count;
@@ -162,14 +166,23 @@ export const useAdStore = create<AdStore>((set, get) => ({
                 ? null
                 : String(viewer?.id ?? viewer?.user_id ?? viewer);
 
-        set((state) => (
-            state.viewerKey === nextViewerKey
-                ? state
-                : {
-                    viewerKey: nextViewerKey,
-                    adStates: state.adStatesByViewer[nextViewerKey || "__guest__"] || {},
-                }
-        ));
+        set((state) => {
+            if (state.viewerKey === nextViewerKey) return state;
+            // Merge any guest-session state into the viewer partition so that
+            // actions taken before setViewer was called (e.g. coin collected on
+            // home feed before shop page sets viewer) are not silently lost.
+            const guestStates = state.adStatesByViewer["__guest__"] || {};
+            const viewerStates = state.adStatesByViewer[nextViewerKey || "__guest__"] || {};
+            const merged = { ...guestStates, ...viewerStates };
+            return {
+                viewerKey: nextViewerKey,
+                adStates: merged,
+                adStatesByViewer: {
+                    ...state.adStatesByViewer,
+                    [nextViewerKey || "__guest__"]: merged,
+                },
+            };
+        });
     },
 
     setViewerContext: (viewer) => {

@@ -33,6 +33,7 @@ router.get('/code/:code', marketController.getMarketItemByCode);
 router.post('/:id/like', authenticateToken, marketController.toggleLike);
 router.post('/:id/video-watch-eligible', authenticateToken, marketController.markAdVideoWatchEligible);
 router.post('/:id/collect-coin', authenticateToken, marketController.collectAdLikeCoin);
+router.post('/collect-coin', authenticateToken, marketController.collectAdLikeCoin);
 router.get('/:id/likes', marketController.getLikes);
 router.post('/:id/comments', authenticateToken, marketController.addComment);
 router.get('/:id/comments', marketController.getComments);

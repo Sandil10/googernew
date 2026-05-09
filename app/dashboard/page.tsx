@@ -422,6 +422,7 @@ export default function DashboardPage() {
     const syncAds = useAdStore((state) => state.syncAds);
     const updateAdState = useAdStore((state) => state.updateAdState);
     const adStates = useAdStore((state) => state.adStates);
+    const setViewerContext = useAdStore((state) => state.setViewerContext);
     const [isLoadingFeed, setIsLoadingFeed] = useState(true);
     const [, setTick] = useState(0);
     const [openMenuAdId, setOpenMenuAdId] = useState<string | number | null>(null);
@@ -566,7 +567,11 @@ export default function DashboardPage() {
     useEffect(() => {
         let mounted = true;
         const getPublicActiveAds = async () => {
-            const response = await fetch("/api/ads/active-public", { cache: "no-store" });
+            const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
+            const response = await fetch("/api/ads/active-public", {
+                cache: "no-store",
+                headers: token ? { Authorization: `Bearer ${token}` } : {},
+            });
             const data = await response.json();
             if (!response.ok) throw new Error(data?.message || "Failed to fetch active ads");
             return (Array.isArray(data?.ads) ? data.ads : []).map(mapPublicActiveAdToHomeAd).filter(isHomeSponsoredAd);
@@ -639,11 +644,13 @@ export default function DashboardPage() {
         if (typeof window === "undefined") return;
         try {
             const storedUser = JSON.parse(window.localStorage.getItem("user") || "{}");
-            setCurrentUser(storedUser?.id ? storedUser : null);
+            const user = storedUser?.id ? storedUser : null;
+            setCurrentUser(user);
+            setViewerContext(user);
         } catch {
             setCurrentUser(null);
         }
-    }, []);
+    }, [setViewerContext]);
 
     useEffect(() => {
         const handleProfileUpdated = (event: Event) => {
@@ -911,7 +918,16 @@ export default function DashboardPage() {
         const liveAd = resolveHomeLiveAd(itemOrId);
         if (!liveAd?.id) return;
 
-        await adActions.like(liveAd);
+        // Block unlike if coin was already collected — guards in the card UI may miss
+        // this when the Zustand subscriber hasn't re-rendered yet (stale reactive value).
+        if (liveAd.ad_like_locked || liveAd.ad_coin_collected) return;
+
+        try {
+            await adActions.like(liveAd);
+        } catch (error: any) {
+            if (error?.locked) return; // backend confirmed lock — silently ignore
+            throw error;
+        }
     };
 
     const getProductPromoteShareItem = (item: any) => {
@@ -1030,7 +1046,15 @@ export default function DashboardPage() {
                 message: error?.message || "Could not collect the ad coin.",
             });
         },
-        onNeedCoinConfirmation: (item) => setPendingAdCoinAd(item.raw || item),
+        onNeedCoinConfirmation: (item) => {
+            const warningKey = `googer-ad-coin-warning-${currentUser?.id}`;
+            const alreadySeen = typeof window !== "undefined" && localStorage.getItem(warningKey) === "1";
+            if (alreadySeen) {
+                collectAdCoin(item.raw || item);
+            } else {
+                setPendingAdCoinAd(item.raw || item);
+            }
+        },
         onNotify: setNotification,
         onSubscribe: (ad) => {
             if (ad.userId) router.push(`/dashboard/profile?id=${ad.userId}`);
@@ -1630,7 +1654,12 @@ export default function DashboardPage() {
                                 </button>
                                 <button
                                     type="button"
-                                    onClick={() => collectAdCoin(pendingAdCoinAd)}
+                                    onClick={() => {
+                                        if (typeof window !== "undefined") {
+                                            localStorage.setItem(`googer-ad-coin-warning-${currentUser?.id}`, "1");
+                                        }
+                                        collectAdCoin(pendingAdCoinAd);
+                                    }}
                                     className="rounded-full bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-black transition hover:bg-slate-200 active:scale-95"
                                 >
                                     Collect
