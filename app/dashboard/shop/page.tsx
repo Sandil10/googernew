@@ -10,6 +10,7 @@ import { marketService } from "@/services/marketService";
 import { authService } from "@/services/authService";
 import { orderService } from "@/services/orderService";
 import { useCart } from "@/app/context/CartContext";
+import { openLoginRequired } from "@/app/lib/loginRequired";
 import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
 import SubscribeButton from "@/app/components/SubscribeButton";
@@ -1063,7 +1064,7 @@ function interleaveShopProductsWithAds(
   shuffleSeed: string,
   productRatio = 6,
 ) {
-  if (!ads.length || products.length < productRatio) return products;
+  if (!ads.length) return products;
 
   const uniqueAds = Array.from(
     ads
@@ -1078,6 +1079,17 @@ function interleaveShopProductsWithAds(
   if (!uniqueAds.length) return products;
 
   const rotatedAds = getShuffledShopAdCycle(uniqueAds, storageKey, shuffleSeed);
+
+  if (!products.length) {
+    const firstAd = rotatedAds[0];
+    return firstAd ? [firstAd] : products;
+  }
+
+  if (products.length < productRatio) {
+    const firstAd = rotatedAds[0];
+    return firstAd ? [...products, firstAd] : products;
+  }
+
   const shownAdIds: Array<string | number> = [];
   const output: any[] = [];
   let adIndex = 0;
@@ -1100,6 +1112,13 @@ function interleaveShopProductsWithAds(
 
 function insertProfilePromoteCarouselRows(items: any[], profilePromoteAds: any[]) {
   if (!profilePromoteAds.length) return items;
+  if (!items.length) {
+    return [{
+      type: "profilePromoteCarousel",
+      id: "shop-profile-promote-carousel-1",
+      ads: profilePromoteAds,
+    }];
+  }
 
   const output: any[] = [];
   let gridSlotsSinceCarousel = 0;
@@ -1408,9 +1427,13 @@ export default function ShopPage() {
         ))
           .filter((ad) => !!ad?.is_sponsored);
 
+        const dedupedHydratedAds = Array.from(
+          new Map(hydratedAds.map((ad) => [String(ad?.adId || ad?.ad_id || ad?.id || Math.random()), ad])).values(),
+        );
+
         if (cancelled) return;
-        setMarketAds(hydratedAds);
-        if (hydratedAds.length > 0) syncAds(hydratedAds);
+        setMarketAds(dedupedHydratedAds);
+        if (dedupedHydratedAds.length > 0) syncAds(dedupedHydratedAds);
       } catch (error) {
         console.error("Failed to load active ads for shop feed:", error);
       }
@@ -1697,7 +1720,7 @@ export default function ShopPage() {
 
   const openOrderChat = (items: any[], options?: { item?: any }) => {
     if (!currentUser) {
-      setNotification({ type: "error", title: "Login Required", message: "Please login to open chat." });
+      openLoginRequired({ message: "Please log in to open chat." });
       return;
     }
 
@@ -1886,7 +1909,10 @@ export default function ShopPage() {
 
   const handleAddComment = async (parentId?: number) => {
     if (!selectedProduct || !newComment.trim()) return;
-    if (!currentUser) return setNotification({ type: 'error', title: 'Login Required', message: 'Please login to comment' });
+    if (!currentUser) {
+      openLoginRequired({ message: "Please log in to comment on products or ads." });
+      return;
+    }
     try {
       const comment = await marketService.addComment(
         selectedProduct.id,
@@ -2032,6 +2058,10 @@ export default function ShopPage() {
     canShowCollectCoin: canShowCollectCoinButton,
     // Removed local sync callbacks - useAdActions now updates useAdStore globally
     onShare: (ad) => {
+      if (!authService.isAuthenticated() || !currentUser?.id) {
+        openLoginRequired({ message: "Please log in to share products or ads." });
+        return;
+      }
       setShareProduct(ad.raw || ad);
       setShowShareModal(true);
     },
@@ -2055,7 +2085,13 @@ export default function ShopPage() {
         setPendingAdCoinProduct(ad.raw || ad);
       }
     },
-    onNotify: setNotification,
+    onNotify: (notification) => {
+      if (notification.title === "Login Required" || notification.title === "Session Expired") {
+        openLoginRequired({ message: notification.message });
+        return;
+      }
+      setNotification(notification);
+    },
   });
 
   const confirmAdVideoWatchEligible = async (product: any, watchedSeconds = 5) => {
@@ -2131,6 +2167,10 @@ export default function ShopPage() {
   };
 
   const handleToggleLike = async (item: any) => {
+    if (!authService.isAuthenticated() || !currentUser?.id) {
+      openLoginRequired({ message: "Please log in to like products or ads." });
+      return;
+    }
     try {
       const likeTarget = resolveLikeTarget(item);
       const id = typeof likeTarget === 'object' ? likeTarget.id : likeTarget;
@@ -2242,6 +2282,10 @@ export default function ShopPage() {
 
   const handleShareClick = (product: any, view: "share" | "resell" = "share") => {
     if (!product) return;
+    if (!authService.isAuthenticated() || !currentUser?.id) {
+      openLoginRequired({ message: "Please log in to share products or ads." });
+      return;
+    }
 
     if (view === "resell") {
       let isResellingEnabled = false;
@@ -2287,6 +2331,9 @@ export default function ShopPage() {
   };
 
   const handleLogView = async (id: number) => {
+    if (!authService.isAuthenticated() || !currentUser?.id) {
+      return;
+    }
     try {
       const result = await marketService.logView(id);
       // Only increment local view count when the backend explicitly confirmed a new unique view
@@ -2569,8 +2616,7 @@ export default function ShopPage() {
         );
         setSubscribedSellerIds(followingIds);
       }
-    } catch (e) {
-      console.error("Not logged in");
+    } catch {
       setCurrentUser(null);
       setViewerContext(null);
     } finally {
@@ -2962,7 +3008,7 @@ export default function ShopPage() {
   ) => {
     try {
       if (!currentUser) {
-        setNotification({ type: 'error', title: 'Login Required', message: 'Please login to buy items' });
+        openLoginRequired({ message: "Please log in to buy items." });
         return;
       }
       const productToAdd = productOverride;
