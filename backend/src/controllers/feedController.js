@@ -1,5 +1,9 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
+const {
+    filterDeliverableAds,
+    loadViewerAdProfile,
+} = require('../utils/adDelivery');
 
 const HOME_AD_RATIO = 4;
 let feedAdEngagementReady = false;
@@ -28,7 +32,10 @@ const ensureFeedAdEngagementSchema = async () => {
     await pool.query(`
         ALTER TABLE ads
         ADD COLUMN IF NOT EXISTS linked_product_id INTEGER,
-        ADD COLUMN IF NOT EXISTS linked_product_share_code VARCHAR(32);
+        ADD COLUMN IF NOT EXISTS linked_product_share_code VARCHAR(32),
+        ADD COLUMN IF NOT EXISTS current_reach INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS max_reach_cap INTEGER,
+        ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
     `);
     feedAdEngagementReady = true;
 };
@@ -439,8 +446,10 @@ exports.getHomeFeed = async (req, res) => {
             pool.query(
                 `SELECT a.ad_id, a.user_id, a.owner_user_id, a.owner_username, a.campaign_type,
                         a.title, a.description, a.media_preview, a.media_gallery, a.media_type,
-                        a.edit_draft, a.impressions, a.likes_count, a.comments_count, a.shares_count,
-                        a.budget, a.created_at,
+                        a.edit_draft, a.gender_target, a.age_min, a.age_max,
+                        a.impressions, a.clicks, a.current_reach, a.max_reach_cap,
+                        a.likes_count, a.comments_count, a.shares_count,
+                        a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.created_at,
                         u.username AS owner_username_joined, u.profile_picture,
                         CASE WHEN $1::int IS NULL THEN FALSE
                              ELSE EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1)
@@ -451,6 +460,7 @@ exports.getHomeFeed = async (req, res) => {
                  FROM ads a
                  LEFT JOIN users u ON u.id = a.user_id
                  WHERE a.status = 'Active'
+                   AND (a.max_reach_cap IS NULL OR COALESCE(a.current_reach, 0) < a.max_reach_cap)
                  ORDER BY a.created_at DESC`,
                 [userId]
             ),
@@ -458,7 +468,9 @@ exports.getHomeFeed = async (req, res) => {
 
         const postRows = postResult.rows || [];
         const posts = postRows.slice(0, limit).map(normalizePost);
-        const ads = await hydrateProductPromoteAds((adResult.rows || []).map(mapActiveAdToHomeAd));
+        const viewerProfile = await loadViewerAdProfile(pool, userId, req);
+        const matchedAdRows = filterDeliverableAds(adResult.rows || [], viewerProfile);
+        const ads = await hydrateProductPromoteAds(matchedAdRows.map(mapActiveAdToHomeAd));
 
         res.status(200).json({
             success: true,

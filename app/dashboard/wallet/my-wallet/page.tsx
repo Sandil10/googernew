@@ -13,8 +13,15 @@ import SecurityVerificationModal from '@/app/components/SecurityVerificationModa
 import ReceiptModal from '@/app/components/ReceiptModal';
 import CancelTransactionModal from '@/app/components/CancelTransactionModal';
 import { formatGoogerId } from '@/app/lib/userDisplay';
-import { generateTransactionReceipt } from '@/utils/pdfGenerator';
 import { getCurrentUserIdentityKey, readAdWalletAdjustments } from '@/utils/adWallet';
+import {
+    formatWalletTransactionDate,
+    formatWalletTransactionTime,
+    getAdPaymentMeta,
+    getAdTransactionSummary,
+    isAdCampaignPayment,
+    isPromoAdRecord,
+} from '@/app/lib/walletTransactions';
 
 const MANUAL_PAYMENT_INTENT_STORAGE_KEY = 'googer-manual-payment-intent';
 const MANUAL_PAYMENT_LOCK_STORAGE_KEY = 'googer-manual-payment-lock';
@@ -59,19 +66,8 @@ const isGoogerPaymentOrderHold = (tx: any) => {
         && !/manual payment/i.test(String(tx?.note || ''));
 };
 
-const isAdCampaignPayment = (tx: any) => {
-    return /ad campaign budget|ad promote/i.test(String(tx?.note || ''));
-};
-
 const AD_COIN_TYPES = new Set(['ad_coin', 'ad_coin_ad_credit', 'ad_coin_commission']);
 const isAdCoinRewardTx = (tx: any) => AD_COIN_TYPES.has(String(tx?.type || '').toLowerCase());
-
-const getAdPaymentMeta = (tx: any) => {
-    const note = String(tx?.note || '');
-    const adId = note.match(/\b\d{10,12}\b/)?.[0]?.slice(-10) || '';
-    const mediaType = /video/i.test(note) ? 'Video' : 'Photo';
-    return { adId, mediaType };
-};
 
 const buildDisplayTransactions = (transactions: any[], currentUser: any) => {
     const currentUserKey = getCurrentUserIdentityKey();
@@ -81,6 +77,12 @@ const buildDisplayTransactions = (transactions: any[], currentUser: any) => {
 
     transactions.forEach((tx) => {
         if (!isAdCampaignPayment(tx)) {
+            regularTransactions.push(tx);
+            return;
+        }
+
+        // Promo ad records ($0, type=promo_ad) shown standalone, not grouped
+        if (isPromoAdRecord(tx)) {
             regularTransactions.push(tx);
             return;
         }
@@ -124,7 +126,7 @@ const buildDisplayTransactions = (transactions: any[], currentUser: any) => {
             sender_id: currentUser?.id,
             created_at: createdAt,
             amount: currentHoldAmount.toFixed(2),
-            note: `Photo & Video Promotion${adId ? ` - Ad ID: ${adId}` : ''} - Deducted R ${Number(tx.adChargeTotal || 0).toFixed(2)}${refundTotal > 0 ? ` - Refunded R ${refundTotal.toFixed(2)}` : ''} - Hold R ${currentHoldAmount.toFixed(2)}`,
+            note: `Ad Hold Summary - ${tx.adMediaType || 'Photo'} Promotion${adId ? ` - Ad ID: ${adId}` : ''} - Status: Hold - Hold Amount: R ${currentHoldAmount.toFixed(2)} - Deducted Amount: R ${Number(tx.adChargeTotal || 0).toFixed(2)}${refundTotal > 0 ? ` - Refunded R ${refundTotal.toFixed(2)}` : ''}`,
             status: 'hold',
             type: 'ad_hold_summary',
         };
@@ -778,6 +780,9 @@ export default function MyWallet() {
                                 transactions.filter((tx) => !isAdCoinRewardTx(tx)).map((tx) => {
                                     const isSent = tx.sender_id === user?.id;
                                     const adCampaignPayment = isAdCampaignPayment(tx);
+                                    const adMeta = adCampaignPayment ? getAdPaymentMeta(tx) : null;
+                                    const adSummary = adCampaignPayment ? getAdTransactionSummary(tx) : null;
+                                    const isPromoFree = Boolean(adMeta?.isPromo);
                                     const otherUserName = isSent
                                         ? (tx.receiver_full_name || tx.receiver_username)
                                         : (tx.sender_full_name || tx.sender_username);
@@ -791,7 +796,7 @@ export default function MyWallet() {
                                         && (!manualOrderHold || Boolean(tx.linked_order_can_cancel));
                                     const displayedStatus = manualOrderHold && tx.linked_order_status
                                         ? String(tx.linked_order_status)
-                                        : String(adCampaignPayment ? 'hold' : (tx.status || ''));
+                                        : String(isPromoFree ? 'free' : adCampaignPayment ? 'hold' : (tx.status || ''));
 
                                     return (
                                         <div key={tx.id} className="bg-gray-800/20 border border-gray-800 rounded-xl p-4 hover:bg-gray-800/40 transition-all group">
@@ -802,28 +807,39 @@ export default function MyWallet() {
                                                 <div className="flex-1 min-w-0">
                                                     <div className="flex justify-between items-center mb-0.5">
                                                         <h5 className="font-bold text-white text-sm">
-                                                            {adCampaignPayment ? 'Photo & Video Promotion' : tx.type === 'request' ? (isSent ? 'Requested From: ' : 'Requested By: ') : (isSent ? 'Sent To: ' : 'Received From: ')}
+                                                            {adCampaignPayment ? `${adMeta?.mediaType || 'Photo'} Promotion${isPromoFree ? ' (Free)' : ''}` : tx.type === 'request' ? (isSent ? 'Requested From: ' : 'Requested By: ') : (isSent ? 'Sent To: ' : 'Received From: ')}
                                                             {!adCampaignPayment && <span className="text-white/65">{otherUserName || 'Unknown User'}{otherUserReadableId ? ` (ID ${otherUserReadableId})` : ''}</span>}
                                                         </h5>
-                                                        <span className={`text-sm font-bold tracking-tight ${isSent ? 'text-red-400' : 'text-green-400'}`}>
-                                                            {isSent ? (tx.type === 'request' ? '' : '-') : '+'} R {parseFloat(tx.amount).toFixed(2)}
+                                                        <span className={`text-sm font-bold tracking-tight ${isPromoFree ? 'text-emerald-400' : isSent ? 'text-red-400' : 'text-green-400'}`}>
+                                                            {isPromoFree ? 'Free' : `${isSent ? (tx.type === 'request' ? '' : '-') : '+'} R ${parseFloat(tx.amount).toFixed(2)}`}
                                                         </span>
                                                     </div>
                                                     <div className="flex justify-between items-center">
                                                         <p className="text-[10px] text-gray-400 font-semibold mb-1">
-                                                            {new Date(tx.created_at).toLocaleDateString('en-GB')} • {new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                            {formatWalletTransactionDate(tx.created_at)} | {formatWalletTransactionTime(tx.created_at)}
                                                         </p>
-                                                        <span className={`text-[9px] uppercase font-black px-2 py-1 rounded-md bg-gray-900/50 ${adCampaignPayment ? 'text-rose-300' : tx.type === 'transfer' ? 'text-white/65' : tx.type === 'request' ? 'text-white/65' : 'text-amber-400'}`}>
-                                                            {adCampaignPayment ? 'Promotion' : tx.type === 'transfer' ? 'Transferred' : tx.type === 'request' ? 'Requested' : tx.type}
+                                                        <span className={`text-[9px] uppercase font-black px-2 py-1 rounded-md bg-gray-900/50 ${isPromoFree ? 'text-emerald-400' : adCampaignPayment ? 'text-rose-300' : tx.type === 'transfer' ? 'text-white/65' : tx.type === 'request' ? 'text-white/65' : 'text-amber-400'}`}>
+                                                            {isPromoFree ? 'Promo' : adCampaignPayment ? 'Promotion' : tx.type === 'transfer' ? 'Transferred' : tx.type === 'request' ? 'Requested' : tx.type}
                                                         </span>
                                                     </div>
                                                     <div className="flex justify-between items-center">
-                                                        <p className="text-[10px] text-gray-500 font-medium italic">
-                                                            {tx.note || (isSent ? (tx.type === 'request' ? 'Coin Request Sent' : 'Direct coin transfer') : 'Coins received')}
-                                                            {tx.commission_percentage > 0 && ` (Incl. ${tx.commission_percentage}% discount)`}
-                                                        </p>
+                                                        <div className="min-w-0 pr-2">
+                                                            {adCampaignPayment && adSummary ? (
+                                                                <div className="space-y-0.5 text-[10px] text-gray-500 font-medium italic">
+                                                                    <p className="truncate">{adSummary.title}</p>
+                                                                    <p>Status: {adSummary.statusLabel}</p>
+                                                                    <p>Hold Amount: {adSummary.holdAmountLabel}</p>
+                                                                    <p>Deducted Amount: {adSummary.deductedAmountLabel}</p>
+                                                                </div>
+                                                            ) : (
+                                                                <p className="text-[10px] text-gray-500 font-medium italic">
+                                                                    {tx.note || (isSent ? (tx.type === 'request' ? 'Coin Request Sent' : 'Direct coin transfer') : 'Coins received')}
+                                                                    {tx.commission_percentage > 0 && ` (Incl. ${tx.commission_percentage}% discount)`}
+                                                                </p>
+                                                            )}
+                                                        </div>
                                                         <div className="flex items-center gap-2">
-                                                            <span className={`text-[9px] uppercase font-bold ${displayedStatus === 'completed' || displayedStatus === 'received' ? 'text-green-500' : 'text-amber-500'}`}>
+                                                            <span className={`text-[9px] uppercase font-bold ${displayedStatus === 'completed' || displayedStatus === 'received' || displayedStatus === 'free' ? 'text-green-500' : 'text-amber-500'}`}>
                                                                 {displayedStatus}
                                                             </span>
                                                             {isCancellable && (
@@ -1002,7 +1018,7 @@ export default function MyWallet() {
                                                 </div>
                                                 <div className="flex justify-between items-center">
                                                     <p className="text-[10px] text-gray-400 font-semibold">
-                                                        {new Date(tx.created_at).toLocaleDateString('en-GB')} • {new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                        {formatWalletTransactionDate(tx.created_at)} | {formatWalletTransactionTime(tx.created_at)}
                                                     </p>
                                                     <span className="text-[9px] uppercase font-black px-2 py-1 rounded-md bg-amber-500/10 text-amber-400">
                                                         Collected
@@ -1058,11 +1074,16 @@ export default function MyWallet() {
                                 transactions.filter((tx) => !isAdCoinRewardTx(tx)).slice(0, 3).map((tx) => {
                                     const isSent = tx.sender_id === user?.id;
                                     const adCampaignPayment = isAdCampaignPayment(tx);
-                                    const counterpartyLine = adCampaignPayment ? 'Photo & Video Promotion' : formatWalletCounterparty(tx, user?.id);
-                                    const typeLabel = adCampaignPayment ? 'Promotion Hold' : formatWalletTypeLabel(tx);
-                                    const compactDescription = tx.note
-                                        ? `${typeLabel} - ${tx.note}`
-                                        : `${typeLabel}${tx.commission_percentage > 0 ? ` (${tx.commission_percentage}%)` : ''}${tx.commission_percentage > 0 ? ` (Incl. ${tx.commission_percentage}% discount)` : ''}`;
+                                    const adMeta = adCampaignPayment ? getAdPaymentMeta(tx) : null;
+                                    const adSummary = adCampaignPayment ? getAdTransactionSummary(tx) : null;
+                                    const isPromoFree = Boolean(adMeta?.isPromo);
+                                    const counterpartyLine = adCampaignPayment ? `${adMeta?.mediaType || 'Photo'} Promotion${isPromoFree ? ' (Free)' : ''}` : formatWalletCounterparty(tx, user?.id);
+                                    const typeLabel = adCampaignPayment ? (isPromoFree ? 'Promotion Free' : 'Promotion Hold') : formatWalletTypeLabel(tx);
+                                    const compactDescription = adCampaignPayment && adSummary
+                                        ? `${adSummary.title} | Status: ${adSummary.statusLabel} | Hold Amount: ${adSummary.holdAmountLabel} | Deducted Amount: ${adSummary.deductedAmountLabel}`
+                                        : tx.note
+                                            ? `${typeLabel} - ${tx.note}`
+                                            : `${typeLabel}${tx.commission_percentage > 0 ? ` (${tx.commission_percentage}%)` : ''}${tx.commission_percentage > 0 ? ` (Incl. ${tx.commission_percentage}% discount)` : ''}`;
                                     return (
                                         <div key={tx.id} className="p-3 bg-[#030303] rounded-xl border border-gray-800/50 hover:border-gray-700 transition-all">
                                             <div className="flex items-start gap-3">
@@ -1074,7 +1095,7 @@ export default function MyWallet() {
                                                         {counterpartyLine}
                                                     </p>
                                                     <p className="text-[8px] text-gray-400 font-medium mt-1">
-                                                        {new Date(tx.created_at).toLocaleDateString('en-GB')} • {new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                        {formatWalletTransactionDate(tx.created_at)} | {formatWalletTransactionTime(tx.created_at)}
                                                     </p>
                                                     <p className="text-[9px] text-gray-500 font-medium italic mt-1 break-words">
                                                         {compactDescription}

@@ -109,11 +109,20 @@ export const walletService = {
     },
 
     payOrder: async (amount: number, options?: { orderId?: string | number; note?: string }) => {
-        const response = await fetch(`${API_URL}/wallet/pay-order`, {
+        const body = JSON.stringify({ amount, ...options });
+        let response = await fetch(`${API_URL}/wallet/pay-order`, {
             method: 'POST',
             headers: getHeaders(),
-            body: JSON.stringify({ amount, ...options })
+            body,
         });
+        if (response.status === 429) {
+            await new Promise((r) => setTimeout(r, 1500));
+            response = await fetch(`${API_URL}/wallet/pay-order`, {
+                method: 'POST',
+                headers: getHeaders(),
+                body,
+            });
+        }
         const result = await safeJson(response);
         if (!response.ok) {
             let fallbackMessage = '';
@@ -122,6 +131,39 @@ export const walletService = {
                 fallbackMessage = text.trim();
             } catch { }
             throw new Error(result?.message || fallbackMessage || `Payment failed (HTTP ${response.status})`);
+        }
+        return result;
+    },
+
+    recordPromoAd: async (adId: string, campaignType?: string, note?: string) => {
+        const response = await fetch(`${API_URL}/wallet/record-promo-ad`, {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify({ adId, campaignType, note }),
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(result?.message || 'Failed to record promo ad');
+        return result as { success: boolean; transferId: number };
+    },
+
+    payProfilePromote: async (amount: number, options?: { orderId?: string | number; note?: string }) => {
+        const body = JSON.stringify({ amount, ...options });
+        let response = await fetch(`${API_URL}/wallet/pay-profile-promote`, {
+            method: 'POST',
+            headers: getHeaders(),
+            body,
+        });
+        if (response.status === 429) {
+            await new Promise((r) => setTimeout(r, 1500));
+            response = await fetch(`${API_URL}/wallet/pay-profile-promote`, {
+                method: 'POST',
+                headers: getHeaders(),
+                body,
+            });
+        }
+        const result = await safeJson(response);
+        if (!response.ok) {
+            throw new Error(result?.message || `Payment failed (HTTP ${response.status})`);
         }
         return result;
     }

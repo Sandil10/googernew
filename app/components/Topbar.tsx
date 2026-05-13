@@ -147,7 +147,7 @@ export default function Topbar() {
         };
 
         refreshChatNotification();
-        const intervalId = window.setInterval(refreshChatNotification, 2000);
+        const intervalId = window.setInterval(refreshChatNotification, 15000);
 
         return () => {
             window.clearInterval(intervalId);

@@ -13,6 +13,8 @@ router.post('/respond', walletController.respondToRequest);
 router.post('/cancel', walletController.cancelTransaction);
 router.post('/transfer', walletController.directTransfer);
 router.post('/pay-order', walletController.payOrder);
+router.post('/pay-profile-promote', walletController.payProfilePromote);
+router.post('/record-promo-ad', walletController.recordPromoAd);
 router.get('/history', walletController.getTransactionHistory);
 
 module.exports = router;

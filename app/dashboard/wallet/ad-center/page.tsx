@@ -26,10 +26,17 @@ type AdHistoryRow = {
     ageMin?: number;
     ageMax?: number;
     reach?: number;
+    currentReach?: number;
+    estimatedReachMin?: number | null;
+    estimatedReachMax?: number | null;
+    maxReachCap?: number | null;
     impressions?: number;
     clicks?: number;
     spend?: number;
     remainingBudget?: number;
+    promoCode?: string | null;
+    walletTransferId?: number | null;
+    startedAt?: string | null;
     campaignPath?: string;
     editDraft?: Record<string, unknown>;
 };
@@ -78,10 +85,17 @@ function normalizeApiAds(input: any[]) {
             ageMin: typeof data.ageMin === "number" ? data.ageMin : Number.isFinite(Number(data.ageMin)) ? Number(data.ageMin) : undefined,
             ageMax: typeof data.ageMax === "number" ? data.ageMax : Number.isFinite(Number(data.ageMax)) ? Number(data.ageMax) : undefined,
             reach: typeof data.reach === "number" ? data.reach : Number(data.reach || 0),
+            currentReach: typeof data.currentReach === "number" ? data.currentReach : Number(data.currentReach ?? data.current_reach ?? data.reach ?? 0),
+            estimatedReachMin: Number.isFinite(Number(data.estimatedReachMin ?? data.estimated_reach_min)) ? Number(data.estimatedReachMin ?? data.estimated_reach_min) : null,
+            estimatedReachMax: Number.isFinite(Number(data.estimatedReachMax ?? data.estimated_reach_max)) ? Number(data.estimatedReachMax ?? data.estimated_reach_max) : null,
+            maxReachCap: Number.isFinite(Number(data.maxReachCap ?? data.max_reach_cap)) ? Number(data.maxReachCap ?? data.max_reach_cap) : null,
             impressions: typeof data.impressions === "number" ? data.impressions : Number(data.impressions || 0),
             clicks: typeof data.clicks === "number" ? data.clicks : Number(data.clicks || 0),
             spend: typeof data.spend === "number" ? data.spend : Number(data.spend || 0),
             remainingBudget: typeof data.remainingBudget === "number" ? data.remainingBudget : Number(data.remainingBudget || 0),
+            promoCode: typeof data.promoCode === "string" ? data.promoCode : (typeof data.promo_code === "string" ? data.promo_code : null),
+            walletTransferId: data.walletTransferId ?? data.wallet_transfer_id ?? null,
+            startedAt: typeof data.startedAt === "string" ? data.startedAt : (typeof data.started_at === "string" ? data.started_at : null),
             campaignPath: typeof data.campaignPath === "string" ? data.campaignPath : "/dashboard/ad-campaign/photo-video",
             editDraft: data.editDraft && typeof data.editDraft === "object" ? data.editDraft : undefined,
         }))
@@ -117,6 +131,25 @@ function formatCurrency(value?: number) {
     return `R ${Number(value || 0).toLocaleString()}`;
 }
 
+function isPromoFreeAd(ad: AdHistoryRow) {
+    return !ad.walletTransferId;
+}
+
+function isProfilePromoteAd(ad: AdHistoryRow) {
+    return ad.campaignType === "Profile Promote";
+}
+
+function getDurationLabel(ad: AdHistoryRow) {
+    const total = ad.durationDays || 0;
+    if (ad.status === "Active" && ad.startedAt) {
+        const elapsedMs = Date.now() - new Date(ad.startedAt).getTime();
+        const elapsedDays = Math.floor(elapsedMs / (1000 * 60 * 60 * 24));
+        const remaining = Math.max(0, total - elapsedDays);
+        return `${remaining} of ${total} ${total === 1 ? "day" : "days"} left`;
+    }
+    return `${total} ${total === 1 ? "day" : "days"}`;
+}
+
 function formatReachCount(value: number) {
     return Number(value || 0).toLocaleString();
 }
@@ -139,10 +172,15 @@ function getTitle(ad: AdHistoryRow) {
 }
 
 function getEstimatedReachLabel(ad: AdHistoryRow) {
+    const minReach = Number(ad.estimatedReachMin || 0);
+    const maxReach = Number(ad.estimatedReachMax || ad.maxReachCap || 0);
+    if (minReach > 0 && maxReach > 0) return `${formatReachCount(minReach)} - ${formatReachCount(maxReach)}`;
+    if (maxReach > 0) return formatReachCount(maxReach);
+
     const budget = Number(ad.budget || 0);
-    const minReach = Math.round((budget / 100) * 300);
-    const maxReach = Math.round((budget / 100) * 500);
-    return `${formatReachCount(minReach)} - ${formatReachCount(maxReach)}`;
+    const fallbackMinReach = Math.round((budget / 100) * 300);
+    const fallbackMaxReach = Math.round((budget / 100) * 500);
+    return `${formatReachCount(fallbackMinReach)} - ${formatReachCount(fallbackMaxReach)}`;
 }
 
 function getLocationLabel(ad: AdHistoryRow) {
@@ -185,6 +223,9 @@ export default function AdCenterPage() {
 
         refreshAds();
         syncFilter();
+        const intervalId = window.setInterval(() => {
+            if (document.visibilityState !== "hidden") void refreshAds();
+        }, 10000);
         window.addEventListener("storage", refreshAds);
         window.addEventListener("googer-ad-history-updated", refreshAds);
         window.addEventListener("focus", refreshAds);
@@ -197,6 +238,7 @@ export default function AdCenterPage() {
             window.removeEventListener("focus", refreshAds);
             document.removeEventListener("visibilitychange", refreshAds);
             window.removeEventListener("popstate", syncFilter);
+            window.clearInterval(intervalId);
         };
     }, []);
 
@@ -232,6 +274,7 @@ export default function AdCenterPage() {
             await adsService.updateAd(adId, { status: "Cancelled" });
             const nextAds = await adsService.getMyAds();
             setAds(normalizeApiAds(nextAds));
+            window.dispatchEvent(new Event("googer-wallet-updated"));
             window.dispatchEvent(new Event("googer-ad-history-updated"));
         } catch {
             return;
@@ -336,7 +379,7 @@ export default function AdCenterPage() {
                                     <div className="flex items-start gap-3">
                                         <div className="text-right">
                                             <p className="text-[8px] font-black uppercase tracking-[0.12em] text-white/28">Total Budget</p>
-                                            <p className="mt-1 text-[1.35rem] font-black tracking-tight text-white">{formatCurrency(ad.budget)}</p>
+                                            <p className="mt-1 text-[1.35rem] font-black tracking-tight text-white">{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.budget)}</p>
                                         </div>
                                         <button
                                             type="button"
@@ -405,15 +448,23 @@ export default function AdCenterPage() {
                                                     Pause
                                                 </button>
                                             ) : null}
-                                            <button
-                                                type="button"
-                                                onClick={() => setCancelTarget(ad)}
-                                                className="inline-flex min-w-[76px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-[8px] font-black uppercase tracking-[0.08em] text-white/70 transition hover:bg-white/[0.09] hover:text-white"
-                                            >
-                                                Cancel
-                                            </button>
+                                            {ad.status === "Under Review" && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setCancelTarget(ad)}
+                                                    className="inline-flex min-w-[76px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-[8px] font-black uppercase tracking-[0.08em] text-white/70 transition hover:bg-white/[0.09] hover:text-white"
+                                                >
+                                                    Cancel
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
+
+                                    {isProfilePromoteAd(ad) && ad.status === "Active" && (
+                                        <div className="mt-3 rounded-[0.95rem] border border-amber-400/16 bg-amber-400/8 px-3 py-2 text-[9px] font-bold leading-4 text-amber-100/80">
+                                            Users can cancel their promotion at any time while under review, but active promotions cannot be cancelled.
+                                        </div>
+                                    )}
 
                                     <div className="mt-3 grid gap-2 lg:grid-cols-[1.15fr_0.85fr_0.85fr]">
                                         <div className="rounded-[0.95rem] border border-white/8 bg-[#0b0b0b] p-2">
@@ -421,11 +472,11 @@ export default function AdCenterPage() {
                                             <div className="mt-2 grid gap-1 text-[9px] font-black text-white">
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Total Budget</span>
-                                                    <span>Rupieer {Number(ad.budget || 0).toLocaleString()}</span>
+                                                    <span>{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.budget)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Duration</span>
-                                                    <span>{ad.durationDays || 0} {ad.durationDays === 1 ? "day" : "days"}</span>
+                                                    <span>{getDurationLabel(ad)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Age</span>
@@ -447,15 +498,15 @@ export default function AdCenterPage() {
                                             <div className="mt-2 grid gap-1 text-[9px] font-black text-white">
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Reach</span>
-                                                    <span>{ad.reach || 0}</span>
+                                                    <span>{formatReachCount(ad.currentReach ?? ad.reach ?? 0)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Impressions</span>
-                                                    <span>{ad.impressions || 0}</span>
+                                                    <span>{formatReachCount(ad.impressions || 0)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Clicks</span>
-                                                    <span>{ad.clicks || 0}</span>
+                                                    <span>{formatReachCount(ad.clicks || 0)}</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -465,7 +516,7 @@ export default function AdCenterPage() {
                                             <div className="mt-2 grid gap-1 text-[9px] font-black text-white">
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Budget</span>
-                                                    <span>{formatCurrency(ad.budget)}</span>
+                                                    <span>{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.budget)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Spend</span>
@@ -473,7 +524,7 @@ export default function AdCenterPage() {
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Remaining</span>
-                                                    <span>{formatCurrency(ad.remainingBudget)}</span>
+                                                    <span>{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.remainingBudget)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2 border-t border-white/8 pt-1">
                                                     <span className="text-white/55">Status</span>
@@ -574,7 +625,7 @@ export default function AdCenterPage() {
                                             <p className="mt-1 text-[10px] font-bold text-white/45">{cleanAdText(selectedAd.description) || "No description added."}</p>
                                         </div>
                                         <div className="text-right">
-                                            <p className="text-sm font-black text-white sm:text-base">{formatCurrency(selectedAd.budget)}</p>
+                                            <p className="text-sm font-black text-white sm:text-base">{isPromoFreeAd(selectedAd) ? "Free" : formatCurrency(selectedAd.budget)}</p>
                                             <p className="mt-1 text-[9px] font-black text-white/35">+ {formatCurrency(0)} Delivery</p>
                                         </div>
                                     </div>
@@ -587,7 +638,7 @@ export default function AdCenterPage() {
                                     <div className="space-y-2 text-[10px] font-black sm:text-[11px]">
                                         <div className="flex items-center justify-between gap-4 text-white/68">
                                             <span>Total</span>
-                                            <span className="text-white">{formatCurrency(selectedAd.budget)}</span>
+                                            <span className="text-white">{isPromoFreeAd(selectedAd) ? "Free" : formatCurrency(selectedAd.budget)}</span>
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
                                             <span>Spend</span>
@@ -595,12 +646,18 @@ export default function AdCenterPage() {
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
                                             <span>Remaining</span>
-                                            <span className="text-white">{formatCurrency(selectedAd.remainingBudget)}</span>
+                                            <span className="text-white">{isPromoFreeAd(selectedAd) ? "Free" : formatCurrency(selectedAd.remainingBudget)}</span>
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
                                             <span>Duration</span>
-                                            <span className="text-white">{selectedAd.durationDays || 0} {selectedAd.durationDays === 1 ? "day" : "days"}</span>
+                                            <span className="text-white">{getDurationLabel(selectedAd)}</span>
                                         </div>
+                                        {selectedAd.startedAt && (
+                                            <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
+                                                <span>Started</span>
+                                                <span className="text-white">{formatDateTime(selectedAd.startedAt)}</span>
+                                            </div>
+                                        )}
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
                                             <span>Age</span>
                                             <span className="text-white">{getAgeLabel(selectedAd)}</span>
@@ -623,7 +680,7 @@ export default function AdCenterPage() {
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-4">
                                             <span className="text-[0.82rem] uppercase tracking-[0.1em] text-white/35">Grand Total</span>
-                                            <span className="text-[1.1rem] italic font-black text-white sm:text-[1.2rem]">{formatCurrency(selectedAd.budget)}</span>
+                                            <span className="text-[1.1rem] italic font-black text-white sm:text-[1.2rem]">{isPromoFreeAd(selectedAd) ? "Free" : formatCurrency(selectedAd.budget)}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -642,9 +699,11 @@ export default function AdCenterPage() {
                         aria-label="Close cancel confirmation"
                     />
                     <div className="relative z-[131] w-full max-w-[360px] rounded-[1.5rem] border border-white/10 bg-[#121212] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.45)]">
-                        <h3 className="text-[1rem] font-black uppercase tracking-[0.06em] text-white">Cancel Ad?</h3>
+                        <h3 className="text-[1rem] font-black uppercase tracking-[0.06em] text-white">
+                            Cancel Ad?
+                        </h3>
                         <p className="mt-2 text-[10px] font-bold leading-5 text-white/50">
-                            This will change the ad status to cancelled.
+                            This will cancel your ad while it is still under review. Your payment will be automatically refunded.
                         </p>
                         <div className="mt-5 grid grid-cols-2 gap-2">
                             <button

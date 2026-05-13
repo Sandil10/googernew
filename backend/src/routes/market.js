@@ -40,6 +40,7 @@ router.get('/:id/comments', marketController.getComments);
 router.delete('/comments/:commentId', authenticateToken, marketController.deleteComment); // Add this
 router.post('/:id/share', marketController.logShare);
 router.get('/:id/shares', marketController.getShares);
+router.post('/:id/click', marketController.logAdClick);
 router.post('/:id/view', marketController.logView);
 router.get('/:id/views', marketController.getViews);
 

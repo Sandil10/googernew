@@ -24,6 +24,7 @@ import {
 import { NormalizedAd } from "@/app/lib/ads/adTypes";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
+import { marketService } from "@/services/marketService";
 
 export type AdCardHandlers = {
     onOpenSecondView?: (ad: any) => void;
@@ -116,6 +117,10 @@ export function SharedPhotoVideoAdCard({
     ).trim();
     const videoPreviewSrc = rawVideoSource ? normalizeMediaSrc(rawVideoSource) : "";
     const canRenderVideoPreview = secondViewKind === "video" && !!videoPreviewSrc;
+    const trackAdClick = () => {
+        const clickId = ad.id || ad.adId || ad.ad_id || raw.id || raw.adId || raw.ad_id;
+        if (clickId) void marketService.logAdClick(clickId);
+    };
 
     const playOverlay = (secondViewKind === "video" || secondViewKind === "embed") ? (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -132,6 +137,7 @@ export function SharedPhotoVideoAdCard({
         event.stopPropagation();
         const href = ctaHref || activeLink;
         if (!href) return;
+        trackAdClick();
         window.open(href, "_blank", "noopener,noreferrer");
     };
 
@@ -139,6 +145,7 @@ export function SharedPhotoVideoAdCard({
         event.stopPropagation();
         const participantId = String(advertiserId || "").trim();
         if (!participantId) return;
+        trackAdClick();
         if (typeof window !== "undefined") {
             window.location.href = `/dashboard/chats?user=${encodeURIComponent(participantId)}`;
         }
@@ -294,6 +301,7 @@ export function SharedPhotoVideoAdCard({
                 type="button"
                 onClick={(event) => {
                     event.stopPropagation();
+                    trackAdClick();
                     if (onOpenSecondView) onOpenSecondView(ad);
                 }}
                 className="block w-full text-left"
@@ -381,6 +389,7 @@ export function SharedPhotoVideoAdCard({
                                 onClick={(event) => {
                                     event.stopPropagation();
                                     if (!callHref) return;
+                                    trackAdClick();
                                     window.location.href = callHref;
                                 }}
                                 className={`rounded-full px-3 py-1.5 text-[9px] font-bold uppercase tracking-[0.14em] transition md:px-4 md:py-2 md:text-[10px] ${callHref ? "cursor-pointer bg-white text-black hover:bg-slate-200 active:scale-95" : "cursor-not-allowed bg-white/10 text-white/35"}`}

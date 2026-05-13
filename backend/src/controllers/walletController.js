@@ -1,6 +1,7 @@
 const pool = require('../config/database');
 
 const TRANSACTION_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const UTC_NOW_SQL = "(NOW() AT TIME ZONE 'UTC')";
 
 function hashString(value) {
     let hash = 0;
@@ -55,7 +56,65 @@ async function getTransferDisplayData(client, transferId) {
         transfer.transaction_id = formatManualPaymentDisplayTransactionId(transfer.id);
     }
 
-    return transfer;
+    return mapWalletTransferRow(transfer);
+}
+
+function toUtcIso(value) {
+    if (!value) return null;
+
+    const normalized = String(value).trim();
+    return new Date(normalized.includes('T') || normalized.endsWith('Z') ? normalized : `${normalized.replace(' ', 'T')}Z`).toISOString();
+}
+
+function mapWalletTransferRow(row) {
+    if (!row) return row;
+
+    return {
+        ...row,
+        created_at: toUtcIso(row.created_at),
+        updated_at: toUtcIso(row.updated_at),
+        transaction_timestamp: toUtcIso(row.created_at),
+    };
+}
+
+async function resolveGoogerMainWalletUserId(client) {
+    const configuredId = Number.parseInt(String(process.env.GOOGER_MAIN_USER_ID || '').trim(), 10);
+    if (Number.isFinite(configuredId) && configuredId > 0) {
+        const configuredResult = await client.query(
+            'SELECT id FROM users WHERE id = $1 LIMIT 1',
+            [configuredId]
+        );
+        if (configuredResult.rows.length > 0) {
+            return configuredResult.rows[0].id;
+        }
+    }
+
+    const googerResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(username) = 'googer'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+
+    if (googerResult.rows.length > 0) {
+        return googerResult.rows[0].id;
+    }
+
+    const fallbackResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
+            OR id = 1
+         ORDER BY
+            CASE
+                WHEN LOWER(COALESCE(user_type, '')) = 'admin' THEN 0
+                WHEN id = 1 THEN 1
+                ELSE 2
+            END,
+            id ASC
+         LIMIT 1`
+    );
+
+    return fallbackResult.rows[0]?.id || null;
 }
 
 // Search users by user_id or username
@@ -130,8 +189,8 @@ exports.initiateTransferRequest = async (req, res) => {
 
             const txNote = note || 'Googer Manual Payment Hold';
             const result = await client.query(
-                `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission)
-                 VALUES ($1, $2, $3, $4, 'order_hold', 'pending', 0, 0)
+                `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, 'order_hold', 'pending', 0, 0, ${UTC_NOW_SQL}, ${UTC_NOW_SQL})
                  RETURNING *`,
                 [senderId, receiverId, baseAmount, txNote]
             );
@@ -158,7 +217,7 @@ exports.initiateTransferRequest = async (req, res) => {
         if (type === 'sell' && commPercent === 0 && !manualPaymentOrder) {
             // Check sender's balance
             const senderResult = await client.query(
-                'SELECT wallet_balance FROM users WHERE id = $1',
+                'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
                 [senderId]
             );
             const senderBalance = parseFloat(senderResult.rows[0].wallet_balance);
@@ -183,8 +242,8 @@ exports.initiateTransferRequest = async (req, res) => {
             // Record as completed transaction (status = 'accepted', not 'pending')
             const txNote = note || 'Direct Money Transfer';
             const result = await client.query(
-                `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission)
-                 VALUES ($1, $2, $3, $4, $5, 'accepted', $6, $7)
+                `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, 'accepted', $6, $7, ${UTC_NOW_SQL}, ${UTC_NOW_SQL})
                  RETURNING *`,
                 [senderId, receiverId, baseAmount, txNote, type, 0, 0]
             );
@@ -214,7 +273,7 @@ exports.initiateTransferRequest = async (req, res) => {
 
             // Check sender's balance
             const senderResult = await client.query(
-                'SELECT wallet_balance FROM users WHERE id = $1',
+                'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
                 [senderId]
             );
             const senderBalance = parseFloat(senderResult.rows[0].wallet_balance);
@@ -242,8 +301,8 @@ exports.initiateTransferRequest = async (req, res) => {
         // Insert transfer record with status 'pending'
         // Store the full amount and commission separately
         const result = await client.query(
-            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission)
-             VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7)
+            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, ${UTC_NOW_SQL}, ${UTC_NOW_SQL})
              RETURNING *`,
             [senderId, receiverId, amountToHold, txNote, type, commPercent, calculatedCommission]
         );
@@ -302,7 +361,7 @@ exports.respondToRequest = async (req, res) => {
 
         // 1. Get request details
         const requestResult = await client.query(
-            'SELECT * FROM wallet_transfers WHERE id = $1 AND receiver_id = $2 AND status = \'pending\'',
+            'SELECT * FROM wallet_transfers WHERE id = $1 AND receiver_id = $2 AND status = \'pending\' FOR UPDATE',
             [requestId, userId]
         );
 
@@ -328,7 +387,7 @@ exports.respondToRequest = async (req, res) => {
 
             // Update transfer status to rejected
             await client.query(
-                'UPDATE wallet_transfers SET status = \'rejected\', updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+                `UPDATE wallet_transfers SET status = 'rejected', updated_at = ${UTC_NOW_SQL} WHERE id = $1`,
                 [requestId]
             );
 
@@ -373,7 +432,7 @@ exports.respondToRequest = async (req, res) => {
                 // For 'request' (buy): Deduct from receiver and give to sender
                 // Check receiver's balance first
                 const receiverResult = await client.query(
-                    'SELECT wallet_balance FROM users WHERE id = $1',
+                    'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
                     [userId]
                 );
                 const receiverBalance = parseFloat(receiverResult.rows[0].wallet_balance);
@@ -400,7 +459,7 @@ exports.respondToRequest = async (req, res) => {
             await client.query(
                 `UPDATE wallet_transfers 
                  SET status = 'accepted', 
-                     updated_at = CURRENT_TIMESTAMP 
+                     updated_at = ${UTC_NOW_SQL} 
                  WHERE id = $1`,
                 [requestId]
             );
@@ -481,7 +540,7 @@ exports.cancelTransaction = async (req, res) => {
         await client.query(
             `UPDATE wallet_transfers
              SET status = 'cancelled',
-                 updated_at = CURRENT_TIMESTAMP
+                 updated_at = ${UTC_NOW_SQL}
              WHERE id = $1`,
             [transactionId]
         );
@@ -533,7 +592,7 @@ exports.directTransfer = async (req, res) => {
         await client.query('BEGIN');
 
         // Check sender balance
-        const sender = await client.query('SELECT wallet_balance FROM users WHERE id = $1', [senderId]);
+        const sender = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [senderId]);
         const balance = parseFloat(sender.rows[0].wallet_balance);
 
         if (balance < finalTransferAmount) {
@@ -561,8 +620,8 @@ exports.directTransfer = async (req, res) => {
 
         // Log transfer with commission details
         await client.query(
-            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage)
-             VALUES ($1, $2, $3, $4, 'transfer', 'accepted', $5, $6)`,
+            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'transfer', 'accepted', $5, $6, ${UTC_NOW_SQL}, ${UTC_NOW_SQL})`,
             [senderId, receiverId, finalTransferAmount, txNote, calculatedCommission, commInput]
         );
 
@@ -629,8 +688,8 @@ exports.payOrder = async (req, res) => {
         // Record as a pending order hold transaction
         const txNote = note || (orderId ? `Payment on hold for Order #${orderId}` : 'Payment on hold for Googer Order');
         const transferRes = await client.query(
-            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status)
-             VALUES ($1, $2, $3, $4, 'order_hold', 'pending') RETURNING id`,
+            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'order_hold', 'pending', ${UTC_NOW_SQL}, ${UTC_NOW_SQL}) RETURNING id`,
             [userId, userId, holdAmount, txNote]
         );
 
@@ -662,6 +721,107 @@ exports.payOrder = async (req, res) => {
         });
     } finally {
         client.release();
+    }
+};
+
+// Direct payment for Profile Promote ads — deducts from user wallet and credits Googer main wallet immediately
+exports.payProfilePromote = async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const { amount, orderId, note } = req.body;
+        const userId = req.user.id;
+
+        if (!amount || parseFloat(amount) <= 0) {
+            return res.status(400).json({ success: false, message: 'Invalid amount' });
+        }
+
+        const payAmount = parseFloat(amount);
+
+        await client.query('BEGIN');
+
+        // Lock user row and verify balance
+        const userResult = await client.query(
+            'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+            [userId]
+        );
+
+        if (userResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        const walletBalance = parseFloat(userResult.rows[0].wallet_balance || 0);
+
+        if (walletBalance < payAmount) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                message: `Insufficient balance. Required: R ${payAmount.toFixed(2)}, Available: R ${walletBalance.toFixed(2)}`
+            });
+        }
+
+        const googerUserId = await resolveGoogerMainWalletUserId(client);
+        if (!googerUserId) {
+            await client.query('ROLLBACK');
+            return res.status(500).json({ success: false, message: 'Googer wallet account not found' });
+        }
+
+        // Deduct from user
+        await client.query(
+            'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
+            [payAmount, userId]
+        );
+
+        const txNote = note || (orderId ? `Profile Promote - ${orderId}` : 'Profile Promote Ad');
+        const transferRes = await client.query(
+            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, commission, note, type, status, created_at, updated_at)
+             VALUES ($1, $2, $3, $3, $4, 'profile_promote', 'accepted', ${UTC_NOW_SQL}, ${UTC_NOW_SQL}) RETURNING id`,
+            [userId, googerUserId, payAmount, txNote]
+        );
+
+        await client.query('COMMIT');
+
+        return res.status(200).json({
+            success: true,
+            message: 'Profile Promote payment processed successfully.',
+            currentBalance: walletBalance - payAmount,
+            transferId: transferRes.rows[0].id
+        });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Pay profile promote error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Server error processing payment: ' + (error.message || 'Unknown error')
+        });
+    } finally {
+        client.release();
+    }
+};
+
+// Record a $0 promo ad transaction for audit/history display (no balance change)
+exports.recordPromoAd = async (req, res) => {
+    try {
+        const { adId, note, campaignType } = req.body;
+        const userId = req.user.id;
+
+        if (!adId) {
+            return res.status(400).json({ success: false, message: 'adId is required' });
+        }
+
+        const promoLabel = campaignType || 'Promo';
+        const txNote = note || `Ad Hold Summary - ${promoLabel} - Ad ID: ${adId} - Status: Free - Hold Amount: Free - Deducted Amount: Free`;
+
+        const transferRes = await pool.query(
+            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, created_at, updated_at)
+             VALUES ($1, $1, 0, $2, 'promo_ad', 'completed', ${UTC_NOW_SQL}, ${UTC_NOW_SQL}) RETURNING id`,
+            [userId, txNote]
+        );
+
+        return res.status(200).json({ success: true, transferId: transferRes.rows[0].id });
+    } catch (error) {
+        console.error('Record promo ad error:', error);
+        return res.status(500).json({ success: false, message: 'Failed to record promo ad' });
     }
 };
 
@@ -703,7 +863,7 @@ exports.getTransactionHistory = async (req, res) => {
 
         res.status(200).json({
             success: true,
-            transactions: result.rows
+            transactions: result.rows.map(mapWalletTransferRow)
         });
     } catch (error) {
         console.error('Get transaction history error:', error);

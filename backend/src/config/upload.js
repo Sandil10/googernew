@@ -5,12 +5,32 @@ const multer = require('multer');
 // we switch to MemoryStorage and store images as Base64 strings in the database.
 
 const storage = multer.memoryStorage();
+const ALLOWED_UPLOAD_MIME_TYPES = new Set([
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+    'video/mp4',
+    'video/webm',
+    'video/quicktime',
+]);
 
 const upload = multer({
     storage: storage,
     // 50MB per file to accommodate short videos. Express body parsers are
     // bypassed for multipart uploads, but multer still enforces this.
-    limits: { fileSize: 50 * 1024 * 1024 }
+    limits: {
+        fileSize: 50 * 1024 * 1024,
+        files: 5,
+    },
+    fileFilter: (req, file, cb) => {
+        if (ALLOWED_UPLOAD_MIME_TYPES.has(file.mimetype)) {
+            cb(null, true);
+            return;
+        }
+        cb(new Error('Unsupported upload file type'));
+    },
 });
 
 module.exports = upload;

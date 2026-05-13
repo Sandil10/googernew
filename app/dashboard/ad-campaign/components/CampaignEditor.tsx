@@ -10,6 +10,7 @@ import { adsService } from "@/services/adsService";
 import { marketService } from "@/services/marketService";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { addAdWalletRefund, getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
+import { calcReach, type ReachTier } from "@/utils/reachCalc";
 
 type PreviewMode = "mobile" | "desktop";
 type LinkPreviewType = "image" | "video" | "embed" | "website" | null;
@@ -72,6 +73,12 @@ type PublishedAdReview = {
     clicks?: number;
     spend?: number;
     remainingBudget?: number;
+    tierId?: number;
+    estimatedReachMin?: number;
+    estimatedReachMax?: number;
+    maxReachCap?: number;
+    promoCode?: string | null;
+    promoDiscount?: number | null;
     status?: "Under Review" | "Active" | "Completed" | "Cancelled";
     campaignPath?: string;
     editDraft?: {
@@ -145,21 +152,12 @@ const CTA_FIELD_PLACEHOLDERS: Record<CtaTopic, string> = {
     "No Button": "",
 };
 
-const BUDGET_MIN = 100;
-const BUDGET_FINE_MAX = 5000;
-const BUDGET_MAX = 100000;
-const BUDGET_FINE_STEP = 50;
-const BUDGET_COARSE_STEP = 1000;
 const PROMO_DURATION_MAX = 7;
 const AD_DRAFT_VERSION = 1;
 const AD_REVIEW_VERSION = 1;
 const AD_ID_COUNTER_KEY = "googer-ad-review-next-id";
 const AD_ID_START = 100000000012;
 const VIDEO_MAX_DURATION_SECONDS = 60;
-const BUDGET_VALUES = [
-    ...Array.from({ length: (BUDGET_FINE_MAX - BUDGET_MIN) / BUDGET_FINE_STEP + 1 }, (_, index) => BUDGET_MIN + index * BUDGET_FINE_STEP),
-    ...Array.from({ length: (BUDGET_MAX - (BUDGET_FINE_MAX + BUDGET_COARSE_STEP)) / BUDGET_COARSE_STEP + 1 }, (_, index) => BUDGET_FINE_MAX + BUDGET_COARSE_STEP + index * BUDGET_COARSE_STEP),
-];
 const GENDER_OPTIONS: GenderTarget[] = ["All", "Male", "Female"];
 const INTEREST_TOPIC_LIMIT = 10;
 const INTEREST_TOPIC_OPTIONS = [
@@ -195,6 +193,8 @@ const PLACEMENT_OPTIONS = [
     { label: "Marketplace", selectable: false },
 ];
 const AVAILABLE_PLACEMENT_LABELS = PLACEMENT_OPTIONS.filter((placement) => placement.selectable && placement.label !== "All").map((placement) => placement.label);
+const PROFILE_PROMOTE_FEATURED_LIMIT = 3;
+const PROFILE_PROMOTE_PICKER_VISIBLE_COUNT = 5;
 
 function normalizePlacementLabel(value: unknown) {
     if (value === "Chat") return "Goog Msg";
@@ -396,6 +396,32 @@ function getProductShareTarget(rawLink: string) {
     return null;
 }
 
+function getProfileUsernameFromLink(rawLink: string) {
+    const trimmed = rawLink.trim();
+    if (!trimmed) return "";
+
+    try {
+        const parsed = new URL(normalizeUrl(trimmed));
+        const segments = parsed.pathname.split("/").filter(Boolean);
+        const first = (segments[0] || "").toLowerCase();
+        const dashboardSection = (segments[1] || "").toLowerCase();
+        const queryUsername = parsed.searchParams.get("user");
+        const queryId = parsed.searchParams.get("id");
+
+        if (first === "dashboard" && dashboardSection === "profile") {
+            return (queryUsername || queryId || "").trim();
+        }
+        if (first === "u" || first === "profile") return (segments[1] || "").trim();
+        if (first && !["dashboard", "share", "product", "shop", "register", "login"].includes(first.toLowerCase())) {
+            return (segments[0] || "").trim();
+        }
+    } catch {
+        // Fall back to treating a bare value as a username.
+    }
+
+    return trimmed.replace(/^@/, "").replace(/^\/+|\/+$/g, "").split("/").filter(Boolean).pop() || "";
+}
+
 function getFlagEmoji(countryCode: string) {
     if (!countryCode || countryCode.length !== 2) return "○";
     return countryCode
@@ -483,23 +509,31 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [isInterestTopicsOpen, setIsInterestTopicsOpen] = useState(false);
     const [selectedPlacements, setSelectedPlacements] = useState<string[]>(["All", ...AVAILABLE_PLACEMENT_LABELS]);
     const [isPlacementDropdownOpen, setIsPlacementDropdownOpen] = useState(false);
-    const [budget, setBudget] = useState(100);
-    const [budgetInput, setBudgetInput] = useState("100");
+    const [budget, setBudget] = useState<number | null>(null);
+    const [budgetInput, setBudgetInput] = useState("");
     const [isBudgetEditing, setIsBudgetEditing] = useState(false);
     const [durationDays, setDurationDays] = useState(1);
     const [promoCode, setPromoCode] = useState("");
     const [isPromoEditing, setIsPromoEditing] = useState(true);
     const [hasPromoCodeAdded, setHasPromoCodeAdded] = useState(false);
+    const [isValidatingPromo, setIsValidatingPromo] = useState(false);
+    const [promoError, setPromoError] = useState("");
+    const [promoDiscount, setPromoDiscount] = useState<{ discount_type: string; discount_value: number; reach_cap?: number | null; min_reach_bonus?: number; max_reach_bonus?: number; promo_max_days?: number } | null>(null);
+    const [reachTiers, setReachTiers] = useState<ReachTier[]>([]);
     const [walletBalance, setWalletBalance] = useState(0);
     const [walletBalanceLoaded, setWalletBalanceLoaded] = useState(false);
     const [userProfile, setUserProfile] = useState<any | null>(null);
     const [showInsufficientBalanceModal, setShowInsufficientBalanceModal] = useState(false);
     const [isInsufficientBalanceDismissed, setIsInsufficientBalanceDismissed] = useState(false);
     const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+    const [acceptedProfileNonRefundable, setAcceptedProfileNonRefundable] = useState(false);
     const [editingAdId, setEditingAdId] = useState("");
     const [linkedProduct, setLinkedProduct] = useState<any | null>(null);
+    const [profilePromoteUser, setProfilePromoteUser] = useState<any | null>(null);
     const [profilePromoteProducts, setProfilePromoteProducts] = useState<any[]>([]);
     const [profilePromoteAvailable, setProfilePromoteAvailable] = useState<any[]>([]);
+    const [profilePromoteSlideIndex, setProfilePromoteSlideIndex] = useState(0);
+    const [profilePromoteAvailableSlideIndex, setProfilePromoteAvailableSlideIndex] = useState(0);
     const [profileLinkCopied, setProfileLinkCopied] = useState(false);
     const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
     const [pendingVideoCrop, setPendingVideoCrop] = useState<PendingVideoCrop | null>(null);
@@ -518,6 +552,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const isProfilePromote = campaignType === "Profile Promote";
     const profileUsername = (typeof userProfile?.username === "string" && userProfile.username) || "your-handle";
     const profileLink = getProfileShareUrl({ username: profileUsername });
+    const promotedProfile = profilePromoteUser || userProfile;
+    const promotedProfileLink = getProfileShareUrl({ username: promotedProfile?.username || profileUsername });
     const hasUploadedImage = uploadedMediaType === "image" ? imageGalleryPreviews.length > 0 : imagePreview.trim().length > 0;
     const hasUploadedVideo = uploadedMediaType === "video";
     const activePlatform = useMemo(() => getSocialPlatform(activeLink), [activeLink]);
@@ -540,7 +576,22 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const youtubeEmbedUrl = useMemo(() => getYouTubeEmbedUrl(activeLink), [activeLink]);
     const socialEmbedUrl = useMemo(() => getSocialEmbedUrl(activeLink), [activeLink]);
     const selectedCountry = countries.find((country) => country.code === selectedCountryCode) || countries[0];
-    const hasInsufficientBalance = walletBalanceLoaded && budget > walletBalance;
+    const effectivePaymentAmount = budget === null ? 0
+        : hasPromoCodeAdded && isProfilePromote
+            ? 0  // Profile Promote + any promo = always free
+            : hasPromoCodeAdded && promoDiscount?.discount_type === "rupee"
+                ? Math.max(0, budget - promoDiscount.discount_value)
+                : hasPromoCodeAdded && promoDiscount?.discount_type === "reach"
+                    ? 0
+                    : budget;
+    const isFreeProfilePromotePromo = isProfilePromote && hasPromoCodeAdded;
+    const showProfileNonRefundableNotice = isProfilePromote && !hasPromoCodeAdded;
+    const hasInsufficientBalance = walletBalanceLoaded && budget !== null && effectivePaymentAmount > walletBalance;
+    const isPromoLockingBudget = hasPromoCodeAdded && (
+        isProfilePromote
+            ? true  // Profile Promote: freeze packages the moment any promo is applied
+            : budget !== null && (promoDiscount?.discount_type === "rupee" || promoDiscount?.discount_type === "reach")
+    );
     const filteredCountries = useMemo(() => {
         const query = countrySearch.trim().toLowerCase();
         if (!query) return countries;
@@ -574,25 +625,18 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         return `${Number.isInteger(roundedToHundred) ? roundedToHundred.toFixed(0) : roundedToHundred.toFixed(1)}K`;
     };
 
-    const normalizeBudget = (value: number) => {
-        return BUDGET_VALUES.reduce((closestValue, currentValue) => {
-            return Math.abs(currentValue - value) < Math.abs(closestValue - value) ? currentValue : closestValue;
-        }, BUDGET_VALUES[0]);
-    };
+    const budgetOptions = reachTiers.map((t) => ({
+        value: Number(t.budget_from),
+        tier: t,
+    }));
+    const tiersLoaded = reachTiers.length > 0;
+    const isProfileAd = campaignType === "Profile Promote";
+    const globalBudgetMin = tiersLoaded ? Math.min(...reachTiers.map((t) => Number(t.budget_from))) : 1;
+    const globalBudgetMax = tiersLoaded ? Math.max(...reachTiers.map((t) => Number(t.budget_to))) : 10000;
+    const budgetSliderIndex = budget !== null ? Math.max(0, budgetOptions.findIndex((o) => o.value === budget)) : 0;
+
     const sanitizePromoCode = (value: string) => value.replace(/[^a-zA-Z0-9]/g, "").slice(0, 15).toUpperCase();
-    const sanitizeBudgetInput = (value: string) => value.replace(/\D/g, "").slice(0, 6);
-    const applyBudgetInput = (value: string) => {
-        setBudgetInput(sanitizeBudgetInput(value));
-    };
-    const closeBudgetEditor = () => {
-        const manualBudget = Math.min(BUDGET_MAX, Math.max(BUDGET_MIN, Number(budgetInput) || BUDGET_MIN));
-        setBudget(manualBudget);
-        setBudgetInput(String(manualBudget));
-        setIsBudgetEditing(false);
-    };
-    const budgetSliderIndex = BUDGET_VALUES.indexOf(normalizeBudget(budget));
-    const budgetProgress = (budgetSliderIndex / (BUDGET_VALUES.length - 1)) * 100;
-    const missingWalletAmount = Math.max(0, budget - walletBalance);
+    const missingWalletAmount = Math.max(0, effectivePaymentAmount - walletBalance);
     const isAllDraftLocationsSelected = countries.length > 0 && countries.every((country) => draftLocationCodes.includes(country.code));
     const ageMinProgress = ((ageMin - 18) / (65 - 18)) * 100;
     const ageMaxProgress = ((ageMax - 18) / (65 - 18)) * 100;
@@ -602,12 +646,100 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         : selectedPlacements.filter((placement) => placement !== "All").join(", ") || "Select placements";
     const shouldShowCtaButton = ctaTopic !== "No Button";
     const ageSummaryLabel = ageMin === 18 && ageMax === 65 ? "All" : `${ageMin}-${ageMax}`;
-    const durationSummaryLabel = `${durationDays} ${durationDays === 1 ? "day" : "days"}`;
-    const estimatedReachMin = Math.round((budget / 100) * 300);
-    const estimatedReachMax = Math.round((budget / 100) * 500);
-    const estimatedReachLabel = `${formatReachCount(estimatedReachMin)} - ${formatReachCount(estimatedReachMax)}`;
-    const profileDisplayName = userProfile?.full_name || [userProfile?.first_name, userProfile?.last_name].filter(Boolean).join(" ") || userProfile?.username || "Your Profile";
-    const profileImage = userProfile?.profile_picture || "";
+    const currentAdType = campaignType === "Product Promote" ? "product_promote_ad" : campaignType === "Profile Promote" ? "profile_promote_ad" : "photo_video_ad";
+    const activeTier = budget !== null
+        ? isProfileAd
+            ? (reachTiers.find((t) => Number(t.budget_from) === budget) ?? null)
+            : (reachTiers.find((t) => budget >= Number(t.budget_from) && budget <= Number(t.budget_to)) ?? null)
+        : null;
+    const isBudgetInGap = !isProfileAd && budget !== null && tiersLoaded && activeTier === null;
+    const promoMaxDays = hasPromoCodeAdded && promoDiscount?.discount_type === "reach" && promoDiscount.promo_max_days != null
+        ? promoDiscount.promo_max_days
+        : null;
+    const isDurationLocked = (activeTier !== null && activeTier.min_days === activeTier.max_days)
+        || (hasPromoCodeAdded && promoDiscount?.discount_type !== "reach");
+    const tierMinDays = activeTier?.min_days ?? 1;
+    const tierMaxDays = promoMaxDays ?? (activeTier?.max_days ?? 30);
+    // Clamp duration inside the active tier range whenever the tier changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => {
+        if (!activeTier) return;
+        if (isDurationLocked) {
+            setDurationDays(tierMinDays);
+        } else {
+            setDurationDays((prev) => Math.min(tierMaxDays, Math.max(tierMinDays, prev)));
+        }
+    }, [activeTier?.id]);
+
+    useEffect(() => {
+        if (!showProfileNonRefundableNotice) {
+            setAcceptedProfileNonRefundable(false);
+        }
+    }, [showProfileNonRefundableNotice]);
+
+    // When a "reach" promo is applied, auto-set budget + duration from the promo definition
+    useEffect(() => {
+        if (!hasPromoCodeAdded || !promoDiscount || promoDiscount.discount_type !== "reach") return;
+        const promoValue = Number(promoDiscount.discount_value);
+        if (promoValue > 0) {
+            setBudget(promoValue);
+        }
+        if (promoDiscount.promo_max_days != null) {
+            setDurationDays((prev) => Math.min(promoDiscount.promo_max_days!, Math.max(1, prev)));
+            return;
+        }
+        // Fallback: derive max_days from the matching reach tier
+        if (reachTiers.length === 0) return;
+        const promoTier = reachTiers.find((t) =>
+            promoValue >= Number(t.budget_from) &&
+            promoValue <= Number(t.budget_to)
+        );
+        if (promoTier) {
+            setDurationDays((prev) => Math.min(promoTier!.max_days, Math.max(1, prev)));
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [hasPromoCodeAdded, promoDiscount?.discount_type, promoDiscount?.discount_value, promoDiscount?.promo_max_days, reachTiers.length]);
+
+    const profilePromoCodeDurationDays = isProfilePromote && hasPromoCodeAdded
+        ? Math.max(1, Number(promoDiscount?.promo_max_days ?? promoDiscount?.discount_value ?? 0))
+        : null;
+    const effectiveDurationDays = profilePromoCodeDurationDays ?? (
+        hasPromoCodeAdded && promoDiscount?.discount_type === "days"
+            ? durationDays + promoDiscount.discount_value
+            : durationDays
+    );
+    const durationSummaryLabel = `${effectiveDurationDays} ${effectiveDurationDays === 1 ? "day" : "days"}`;
+
+    const effectiveBudget = hasPromoCodeAdded && promoDiscount?.discount_type === "reach"
+        ? promoDiscount.discount_value
+        : budget;
+    const promoReachCap = hasPromoCodeAdded && promoDiscount?.discount_type === "reach" ? (promoDiscount.reach_cap ?? null) : null;
+
+    // For reach-type promos the backend pre-computes the exact reach values — use them directly
+    const promoDefinedReach = hasPromoCodeAdded
+        && promoDiscount?.discount_type === "reach"
+        && promoDiscount.min_reach_bonus != null
+        && promoDiscount.max_reach_bonus != null
+        ? { minReach: promoDiscount.min_reach_bonus, maxReach: promoDiscount.max_reach_bonus, reachCap: promoReachCap }
+        : null;
+
+    const showReach = currentAdType !== "profile_promote_ad"
+        && (promoDefinedReach !== null || (activeTier !== null
+            && (Number(activeTier.min_multiplier) > 0 || Number(activeTier.max_multiplier) > 0)));
+
+    const reachResult = promoDefinedReach !== null
+        ? promoDefinedReach
+        : (showReach && effectiveBudget !== null
+            ? calcReach(reachTiers, effectiveBudget, 0, 0, promoReachCap)
+            : null);
+    const estimatedReachMin = reachResult?.minReach ?? null;
+    const estimatedReachMax = reachResult?.maxReach ?? null;
+    const maxReachCap = reachResult?.reachCap ?? null;
+    const estimatedReachLabel = estimatedReachMin !== null && estimatedReachMax !== null
+        ? `${formatReachCount(estimatedReachMin)} – ${formatReachCount(estimatedReachMax)}`
+        : null;
+    const profileDisplayName = promotedProfile?.full_name || [promotedProfile?.first_name, promotedProfile?.last_name].filter(Boolean).join(" ") || promotedProfile?.username || "Your Profile";
+    const profileImage = promotedProfile?.profile_picture || "";
     const profileInitial = profileDisplayName.trim().charAt(0).toUpperCase() || "G";
     const previewDescription = description.trim() || "Write a short ad description...";
     const popupErrorTitle = (() => {
@@ -615,11 +747,36 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         if (!message) return "Error";
         if (message.includes("insufficient") || message.includes("balance") || message.includes("payment")) return "Payment Error";
         if (message.includes("publish") || message.includes("failed")) return "Publish Error";
+        if (message.includes("too many") || message.includes("rate") || message.includes("limit")) return "Too Many Requests";
         return "Required Field";
     })();
 
     const showPopupError = (message: string) => {
+        const lower = message.toLowerCase();
+        if (
+            lower.includes("too many") ||
+            lower.includes("rate limit") ||
+            lower.includes("429") ||
+            lower.includes("try again later")
+        ) return;
         setPopupError(message);
+    };
+
+    const closeBudgetEditor = () => {
+        setIsBudgetEditing(false);
+        const parsed = parseInt(budgetInput.replace(/[^0-9]/g, ""), 10);
+        if (!isNaN(parsed)) {
+            setBudget(clamp(parsed, globalBudgetMin, globalBudgetMax));
+        }
+    };
+
+    const applyBudgetInput = (value: string) => {
+        const digits = value.replace(/[^0-9]/g, "");
+        setBudgetInput(digits);
+        const parsed = parseInt(digits, 10);
+        if (!isNaN(parsed)) {
+            setBudget(clamp(parsed, globalBudgetMin, globalBudgetMax));
+        }
     };
 
     const clearSelectedUpload = () => {
@@ -1005,8 +1162,23 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             }
         }
 
-        if (!budget || budget < BUDGET_MIN) {
-            showPopupError("Please enter a valid budget.");
+        if (!tiersLoaded && !isFreeProfilePromotePromo) {
+            showPopupError("No ad packages are currently available. Please try again later.");
+            return false;
+        }
+
+        if (budget === null && !isFreeProfilePromotePromo) {
+            showPopupError(isProfileAd ? "Please select a budget package." : "Please set a budget.");
+            return false;
+        }
+
+        if (isBudgetInGap && !isFreeProfilePromotePromo) {
+            showPopupError("This budget amount is not available. Please adjust to a valid range.");
+            return false;
+        }
+
+        if (!activeTier && !isFreeProfilePromotePromo) {
+            showPopupError("Please select a valid budget.");
             return false;
         }
 
@@ -1030,13 +1202,18 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             return false;
         }
 
+        if (showProfileNonRefundableNotice && !acceptedProfileNonRefundable) {
+            showPopupError("Please accept the non-refundable profile promotion package condition.");
+            return false;
+        }
+
         return true;
     };
 
     const handlePublish = async () => {
         if (isPublishing) return;
         if (!validateFinalForm()) return;
-        if (hasInsufficientBalance) {
+        if (hasInsufficientBalance && !isFreeProfilePromotePromo) {
             setIsInsufficientBalanceDismissed(false);
             setShowInsufficientBalanceModal(true);
             return;
@@ -1048,7 +1225,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const existingReview = editingAdId ? await adsService.getAdById(editingAdId).catch(() => null) : null;
         const existingBudget = Number(existingReview?.budget || 0);
         const nextAdId = existingReview?.adId && typeof existingReview.adId === "string" ? existingReview.adId : createNextAdId();
-        const budgetDifference = budget - existingBudget;
+        const selectedBudget = budget ?? 0;
+        const publishBudget = effectiveBudget ?? selectedBudget;
+        const budgetDifference = selectedBudget - existingBudget;
 
         const reviewRecord: PublishedAdReview = {
             adId: nextAdId,
@@ -1057,8 +1236,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             ownerKey: ownerKey || undefined,
             ownerId: ownerId !== undefined && ownerId !== null ? String(ownerId) : undefined,
             ownerUsername: ownerUsername || undefined,
-            budget,
-            durationDays,
+            budget: effectiveBudget ?? 0,
+            durationDays: effectiveDurationDays,
             title: isProductPromote && linkedProduct
                 ? linkedProduct.title
                 : isProfilePromote
@@ -1083,7 +1262,13 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             impressions: 0,
             clicks: 0,
             spend: 0,
-            remainingBudget: budget,
+            remainingBudget: selectedBudget,
+            tierId: activeTier?.id ?? undefined,
+            estimatedReachMin: estimatedReachMin ?? undefined,
+            estimatedReachMax: estimatedReachMax ?? undefined,
+            maxReachCap: maxReachCap ?? undefined,
+            promoCode: hasPromoCodeAdded && promoCode ? promoCode : null,
+            promoDiscount: hasPromoCodeAdded && promoDiscount?.discount_type === "reach" ? promoDiscount.discount_value : null,
             status: "Under Review",
             campaignPath:
                 campaignType === "Product Promote"
@@ -1105,7 +1290,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 ageMax,
                 selectedInterestTopics,
                 selectedPlacements,
-                budget,
+                budget: selectedBudget,
                 durationDays,
                 promoCode,
                 hasPromoCodeAdded,
@@ -1122,10 +1307,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         : hasUploadedVideo ? "video" : selectedPreviewImage ? "image" : hasLink ? "link" : "",
                 imageName,
                 ...(isProfilePromote ? {
-                    profileUsername,
-                    profileLink,
-                    featuredProductIds: profilePromoteProducts.map((p) => p.id),
-                } : {}),
+                profileUsername: promotedProfile?.username || profileUsername,
+                profileLink: activeLink || profileLink,
+                featuredProductIds: profilePromoteProducts.map((p) => p.id),
+                promotedProfileUserId: promotedProfile?.id ?? promotedProfile?.user_id ?? null,
+            } : {}),
                 ...(isProductPromote && linkedProduct ? {
                     linkedProductId: linkedProduct.id,
                 } : {}),
@@ -1141,19 +1327,56 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         }
 
         setIsPublishing(true);
+        setPopupError("");
         try {
-            const adFormatLabel = hasUploadedVideo ? "Video" : "Photo";
+            const promotionLabel = isProfilePromote
+                ? "Profile Promote"
+                : isProductPromote
+                    ? "Product Promote"
+                    : hasUploadedVideo
+                        ? "Video Promote"
+                        : "Photo Promote";
             let paymentResult: any = null;
 
-            if (!existingReview || budgetDifference > 0) {
-                paymentResult = await walletService.payOrder(existingReview ? budgetDifference : budget, {
-                    orderId: reviewRecord.adId,
-                    note: `${existingReview ? "Ad Promote Update" : "Ad Promote"} - ${reviewRecord.adId} - ${adFormatLabel}`,
-                });
+            // Payment amount after promo discount
+            const discountedBudget = (() => {
+                if (!hasPromoCodeAdded || !promoDiscount || existingReview) return publishBudget;
+                if (isProfilePromote) return 0; // Profile Promote + any promo = always free
+                if (promoDiscount.discount_type === "rupee") {
+                    return Math.max(0, publishBudget - promoDiscount.discount_value);
+                }
+                if (promoDiscount.discount_type === "reach") {
+                    return 0;
+                }
+                return publishBudget; // days promos: full budget charged, bonus is free
+            })();
+
+            if ((!existingReview && discountedBudget > 0) || (existingReview && budgetDifference > 0)) {
+                const payAmount = existingReview ? budgetDifference : discountedBudget;
+                if (isProfilePromote) {
+                    paymentResult = await walletService.payProfilePromote(payAmount, {
+                        orderId: reviewRecord.adId,
+                        note: `Ad Hold Summary - Profile Promotion - Ad ID: ${reviewRecord.adId} - Status: Completed - Hold Amount: R ${Number(payAmount || 0).toFixed(2)} - Deducted Amount: R ${Number(payAmount || 0).toFixed(2)}`,
+                    });
+                } else {
+                    paymentResult = await walletService.payOrder(payAmount, {
+                        orderId: reviewRecord.adId,
+                        note: `${existingReview ? "Ad Promote Update" : "Ad Promote"} - ${reviewRecord.adId} - ${promotionLabel}`,
+                    });
+                }
             }
 
             if (existingReview && budgetDifference < 0 && ownerKey) {
                 addAdWalletRefund(reviewRecord.adId, ownerKey, Math.abs(budgetDifference), `Ad Budget Refund - ${reviewRecord.adId}`);
+            }
+
+            // Record a $0 wallet entry for free promo ads so they appear in transaction history
+            if (!existingReview && discountedBudget === 0 && hasPromoCodeAdded && promoCode) {
+                try {
+                    await walletService.recordPromoAd(reviewRecord.adId, promotionLabel);
+                } catch {
+                    // non-critical — don't block publish
+                }
             }
 
             const currentBalance = Number(paymentResult?.currentBalance);
@@ -1162,7 +1385,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             } else if (existingReview && budgetDifference < 0) {
                 setWalletBalance((current) => current + Math.abs(budgetDifference));
             } else {
-                setWalletBalance((current) => Math.max(0, current - (existingReview ? Math.max(0, budgetDifference) : budget)));
+                setWalletBalance((current) => Math.max(0, current - (existingReview ? Math.max(0, budgetDifference) : discountedBudget)));
             }
             window.dispatchEvent(new Event("googer-wallet-updated"));
 
@@ -1170,7 +1393,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 ...reviewRecord,
                 walletTransferId: paymentResult?.transferId || existingReview?.walletTransferId,
                 spend: typeof existingReview?.spend === "number" ? existingReview.spend : reviewRecord.spend,
-                remainingBudget: budget - (typeof existingReview?.spend === "number" ? existingReview.spend : 0),
+                remainingBudget: (budget ?? 0) - (typeof existingReview?.spend === "number" ? existingReview.spend : 0),
             };
             const uploadAdPayload = uploadedFiles.length > 0
                 ? {
@@ -1196,13 +1419,26 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 ? await adsService.updateAd(reviewRecord.adId, payload as any)
                 : await adsService.createAd(payload as any);
 
+            // Redeem promo AFTER ad is successfully created (increments uses_count)
+            if (hasPromoCodeAdded && promoCode && !existingReview) {
+                try {
+                    await adsService.redeemPromoCode(promoCode, getAdTypeForCampaign(), reviewRecord.adId);
+                } catch {
+                    // Non-fatal — ad is already created and paid for; just skip redeem silently
+                }
+            }
+
             window.dispatchEvent(new Event("googer-ad-history-updated"));
             window.localStorage.removeItem(draftStorageKey);
             setEditingAdId("");
             setPublishedAd(savedAd || reviewRecord);
             setShowPublishedPopup(true);
         } catch (error: any) {
-            showPopupError(error?.message || "Could not publish this ad. Please check your wallet balance.");
+            const errMsg = error?.message || "";
+            const isPromoErr = errMsg.includes("promo") || errMsg.includes("Promo") || errMsg.includes("usage limit") || errMsg.includes("expired") || errMsg.includes("ad type");
+            if (!isPromoErr) {
+                showPopupError(errMsg || "Could not publish this ad. Please check your wallet balance.");
+            }
         } finally {
             setIsPublishing(false);
         }
@@ -1219,23 +1455,51 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         router.back();
     };
 
-    const addPromoCode = () => {
+    const getAdTypeForCampaign = (): string => {
+        if (campaignType === "Product Promote") return "product_promote_ad";
+        if (campaignType === "Profile Promote") return "profile_promote_ad";
+        return "photo_video_ad";
+    };
+
+    const addPromoCode = async () => {
         const sanitizedCode = sanitizePromoCode(promoCode);
         if (!sanitizedCode) {
             if (hasPromoCodeAdded) {
                 setPromoCode("");
                 setHasPromoCodeAdded(false);
                 setIsPromoEditing(true);
+                setPromoDiscount(null);
+                setPromoError("");
                 return;
             }
-            showPopupError("Please enter a promo code.");
+            setPromoError("Please enter a promo code.");
             return;
         }
-        setPromoCode(sanitizedCode);
-        setHasPromoCodeAdded(true);
-        setIsPromoEditing(false);
-        setIsBudgetEditing(false);
-        setDurationDays((current) => Math.min(current, PROMO_DURATION_MAX));
+        setPromoError("");
+        setIsValidatingPromo(true);
+        try {
+            const result = await adsService.validatePromoCode(sanitizedCode, getAdTypeForCampaign());
+            setPromoCode(sanitizedCode);
+            setHasPromoCodeAdded(true);
+            setIsPromoEditing(false);
+            setIsBudgetEditing(false);
+            setPromoDiscount({ discount_type: result.discount_type, discount_value: result.discount_value, reach_cap: result.reach_cap ?? null, min_reach_bonus: result.min_reach_bonus, max_reach_bonus: result.max_reach_bonus, promo_max_days: result.promo_max_days });
+        } catch (err: any) {
+            const msg = err?.message || "Invalid promo code.";
+            if (msg.includes("doesn't exist") || msg.includes("inactive")) {
+                setPromoError("This promo code doesn't exist or is inactive");
+            } else if (msg.includes("not valid for this ad type")) {
+                setPromoError("This code is not valid for this ad type");
+            } else if (msg.includes("expired")) {
+                setPromoError("This promo code has expired");
+            } else if (msg.includes("usage limit")) {
+                setPromoError("This promo code has reached its usage limit");
+            } else {
+                setPromoError(msg);
+            }
+        } finally {
+            setIsValidatingPromo(false);
+        }
     };
 
     const handleAddLink = async () => {
@@ -1294,6 +1558,34 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             }
         }
 
+        if (isProfilePromote) {
+            const username = getProfileUsernameFromLink(trimmedLink);
+            if (!username) {
+                showPopupError("Please paste a valid public profile link.");
+                return;
+            }
+
+            try {
+                const profile = /^\d+$/.test(username)
+                    ? await authService.getUserProfile(username).catch(() => authService.getUserByUsername(username))
+                    : await authService.getUserByUsername(username);
+                if (!profile?.username && !profile?.id && !profile?.user_id) {
+                    showPopupError("That profile link could not be found.");
+                    return;
+                }
+
+                setProfilePromoteUser(profile);
+                setProfilePromoteProducts([]);
+                setProfilePromoteSlideIndex(0);
+                setLinkInput(getProfileShareUrl(profile));
+                setActiveLink(getProfileShareUrl(profile));
+                return;
+            } catch {
+                showPopupError("That profile link could not be found.");
+                return;
+            }
+        }
+
         // Photo/Video (and other non-product) promote: reject product share links
         // that arrive as a real URL with a /product, /share or /shop path segment.
         try {
@@ -1318,11 +1610,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const file = files[0];
         if (!file) return;
         if (hasLink) {
-            showPopupError("You have already added a link. Please remove it before uploading an image.");
-            if (fileInputRef.current) {
-                fileInputRef.current.value = "";
-            }
-            return;
+            handleRemoveLink();
         }
 
         const isVideoUpload = files.some((currentFile) => isVideoUploadFile(currentFile));
@@ -1424,8 +1712,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
     const handleUploadClick = () => {
         if (hasLink) {
-            showPopupError("You have already added a link. Please remove it before uploading an image.");
-            return;
+            handleRemoveLink();
         }
 
         fileInputRef.current?.click();
@@ -1436,7 +1723,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         setLinkInput("");
         setLinkPreviewMeta(null);
         setLinkedProduct(null);
+        setProfilePromoteUser(null);
         setProfilePromoteProducts([]);
+        setProfilePromoteSlideIndex(0);
     };
 
     const handleRemoveImage = () => {
@@ -1466,6 +1755,33 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             }
         };
     }, [imagePreview, pendingVideoCrop]);
+
+    useEffect(() => {
+        let active = true;
+        const adType = campaignType === "Product Promote" ? "product_promote_ad"
+            : campaignType === "Profile Promote" ? "profile_promote_ad"
+            : "photo_video_ad";
+        adsService.getReachTiersPublic(adType)
+            .then((tiers) => {
+                if (!active) return;
+                setReachTiers(tiers);
+                if (tiers.length > 0) {
+                    if (adType === "profile_promote_ad") {
+                        // Profile: no auto-select, user must pick a chip
+                        setBudget(null);
+                    } else {
+                        // Photo/video & product: auto-init to the global minimum so Order Summary is populated
+                        const globalMin = Math.min(...tiers.map((t) => Number(t.budget_from)));
+                        setBudget(globalMin);
+                        setDurationDays(tiers.find((t) => Number(t.budget_from) === globalMin)?.min_days ?? 1);
+                    }
+                } else {
+                    setBudget(null);
+                }
+            })
+            .catch(() => { /* tiers unavailable — UI will show "no packages" */ });
+        return () => { active = false; };
+    }, [campaignType]);
 
     useEffect(() => {
         try {
@@ -1532,9 +1848,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 }
             }
             if (typeof parsed.budget === "number") {
-                const savedBudget = Math.min(BUDGET_MAX, Math.max(BUDGET_MIN, parsed.budget));
-                setBudget(savedBudget);
-                setBudgetInput(String(savedBudget));
+                // Only restore if it exactly matches a valid tier option
+                setBudget((prev) => {
+                    const validOption = reachTiers.find((t) => Number(t.budget_from) === parsed.budget);
+                    return validOption ? parsed.budget : prev;
+                });
             }
             if (typeof parsed.durationDays === "number") {
                 const durationLimit = parsed.hasPromoCodeAdded ? PROMO_DURATION_MAX : 30;
@@ -1542,8 +1860,16 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             }
             if (typeof parsed.promoCode === "string") setPromoCode(sanitizePromoCode(parsed.promoCode));
             if (typeof parsed.hasPromoCodeAdded === "boolean") {
-                setHasPromoCodeAdded(parsed.hasPromoCodeAdded);
-                setIsPromoEditing(!parsed.hasPromoCodeAdded);
+                const hasValidPromoDiscount = parsed.promoDiscount
+                    && typeof parsed.promoDiscount === "object"
+                    && typeof parsed.promoDiscount.discount_type === "string";
+                // Only restore as applied if we have the full discount data — otherwise reset so user re-validates
+                const restoredAsApplied = parsed.hasPromoCodeAdded && hasValidPromoDiscount;
+                setHasPromoCodeAdded(restoredAsApplied);
+                setIsPromoEditing(!restoredAsApplied);
+                if (hasValidPromoDiscount) {
+                    setPromoDiscount(parsed.promoDiscount);
+                }
             }
             const savedMediaGallery = Array.isArray(parsed.mediaGallery)
                 ? parsed.mediaGallery.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
@@ -1593,6 +1919,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 durationDays,
                 promoCode,
                 hasPromoCodeAdded,
+                promoDiscount,
                 mediaPreview: persistedImageGallery[0] || historyMediaPreview || "",
                 mediaGallery: persistedImageGallery,
                 mediaType: uploadedMediaType,
@@ -1846,8 +2173,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isProductPromote, searchParams, activeLink, linkedProduct]);
 
-    // Profile Promote: pre-fill the link input with the user's profile link and load all of their products
-    // so they can manually pick up to 3 to feature in the ad preview.
+    // Profile Promote: pre-fill the link input with the user's profile link and load products
+    // for whichever public profile is currently being promoted.
     useEffect(() => {
         if (!isProfilePromote || !userProfile?.username) return;
         if (!linkInput && !activeLink) {
@@ -1856,7 +2183,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         let cancelled = false;
         (async () => {
             try {
-                const ownerId = userProfile?.id ?? userProfile?._id ?? userProfile?.user_id;
+                const ownerId = promotedProfile?.id ?? promotedProfile?._id ?? promotedProfile?.user_id;
                 if (!ownerId) return;
                 const items = await marketService.getItems({ user_id: ownerId, status: "active,approved" });
                 if (cancelled) return;
@@ -1871,19 +2198,41 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             cancelled = true;
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isProfilePromote, userProfile?.username, userProfile?.id]);
+    }, [isProfilePromote, userProfile?.username, userProfile?.id, promotedProfile?.id, promotedProfile?.user_id]);
 
     const toggleProfilePromoteProduct = (product: any) => {
         setProfilePromoteProducts((current) => {
             const exists = current.some((p) => String(p.id) === String(product.id));
             if (exists) return current.filter((p) => String(p.id) !== String(product.id));
-            if (current.length >= 3) {
-                showPopupError("You can select up to 3 products.");
+            if (current.length >= PROFILE_PROMOTE_FEATURED_LIMIT) {
+                showPopupError(`You can select up to ${PROFILE_PROMOTE_FEATURED_LIMIT} products.`);
                 return current;
             }
             return [...current, product];
         });
     };
+
+    const slideProfilePromoteProducts = (direction: -1 | 1) => {
+        setProfilePromoteSlideIndex((current) => {
+            const maxIndex = Math.max(0, profilePromoteProducts.length - 3);
+            return clamp(current + direction, 0, maxIndex);
+        });
+    };
+
+    useEffect(() => {
+        setProfilePromoteSlideIndex((current) => Math.min(current, Math.max(0, profilePromoteProducts.length - 3)));
+    }, [profilePromoteProducts.length]);
+
+    const slideProfilePromoteAvailableProducts = (direction: -1 | 1) => {
+        setProfilePromoteAvailableSlideIndex((current) => {
+            const maxIndex = Math.max(0, profilePromoteAvailable.length - PROFILE_PROMOTE_PICKER_VISIBLE_COUNT);
+            return clamp(current + direction, 0, maxIndex);
+        });
+    };
+
+    useEffect(() => {
+        setProfilePromoteAvailableSlideIndex((current) => Math.min(current, Math.max(0, profilePromoteAvailable.length - PROFILE_PROMOTE_PICKER_VISIBLE_COUNT)));
+    }, [profilePromoteAvailable.length]);
 
     const renderCreative = (context: "mobile" | "desktop") => {
         const iconSize = context === "mobile" ? "text-3xl" : "text-4xl";
@@ -2493,7 +2842,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                         type="text"
                                         value={linkInput}
                                         onChange={(event) => setLinkInput(event.target.value)}
-                                        placeholder="https://app.infranex.it.com/profile/username"
+                                        placeholder="https://app.infranex.it.com/username"
                                         className="min-h-10 min-w-0 flex-1 rounded-xl bg-white/[0.06] px-3 text-xs text-white outline-none transition placeholder:text-white/25 focus:bg-white/[0.09]"
                                     />
                                     <button
@@ -2510,7 +2859,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     <button
                                         type="button"
                                         onClick={async () => {
-                                            const value = linkInput || profileLink;
+                                            const value = activeLink || linkInput || promotedProfileLink;
                                             try {
                                                 if (navigator.clipboard?.writeText) {
                                                     await navigator.clipboard.writeText(value);
@@ -2529,7 +2878,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     <button
                                         type="button"
                                         onClick={() => {
+                                            setProfilePromoteUser(null);
+                                            setProfilePromoteProducts([]);
+                                            setProfilePromoteSlideIndex(0);
                                             setLinkInput(profileLink);
+                                            setActiveLink(profileLink);
                                         }}
                                         className="flex min-h-9 items-center gap-2 rounded-full bg-white/[0.06] px-3 text-[10px] font-black uppercase tracking-[0.14em] text-white/55 transition hover:bg-white/[0.1] hover:text-white active:scale-95"
                                     >
@@ -2545,7 +2898,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                         <div>
                                             <p className="text-sm font-bold text-white">Featured Products</p>
                                             <p className="mt-1 text-xs text-white/45">
-                                                Select up to 3 of your products to feature in this ad. ({profilePromoteProducts.length}/3)
+                                                Select up to 3 products to feature in this ad. ({profilePromoteProducts.length}/{PROFILE_PROMOTE_FEATURED_LIMIT})
                                             </p>
                                         </div>
                                         {profilePromoteProducts.length > 0 && (
@@ -2564,42 +2917,71 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                             You have no public products yet. Add products to your marketplace first.
                                         </div>
                                     ) : (
-                                        <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 md:grid-cols-5">
-                                            {profilePromoteAvailable.map((product) => {
-                                                const selected = profilePromoteProducts.some((p) => String(p.id) === String(product.id));
-                                                const selectionIndex = profilePromoteProducts.findIndex((p) => String(p.id) === String(product.id));
-                                                const img = getProductImageSrc(product);
-                                                const price = product?.promo_price || product?.price;
-                                                return (
+                                        <div className="relative overflow-hidden">
+                                            {profilePromoteAvailable.length > PROFILE_PROMOTE_PICKER_VISIBLE_COUNT && (
+                                                <div className="absolute right-2 top-2 z-10 flex gap-1">
                                                     <button
-                                                        key={`profile-promote-pick-${product.id}`}
                                                         type="button"
-                                                        onClick={() => toggleProfilePromoteProduct(product)}
-                                                        className={`relative overflow-hidden rounded-lg border text-left transition active:scale-[0.99] ${selected ? "border-white/80 bg-white/[0.06] shadow-[0_6px_18px_rgba(255,255,255,0.06)]" : "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.05]"}`}
+                                                        onClick={() => slideProfilePromoteAvailableProducts(-1)}
+                                                        disabled={profilePromoteAvailableSlideIndex === 0}
+                                                        className="flex h-6 w-6 items-center justify-center rounded-full bg-black/65 text-[10px] font-black text-white transition hover:bg-black disabled:opacity-35"
+                                                        aria-label="Previous available products"
                                                     >
-                                                        <div className="relative aspect-square w-full overflow-hidden bg-black">
-                                                            {img ? (
-                                                                <Image src={img} alt={product.title || "Product"} fill className="object-cover" unoptimized />
-                                                            ) : (
-                                                                <div className="flex h-full w-full items-center justify-center bg-white/[0.04]">
-                                                                    <IonIcon name="image-outline" className="text-sm text-white/30" />
-                                                                </div>
-                                                            )}
-                                                            {selected && (
-                                                                <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-white text-[8px] font-black text-black">
-                                                                    {selectionIndex + 1}
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                        <div className="px-1.5 py-1">
-                                                            <p className="truncate text-[8px] font-black text-white">{product.title || "Item"}</p>
-                                                            <p className="truncate text-[7px] font-bold text-white/45">
-                                                                {Number(price || 0).toLocaleString()}
-                                                            </p>
-                                                        </div>
+                                                        &lt;
                                                     </button>
-                                                );
-                                            })}
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => slideProfilePromoteAvailableProducts(1)}
+                                                        disabled={profilePromoteAvailableSlideIndex >= profilePromoteAvailable.length - PROFILE_PROMOTE_PICKER_VISIBLE_COUNT}
+                                                        className="flex h-6 w-6 items-center justify-center rounded-full bg-black/65 text-[10px] font-black text-white transition hover:bg-black disabled:opacity-35"
+                                                        aria-label="Next available products"
+                                                    >
+                                                        &gt;
+                                                    </button>
+                                                </div>
+                                            )}
+                                            <div className="overflow-hidden">
+                                                <div
+                                                    className="flex gap-1.5 transition-transform duration-300 ease-out"
+                                                    style={{ transform: `translateX(calc(-${profilePromoteAvailableSlideIndex * 20}% - ${profilePromoteAvailableSlideIndex * 0.3}rem))` }}
+                                                >
+                                                    {profilePromoteAvailable.map((product) => {
+                                                        const selected = profilePromoteProducts.some((p) => String(p.id) === String(product.id));
+                                                        const selectionIndex = profilePromoteProducts.findIndex((p) => String(p.id) === String(product.id));
+                                                        const img = getProductImageSrc(product);
+                                                        const price = product?.promo_price || product?.price;
+                                                        return (
+                                                            <button
+                                                                key={`profile-promote-pick-${product.id}`}
+                                                                type="button"
+                                                                onClick={() => toggleProfilePromoteProduct(product)}
+                                                                className={`relative w-[calc((100%-1.5rem)/5)] shrink-0 overflow-hidden rounded-lg border text-left transition active:scale-[0.99] ${selected ? "border-white/80 bg-white/[0.06] shadow-[0_6px_18px_rgba(255,255,255,0.06)]" : "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.05]"}`}
+                                                            >
+                                                                <div className="relative aspect-square w-full overflow-hidden bg-black">
+                                                                    {img ? (
+                                                                        <Image src={img} alt={product.title || "Product"} fill className="object-cover" unoptimized />
+                                                                    ) : (
+                                                                        <div className="flex h-full w-full items-center justify-center bg-white/[0.04]">
+                                                                            <IonIcon name="image-outline" className="text-sm text-white/30" />
+                                                                        </div>
+                                                                    )}
+                                                                    {selected && (
+                                                                        <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-white text-[8px] font-black text-black">
+                                                                            {selectionIndex + 1}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                                <div className="px-1.5 py-1">
+                                                                    <p className="truncate text-[8px] font-black text-white">{product.title || "Item"}</p>
+                                                                    <p className="truncate text-[7px] font-bold text-white/45">
+                                                                        {Number(price || 0).toLocaleString()}
+                                                                    </p>
+                                                                </div>
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
@@ -2909,116 +3291,156 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     <div className="flex flex-col gap-1.5">
                                         <div className="flex items-center gap-2 text-base font-black text-white">
                                             <span className="rounded-lg bg-white/[0.07] px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/55">Rupieer</span>
-                                            <span>{formatRuppier(budget)}</span>
+                                            <span>{budget !== null ? formatRuppier(budget) : "—"}</span>
                                             <span className="text-xs font-black text-white/45">Total Budget</span>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    if (hasPromoCodeAdded) return;
-                                                    if (isBudgetEditing) {
-                                                        closeBudgetEditor();
-                                                        return;
-                                                    }
-                                                    setBudgetInput(String(budget));
-                                                    setIsBudgetEditing(true);
-                                                }}
-                                                className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/[0.06] text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                                                aria-label="Edit budget amount"
-                                                disabled={hasPromoCodeAdded}
-                                            >
-                                                <IonIcon name={isBudgetEditing ? "checkmark-outline" : "create-outline"} className="text-sm" />
-                                            </button>
+                                            {!isProfileAd && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        if (isPromoLockingBudget) return;
+                                                        if (isBudgetEditing) { closeBudgetEditor(); return; }
+                                                        setBudgetInput(budget !== null ? String(budget) : "");
+                                                        setIsBudgetEditing(true);
+                                                    }}
+                                                    className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/[0.06] text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                                                    aria-label="Edit budget amount"
+                                                    disabled={isPromoLockingBudget}
+                                                >
+                                                    <IonIcon name={isBudgetEditing ? "checkmark-outline" : "create-outline"} className="text-sm" />
+                                                </button>
+                                            )}
                                         </div>
-                                        {isBudgetEditing && (
+                                        {!isProfileAd && isBudgetEditing && (
                                             <input
                                                 type="text"
                                                 inputMode="numeric"
                                                 value={budgetInput}
                                                 onChange={(event) => applyBudgetInput(event.target.value)}
                                                 onBlur={closeBudgetEditor}
-                                                onKeyDown={(event) => {
-                                                    if (event.key === "Enter") closeBudgetEditor();
-                                                }}
+                                                onKeyDown={(event) => { if (event.key === "Enter") closeBudgetEditor(); }}
                                                 maxLength={6}
                                                 className="min-h-8 w-32 rounded-lg border border-white/10 bg-black/20 px-2 text-[10px] font-black text-white outline-none transition focus:border-white/30 focus:bg-white/[0.08]"
-                                                disabled={hasPromoCodeAdded}
+                                                disabled={isPromoLockingBudget}
                                                 autoFocus
                                             />
                                         )}
                                     </div>
-                                    <div className="flex flex-wrap items-center justify-end gap-2">
-                                        <div className="flex min-h-9 items-center gap-1 rounded-xl border border-white/10 bg-black/20 px-1.5 py-1 transition focus-within:border-white/30">
-                                            <input
-                                                type="text"
-                                                value={promoCode}
-                                                onChange={(event) => setPromoCode(sanitizePromoCode(event.target.value))}
-                                                onKeyDown={(event) => {
-                                                    if (event.key === "Enter") addPromoCode();
-                                                }}
-                                                maxLength={15}
-                                                disabled={hasPromoCodeAdded && !isPromoEditing}
-                                                placeholder="Promo Code"
-                                                className="h-7 w-32 bg-transparent px-2 text-[10px] font-black uppercase tracking-[0.08em] text-white outline-none placeholder:text-white/40 disabled:cursor-default disabled:opacity-100"
-                                            />
-                                            {hasPromoCodeAdded && !isPromoEditing ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        setPromoCode("");
-                                                        setHasPromoCodeAdded(false);
-                                                        setIsPromoEditing(true);
+                                    <div className="flex flex-col items-end gap-1">
+                                        <div className="flex flex-wrap items-center justify-end gap-2">
+                                            <div className={`flex min-h-9 items-center gap-1 rounded-xl border bg-black/20 px-1.5 py-1 transition focus-within:border-white/30 ${promoError ? "border-red-500/60" : "border-white/10"}`}>
+                                                <input
+                                                    type="text"
+                                                    value={promoCode}
+                                                    onChange={(event) => {
+                                                        setPromoCode(sanitizePromoCode(event.target.value));
+                                                        if (promoError) setPromoError("");
                                                     }}
-                                                    className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-500/15 text-red-400 transition hover:bg-red-500/25 hover:text-red-300"
-                                                    aria-label="Remove promo code"
-                                                >
-                                                    <IonIcon name="close-outline" className="text-base" />
-                                                </button>
-                                            ) : (
-                                                <button
-                                                    type="button"
-                                                    onClick={addPromoCode}
-                                                    className="flex h-7 min-w-10 items-center justify-center rounded-lg bg-rose-500 px-2 text-[9px] font-black uppercase tracking-[0.08em] text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
-                                                    disabled={!promoCode.trim() && !hasPromoCodeAdded}
-                                                >
-                                                    Add
-                                                </button>
-                                            )}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === "Enter") addPromoCode();
+                                                    }}
+                                                    maxLength={15}
+                                                    disabled={hasPromoCodeAdded && !isPromoEditing}
+                                                    placeholder="Promo Code"
+                                                    className="h-7 w-32 bg-transparent px-2 text-[10px] font-black uppercase tracking-[0.08em] text-white outline-none placeholder:text-white/40 disabled:cursor-default disabled:opacity-100"
+                                                />
+                                                {hasPromoCodeAdded && !isPromoEditing ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setPromoCode("");
+                                                            setHasPromoCodeAdded(false);
+                                                            setIsPromoEditing(true);
+                                                            setPromoDiscount(null);
+                                                            setPromoError("");
+                                                        }}
+                                                        className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-500/15 text-red-400 transition hover:bg-red-500/25 hover:text-red-300"
+                                                        aria-label="Remove promo code"
+                                                    >
+                                                        <IonIcon name="close-outline" className="text-base" />
+                                                    </button>
+                                                ) : (
+                                                    <button
+                                                        type="button"
+                                                        onClick={addPromoCode}
+                                                        className="flex h-7 min-w-10 items-center justify-center rounded-lg bg-rose-500 px-2 text-[9px] font-black uppercase tracking-[0.08em] text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
+                                                        disabled={(!promoCode.trim() && !hasPromoCodeAdded) || isValidatingPromo}
+                                                    >
+                                                        {isValidatingPromo ? (
+                                                            <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                                                        ) : "Add"}
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                        {promoError && (
+                                            <p className="text-right text-[9px] font-semibold text-red-400">{promoError}</p>
+                                        )}
+                                        {hasPromoCodeAdded && promoDiscount && !promoError && (
+                                            <p className="text-right text-[9px] font-semibold text-emerald-400">
+                                                {promoDiscount.discount_type === "rupee"
+                                                    ? `–R${promoDiscount.discount_value.toLocaleString()} discount applied`
+                                                    : promoDiscount.discount_type === "reach"
+                                                        ? "Promo code applied"
+                                                        : `+${promoDiscount.discount_value} free day${promoDiscount.discount_value !== 1 ? "s" : ""} added`}
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                                {/* Budget slider — full width, photo/video & product only */}
+                                {!isProfileAd && tiersLoaded && (
+                                    <div className={`transition-opacity ${isPromoLockingBudget ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
+                                        <input
+                                            type="range"
+                                            min={globalBudgetMin}
+                                            max={globalBudgetMax}
+                                            step={1}
+                                            value={budget ?? globalBudgetMin}
+                                            disabled={isPromoLockingBudget}
+                                            onChange={(event) => {
+                                                const val = Number(event.target.value);
+                                                setBudget(val);
+                                                if (isBudgetEditing) setBudgetInput(String(val));
+                                            }}
+                                            className="h-2 w-full cursor-pointer accent-rose-500 disabled:cursor-not-allowed"
+                                        />
+                                        <div className="mt-1 flex justify-between text-[9px] font-bold text-white/35">
+                                            <span>R{globalBudgetMin.toLocaleString()}</span>
+                                            <span>R{globalBudgetMax.toLocaleString()}</span>
                                         </div>
                                     </div>
-                                </div>
-                                <div className={`relative pt-4 transition-opacity ${hasPromoCodeAdded ? "opacity-45" : "opacity-100"}`}>
-                                    <div
-                                        className="pointer-events-none absolute left-0 right-0 top-[1.55rem] h-2 rounded-full"
-                                        style={{
-                                            background: `linear-gradient(to right, #f43f5e 0%, #f43f5e ${budgetProgress}%, rgba(255,255,255,0.22) ${budgetProgress}%, rgba(255,255,255,0.22) 100%)`,
-                                        }}
-                                    />
-                                    <div
-                                        className="pointer-events-none absolute top-0 -translate-x-1/2 rounded-lg bg-white px-2 py-1 text-[10px] font-black text-black shadow-[0_8px_22px_rgba(0,0,0,0.28)]"
-                                        style={{ left: `${budgetProgress}%` }}
-                                    >
-                                        {formatRuppier(budget)}
+                                )}
+                                {isBudgetInGap && (
+                                    <p className="mt-1 text-[9px] font-semibold text-amber-400">
+                                        This budget amount is not available. Adjust to a valid range.
+                                    </p>
+                                )}
+                                {/* Profile promote: chip picker */}
+                                {isProfileAd && (!tiersLoaded ? (
+                                    <p className="mt-3 text-center text-[10px] font-semibold text-white/35">
+                                        No budget packages available right now.
+                                    </p>
+                                ) : (
+                                    <div className={`mt-3 flex flex-wrap gap-2 transition-opacity ${isPromoLockingBudget ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
+                                        {budgetOptions.map((opt) => (
+                                            <button
+                                                key={opt.value}
+                                                type="button"
+                                                onClick={() => {
+                                                    setBudget(opt.value);
+                                                    setDurationDays(opt.tier.min_days);
+                                                }}
+                                                className={`rounded-full border px-4 py-1.5 text-[10px] font-black transition active:scale-95 ${
+                                                    budget === opt.value
+                                                        ? "border-rose-500 bg-rose-500 text-white shadow-[0_6px_18px_rgba(244,63,94,0.35)]"
+                                                        : "border-white/15 bg-white/5 text-white/70 hover:border-white/30 hover:text-white"
+                                                }`}
+                                            >
+                                                R{opt.value.toLocaleString()}
+                                            </button>
+                                        ))}
                                     </div>
-                                    <div
-                                        className="pointer-events-none absolute top-[1.3rem] z-10 h-5 w-5 -translate-x-1/2 rounded-full border-2 border-white bg-rose-500 shadow-[0_6px_16px_rgba(244,63,94,0.45)]"
-                                        style={{ left: `${budgetProgress}%` }}
-                                    />
-                                    <input
-                                        type="range"
-                                        min={0}
-                                        max={BUDGET_VALUES.length - 1}
-                                        step={1}
-                                        value={budgetSliderIndex}
-                                        onChange={(event) => {
-                                            const nextBudget = BUDGET_VALUES[Number(event.target.value)];
-                                            setBudget(nextBudget);
-                                            setBudgetInput(String(nextBudget));
-                                        }}
-                                        disabled={hasPromoCodeAdded}
-                                        className="relative z-10 h-8 w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
-                                    />
-                                </div>
-                                <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+                                ))}
+                                <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
                                     <div className="rounded-xl bg-black/20 px-2.5 py-1 text-[10px] font-black text-white/55">
                                         Rupieer Balance: {walletBalanceLoaded ? formatRuppier(walletBalance) : "Loading..."}
                                     </div>
@@ -3039,22 +3461,27 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 )}
                             </div>
 
-                            <div>
+                            <div className={`transition-opacity ${isDurationLocked ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
                                 <p className="text-sm font-bold text-white">Duration</p>
                                 <div className="mb-3 mt-3 text-sm font-black text-white">
                                     {durationDays} {durationDays === 1 ? "day" : "days"}
+                                    {isDurationLocked && <span className="ml-2 text-[9px] font-semibold text-white/40 uppercase tracking-widest">Fixed</span>}
+                                    {hasPromoCodeAdded && promoDiscount?.discount_type === "days" && (
+                                        <span className="ml-2 text-[9px] font-semibold text-emerald-400">+{promoDiscount.discount_value} bonus</span>
+                                    )}
                                 </div>
                                 <input
                                     type="range"
-                                    min={1}
-                                    max={hasPromoCodeAdded ? PROMO_DURATION_MAX : 30}
+                                    min={tierMinDays}
+                                    max={tierMaxDays}
                                     step={1}
                                     value={durationDays}
+                                    disabled={isDurationLocked}
                                     onChange={(event) => {
                                         const nextDuration = Number(event.target.value);
-                                        setDurationDays(hasPromoCodeAdded ? Math.min(nextDuration, PROMO_DURATION_MAX) : nextDuration);
+                                        setDurationDays(Math.min(tierMaxDays, Math.max(tierMinDays, nextDuration)));
                                     }}
-                                    className="h-2 w-full cursor-pointer accent-rose-500"
+                                    className="h-2 w-full cursor-pointer accent-rose-500 disabled:cursor-not-allowed"
                                 />
                                 <p className="mt-2 text-[9px] font-bold leading-4 text-white/35">
                                     Ads usually complete within your selected time, but may finish sooner or take longer depending on audience reach.
@@ -3298,6 +3725,20 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             </div>
                         </div>
 
+                        {showProfileNonRefundableNotice && (
+                            <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3 text-left">
+                                <input
+                                    type="checkbox"
+                                    checked={acceptedProfileNonRefundable}
+                                    onChange={(event) => setAcceptedProfileNonRefundable(event.target.checked)}
+                                    className="mt-0.5 h-4 w-4 shrink-0 accent-amber-400"
+                                />
+                                <span className="text-[10px] font-bold leading-5 text-amber-100">
+                                    Profile promotion packages are non-refundable once activated.
+                                </span>
+                            </label>
+                        )}
+
                         <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-white/8 pt-4">
                             <button
                                 type="button"
@@ -3380,7 +3821,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                             </div>
                                             <div className="min-w-0 flex-1">
                                                 <p className="truncate text-[12px] font-black text-white">{profileDisplayName}</p>
-                                                <p className="truncate text-[9px] font-bold text-white/40">@{profileUsername}</p>
+                                                <p className="truncate text-[9px] font-bold text-white/40">@{promotedProfile?.username || profileUsername}</p>
                                             </div>
                                             <button
                                                 type="button"
@@ -3397,38 +3838,72 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                             </button>
                                         </div>
 
-                                        {/* Middle: 3 products from user's market */}
-                                        <div className="grid grid-cols-3 gap-1 p-1.5">
+                                        {/* Middle: selected featured products */}
+                                        <div className="relative overflow-hidden p-1.5">
+                                            {profilePromoteProducts.length > 3 && (
+                                                <div className="absolute right-2 top-2 z-10 flex gap-1">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => slideProfilePromoteProducts(-1)}
+                                                        disabled={profilePromoteSlideIndex === 0}
+                                                        className="flex h-6 w-6 items-center justify-center rounded-full bg-black/65 text-[10px] font-black text-white transition hover:bg-black disabled:opacity-35"
+                                                        aria-label="Previous featured products"
+                                                    >
+                                                        &lt;
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => slideProfilePromoteProducts(1)}
+                                                        disabled={profilePromoteSlideIndex >= profilePromoteProducts.length - 3}
+                                                        className="flex h-6 w-6 items-center justify-center rounded-full bg-black/65 text-[10px] font-black text-white transition hover:bg-black disabled:opacity-35"
+                                                        aria-label="Next featured products"
+                                                    >
+                                                        &gt;
+                                                    </button>
+                                                </div>
+                                            )}
                                             {profilePromoteProducts.length === 0 ? (
-                                                Array.from({ length: 3 }).map((_, idx) => (
-                                                    <div key={`profile-promote-empty-${idx}`} className="aspect-[4/5] rounded-[0.5rem] border border-dashed border-white/8 bg-white/[0.025]" />
-                                                ))
+                                                <div className="grid grid-cols-3 gap-1">
+                                                    {Array.from({ length: 3 }).map((_, idx) => (
+                                                        <div key={`profile-promote-empty-${idx}`} className="aspect-[4/5] rounded-[0.5rem] border border-dashed border-white/8 bg-white/[0.025]" />
+                                                    ))}
+                                                </div>
                                             ) : (
-                                                profilePromoteProducts.map((product) => {
-                                                    const img = getProductImageSrc(product);
-                                                    return (
-                                                        <div
-                                                            key={`profile-promote-product-${product.id}`}
-                                                            className="overflow-hidden rounded-[0.5rem] border border-white/8 bg-[#0e1014]"
-                                                        >
-                                                            <div className="relative aspect-square w-full overflow-hidden bg-black">
-                                                                {img ? (
-                                                                    <Image src={img} alt={product.title || ""} fill className="object-cover" unoptimized />
-                                                                ) : (
-                                                                    <div className="flex h-full w-full items-center justify-center bg-white/[0.04]">
-                                                                        <IonIcon name="image-outline" className="text-[10px] text-white/30" />
+                                                <div className="overflow-hidden">
+                                                    <div
+                                                        className="flex gap-1 transition-transform duration-300 ease-out"
+                                                        style={{ transform: `translateX(-${profilePromoteSlideIndex * 33.3333}%)` }}
+                                                    >
+                                                        {profilePromoteProducts.map((product) => {
+                                                            const img = getProductImageSrc(product);
+                                                            return (
+                                                                <div
+                                                                    key={`profile-promote-product-${product.id}`}
+                                                                    className="w-1/3 shrink-0 overflow-hidden rounded-[0.5rem] border border-white/8 bg-[#0e1014]"
+                                                                >
+                                                                    <div className="relative aspect-square w-full overflow-hidden bg-black">
+                                                                        {img ? (
+                                                                            <Image src={img} alt={product.title || ""} fill className="object-cover" unoptimized />
+                                                                        ) : (
+                                                                            <div className="flex h-full w-full items-center justify-center bg-white/[0.04]">
+                                                                                <IonIcon name="image-outline" className="text-[10px] text-white/30" />
+                                                                            </div>
+                                                                        )}
                                                                     </div>
-                                                                )}
-                                                            </div>
-                                                            <div className="px-1 py-1">
-                                                                <p className="truncate text-[7px] font-black text-white/85">{product.title || "Item"}</p>
-                                                                <p className="truncate text-[7px] font-bold text-white/45">
-                                                                    {Number(product.promo_price || product.price || 0).toLocaleString()}
-                                                                </p>
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                })
+                                                                    <div className="px-1 py-1">
+                                                                        <p className="truncate text-[7px] font-black text-white/85">{product.title || "Item"}</p>
+                                                                        <p className="truncate text-[7px] font-bold text-white/45">
+                                                                            {Number(product.promo_price || product.price || 0).toLocaleString()}
+                                                                        </p>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                        {Array.from({ length: Math.max(0, 3 - profilePromoteProducts.length) }).map((_, idx) => (
+                                                            <div key={`profile-promote-fill-${idx}`} className="w-1/3 shrink-0 aspect-[4/5] rounded-[0.5rem] border border-dashed border-white/8 bg-white/[0.025]" />
+                                                        ))}
+                                                    </div>
+                                                </div>
                                             )}
                                         </div>
 
@@ -3578,7 +4053,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             <div className="mt-1.5 grid grid-cols-2 gap-1">
                                 <div className="rounded-[0.75rem] bg-black/20 px-2 py-1">
                                     <p className="text-[8px] font-black uppercase tracking-[0.16em] text-white/35">Total Budget</p>
-                                    <p className="mt-0.5 truncate text-[9px] font-bold text-white/82">Rupieer {formatRuppier(budget)}</p>
+                                    <p className="mt-0.5 truncate text-[9px] font-bold text-white/82">{isProfileAd && hasPromoCodeAdded ? "Rupieer 0" : (effectiveBudget !== null ? `Rupieer ${formatRuppier(effectiveBudget)}` : "—")}</p>
                                 </div>
                                 <div className="rounded-[0.75rem] bg-black/20 px-2 py-1">
                                     <p className="text-[8px] font-black uppercase tracking-[0.16em] text-white/35">Duration</p>
@@ -3592,10 +4067,24 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     <p className="text-[8px] font-black uppercase tracking-[0.16em] text-white/35">Gender</p>
                                     <p className="mt-0.5 truncate text-[9px] font-bold text-white/82">{genderTarget}</p>
                                 </div>
-                                <div className="col-span-2 rounded-[0.75rem] bg-black/20 px-2 py-1">
-                                    <p className="text-[8px] font-black uppercase tracking-[0.16em] text-white/35">Estimated Reach</p>
-                                    <p className="mt-0.5 truncate text-[10px] font-black text-white/90">{estimatedReachLabel}</p>
-                                </div>
+                                {estimatedReachLabel && (
+                                    <div className="col-span-2 rounded-[0.75rem] bg-black/20 px-2 py-1">
+                                        <p className="text-[8px] font-black uppercase tracking-[0.16em] text-white/35">Estimated Reach</p>
+                                        <p className="mt-0.5 truncate text-[10px] font-black text-white/90">{estimatedReachLabel} people</p>
+                                    </div>
+                                )}
+                                {hasPromoCodeAdded && promoDiscount?.discount_type === "reach" && promoDiscount.promo_max_days != null && (
+                                    <div className="col-span-2 rounded-[0.75rem] bg-emerald-500/10 px-2 py-1">
+                                        <p className="text-[8px] font-black uppercase tracking-[0.16em] text-emerald-400/70">Promo ({promoCode})</p>
+                                        <p className="mt-0.5 text-[9px] font-black text-emerald-400">Max Ad Duration: {promoDiscount.promo_max_days} {promoDiscount.promo_max_days === 1 ? "day" : "days"}</p>
+                                    </div>
+                                )}
+                                {hasPromoCodeAdded && promoDiscount?.discount_type === "days" && (
+                                    <div className="col-span-2 rounded-[0.75rem] bg-emerald-500/10 px-2 py-1">
+                                        <p className="text-[8px] font-black uppercase tracking-[0.16em] text-emerald-400/70">Promo ({promoCode})</p>
+                                        <p className="mt-0.5 text-[9px] font-black text-emerald-400">+{promoDiscount.discount_value} Free {promoDiscount.discount_value === 1 ? "Day" : "Days"}</p>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>

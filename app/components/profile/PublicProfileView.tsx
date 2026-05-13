@@ -73,12 +73,38 @@ function formatDisplayUrl(url: string) {
     }
 }
 
-function renderBioText(text: string): ReactNode[] {
+function getCanonicalProfileLink(url: string, username?: string) {
+    const canonicalProfileUrl = username ? getProfileShareUrl({ username }) : "";
+    if (!canonicalProfileUrl) return normalizeUrl(url);
+
+    try {
+        const parsed = new URL(normalizeUrl(url));
+        const segments = parsed.pathname.split("/").filter(Boolean);
+        const first = (segments[0] || "").toLowerCase();
+
+        if (first === "dashboard" && (segments[1] || "").toLowerCase() === "profile") {
+            return canonicalProfileUrl;
+        }
+        if ((first === "profile" || first === "u") && segments[1]) {
+            return getProfileShareUrl({ username: segments[1] });
+        }
+        if (segments.length === 1 && username && segments[0]?.toLowerCase() === username.toLowerCase()) {
+            return canonicalProfileUrl;
+        }
+    } catch {
+        return normalizeUrl(url);
+    }
+
+    return normalizeUrl(url);
+}
+
+function renderBioText(text: string, username?: string): ReactNode[] {
     if (!text) return [];
     const parts = text.split(/(https?:\/\/[^\s]+|www\.[^\s]+|@[\w.]+|#[\w.]+)/g);
     return parts.filter(Boolean).map((part, index) => {
         if (/^(https?:\/\/|www\.)/i.test(part)) {
-            return <a key={index} href={normalizeUrl(part)} target="_blank" rel="noreferrer" className="text-sky-400 transition hover:text-sky-300">{part}</a>;
+            const canonicalLink = getCanonicalProfileLink(part, username);
+            return <a key={index} href={canonicalLink} target="_blank" rel="noreferrer" className="text-sky-400 transition hover:text-sky-300">{formatDisplayUrl(canonicalLink)}</a>;
         }
         if (part.startsWith("@") || part.startsWith("#")) return <span key={index} className="text-sky-400">{part}</span>;
         return <span key={index}>{part}</span>;
@@ -163,6 +189,7 @@ export function PublicProfileView({ user: initialUser, isPublic = true }: { user
     const profileImage = user.profile_picture ? (user.profile_picture.startsWith("http") ? user.profile_picture : `/uploads/${user.profile_picture.split(/[\\/]/).pop()}`) : `https://ui-avatars.com/api/?name=${encodeURIComponent(user.full_name || user.username || "G")}&background=111&color=fff`;
     const bioLines = (user.bio || "").split(/\n+/).filter(Boolean);
     const bioLinks = (user.bio || "").match(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi) || [];
+    const normalizedBioLinks = bioLinks.map((link) => getCanonicalProfileLink(link, user.username));
 
     return (
         <div className="mx-auto max-w-[1280px] pb-24 text-white">
@@ -183,11 +210,11 @@ export function PublicProfileView({ user: initialUser, isPublic = true }: { user
 
                 <div className="mt-6 max-w-2xl">
                     <div className="space-y-1 text-sm font-medium leading-relaxed text-zinc-200">
-                        {bioLines.length > 0 ? bioLines.map((line, i) => <p key={i}>{renderBioText(line)}</p>) : <p className="text-zinc-500 italic">No bio provided</p>}
+                        {bioLines.length > 0 ? bioLines.map((line, i) => <p key={i}>{renderBioText(line, user.username)}</p>) : <p className="text-zinc-500 italic">No bio provided</p>}
                     </div>
                     <div className="mt-3 flex flex-col gap-1.5">
-                        {bioLinks.slice(0, 2).map((link, i) => (
-                            <a key={i} href={normalizeUrl(link)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-sm font-bold text-sky-400 hover:text-sky-300 transition-colors">
+                        {normalizedBioLinks.slice(0, 2).map((link, i) => (
+                            <a key={i} href={link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-sm font-bold text-sky-400 hover:text-sky-300 transition-colors">
                                 <IonIcon name="link-outline" />
                                 <span className="truncate">{formatDisplayUrl(link)}</span>
                             </a>

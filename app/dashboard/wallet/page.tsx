@@ -63,7 +63,7 @@ export default function WalletPage() {
             }
         };
         fetchData();
-    }, [user]);
+    }, []);
 
     useEffect(() => {
         const refreshAdCount = async () => {
@@ -80,7 +80,7 @@ export default function WalletPage() {
         window.addEventListener("googer-ad-history-updated", refreshAdCount);
         window.addEventListener("focus", refreshAdCount);
         document.addEventListener("visibilitychange", refreshAdCount);
-        const intervalId = window.setInterval(refreshAdCount, 1000);
+        const intervalId = window.setInterval(refreshAdCount, 30000);
 
         return () => {
             window.removeEventListener("storage", refreshAdCount);

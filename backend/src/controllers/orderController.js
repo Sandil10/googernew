@@ -247,31 +247,42 @@ async function cancelTransferIfUnused(client, transferColumn, transferId, curren
 
 async function refundCancelledOrder(client, order) {
     if (order.wallet_transfer_id) {
-        const buyerRefundAmount = parseFloat(order.total_price || 0) + parseFloat(order.shipping_fee || 0);
-        await client.query(
-            'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
-            [buyerRefundAmount, order.buyer_id]
+        const holdTxRes = await client.query(
+            'SELECT status FROM wallet_transfers WHERE id = $1 FOR UPDATE',
+            [order.wallet_transfer_id]
         );
-        await cancelTransferIfUnused(client, 'wallet_transfer_id', order.wallet_transfer_id, order.id);
+        const holdStatus = String(holdTxRes.rows[0]?.status || '').toLowerCase();
+        if (holdStatus !== 'cancelled' && holdStatus !== 'completed') {
+            const buyerRefundAmount = parseFloat(order.total_price || 0) + parseFloat(order.shipping_fee || 0);
+            await client.query(
+                'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
+                [buyerRefundAmount, order.buyer_id]
+            );
+            await cancelTransferIfUnused(client, 'wallet_transfer_id', order.wallet_transfer_id, order.id);
+        }
     }
 
     if (order.seller_commission_transfer_id) {
-        const commRes = await client.query('SELECT amount FROM wallet_transfers WHERE id = $1', [order.seller_commission_transfer_id]);
+        const commRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_commission_transfer_id]);
         if (commRes.rows.length > 0) {
             const commAmount = parseFloat(commRes.rows[0].amount || 0);
-            await client.query(
-                'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
-                [commAmount, order.seller_id]
-            );
-            await cancelTransferIfUnused(client, 'seller_commission_transfer_id', order.seller_commission_transfer_id, order.id);
+            const commStatus = String(commRes.rows[0].status || '').toLowerCase();
+            if (commStatus !== 'cancelled' && commStatus !== 'completed') {
+                await client.query(
+                    'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
+                    [commAmount, order.seller_id]
+                );
+                await cancelTransferIfUnused(client, 'seller_commission_transfer_id', order.seller_commission_transfer_id, order.id);
+            }
         }
     }
 
     if (order.seller_discount_transfer_id) {
-        const discRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1', [order.seller_discount_transfer_id]);
+        const discRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_discount_transfer_id]);
         if (discRes.rows.length > 0) {
             const discAmount = parseFloat(discRes.rows[0].amount || 0);
             const discountStatus = String(discRes.rows[0].status || '').toLowerCase();
+            if (discountStatus === 'cancelled') return;
             if (order.payment_method === 'wallet_manual') {
                 await client.query(
                     'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
@@ -402,7 +413,11 @@ async function stakeSellerDiscount(client, { sellerId, buyerId, itemId, quantity
 
 async function finalizeReceivedOrder(client, order) {
     if (order.wallet_transfer_id) {
-        const holdTxRes = await client.query('SELECT amount FROM wallet_transfers WHERE id = $1', [order.wallet_transfer_id]);
+        const holdTxRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.wallet_transfer_id]);
+        const holdStatus = String(holdTxRes.rows[0]?.status || '').toLowerCase();
+        if (holdStatus === 'completed' || holdStatus === 'cancelled') {
+            return;
+        }
         const totalReleased = holdTxRes.rows.length > 0
             ? parseFloat(holdTxRes.rows[0].amount || 0)
             : (parseFloat(order.total_price || 0) + parseFloat(order.shipping_fee || 0));
@@ -412,17 +427,20 @@ async function finalizeReceivedOrder(client, order) {
     }
 
     if (order.seller_commission_transfer_id) {
-        const commRes = await client.query('SELECT amount FROM wallet_transfers WHERE id = $1', [order.seller_commission_transfer_id]);
+        const commRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_commission_transfer_id]);
         if (commRes.rows.length > 0) {
             const commAmount = parseFloat(commRes.rows[0].amount || 0);
-            await client.query('UPDATE users SET hold_balance = hold_balance - $1 WHERE id = $2', [commAmount, order.seller_id]);
-            await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = 1', [commAmount]);
-            await client.query("UPDATE wallet_transfers SET status = 'completed', receiver_id = 1 WHERE id = $1", [order.seller_commission_transfer_id]);
+            const commStatus = String(commRes.rows[0].status || '').toLowerCase();
+            if (commStatus !== 'completed' && commStatus !== 'cancelled') {
+                await client.query('UPDATE users SET hold_balance = hold_balance - $1 WHERE id = $2', [commAmount, order.seller_id]);
+                await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = 1', [commAmount]);
+                await client.query("UPDATE wallet_transfers SET status = 'completed', receiver_id = 1 WHERE id = $1", [order.seller_commission_transfer_id]);
+            }
         }
     }
 
     if (order.seller_discount_transfer_id) {
-        const discRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1', [order.seller_discount_transfer_id]);
+        const discRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_discount_transfer_id]);
         if (discRes.rows.length > 0) {
             const discAmount = parseFloat(discRes.rows[0].amount || 0);
             const discountStatus = String(discRes.rows[0].status || '').toLowerCase();

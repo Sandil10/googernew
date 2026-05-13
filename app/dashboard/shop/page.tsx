@@ -1505,6 +1505,12 @@ export default function ShopPage() {
     return String(product?.id || "").startsWith("ad-") ? product.id : (product?.adId ? `ad-${product.adId}` : product?.id);
   };
 
+  const trackSponsoredAdClick = (product: any) => {
+    if (!product?.is_sponsored && !String(product?.id || "").startsWith("ad-")) return;
+    const clickId = getSponsoredCollectionId(product);
+    if (clickId) void marketService.logAdClick(clickId);
+  };
+
   const getUserIdentity = (user: any) => (
     user?.id ??
     user?.user_id ??
@@ -4344,6 +4350,7 @@ export default function ShopPage() {
                   className="col-span-2 sm:col-span-2 lg:col-span-4 px-4 py-4 transition-colors sm:px-7"
                   cardsPerView={4}
                   onProductClick={(previewProduct) => {
+                    trackSponsoredAdClick(previewProduct);
                     void openProductPromoteSecondView(previewProduct);
                   }}
                   onProfileClick={(profileAd) => {
@@ -4365,7 +4372,7 @@ export default function ShopPage() {
 
             if (isSponsoredCard) {
               return (
-                <Fragment key={`${product.adId ? `ad-${product.adId}` : ''}:${product.id || index}`}>
+                <Fragment key={`${product.id || (product.adId ? `ad-${product.adId}` : `item`)}-${index}`}>
                   <MarketItemWrapper product={product} onView={handleLogView} activeTab={activeTab}>
                     <PromotedAdCard
                       ad={product}
@@ -4374,11 +4381,13 @@ export default function ShopPage() {
                       onToggleMenu={(id) => setOpenMenuProductId(openMenuProductId === id ? null : id)}
                       onCloseMenu={() => setOpenMenuProductId(null)}
                       onProductClick={(p) => {
+                        trackSponsoredAdClick(p);
                         if (isProductPromoteCard) {
                           void openProductPromoteSecondView(p);
                         }
                       }}
                       onAddToBagClick={(p) => {
+                        trackSponsoredAdClick(p);
                         if (isProductPromoteCard) {
                           void openProductPromoteSecondView(p);
                         }
@@ -4386,6 +4395,7 @@ export default function ShopPage() {
                       onOpenSecondView={() => {
                         if (isProductPromoteCard) return;
                         const kind = getSponsoredSecondViewKind(product, sponsoredLinkPreviewType);
+                        trackSponsoredAdClick(product);
                         setSharedAdPreviewModal({ ad: product, kind });
                         handleLogView(product.id);
                       }}
@@ -4405,7 +4415,7 @@ export default function ShopPage() {
             }
 
             return (
-              <Fragment key={`${product.adId ? `ad-${product.adId}` : ''}:${product.id || index}`}>
+              <Fragment key={`${product.id || (product.adId ? `ad-${product.adId}` : `item`)}-${index}`}>
                 <MarketItemWrapper
                   product={product}
                   onView={handleLogView}
@@ -4416,6 +4426,7 @@ export default function ShopPage() {
                     isAd={isProductPromoteCard}
                     currentUser={currentUser}
                     onProductClick={(p) => {
+                      trackSponsoredAdClick(p);
                       if (isProductPromoteCard) {
                         void openProductPromoteSecondView(p);
                       } else {
@@ -4426,6 +4437,7 @@ export default function ShopPage() {
                       }
                     }}
                     onAddToBagClick={(p) => {
+                      trackSponsoredAdClick(p);
                       if (isProductPromoteCard) {
                         void openProductPromoteSecondView(p);
                       } else {

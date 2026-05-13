@@ -5,11 +5,17 @@ import { useRouter } from 'next/navigation';
 import { authService } from '@/services/authService';
 import { walletService } from '@/services/walletService';
 import IonIcon from '@/app/components/IonIcon';
-import Image from 'next/image';
-import { generateTransactionReceipt } from '@/utils/pdfGenerator';
 import ReceiptModal from '@/app/components/ReceiptModal';
 import CancelTransactionModal from '@/app/components/CancelTransactionModal';
 import { getCurrentUserIdentityKey, readAdWalletAdjustments } from '@/utils/adWallet';
+import {
+    formatWalletTransactionDate,
+    formatWalletTransactionTime,
+    getAdPaymentMeta,
+    getAdTransactionSummary,
+    isAdCampaignPayment,
+    isPromoAdRecord,
+} from '@/app/lib/walletTransactions';
 
 const formatHistoryCounterparty = (tx: any, currentUserId?: number | string) => {
     const isSent = tx.sender_id === currentUserId;
@@ -29,17 +35,6 @@ const isGoogerPaymentOrderHold = (tx: any) => {
         && !/manual payment/i.test(String(tx?.note || ''));
 };
 
-const isAdCampaignPayment = (tx: any) => {
-    return /ad campaign budget|ad promote/i.test(String(tx?.note || ''));
-};
-
-const getAdPaymentMeta = (tx: any) => {
-    const note = String(tx?.note || '');
-    const adId = note.match(/\b\d{10,12}\b/)?.[0]?.slice(-10) || '';
-    const mediaType = /video/i.test(note) ? 'Video' : 'Photo';
-    return { adId, mediaType };
-};
-
 const buildDisplayTransactions = (transactions: any[], currentUser: any) => {
     const currentUserKey = getCurrentUserIdentityKey();
     const adRefundAdjustments = readAdWalletAdjustments().filter((entry) => !currentUserKey || entry.ownerKey === currentUserKey);
@@ -48,6 +43,11 @@ const buildDisplayTransactions = (transactions: any[], currentUser: any) => {
 
     transactions.forEach((tx) => {
         if (!isAdCampaignPayment(tx)) {
+            regularTransactions.push(tx);
+            return;
+        }
+
+        if (isPromoAdRecord(tx)) {
             regularTransactions.push(tx);
             return;
         }
@@ -91,7 +91,7 @@ const buildDisplayTransactions = (transactions: any[], currentUser: any) => {
             sender_id: currentUser?.id,
             created_at: createdAt,
             amount: currentHoldAmount.toFixed(2),
-            note: `Photo & Video Promotion${adId ? ` - Ad ID: ${adId}` : ''} - Deducted R ${Number(tx.adChargeTotal || 0).toFixed(2)}${refundTotal > 0 ? ` - Refunded R ${refundTotal.toFixed(2)}` : ''} - Hold R ${currentHoldAmount.toFixed(2)}`,
+            note: `Ad Hold Summary - ${tx.adMediaType || 'Photo'} Promotion${adId ? ` - Ad ID: ${adId}` : ''} - Status: Hold - Hold Amount: R ${currentHoldAmount.toFixed(2)} - Deducted Amount: R ${Number(tx.adChargeTotal || 0).toFixed(2)}${refundTotal > 0 ? ` - Refunded R ${refundTotal.toFixed(2)}` : ''}`,
             status: 'hold',
             type: 'ad_hold_summary',
         };
@@ -153,7 +153,7 @@ export default function TransactionsPage() {
             await walletService.cancelTransaction(cancelTransaction.id);
             alert("Transaction cancelled successfully");
             const txData = await walletService.getTransactionHistory();
-            setTransactions(txData);
+            setTransactions(buildDisplayTransactions(txData, user));
             setCancelTransaction(null);
         } catch (error: any) {
             alert(error.message || "Failed to cancel transaction");
@@ -195,12 +195,20 @@ export default function TransactionsPage() {
                                 const googerPaymentOrderHold = isGoogerPaymentOrderHold(tx);
                                 const adCampaignPayment = isAdCampaignPayment(tx);
                                 const adPaymentMeta = adCampaignPayment ? getAdPaymentMeta(tx) : null;
-                                const displayStatus = adCampaignPayment ? 'hold' : tx.status;
+                                const adSummary = adCampaignPayment ? getAdTransactionSummary(tx) : null;
+                                const isPromoFree = adCampaignPayment && (isPromoAdRecord(tx) || adPaymentMeta?.isPromo);
+                                const displayStatus = isPromoFree ? 'free' : adCampaignPayment ? 'hold' : tx.status;
                                 const isCancellable = isSent
                                     && tx.status === 'pending'
                                     && !googerPaymentOrderHold
                                     && !adCampaignPayment
                                     && (!manualOrderHold || Boolean(tx.linked_order_can_cancel));
+
+                                const adTitle = adPaymentMeta?.isPromo
+                                    ? `${adPaymentMeta.mediaType} Promotion (Free)`
+                                    : adPaymentMeta?.mediaType
+                                        ? `${adPaymentMeta.mediaType} Promotion`
+                                        : 'Ad Promotion';
 
                                 return (
                                     <div key={tx.id} className="bg-gray-800/20 border border-gray-800 rounded-xl p-4 hover:bg-gray-800/40 transition-all group">
@@ -211,32 +219,43 @@ export default function TransactionsPage() {
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex justify-between items-center mb-1">
                                                     <h5 className="font-bold text-white text-sm">
-                                                        {adCampaignPayment ? 'Photo & Video Promotion' : tx.type === 'request' ? (isSent ? 'Requested From: ' : 'Requested By: ') : (isSent ? 'Sent To: ' : 'Received From: ')}
+                                                        {adCampaignPayment ? adTitle : tx.type === 'request' ? (isSent ? 'Requested From: ' : 'Requested By: ') : (isSent ? 'Sent To: ' : 'Received From: ')}
                                                         {!adCampaignPayment && <span className="text-white/65">{otherUser}</span>}
                                                     </h5>
                                                     <div className="text-right">
-                                                        {adCampaignPayment && <p className="text-[8px] font-black uppercase tracking-widest text-white/35">Hold Amount</p>}
-                                                        <span className={`text-sm font-bold tracking-tight ${isSent ? 'text-red-400' : 'text-green-400'}`}>
-                                                            {isSent ? (tx.type === 'request' ? '' : '-') : '+'} R {parseFloat(tx.amount).toFixed(2)}
+                                                        {adCampaignPayment && <p className="text-[8px] font-black uppercase tracking-widest text-white/35">{isPromoFree ? 'Promo Status' : 'Hold Amount'}</p>}
+                                                        <span className={`text-sm font-bold tracking-tight ${isPromoFree ? 'text-emerald-400' : isSent ? 'text-red-400' : 'text-green-400'}`}>
+                                                            {isPromoFree ? 'Free' : `${isSent ? (tx.type === 'request' ? '' : '-') : '+'} R ${parseFloat(tx.amount || 0).toFixed(2)}`}
                                                         </span>
                                                     </div>
                                                 </div>
                                                 <div className="flex justify-between items-center mb-1">
                                                     <p className="text-[10px] text-gray-400 font-semibold">
-                                                        {new Date(tx.created_at).toLocaleDateString('en-GB')} • {new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                        {formatWalletTransactionDate(tx.created_at)} | {formatWalletTransactionTime(tx.created_at)}
                                                     </p>
-                                                            <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded bg-gray-900/50 ${adCampaignPayment ? 'text-rose-300' : tx.type === 'transfer' ? 'text-white/65' : tx.type === 'request' ? 'text-white/65' : 'text-amber-400'}`}>
-                                                        {adCampaignPayment ? 'Promotion' : tx.type === 'transfer' ? 'Transferred' : tx.type === 'request' ? 'Requested' : tx.type}
+                                                    <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded bg-gray-900/50 ${isPromoFree ? 'text-emerald-400' : adCampaignPayment ? 'text-rose-300' : tx.type === 'transfer' ? 'text-white/65' : tx.type === 'request' ? 'text-white/65' : 'text-amber-400'}`}>
+                                                        {isPromoFree ? 'Promo' : adCampaignPayment ? 'Promotion' : tx.type === 'transfer' ? 'Transferred' : tx.type === 'request' ? 'Requested' : tx.type}
                                                     </span>
                                                 </div>
                                                 <div className="flex justify-between items-center">
-                                                    <p className="text-[10px] text-gray-500 italic pr-2 truncate">
-                                                        {adCampaignPayment ? (tx.note || `${adPaymentMeta?.mediaType || 'Photo'} Ad Promotion${adPaymentMeta?.adId ? ` - Ad ID ${adPaymentMeta.adId}` : ''}`) : tx.note || (isSent ? (tx.type === 'request' ? 'Coin Request Sent' : 'Direct coin transfer') : 'Coins received')}
-                                                        {tx.commission_percentage > 0 && ` (${tx.commission_percentage}% discount)`}
-                                                    </p>
+                                                    <div className="pr-2 min-w-0">
+                                                        {adCampaignPayment && adSummary ? (
+                                                            <div className="space-y-0.5 text-[10px] text-gray-500 italic">
+                                                                <p className="truncate">{adSummary.title}</p>
+                                                                <p>Status: {adSummary.statusLabel}</p>
+                                                                <p>Hold Amount: {adSummary.holdAmountLabel}</p>
+                                                                <p>Deducted Amount: {adSummary.deductedAmountLabel}</p>
+                                                            </div>
+                                                        ) : (
+                                                            <p className="text-[10px] text-gray-500 italic truncate">
+                                                                {tx.note || (isSent ? (tx.type === 'request' ? 'Coin Request Sent' : 'Direct coin transfer') : 'Coins received')}
+                                                                {tx.commission_percentage > 0 && ` (${tx.commission_percentage}% discount)`}
+                                                            </p>
+                                                        )}
+                                                    </div>
                                                     <div className="flex items-center gap-3">
                                                         <div className="flex items-center gap-2">
-                                                            <span className={`text-[9px] uppercase font-bold ${displayStatus === 'completed' || displayStatus === 'accepted' ? 'text-green-500' : 'text-amber-500'}`}>
+                                                            <span className={`text-[9px] uppercase font-bold ${displayStatus === 'completed' || displayStatus === 'accepted' || displayStatus === 'free' ? 'text-green-500' : 'text-amber-500'}`}>
                                                                 {displayStatus === 'accepted' ? 'completed' : displayStatus}
                                                             </span>
                                                             {isCancellable && (
@@ -276,7 +295,6 @@ export default function TransactionsPage() {
                     </div>
                 </div>
             </div>
-            {/* Spacer for mobile bottom bar */}
             <div className="h-20 md:hidden"></div>
             <ReceiptModal
                 isOpen={showReceiptModal}

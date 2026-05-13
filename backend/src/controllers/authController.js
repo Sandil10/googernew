@@ -910,29 +910,68 @@ exports.getWallet = async (req, res) => {
 exports.getUserByUsername = async (req, res) => {
     try {
         const { username } = req.params;
-        const currentUserId = getOptionalUserId(req);
+        const authUser = getOptionalAuthUser(req);
+        await ensureGoogerIdNormalization();
+        await ensureSubscriptionsTable();
+        await ensureExtendedUserProfileSchema();
+        await ensureUserBlocksTable();
+        const includeShippingAddress = await hasUsersTableColumn('shipping_address');
+        const publicColumns = [
+            'id',
+            'user_id',
+            'username',
+            'full_name',
+            'first_name',
+            'last_name',
+            'profile_picture',
+            'bio',
+            'user_type',
+            'created_at',
+            'email',
+            'contact_email',
+            'phone_number',
+            'country',
+            'province',
+            'date_of_birth',
+            'gender',
+            'relationship_status',
+            'who_can_follow_me',
+            'who_can_see_activity',
+            'contact_email_visibility',
+            'contact_phone_visibility'
+        ];
+        if (includeShippingAddress) {
+            publicColumns.push('shipping_address');
+        }
 
-        const query = `
-            SELECT
-                u.id, u.username, u.full_name, u.bio, u.profile_picture, u.email,
-                u.contact_email, u.contact_phone, u.contact_email_visibility, u.contact_phone_visibility,
-                u.shipping_address,
-                (SELECT COUNT(*) FROM subscriptions WHERE author_id = u.id) as subscriber_count,
-                (SELECT COUNT(*) FROM user_follows WHERE follower_id = u.id) as following_count,
-                (SELECT COUNT(*) FROM profile_views WHERE profile_id = u.id) as profile_views_count,
-                EXISTS(SELECT 1 FROM subscriptions WHERE author_id = u.id AND subscriber_id = $1) as is_subscribed
-            FROM users u
-            WHERE LOWER(u.username) = LOWER($2)
-            LIMIT 1
-        `;
-
-        const result = await pool.query(query, [currentUserId, username]);
+        const result = await pool.query(
+            `SELECT ${publicColumns.join(', ')}
+             FROM users
+             WHERE LOWER(username) = LOWER($1)
+             LIMIT 1`,
+            [username]
+        );
 
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'User not found' });
         }
 
-        res.status(200).json({ success: true, data: result.rows[0] });
+        const user = result.rows[0];
+        const isOwner = Number(authUser?.id) === Number(user.id);
+        user.subscriber_count = await getSubscriberCount(user.id);
+        user.is_subscribed = await getSubscribedStatus(authUser?.id, user.id);
+        user.profile_views_count = await getProfileViewCount(user.id);
+        user.following_count = await getFollowingCount(user.id);
+        user.blocked_count = await getBlockedCount(user.id);
+        user.contact_email = isOwner || user.contact_email_visibility !== 'only_me' ? (user.contact_email || null) : null;
+        user.contact_phone = isOwner || user.contact_phone_visibility !== 'only_me'
+            ? (user.phone_number || user.shipping_address?.phone || user.shipping_address?.phone2 || null)
+            : null;
+        if (!isOwner) {
+            user.email = null;
+        }
+
+        res.status(200).json({ success: true, data: user });
     } catch (error) {
         console.error('Error fetching user by username:', error);
         res.status(500).json({ success: false, message: 'Server error fetching user' });

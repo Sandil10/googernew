@@ -45,7 +45,8 @@ if (connectionString && !forceLocalDb) {
 
 const pool = new Pool(dbConfig);
 
-pool.on('connect', () => {
+pool.on('connect', (client) => {
+    client.query("SET timezone = 'UTC'");
     console.log('Connected to PostgreSQL database');
 });
 

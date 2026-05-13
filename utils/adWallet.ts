@@ -42,6 +42,8 @@ export function getCurrentUserIdentityKey() {
     return getUserIdentityKey(getStoredUser());
 }
 
+const ADJUSTMENT_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
 export function readAdWalletAdjustments() {
     if (typeof window === "undefined") return [] as AdWalletAdjustment[];
 
@@ -52,7 +54,9 @@ export function readAdWalletAdjustments() {
         const parsed = JSON.parse(rawValue);
         if (!Array.isArray(parsed)) return [];
 
-        return parsed.filter((entry): entry is AdWalletAdjustment => {
+        const now = Date.now();
+
+        const valid = parsed.filter((entry): entry is AdWalletAdjustment => {
             return Boolean(
                 entry
                 && typeof entry.id === "string"
@@ -61,8 +65,16 @@ export function readAdWalletAdjustments() {
                 && typeof entry.amount === "number"
                 && entry.kind === "refund"
                 && typeof entry.createdAt === "string"
+                && (now - new Date(entry.createdAt).getTime()) < ADJUSTMENT_TTL_MS
             );
         });
+
+        // Prune stale entries so they don't accumulate indefinitely
+        if (valid.length !== parsed.length) {
+            try { window.localStorage.setItem(AD_WALLET_ADJUSTMENTS_KEY, JSON.stringify(valid)); } catch { /* storage full */ }
+        }
+
+        return valid;
     } catch {
         return [];
     }

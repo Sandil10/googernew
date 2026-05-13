@@ -5,6 +5,12 @@ import { useEffect, useState } from "react";
 import IonIcon from "./IonIcon";
 import { generateTransactionReceipt } from "@/utils/pdfGenerator";
 import { formatDisplayTransactionId, getRawTransactionId } from "@/utils/transactionReceipt";
+import {
+    formatWalletTransactionDateTime,
+    getAdPaymentMeta,
+    getAdTransactionSummary,
+    isAdCampaignPayment,
+} from "@/app/lib/walletTransactions";
 
 interface ReceiptModalProps {
     isOpen: boolean;
@@ -12,14 +18,6 @@ interface ReceiptModalProps {
     transaction: any;
     currentUser: any;
 }
-
-const formatDateTime = (value: string) => {
-    const date = new Date(value);
-    return `${date.toLocaleDateString("en-GB")} ${date.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-    })}`;
-};
 
 const formatAccount = (id: string | number | undefined, username: string | undefined) => {
     return `ID ${id ?? "N/A"} (${username || "Unknown"})`;
@@ -49,7 +47,33 @@ const formatTransactionStatus = (transaction: any) => {
     return status.charAt(0).toUpperCase() + status.slice(1);
 };
 
+const getAdCampaignReceiptDetails = (transaction: any) => {
+    const adMeta = getAdPaymentMeta(transaction);
+    const adSummary = getAdTransactionSummary(transaction);
+
+    const details: { label: string; value: string }[] = [
+        { label: "Status", value: adSummary.statusLabel },
+        { label: "Hold Amount", value: adSummary.holdAmountLabel },
+        { label: "Deducted Amount", value: adSummary.deductedAmountLabel },
+    ];
+
+    if (adMeta.adId) {
+        details.push({ label: "Ad ID", value: adMeta.adId });
+    }
+
+    details.push(
+        { label: "Ad Type", value: `${adMeta.mediaType} Promotion` },
+        { label: "Date & Time", value: formatWalletTransactionDateTime(transaction.created_at) }
+    );
+
+    return { title: adSummary.title, details };
+};
+
 const getReceiptDetails = (transaction: any) => {
+    if (isAdCampaignPayment(transaction)) {
+        return getAdCampaignReceiptDetails(transaction);
+    }
+
     const formattedTid = formatDisplayTransactionId(getRawTransactionId(transaction), transaction);
     const commission = Number(transaction.commission_percentage || 0);
     const type = String(transaction.type || "").toLowerCase();
@@ -111,7 +135,7 @@ const getReceiptDetails = (transaction: any) => {
 
     details.push(
         { label: "Transaction ID", value: formattedTid },
-        { label: "Date & Time", value: formatDateTime(transaction.created_at) },
+        { label: "Date & Time", value: formatWalletTransactionDateTime(transaction.created_at) },
         { label: "Type", value: typeLabel },
         { label: "Status", value: statusLabel }
     );

@@ -8,7 +8,8 @@
         "dev": "nodemon src/server.js",
         "init-db": "node src/config/initDb.js",
         "test-db": "node test-supabase.js",
-        "migrate:product-promote-identity": "node migrate_product_promote_identity.js"
+        "migrate:product-promote-identity": "node migrate_product_promote_identity.js",
+        "migrate": "node scripts/run-migrations.js"
     },
     "keywords": [
         "googer",

@@ -114,21 +114,47 @@ function formatDisplayUrl(url: string) {
     }
 }
 
-function renderBioText(text: string): ReactNode[] {
+function getCanonicalProfileLink(url: string, username?: string) {
+    const canonicalProfileUrl = username ? getProfileShareUrl({ username }) : "";
+    if (!canonicalProfileUrl) return normalizeUrl(url);
+
+    try {
+        const parsed = new URL(normalizeUrl(url));
+        const segments = parsed.pathname.split("/").filter(Boolean);
+        const first = (segments[0] || "").toLowerCase();
+
+        if (first === "dashboard" && (segments[1] || "").toLowerCase() === "profile") {
+            return canonicalProfileUrl;
+        }
+        if ((first === "profile" || first === "u") && segments[1]) {
+            return getProfileShareUrl({ username: segments[1] });
+        }
+        if (segments.length === 1 && username && segments[0]?.toLowerCase() === username.toLowerCase()) {
+            return canonicalProfileUrl;
+        }
+    } catch {
+        return normalizeUrl(url);
+    }
+
+    return normalizeUrl(url);
+}
+
+function renderBioText(text: string, username?: string): ReactNode[] {
     if (!text) return [];
 
     const parts = text.split(/(https?:\/\/[^\s]+|www\.[^\s]+|@[\w.]+|#[\w.]+)/g);
     return parts.filter(Boolean).map((part, index) => {
         if (/^(https?:\/\/|www\.)/i.test(part)) {
+            const canonicalLink = getCanonicalProfileLink(part, username);
             return (
                 <a
                     key={`${part}-${index}`}
-                    href={normalizeUrl(part)}
+                    href={canonicalLink}
                     target="_blank"
                     rel="noreferrer"
                     className="text-sky-400 transition hover:text-sky-300"
                 >
-                    {part}
+                    {formatDisplayUrl(canonicalLink)}
                 </a>
             );
         }
@@ -898,7 +924,9 @@ export default function ProfilePage() {
 
     const username = user?.username || "googer";
     const displayName = user?.full_name || user?.username || "Googer User";
-    const bioLinks = extractUrls(user?.bio).slice(0, 2);
+    const bioLinks = extractUrls(user?.bio)
+        .slice(0, 2)
+        .map((bioLink) => getCanonicalProfileLink(bioLink, username || user?.username));
     const cleanedBio = (user?.bio || "").replace(/\n{3,}/g, "\n\n").trim();
     const bioLines = cleanedBio
         .split(/\n+/)
@@ -1093,7 +1121,7 @@ export default function ProfilePage() {
                                     <div className="space-y-1.5 text-[13px] font-semibold tracking-tight leading-5 text-zinc-200 min-[960px]:text-[14px]">
                                         {bioLines.length > 0 ? bioLines.map((line, idx) => (
                                             <p key={`${line}-${idx}`} className="break-words">
-                                                {renderBioText(line)}
+                                                {renderBioText(line, username || user?.username)}
                                             </p>
                                         )) : <p className="text-zinc-500">No bio yet</p>}
                                     </div>

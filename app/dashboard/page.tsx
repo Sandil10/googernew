@@ -316,7 +316,7 @@ function interleaveWritePostsWithAds(
     posts.forEach((post, index) => {
         output.push({ type: "write", post });
         if ((index + 1) % writeRatio === 0) {
-            const ad = rotatedAds[adIndex % rotatedAds.length];
+            const ad = rotatedAds[adIndex];
             if (ad) {
                 output.push({ type: "ad", ad });
                 shownAdIds.push(ad.id);
@@ -335,6 +335,16 @@ function interleaveWritePostsWithAds(
 
     rememberShownAdIds(storageKey, shownAdIds);
     return output;
+}
+
+function dedupeAdsByIdentity(ads: any[]) {
+    const seen = new Set<string>();
+    return ads.filter((ad) => {
+        const identity = getAdInteractionId(ad);
+        if (!identity || seen.has(identity)) return false;
+        seen.add(identity);
+        return true;
+    });
 }
 
 const isHomeSponsoredAd = (item: any) => {
@@ -511,7 +521,7 @@ export default function DashboardPage() {
         return sourceAd ? getHomeLiveAd(sourceAd) : null;
     }, [ads, getHomeLiveAd]);
     const liveHomeAds = useMemo(
-        () => ads.map((ad) => getHomeLiveAd(ad)),
+        () => dedupeAdsByIdentity(ads.map((ad) => getHomeLiveAd(ad))),
         [ads, getHomeLiveAd],
     );
     const homeProfilePromoteAds = useMemo(
@@ -1008,10 +1018,17 @@ export default function DashboardPage() {
         return String(ad?.id || "").startsWith("ad-") ? ad.id : (ad?.adId ? `ad-${ad.adId}` : ad?.id);
     };
 
-    const canShowAdCollectCoin = (ad: any) => (
-        canShowCollectCoinButton(ad, currentUser) ||
-        homeCoinReadyAdIds.has(String(getSponsoredCollectionId(ad?.raw || ad)))
-    );
+    const canShowAdCollectCoin = (ad: any) => {
+        const raw = ad?.raw || ad || {};
+        const mediaType = String(raw.media_type || raw.mediaType || "").toLowerCase();
+        const mediaSrc = String(raw.media_preview || raw.video_url || raw.media_url || "");
+        const isVideoAd = mediaType === "video" || /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(mediaSrc);
+        const collectionId = String(getSponsoredCollectionId(raw));
+        if (isVideoAd) {
+            return canShowCollectCoinButton(ad, currentUser) && homeCoinReadyAdIds.has(collectionId);
+        }
+        return canShowCollectCoinButton(ad, currentUser);
+    };
 
     const markAdCoinCollectedLocally = (adId: string | number) => {
         updateAdState(adId, { ad_coin_collected: true, ad_like_locked: true });
@@ -1239,7 +1256,7 @@ export default function DashboardPage() {
                             const previewType = getSponsoredLinkPreviewType(activeLink);
 
                             return (
-                                <article key={`ad-${ad.id}`} className="px-4 py-4 transition-colors sm:px-7">
+                                <article key={String(ad.id)} className="px-4 py-4 transition-colors sm:px-7">
                                     <div className="mx-auto w-full max-w-[360px]">
                                         <PromotedAdCard
                                             ad={ad}
@@ -1422,6 +1439,16 @@ export default function DashboardPage() {
                     onCollectCoin={handleAdCoinClick}
                     onNavigateToProfile={navigateToAdProfile}
                     canShowCollectCoin={canShowAdCollectCoin}
+                    onVideoWatchEligible={(watchedAd) => {
+                        const adId = String(getSponsoredCollectionId(watchedAd?.raw || watchedAd));
+                        if (adId) {
+                            setHomeCoinReadyAdIds((prev) => {
+                                const next = new Set(prev);
+                                next.add(adId);
+                                return next;
+                            });
+                        }
+                    }}
                 />
             )}
 

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { getItemUsername } from "@/app/lib/userDisplay";
+import { marketService } from "@/services/marketService";
 
 type ProfilePromoteCarouselProps = {
   ads: any[];
@@ -66,6 +67,8 @@ export function ProfilePromoteCarousel({
                   ad={profileAd}
                   onProductClick={onProductClick}
                   onProfileClick={(clickedAd) => {
+                    const clickId = clickedAd?.id || clickedAd?.adId || clickedAd?.ad_id || profileAd?.id || profileAd?.adId || profileAd?.ad_id;
+                    if (clickId) void marketService.logAdClick(clickId);
                     if (clickedAd) {
                       onProfileClick(clickedAd);
                       return;

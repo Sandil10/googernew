@@ -1,6 +1,11 @@
 const pool = require('../config/database');
 const { saveUploadedFiles } = require('../utils/localUpload');
 const jwt = require('jsonwebtoken');
+const {
+    filterDeliverableAds,
+    loadViewerAdProfile,
+    recordAdImpression,
+} = require('../utils/adDelivery');
 
 let adsTableReady = false;
 const VALID_STATUSES = new Set(['Under Review', 'Active', 'Paused', 'Completed', 'Cancelled']);
@@ -32,6 +37,16 @@ const normalizeMediaGallery = (value, fallback = []) => {
         .filter((entry) => typeof entry === 'string')
         .map((entry) => entry.trim())
         .filter(Boolean);
+};
+
+const getDisplayReach = (row) => {
+    const currentReach = Number(row.current_reach || 0);
+    if (currentReach > 0) return currentReach;
+
+    const legacyReach = Number(row.reach || 0);
+    if (legacyReach > 0) return legacyReach;
+
+    return Number(row.impressions || 0);
 };
 
 const getOptionalViewerId = (req) => {
@@ -138,6 +153,34 @@ const ensureAdsTable = async () => {
     `);
 
     await pool.query(`
+        ALTER TABLE ads
+            ADD COLUMN IF NOT EXISTS tier_id              INTEGER,
+            ADD COLUMN IF NOT EXISTS estimated_reach_min  INTEGER,
+            ADD COLUMN IF NOT EXISTS estimated_reach_max  INTEGER,
+            ADD COLUMN IF NOT EXISTS max_reach_cap        INTEGER,
+            ADD COLUMN IF NOT EXISTS current_reach        INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS promo_code           VARCHAR(20),
+            ADD COLUMN IF NOT EXISTS promo_discount       INTEGER;
+    `);
+
+    await pool.query(`
+        ALTER TABLE ads
+            ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
+    `);
+
+    await pool.query(`
+        UPDATE ads
+        SET current_reach = GREATEST(COALESCE(current_reach, 0), COALESCE(impressions, 0)),
+            reach = GREATEST(COALESCE(reach, 0), COALESCE(impressions, 0)),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE COALESCE(impressions, 0) > 0
+          AND (
+              COALESCE(current_reach, 0) = 0
+              OR COALESCE(reach, 0) = 0
+          );
+    `);
+
+    await pool.query(`
         CREATE INDEX IF NOT EXISTS idx_ads_user_id ON ads(user_id);
         CREATE INDEX IF NOT EXISTS idx_ads_status ON ads(status);
         CREATE INDEX IF NOT EXISTS idx_ads_created_at ON ads(created_at DESC);
@@ -178,7 +221,7 @@ const mapRow = (row) => {
     genderTarget: row.gender_target,
     ageMin: row.age_min,
     ageMax: row.age_max,
-    reach: Number(row.reach || 0),
+    reach: getDisplayReach(row),
     impressions: Number(row.impressions || 0),
     views_count: Number(row.impressions || row.views_count || 0),
     viewCount: Number(row.impressions || row.views_count || 0),
@@ -209,11 +252,19 @@ const mapRow = (row) => {
     share_code: isProductPromote ? (originalProductCode || linkedProductShareCode || row.share_code || null) : (row.share_code || row.product_code || row.ad_id),
     shareCode: isProductPromote ? (originalProductCode || linkedProductShareCode || row.share_code || null) : (row.share_code || row.product_code || row.ad_id),
     walletTransferId: row.wallet_transfer_id,
+    tierId: row.tier_id ?? null,
+    estimatedReachMin: row.estimated_reach_min ?? null,
+    estimatedReachMax: row.estimated_reach_max ?? null,
+    maxReachCap: row.max_reach_cap ?? null,
+    currentReach: getDisplayReach(row),
+    promoCode: row.promo_code || null,
     editDraft: row.edit_draft || {},
-    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
-    created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
-    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
-    updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+    createdAt: row.created_at ? new Date(String(row.created_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
+    created_at: row.created_at ? new Date(String(row.created_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
+    startedAt: row.started_at ? new Date(String(row.started_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
+    started_at: row.started_at ? new Date(String(row.started_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
+    updatedAt: row.updated_at ? new Date(String(row.updated_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
+    updated_at: row.updated_at ? new Date(String(row.updated_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
     };
 };
 
@@ -381,10 +432,60 @@ const normalizePayload = (body = {}, fallback = {}) => {
         linked_product_id: hasOwn(body, 'linked_product_id') ? body.linked_product_id : (body.linkedProductId ?? fallback.linked_product_id ?? fallback.linkedProductId ?? null),
         linkedProductCode: hasOwn(body, 'linkedProductCode') ? body.linkedProductCode : (body.linked_product_code ?? fallback.linkedProductCode ?? fallback.linked_product_code ?? null),
         linked_product_code: hasOwn(body, 'linked_product_code') ? body.linked_product_code : (body.linkedProductCode ?? fallback.linked_product_code ?? fallback.linkedProductCode ?? null),
+        tierId: hasOwn(body, 'tierId') || hasOwn(body, 'tier_id') ? (Number.isFinite(Number(body.tierId ?? body.tier_id)) ? Number(body.tierId ?? body.tier_id) : null) : (fallback.tierId ?? fallback.tier_id ?? null),
+        estimatedReachMin: hasOwn(body, 'estimatedReachMin') || hasOwn(body, 'estimated_reach_min') ? (Number.isFinite(Number(body.estimatedReachMin ?? body.estimated_reach_min)) ? Number(body.estimatedReachMin ?? body.estimated_reach_min) : null) : (fallback.estimatedReachMin ?? fallback.estimated_reach_min ?? null),
+        estimatedReachMax: hasOwn(body, 'estimatedReachMax') || hasOwn(body, 'estimated_reach_max') ? (Number.isFinite(Number(body.estimatedReachMax ?? body.estimated_reach_max)) ? Number(body.estimatedReachMax ?? body.estimated_reach_max) : null) : (fallback.estimatedReachMax ?? fallback.estimated_reach_max ?? null),
+        maxReachCap: hasOwn(body, 'maxReachCap') || hasOwn(body, 'max_reach_cap')
+            ? (Number.isFinite(Number(body.maxReachCap ?? body.max_reach_cap)) ? Number(body.maxReachCap ?? body.max_reach_cap) : null)
+            : ((hasOwn(body, 'estimatedReachMax') || hasOwn(body, 'estimated_reach_max')) && Number.isFinite(Number(body.estimatedReachMax ?? body.estimated_reach_max))
+                ? Number(body.estimatedReachMax ?? body.estimated_reach_max)
+                : (fallback.maxReachCap ?? fallback.max_reach_cap ?? fallback.estimatedReachMax ?? fallback.estimated_reach_max ?? null)),
+        promoCode: typeof body.promoCode === 'string' ? body.promoCode.trim() || null : (fallback.promoCode ?? null),
+        promoDiscount: hasOwn(body, 'promoDiscount') || hasOwn(body, 'promo_discount') ? (Number.isFinite(Number(body.promoDiscount ?? body.promo_discount)) ? Number(body.promoDiscount ?? body.promo_discount) : null) : (fallback.promoDiscount ?? fallback.promo_discount ?? null),
         editDraft: body.editDraft && typeof body.editDraft === 'object' ? body.editDraft : (fallback.editDraft || {}),
         createdAt: body.createdAt ? new Date(body.createdAt) : (fallback.createdAt ? new Date(fallback.createdAt) : null),
     };
 };
+
+async function resolveGoogerMainWalletUserId(client) {
+    const configuredId = Number.parseInt(String(process.env.GOOGER_MAIN_USER_ID || '').trim(), 10);
+    if (Number.isFinite(configuredId) && configuredId > 0) {
+        const configuredResult = await client.query(
+            'SELECT id FROM users WHERE id = $1 LIMIT 1',
+            [configuredId]
+        );
+        if (configuredResult.rows.length > 0) {
+            return configuredResult.rows[0].id;
+        }
+    }
+
+    const googerResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(username) = 'googer'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+
+    if (googerResult.rows.length > 0) {
+        return googerResult.rows[0].id;
+    }
+
+    const fallbackResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
+            OR id = 1
+         ORDER BY
+            CASE
+                WHEN LOWER(COALESCE(user_type, '')) = 'admin' THEN 0
+                WHEN id = 1 THEN 1
+                ELSE 2
+            END,
+            id ASC
+         LIMIT 1`
+    );
+
+    return fallbackResult.rows[0]?.id || null;
+}
 
 const assertAdmin = async (userId) => {
     const result = await pool.query('SELECT user_type FROM users WHERE id = $1 LIMIT 1', [userId]);
@@ -456,12 +557,18 @@ exports.createAd = async (req, res) => {
                 media_preview, media_gallery, media_type, gender_target, age_min, age_max, reach, impressions,
                 clicks, budget, duration_days, spend, remaining_budget, status, campaign_path,
                 linked_product_id, linked_product_share_code, original_product_id, original_product_code,
-                wallet_transfer_id, edit_draft, created_at, updated_at
+                wallet_transfer_id, edit_draft,
+                tier_id, estimated_reach_min, estimated_reach_max, max_reach_cap,
+                promo_code, promo_discount,
+                created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10, $11, $12, $13, $14, $15,
                 $16, $17, $18, $19, $20, $21, $22,
-                $23, $24, $25, $26, $27, $28, COALESCE($29, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP
+                $23, $24, $25, $26, $27, $28,
+                $29, $30, $31, $32,
+                $33, $34,
+                COALESCE($35, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP
             )
             RETURNING *`,
             [
@@ -470,7 +577,10 @@ exports.createAd = async (req, res) => {
                 payload.clicks, payload.budget, payload.durationDays, payload.spend, payload.remainingBudget, isAdmin ? payload.status : 'Under Review', payload.campaignPath,
                 productPromoteIdentity.linkedProductId, productPromoteIdentity.linkedProductShareCode,
                 productPromoteIdentity.originalProductId, productPromoteIdentity.originalProductCode,
-                payload.walletTransferId, JSON.stringify(payload.editDraft), payload.createdAt && !Number.isNaN(payload.createdAt.getTime()) ? payload.createdAt : null,
+                payload.walletTransferId, JSON.stringify(payload.editDraft),
+                payload.tierId ?? null, payload.estimatedReachMin ?? null, payload.estimatedReachMax ?? null, payload.maxReachCap ?? null,
+                payload.promoCode ?? null, payload.promoDiscount ?? null,
+                payload.createdAt && !Number.isNaN(payload.createdAt.getTime()) ? payload.createdAt : null,
             ]
         );
 
@@ -482,12 +592,13 @@ exports.createAd = async (req, res) => {
 };
 
 exports.updateAd = async (req, res) => {
+    const client = await pool.connect();
     try {
         await ensureAdsTable();
         const { adId } = req.params;
         const userId = req.user.id;
         const isAdmin = await assertAdmin(userId);
-        const existingResult = await pool.query(
+        const existingResult = await client.query(
             'SELECT * FROM ads WHERE ad_id = $1 LIMIT 1',
             [adId]
         );
@@ -517,6 +628,16 @@ exports.updateAd = async (req, res) => {
         }
 
         const payload = normalizePayload(body, existingAd);
+        const isProfilePromote = String(existingAd.campaignType || '').trim().toLowerCase() === 'profile promote';
+        if (
+            existingAd.status === 'Active' &&
+            payload.status === 'Cancelled'
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Active ads cannot be cancelled.',
+            });
+        }
         const productPromoteIdentity = await resolveProductPromoteIdentity(payload, existingAd);
         if (String(payload.campaignType || '').trim().toLowerCase() === 'product promote'
             && !productPromoteIdentity.linkedProductId
@@ -582,7 +703,71 @@ exports.updateAd = async (req, res) => {
             }
         }
 
-        const result = await pool.query(
+        await client.query('BEGIN');
+
+        if (
+            existingAd.status === 'Under Review'
+            && payload.status === 'Cancelled'
+            && Number(existingAd.walletTransferId) > 0
+        ) {
+            const transferResult = await client.query(
+                `SELECT id, sender_id, receiver_id, amount, status
+                 FROM wallet_transfers
+                 WHERE id = $1
+                 LIMIT 1
+                 FOR UPDATE`,
+                [existingAd.walletTransferId]
+            );
+
+            if (transferResult.rows.length > 0) {
+                const transfer = transferResult.rows[0];
+                const refundAmount = Number(transfer.amount || 0);
+                const advertiserUserId = Number(transfer.sender_id || existingAd.userId);
+                const creditedGoogerUserId = Number(transfer.receiver_id || 0);
+                const canonicalGoogerUserId = await resolveGoogerMainWalletUserId(client);
+                const googerUserId = creditedGoogerUserId || canonicalGoogerUserId;
+
+                if (refundAmount > 0 && advertiserUserId > 0 && googerUserId > 0) {
+                    const googerBalanceResult = await client.query(
+                        'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+                        [googerUserId]
+                    );
+
+                    if (!googerBalanceResult.rows.length) {
+                        await client.query('ROLLBACK');
+                        return res.status(500).json({ success: false, message: 'Googer wallet account not found for refund.' });
+                    }
+
+                    const googerBalance = Number(googerBalanceResult.rows[0].wallet_balance || 0);
+                    if (googerBalance < refundAmount) {
+                        await client.query('ROLLBACK');
+                        return res.status(400).json({ success: false, message: 'Googer main wallet has insufficient balance for refund reversal.' });
+                    }
+
+                    await client.query(
+                        'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
+                        [refundAmount, googerUserId]
+                    );
+                    await client.query(
+                        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
+                        [refundAmount, advertiserUserId]
+                    );
+
+                    await client.query(
+                        `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, created_at, updated_at)
+                         VALUES ($1, $2, $3, $4, 'transfer', 'accepted', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                        [
+                            googerUserId,
+                            advertiserUserId,
+                            refundAmount,
+                            `Ad Refund - ${existingAd.adId} (${existingAd.campaignType}) - Cancelled During Review`,
+                        ]
+                    );
+                }
+            }
+        }
+
+        const result = await client.query(
             `UPDATE ads
              SET campaign_type = $1,
                  title = $2,
@@ -600,7 +785,7 @@ exports.updateAd = async (req, res) => {
                  duration_days = $14,
                  spend = $15,
                  remaining_budget = $16,
-                 status = $17,
+                 status = $17::varchar,
                  campaign_path = $18,
                  linked_product_id = $19,
                  linked_product_share_code = $20,
@@ -608,8 +793,13 @@ exports.updateAd = async (req, res) => {
                  original_product_code = $22,
                  wallet_transfer_id = COALESCE($23, wallet_transfer_id),
                  edit_draft = $24,
+                 tier_id = COALESCE($25, tier_id),
+                 estimated_reach_min = COALESCE($26, estimated_reach_min),
+                 estimated_reach_max = COALESCE($27, estimated_reach_max),
+                 max_reach_cap = $28,
+                 started_at = CASE WHEN $17::varchar = 'Active' AND started_at IS NULL THEN CURRENT_TIMESTAMP ELSE started_at END,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE ad_id = $25
+             WHERE ad_id = $29
              RETURNING *`,
             [
                 payload.campaignType, payload.title, payload.description, payload.mediaPreview, JSON.stringify(payload.mediaGallery), payload.mediaType,
@@ -617,18 +807,25 @@ exports.updateAd = async (req, res) => {
                 payload.budget, payload.durationDays, payload.spend, payload.remainingBudget, payload.status,
                 payload.campaignPath, productPromoteIdentity.linkedProductId, productPromoteIdentity.linkedProductShareCode,
                 productPromoteIdentity.originalProductId, productPromoteIdentity.originalProductCode,
-                payload.walletTransferId, JSON.stringify(payload.editDraft), adId,
+                payload.walletTransferId, JSON.stringify(payload.editDraft),
+                payload.tierId ?? null, payload.estimatedReachMin ?? null, payload.estimatedReachMax ?? null, payload.maxReachCap ?? null,
+                adId,
             ]
         );
 
         if (!result.rows.length) {
+            await client.query('ROLLBACK');
             return res.status(404).json({ success: false, message: 'Ad not found' });
         }
 
+        await client.query('COMMIT');
         return res.status(200).json({ success: true, ad: mapRow(result.rows[0]) });
     } catch (error) {
+        try { await client.query('ROLLBACK'); } catch {}
         console.error('Update ad error:', error);
         return res.status(500).json({ success: false, message: 'Failed to update ad' });
+    } finally {
+        client.release();
     }
 };
 
@@ -712,18 +909,21 @@ exports.getActiveAdsPublic = async (req, res) => {
             : `,
                 FALSE AS user_liked,
                 FALSE AS ad_coin_collected`;
-        const queryParams = viewerId ? [limit + 1, offset, viewerId] : [limit + 1, offset];
+        const fetchLimit = Math.min(limit * 4 + 1, 200);
+        const queryParams = viewerId ? [fetchLimit, offset, viewerId] : [fetchLimit, offset];
         const result = await pool.query(
             `SELECT a.*, u.username AS owner_username_joined, u.profile_picture${viewerSelect}
              FROM ads a
              LEFT JOIN users u ON a.user_id = u.id
              WHERE a.status = 'Active'
+               AND (a.max_reach_cap IS NULL OR COALESCE(a.current_reach, 0) < a.max_reach_cap)
              ORDER BY a.created_at DESC
              LIMIT $1 OFFSET $2`,
             queryParams
         );
 
-        const rows = result.rows || [];
+        const viewerProfile = await loadViewerAdProfile(pool, viewerId, req);
+        const rows = filterDeliverableAds(result.rows || [], viewerProfile);
         const ads = rows.slice(0, limit).map((row) => {
             const ad = {
                 ...mapRow(row),
@@ -919,5 +1119,28 @@ exports.getAdPublic = async (req, res) => {
     } catch (error) {
         console.error('Get ad public error:', error);
         return res.status(500).json({ success: false, message: 'Failed to fetch ad' });
+    }
+};
+
+exports.updateAdReach = async (req, res) => {
+    try {
+        await ensureAdsTable();
+        const { adId } = req.params;
+        const { reach } = req.body;
+
+        if (typeof reach !== 'number' || reach < 0) {
+            return res.status(400).json({ success: false, message: 'reach must be a non-negative number' });
+        }
+
+        const ad = await recordAdImpression(pool, adId, reach);
+
+        if (!ad) {
+            return res.status(404).json({ success: false, message: 'Ad not found' });
+        }
+
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error('updateAdReach error:', error);
+        return res.status(500).json({ success: false, message: 'Failed to update ad reach' });
     }
 };

@@ -41,6 +41,42 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
+const strictMutationLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: process.env.NODE_ENV === 'development' ? 1000 : 120,
+    message: { success: false, message: 'Too many requests, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: process.env.NODE_ENV === 'development' ? 500 : 30,
+    message: { success: false, message: 'Too many authentication attempts, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+const uploadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: process.env.NODE_ENV === 'development' ? 300 : 40,
+    message: { success: false, message: 'Too many uploads, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+const limitMutationsOnly = (limiterMiddleware) => (req, res, next) => {
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+        return limiterMiddleware(req, res, next);
+    }
+    return next();
+};
+
+app.use(['/api/auth/login', '/api/auth/register', '/auth/login', '/auth/register'], authLimiter);
+app.use(['/api/wallet', '/wallet', '/api/orders', '/orders'], limitMutationsOnly(strictMutationLimiter));
+app.use(['/api/market/collect-coin', '/market/collect-coin'], strictMutationLimiter);
+app.use(['/api/market/create', '/market/create', '/api/ads', '/ads'], limitMutationsOnly(uploadLimiter));
+
 // Logging
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
@@ -63,6 +99,8 @@ const chatRoutes = require('./routes/chat');
 const cartRoutes = require('./routes/cart');
 const googRoutes = require('./routes/googs');
 const feedRoutes = require('./routes/feed');
+const promoCodesRoutes = require('./routes/promoCodes');
+const adminCustomizationRoutes = require('./routes/adminCustomization');
 
 // API Versioning & Routing (Compatible with existing web app)
 const apiRoutes = express.Router();
@@ -77,6 +115,8 @@ apiRoutes.use('/orders', orderRoutes);
 apiRoutes.use('/chat', chatRoutes);
 apiRoutes.use('/cart', cartRoutes);
 apiRoutes.use('/feed', feedRoutes);
+apiRoutes.use('/promo-codes', promoCodesRoutes);
+apiRoutes.use('/admin/customization', adminCustomizationRoutes);
 
 // Mount API routes
 app.use('/api', apiRoutes);
@@ -92,6 +132,8 @@ app.use('/orders', orderRoutes);
 app.use('/chat', chatRoutes);
 app.use('/cart', cartRoutes);
 app.use('/feed', feedRoutes);
+app.use('/promo-codes', promoCodesRoutes);
+app.use('/admin/customization', adminCustomizationRoutes);
 
 app.get('/api/test', (req, res) => {
     res.json({ success: true, message: 'New routes are live' });

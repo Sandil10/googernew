@@ -438,6 +438,19 @@ export const marketService = {
         }
     },
 
+    logAdClick: async (id: string | number) => {
+        const engagementId = String(id);
+        try {
+            const response = await fetch(`${API_URL}/market/${engagementId}/click`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            return await response.json();
+        } catch (error) {
+            console.error('Error logging ad click:', error);
+        }
+    },
+
     getLikes: async (id: string | number) => {
         const engagementId = String(id);
         try {
