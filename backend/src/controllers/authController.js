@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
 const { saveUploadedFile } = require('../utils/localUpload');
+const { getUserPlanLimits } = require('../utils/planLimits');
 
 let usersTableHasShippingAddressColumn = null;
 let subscriptionsTableEnsured = false;
@@ -597,6 +598,9 @@ exports.getUserById = async (req, res) => {
             user.email = null;
         }
 
+        const limits = await getUserPlanLimits(user.id);
+        user.verified_tick = limits.verifiedTick;
+
         res.status(200).json({
             success: true,
             user
@@ -693,6 +697,9 @@ exports.getProfile = async (req, res) => {
         userData.blocked_count = await getBlockedCount(userData.id);
         userData.contact_email = userData.contact_email || null;
         userData.contact_phone = userData.phone_number || userData.shipping_address?.phone || userData.shipping_address?.phone2 || null;
+
+        const limits = await getUserPlanLimits(userData.id);
+        userData.verified_tick = limits.verifiedTick;
 
         res.status(200).json({
             success: true,
@@ -970,6 +977,9 @@ exports.getUserByUsername = async (req, res) => {
         if (!isOwner) {
             user.email = null;
         }
+
+        const limits = await getUserPlanLimits(user.id);
+        user.verified_tick = limits.verifiedTick;
 
         res.status(200).json({ success: true, data: user });
     } catch (error) {

@@ -5,8 +5,6 @@ const crypto = require('crypto');
 const {
     filterDeliverableAds,
     loadViewerAdProfile,
-    recordAdClick,
-    recordAdImpression,
 } = require('../utils/adDelivery');
 
 let marketFeedSchemaReady = false;
@@ -246,10 +244,15 @@ const stripFeedMediaPayload = (item) => {
 const attachCurrentUser = (row) => {
     const username = row.owner_username_joined || row.owner_username || row.username || 'User';
     const profilePicture = row.profile_picture || null;
+    const activeTs = row.active_start_time || row.started_at || row.created_at;
     return {
         ...row,
-        createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
-        created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+        createdAt: activeTs ? new Date(activeTs).toISOString() : null,
+        created_at: activeTs ? new Date(activeTs).toISOString() : null,
+        activeStartTime: row.active_start_time || row.started_at ? new Date(row.active_start_time || row.started_at).toISOString() : null,
+        active_start_time: row.active_start_time || row.started_at ? new Date(row.active_start_time || row.started_at).toISOString() : null,
+        startedAt: row.started_at || row.active_start_time ? new Date(row.started_at || row.active_start_time).toISOString() : null,
+        started_at: row.started_at || row.active_start_time ? new Date(row.started_at || row.active_start_time).toISOString() : null,
         username,
         owner_username: username,
         profile_picture: profilePicture,
@@ -622,6 +625,7 @@ const DEFAULT_AD_COIN_REWARD_SETTINGS = {
     user_reward_amount: 1.00,
     googer_commission_amount: 0.25,
     advertiser_charge_amount: 1.25,
+    required_watch_seconds: 5,
 };
 const DIRECT_VIDEO_PATTERN = /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i;
 const EMBED_VIDEO_PATTERN = /(?:youtube\.com\/watch|youtu\.be\/|tiktok\.com\/|fb\.watch|facebook\.com\/.*\/videos\/|\/videos\/|\/watch\/|\?v=)/i;
@@ -639,6 +643,30 @@ const isSponsoredVideoAd = (adRow) => {
     if (!activeLink) return false;
 
     return DIRECT_VIDEO_PATTERN.test(activeLink) || EMBED_VIDEO_PATTERN.test(activeLink);
+};
+
+const getViewerKeyFromRequest = (req) => {
+    const headerValue = String(req.headers['x-googer-viewer-key'] || '').trim();
+    return headerValue || null;
+};
+
+const getAnonymousViewerIdentifier = ({ viewerKey, ipAddress }) => {
+    if (viewerKey) return { column: 'viewer_key', value: viewerKey };
+    return { column: 'ip_address', value: ipAddress };
+};
+
+const normalizeAdActionType = (value) => {
+    const actionType = String(value || '').trim().toLowerCase();
+    return ['message', 'visit', 'call'].includes(actionType) ? actionType : null;
+};
+
+const isWatchTimedSponsoredAd = (adRow) => {
+    const campaignType = normalizeText(adRow?.campaign_type || adRow?.campaignType || '');
+    if (campaignType.includes('product') || campaignType.includes('profile')) return false;
+    if (!(campaignType.includes('photo') || campaignType.includes('video'))) return false;
+    // Watch-time applies only to actual uploaded video files, not images, image-links, or video-links.
+    const mediaType = normalizeText(adRow?.media_type || adRow?.mediaType || '');
+    return mediaType === 'video';
 };
 
 const ensureSponsoredAdsEngagementSchema = async () => {
@@ -700,8 +728,20 @@ const ensureSponsoredAdsEngagementSchema = async () => {
             id SERIAL PRIMARY KEY,
             ad_id VARCHAR(20) NOT NULL REFERENCES ads(ad_id) ON DELETE CASCADE,
             user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+            viewer_key TEXT,
             ip_address TEXT,
+            view_count INTEGER NOT NULL DEFAULT 1,
             last_viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS ad_click_events (
+            id SERIAL PRIMARY KEY,
+            ad_id VARCHAR(80) NOT NULL REFERENCES ads(ad_id) ON DELETE CASCADE,
+            user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+            viewer_key TEXT,
+            ip_address TEXT,
+            action_type VARCHAR(30) NOT NULL DEFAULT 'visit',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS ad_like_coin_rewards (
@@ -719,6 +759,7 @@ const ensureSponsoredAdsEngagementSchema = async () => {
             user_reward_amount DECIMAL(10, 2) DEFAULT 1.00,
             googer_commission_amount DECIMAL(10, 2) DEFAULT 0.25,
             advertiser_charge_amount DECIMAL(10, 2) DEFAULT 1.25,
+            required_watch_seconds INTEGER DEFAULT 5,
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -760,6 +801,8 @@ const ensureSponsoredAdsEngagementSchema = async () => {
         CREATE INDEX IF NOT EXISTS idx_ad_coin_collections_user_id ON ad_coin_collections(user_id);
         CREATE INDEX IF NOT EXISTS idx_ad_video_watch_eligibility_ad_id ON ad_video_watch_eligibility(ad_id);
         CREATE INDEX IF NOT EXISTS idx_ad_video_watch_eligibility_user_id ON ad_video_watch_eligibility(user_id);
+        CREATE INDEX IF NOT EXISTS idx_ad_click_events_ad_id ON ad_click_events(ad_id);
+        CREATE INDEX IF NOT EXISTS idx_ad_click_events_action_type ON ad_click_events(action_type);
     `);
 
     await pool.query(`
@@ -779,9 +822,19 @@ const ensureSponsoredAdsEngagementSchema = async () => {
             ADD COLUMN IF NOT EXISTS user_reward_amount DECIMAL(10, 2) DEFAULT 1.00,
             ADD COLUMN IF NOT EXISTS googer_commission_amount DECIMAL(10, 2) DEFAULT 0.25,
             ADD COLUMN IF NOT EXISTS advertiser_charge_amount DECIMAL(10, 2) DEFAULT 1.25,
+            ADD COLUMN IF NOT EXISTS required_watch_seconds INTEGER DEFAULT 5,
             ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE,
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+
+        ALTER TABLE ads
+            ADD COLUMN IF NOT EXISTS message_clicks INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS visit_clicks INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS call_clicks INTEGER DEFAULT 0;
+
+        ALTER TABLE ad_views
+            ADD COLUMN IF NOT EXISTS viewer_key TEXT,
+            ADD COLUMN IF NOT EXISTS view_count INTEGER NOT NULL DEFAULT 1;
     `);
 
     const activeRewardResult = await pool.query(
@@ -797,12 +850,14 @@ const ensureSponsoredAdsEngagementSchema = async () => {
                 user_reward_amount,
                 googer_commission_amount,
                 advertiser_charge_amount,
+                required_watch_seconds,
                 is_active
-            ) VALUES ($1, $2, $3, TRUE)`,
+            ) VALUES ($1, $2, $3, $4, TRUE)`,
             [
                 DEFAULT_AD_COIN_REWARD_SETTINGS.user_reward_amount,
                 DEFAULT_AD_COIN_REWARD_SETTINGS.googer_commission_amount,
                 DEFAULT_AD_COIN_REWARD_SETTINGS.advertiser_charge_amount,
+                DEFAULT_AD_COIN_REWARD_SETTINGS.required_watch_seconds,
             ]
         );
     }
@@ -825,7 +880,7 @@ const getActiveAdCoinRewardSettings = async (client = pool) => {
     await ensureSponsoredAdsEngagementSchema();
 
     const result = await client.query(
-        `SELECT id, user_reward_amount, googer_commission_amount, advertiser_charge_amount, is_active
+        `SELECT id, user_reward_amount, googer_commission_amount, advertiser_charge_amount, required_watch_seconds, is_active
          FROM ad_coin_reward_settings
          WHERE is_active = TRUE
          ORDER BY updated_at DESC, id DESC
@@ -839,6 +894,7 @@ const getActiveAdCoinRewardSettings = async (client = pool) => {
             user_reward_amount: parseRewardSettingAmount(row.user_reward_amount, DEFAULT_AD_COIN_REWARD_SETTINGS.user_reward_amount),
             googer_commission_amount: parseRewardSettingAmount(row.googer_commission_amount, DEFAULT_AD_COIN_REWARD_SETTINGS.googer_commission_amount),
             advertiser_charge_amount: parseRewardSettingAmount(row.advertiser_charge_amount, DEFAULT_AD_COIN_REWARD_SETTINGS.advertiser_charge_amount),
+            required_watch_seconds: Math.max(1, Math.floor(Number(row.required_watch_seconds || DEFAULT_AD_COIN_REWARD_SETTINGS.required_watch_seconds))),
             is_active: row.is_active !== false,
         };
     }
@@ -848,16 +904,23 @@ const getActiveAdCoinRewardSettings = async (client = pool) => {
             user_reward_amount,
             googer_commission_amount,
             advertiser_charge_amount,
+            required_watch_seconds,
             is_active
-        ) VALUES ($1, $2, $3, TRUE)`,
+        ) VALUES ($1, $2, $3, $4, TRUE)`,
         [
             DEFAULT_AD_COIN_REWARD_SETTINGS.user_reward_amount,
             DEFAULT_AD_COIN_REWARD_SETTINGS.googer_commission_amount,
             DEFAULT_AD_COIN_REWARD_SETTINGS.advertiser_charge_amount,
+            DEFAULT_AD_COIN_REWARD_SETTINGS.required_watch_seconds,
         ]
     );
 
     return { ...DEFAULT_AD_COIN_REWARD_SETTINGS, is_active: true };
+};
+
+const assertAdmin = async (userId) => {
+    const result = await pool.query('SELECT user_type FROM users WHERE id = $1 LIMIT 1', [userId]);
+    return result.rows[0]?.user_type === 'admin';
 };
 
 const getGoogerWalletUserId = async (client = pool) => {
@@ -1126,11 +1189,21 @@ const mapActiveAdToMarketCard = (row, adCoinValue = DEFAULT_AD_COIN_REWARD_SETTI
         comments_count: Number(row.comments_count || 0),
         shares_count: Number(row.shares_count || 0),
         views_count: Number(row.impressions || 0),
+        clicks: Number(row.clicks || 0),
+        link_actions: Number(row.clicks || 0),
+        message_clicks: Number(row.message_clicks || 0),
+        visit_clicks: Number(row.visit_clicks || 0),
+        call_clicks: Number(row.call_clicks || 0),
+        current_reach: Number(row.current_reach || row.reach || 0),
         variants: [],
         shipping_info: null,
         commission_info: null,
-        createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
-        created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+        createdAt: row.active_start_time || row.started_at ? new Date(row.active_start_time || row.started_at || row.created_at).toISOString() : (row.created_at ? new Date(row.created_at).toISOString() : null),
+        created_at: row.active_start_time || row.started_at ? new Date(row.active_start_time || row.started_at || row.created_at).toISOString() : (row.created_at ? new Date(row.created_at).toISOString() : null),
+        activeStartTime: row.active_start_time || row.started_at ? new Date(row.active_start_time || row.started_at).toISOString() : null,
+        active_start_time: row.active_start_time || row.started_at ? new Date(row.active_start_time || row.started_at).toISOString() : null,
+        startedAt: row.started_at || row.active_start_time ? new Date(row.started_at || row.active_start_time).toISOString() : null,
+        started_at: row.started_at || row.active_start_time ? new Date(row.started_at || row.active_start_time).toISOString() : null,
         product_code: isProductPromote ? (linkedProductShareCode || row.product_code || null) : row.ad_id,
         share_code: isProductPromote ? (linkedProductShareCode || row.share_code || null) : canonicalShareCode,
         shareCode: isProductPromote ? (linkedProductShareCode || row.share_code || null) : canonicalShareCode,
@@ -1372,6 +1445,22 @@ exports.createMarketItem = async (req, res) => {
         } = req.body;
 
         const userId = req.user.id;
+
+        // Enforce dynamic product upload limit (deleted items don't count)
+        const { getUserPlanLimits } = require('../utils/planLimits');
+        const limits = await getUserPlanLimits(userId);
+        const productCountRes = await pool.query(
+            `SELECT COUNT(*)::int AS c FROM market WHERE user_id = $1 AND status != 'deleted'`,
+            [userId]
+        );
+        if (productCountRes.rows[0].c >= limits.productUploadLimit) {
+            return res.status(403).json({
+                success: false,
+                message: 'Product upload limit reached. Subscribe to a higher plan to upload more products.',
+                code: 'PRODUCT_UPLOAD_LIMIT',
+                limit: limits.productUploadLimit,
+            });
+        }
 
         // Fetch real username and 6-digit user_id (string) from users table
         const userResult = await pool.query('SELECT username, user_id FROM users WHERE id = $1', [userId]);
@@ -1911,7 +2000,7 @@ exports.getMarketProducts = async (req, res) => {
                         a.edit_draft, a.gender_target, a.age_min, a.age_max,
                         a.impressions, a.clicks, a.current_reach, a.max_reach_cap,
                         a.likes_count, a.comments_count,
-                        a.shares_count, a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.created_at,
+                        a.shares_count, a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.active_start_time, a.created_at,
                         u.profile_picture, u.username AS owner_username_joined,
                         ${hasUsersCountry ? 'u.country AS seller_country,' : 'NULL::text AS seller_country,'}
                         ${hasUsersShippingAddress
@@ -1941,7 +2030,10 @@ exports.getMarketProducts = async (req, res) => {
                 [viewerId]
             );
             const viewerAdProfile = await loadViewerAdProfile(pool, viewerId, req);
-            let sponsoredRows = filterDeliverableAds(sponsoredResult.rows, viewerAdProfile).map(mapActiveAdToMarketCard);
+            const deliverableSponsoredRows = viewerAdProfile?.isAnonymous
+                ? sponsoredResult.rows
+                : filterDeliverableAds(sponsoredResult.rows, viewerAdProfile);
+            let sponsoredRows = deliverableSponsoredRows.map(mapActiveAdToMarketCard);
             const productPromoteAds = sponsoredRows.filter(
                 (ad) => ad.campaign_type === 'Product Promote' && (ad.linked_product_id != null || ad.linked_product_share_code)
             );
@@ -2381,7 +2473,7 @@ exports.getMarketItems = async (req, res) => {
                             a.media_preview, a.media_gallery, a.media_type, a.edit_draft, a.gender_target, a.age_min, a.age_max,
                             a.impressions, a.clicks, a.current_reach, a.max_reach_cap,
                             a.likes_count, a.comments_count, a.shares_count,
-                            a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.created_at,
+                            a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.active_start_time, a.created_at,
                             u.profile_picture, u.username AS owner_username_joined,
                             ${hasUsersCountry ? 'u.country AS seller_country,' : 'NULL::text AS seller_country,'}
                             ${hasUsersShippingAddress
@@ -2413,7 +2505,10 @@ exports.getMarketItems = async (req, res) => {
                     , [viewerId]);
 
                 const viewerAdProfile = await loadViewerAdProfile(pool, viewerId, req);
-                sponsoredRows = filterDeliverableAds(sponsoredResult.rows, viewerAdProfile).map(mapActiveAdToMarketCard);
+                const deliverableSponsoredRows = viewerAdProfile?.isAnonymous
+                    ? sponsoredResult.rows
+                    : filterDeliverableAds(sponsoredResult.rows, viewerAdProfile);
+                sponsoredRows = deliverableSponsoredRows.map(mapActiveAdToMarketCard);
 
                 const productPromoteAds = sponsoredRows.filter(
                     (ad) => ad.campaign_type === 'Product Promote' && (ad.linked_product_id != null || ad.linked_product_share_code)
@@ -2863,22 +2958,23 @@ exports.collectAdLikeCoin = async (req, res) => {
             return res.status(400).json({ success: false, message: 'You must like this ad before collecting the coin.' });
         }
 
-        if (isSponsoredVideoAd(adRow)) {
+        const rewardSettings = await getActiveAdCoinRewardSettings(client);
+
+        if (isWatchTimedSponsoredAd(adRow)) {
+            const requiredWatchSeconds = Math.max(1, Math.floor(Number(rewardSettings?.required_watch_seconds || DEFAULT_AD_COIN_REWARD_SETTINGS.required_watch_seconds)));
             const eligibilityResult = await client.query(
-                'SELECT 1 FROM ad_video_watch_eligibility WHERE ad_id = $1 AND user_id = $2 AND watched_seconds >= 5 LIMIT 1',
-                [adId, userId]
+                'SELECT 1 FROM ad_video_watch_eligibility WHERE ad_id = $1 AND user_id = $2 AND watched_seconds >= $3 LIMIT 1',
+                [adId, userId, requiredWatchSeconds]
             );
 
             if (!eligibilityResult.rows.length) {
                 await client.query('ROLLBACK');
                 return res.status(400).json({
                     success: false,
-                    message: 'Watch this ad video for at least 5 seconds before collecting the coin.',
+                    message: `Please watch this ad for ${requiredWatchSeconds} seconds before collecting the coin.`,
                 });
             }
         }
-
-        const rewardSettings = await getActiveAdCoinRewardSettings(client);
 
         // Promo code ads with a zero budget are free — same UI flow, but all amounts are 0
         const isPromoFreeAd = !!(adRow.promo_code) && Number(adRow.budget || 0) === 0;
@@ -3033,9 +3129,11 @@ exports.markAdVideoWatchEligible = async (req, res) => {
         await ensureSponsoredAdsEngagementSchema();
         const adId = normalizeSponsoredAdId(id);
         const watchedSeconds = Math.max(0, Math.floor(Number(req.body?.watchedSeconds || 0)));
+        const rewardSettings = await getActiveAdCoinRewardSettings(pool);
+        const requiredWatchSeconds = Math.max(1, Math.floor(Number(rewardSettings?.required_watch_seconds || DEFAULT_AD_COIN_REWARD_SETTINGS.required_watch_seconds)));
 
         const adResult = await pool.query(
-            'SELECT ad_id, media_type, edit_draft FROM ads WHERE ad_id = $1 LIMIT 1',
+            'SELECT ad_id, campaign_type, media_type, edit_draft FROM ads WHERE ad_id = $1 LIMIT 1',
             [adId]
         );
 
@@ -3044,10 +3142,10 @@ exports.markAdVideoWatchEligible = async (req, res) => {
         }
 
         const adRow = adResult.rows[0];
-        const eligibleSeconds = Math.max(5, watchedSeconds);
+        const eligibleSeconds = Math.max(requiredWatchSeconds, watchedSeconds);
 
-        if (!isSponsoredVideoAd(adRow)) {
-            return res.status(200).json({ success: true, eligible: true, watchedSeconds: eligibleSeconds });
+        if (!isWatchTimedSponsoredAd(adRow)) {
+            return res.status(200).json({ success: true, eligible: true, watchedSeconds: eligibleSeconds, requiredWatchSeconds });
         }
 
         await pool.query(
@@ -3061,10 +3159,60 @@ exports.markAdVideoWatchEligible = async (req, res) => {
             [adId, userId, eligibleSeconds]
         );
 
-        return res.status(200).json({ success: true, eligible: true, watchedSeconds: eligibleSeconds });
+        return res.status(200).json({ success: true, eligible: true, watchedSeconds: eligibleSeconds, requiredWatchSeconds });
     } catch (error) {
         console.error('Error marking ad video watch eligibility:', error);
         return res.status(500).json({ success: false, message: 'Server error tracking ad video watch' });
+    }
+};
+
+exports.getAdCoinRewardSettingsPublic = async (_req, res) => {
+    try {
+        const settings = await getActiveAdCoinRewardSettings(pool);
+        return res.status(200).json({ success: true, settings });
+    } catch (error) {
+        console.error('Error fetching ad coin reward settings:', error);
+        return res.status(500).json({ success: false, message: 'Failed to fetch ad coin reward settings' });
+    }
+};
+
+exports.upsertAdCoinRewardSettings = async (req, res) => {
+    const client = await pool.connect();
+    try {
+        if (!(await assertAdmin(req.user?.id))) {
+            return res.status(403).json({ success: false, message: 'Admin access required' });
+        }
+
+        await ensureSponsoredAdsEngagementSchema();
+        const current = await getActiveAdCoinRewardSettings(client);
+        const userRewardAmount = parseRewardSettingAmount(req.body?.user_reward_amount, current.user_reward_amount);
+        const googerCommissionAmount = parseRewardSettingAmount(req.body?.googer_commission_amount, current.googer_commission_amount);
+        const advertiserChargeAmount = parseRewardSettingAmount(req.body?.advertiser_charge_amount, current.advertiser_charge_amount);
+        const requiredWatchSeconds = Math.max(1, Math.floor(Number(req.body?.required_watch_seconds ?? current.required_watch_seconds)));
+
+        await client.query('BEGIN');
+        await client.query(`UPDATE ad_coin_reward_settings SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE is_active = TRUE`);
+        const insertResult = await client.query(
+            `INSERT INTO ad_coin_reward_settings (
+                user_reward_amount,
+                googer_commission_amount,
+                advertiser_charge_amount,
+                required_watch_seconds,
+                is_active,
+                created_at,
+                updated_at
+            ) VALUES ($1, $2, $3, $4, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id, user_reward_amount, googer_commission_amount, advertiser_charge_amount, required_watch_seconds, is_active, created_at, updated_at`,
+            [userRewardAmount, googerCommissionAmount, advertiserChargeAmount, requiredWatchSeconds]
+        );
+        await client.query('COMMIT');
+        return res.status(200).json({ success: true, settings: insertResult.rows[0] });
+    } catch (error) {
+        try { await client.query('ROLLBACK'); } catch {}
+        console.error('Error updating ad coin reward settings:', error);
+        return res.status(500).json({ success: false, message: 'Failed to update ad coin reward settings' });
+    } finally {
+        client.release();
     }
 };
 
@@ -3350,6 +3498,7 @@ exports.logView = async (req, res) => {
         const { id } = req.params;
         let userId = req.user?.id || null;
         const ipAddress = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+        const viewerKey = getViewerKeyFromRequest(req);
 
         // Manual token check if req.user is not set
         if (!userId) {
@@ -3367,59 +3516,89 @@ exports.logView = async (req, res) => {
         if (isSponsoredFeedItemId(id)) {
             await ensureSponsoredAdsEngagementSchema();
             const adId = normalizeSponsoredAdId(id);
-            let query = '';
-            let params = [];
+            const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
+            // Resolve anonymous viewer identifier once so it's available in both the
+            // SELECT and the UPDATE phases below.
+            const anonymousViewer = userId ? null : getAnonymousViewerIdentifier({ viewerKey, ipAddress });
+
+            let existingViewResult;
             if (userId) {
-                query = 'SELECT last_viewed_at FROM ad_views WHERE ad_id = $1 AND user_id = $2';
-                params = [adId, userId];
+                existingViewResult = await pool.query(
+                    'SELECT id, last_viewed_at FROM ad_views WHERE ad_id = $1 AND user_id = $2 LIMIT 1',
+                    [adId, userId]
+                );
             } else {
-                query = 'SELECT last_viewed_at FROM ad_views WHERE ad_id = $1 AND ip_address = $2 AND user_id IS NULL';
-                params = [adId, ipAddress];
+                existingViewResult = await pool.query(
+                    `SELECT id, last_viewed_at FROM ad_views WHERE ad_id = $1 AND ${anonymousViewer.column} = $2 AND user_id IS NULL LIMIT 1`,
+                    [adId, anonymousViewer.value]
+                );
             }
 
-            const viewCheck = await pool.query(query, params);
-            const now = new Date();
-            let shouldIncrement = false;
+            const existingRow = existingViewResult.rows[0] || null;
+            const isNewViewer = !existingRow;
+            const is24hElapsed = existingRow
+                ? (Date.now() - new Date(existingRow.last_viewed_at).getTime()) >= TWENTY_FOUR_HOURS_MS
+                : false;
+            // Reach increments for brand-new viewers AND for returning viewers whose
+            // 24-hour window has reset.  Impressions always increment regardless.
+            const isUniqueReach = isNewViewer || is24hElapsed;
 
-            if (viewCheck.rows.length === 0) {
-                if (userId) {
-                    await pool.query(
-                        'INSERT INTO ad_views (ad_id, user_id, ip_address, last_viewed_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)',
-                        [adId, userId, ipAddress]
+            const client = await pool.connect();
+            try {
+                await client.query('BEGIN');
+                if (isNewViewer) {
+                    await client.query(
+                        `INSERT INTO ad_views (ad_id, user_id, viewer_key, ip_address, view_count, last_viewed_at)
+                         VALUES ($1, $2, $3, $4, 1, CURRENT_TIMESTAMP)`,
+                        [adId, userId, viewerKey, ipAddress]
                     );
                 } else {
-                    await pool.query(
-                        'INSERT INTO ad_views (ad_id, ip_address, last_viewed_at) VALUES ($1, $2, CURRENT_TIMESTAMP)',
-                        [adId, ipAddress]
+                    // Reset last_viewed_at only when the 24h window has elapsed so that
+                    // the NEXT view 24h+ later can again count as a new reach.
+                    await client.query(
+                        `UPDATE ad_views
+                         SET view_count = COALESCE(view_count, 0) + 1,
+                             viewer_key  = COALESCE($1, viewer_key),
+                             ip_address  = $2,
+                             last_viewed_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE last_viewed_at END
+                         WHERE id = $3`,
+                        [viewerKey, ipAddress, existingRow.id, isUniqueReach]
                     );
                 }
-                shouldIncrement = true;
-            } else {
-                const lastViewed = new Date(viewCheck.rows[0].last_viewed_at);
-                const diffInHours = (now - lastViewed) / (1000 * 60 * 60);
 
-                if (diffInHours >= 24) {
-                    if (userId) {
-                        await pool.query(
-                            'UPDATE ad_views SET last_viewed_at = CURRENT_TIMESTAMP, ip_address = $1 WHERE ad_id = $2 AND user_id = $3',
-                            [ipAddress, adId, userId]
-                        );
-                    } else {
-                        await pool.query(
-                            'UPDATE ad_views SET last_viewed_at = CURRENT_TIMESTAMP WHERE ad_id = $1 AND ip_address = $2 AND user_id IS NULL',
-                            [adId, ipAddress]
-                        );
-                    }
-                    shouldIncrement = true;
-                }
+                const updatedAnalytics = await client.query(
+                    `UPDATE ads
+                     SET impressions    = COALESCE(impressions, 0) + 1,
+                         current_reach  = COALESCE(current_reach, 0) + $2,
+                         reach          = COALESCE(reach, 0) + $2,
+                         updated_at     = CURRENT_TIMESTAMP
+                     WHERE ad_id = $1
+                     RETURNING impressions, current_reach, reach, clicks, message_clicks, visit_clicks, call_clicks`,
+                    [adId, isUniqueReach ? 1 : 0]
+                );
+
+                await client.query('COMMIT');
+
+                return res.status(200).json({
+                    success: true,
+                    incremented: true,
+                    uniqueReachIncremented: isUniqueReach,
+                    impressions: Number(updatedAnalytics.rows[0]?.impressions || 0),
+                    reach: Number(updatedAnalytics.rows[0]?.current_reach || updatedAnalytics.rows[0]?.reach || 0),
+                    current_reach: Number(updatedAnalytics.rows[0]?.current_reach || updatedAnalytics.rows[0]?.reach || 0),
+                    clicks: Number(updatedAnalytics.rows[0]?.clicks || 0),
+                    link_actions: Number(updatedAnalytics.rows[0]?.clicks || 0),
+                    message_clicks: Number(updatedAnalytics.rows[0]?.message_clicks || 0),
+                    visit_clicks: Number(updatedAnalytics.rows[0]?.visit_clicks || 0),
+                    call_clicks: Number(updatedAnalytics.rows[0]?.call_clicks || 0),
+                });
+            } catch (error) {
+                await client.query('ROLLBACK');
+                throw error;
+            } finally {
+                client.release();
             }
-
-            if (shouldIncrement) {
-                await recordAdImpression(pool, adId, 1);
-            }
-
-            return res.status(200).json({ success: true, incremented: shouldIncrement });
         }
 
         // Resolve market_id: support both numeric id and alphanumeric product_code
@@ -3501,16 +3680,78 @@ exports.logView = async (req, res) => {
 exports.logAdClick = async (req, res) => {
     try {
         const { id } = req.params;
+        let userId = req.user?.id || null;
+        const viewerKey = getViewerKeyFromRequest(req);
+        const ipAddress = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+        const actionType = normalizeAdActionType(req.body?.action_type);
+
+        if (!userId) {
+            const authHeader = req.header('Authorization');
+            const token = authHeader?.startsWith('Bearer ') ? authHeader.replace('Bearer ', '') : authHeader;
+            if (token) {
+                try {
+                    const secret = process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET;
+                    const decoded = jwt.verify(token, secret);
+                    userId = decoded.id;
+                } catch (e) { /* ignore invalid guest token */ }
+            }
+        }
 
         await ensureSponsoredAdsEngagementSchema();
         const adId = normalizeSponsoredAdId(id);
-        const updated = await recordAdClick(pool, adId);
+        const clickColumn = actionType === 'message'
+            ? 'message_clicks'
+            : actionType === 'visit'
+                ? 'visit_clicks'
+                : actionType === 'call'
+                    ? 'call_clicks'
+                    : null;
 
-        if (!updated) {
+        const client = await pool.connect();
+        let updated;
+        try {
+            await client.query('BEGIN');
+            if (actionType) {
+                await client.query(
+                    `INSERT INTO ad_click_events (ad_id, user_id, viewer_key, ip_address, action_type)
+                     VALUES ($1, $2, $3, $4, $5)`,
+                    [adId, userId, viewerKey, ipAddress, actionType]
+                );
+            }
+
+            updated = await client.query(
+                `UPDATE ads
+                 SET clicks = COALESCE(clicks, 0) + 1,
+                     ${clickColumn ? `${clickColumn} = COALESCE(${clickColumn}, 0) + 1,` : ''}
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE ad_id = $1
+                 RETURNING clicks, message_clicks, visit_clicks, call_clicks, impressions, current_reach, reach`,
+                [adId]
+            );
+
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+
+        if (!updated.rows[0]) {
             return res.status(404).json({ success: false, message: 'Ad not found' });
         }
 
-        return res.status(200).json({ success: true, clicks: Number(updated.clicks || 0) });
+        return res.status(200).json({
+            success: true,
+            clicks: Number(updated.rows[0].clicks || 0),
+            link_actions: Number(updated.rows[0].clicks || 0),
+            message_clicks: Number(updated.rows[0].message_clicks || 0),
+            visit_clicks: Number(updated.rows[0].visit_clicks || 0),
+            call_clicks: Number(updated.rows[0].call_clicks || 0),
+            impressions: Number(updated.rows[0].impressions || 0),
+            reach: Number(updated.rows[0].current_reach || updated.rows[0].reach || 0),
+            current_reach: Number(updated.rows[0].current_reach || updated.rows[0].reach || 0),
+        });
     } catch (error) {
         console.error('Error logging ad click:', error);
         return res.status(500).json({ success: false, message: 'Server error' });

@@ -1,18 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import IonIcon from "@/app/components/IonIcon";
 import { adsService } from "@/services/adsService";
+import { AdAnalyticsModal } from "@/app/components/ads/AdAnalyticsModal";
+import { subscriptionService } from "@/services/subscriptionService";
 
 type AdStatus = "Under Review" | "Active" | "Paused" | "Completed" | "Cancelled";
 type StatusFilter = "All Ads" | AdStatus;
 const ADS_PER_PAGE = 5;
+const BASIC_RAW_MEDIA_WARNING_MS = 2 * 60 * 1000;
+const BASIC_RAW_MEDIA_EXPIRY_MS = 10 * 60 * 1000;
 
 type AdHistoryRow = {
     adId: string;
+    displayAdId: string;
     campaignType: string;
     createdAt: string;
+    publishedAt?: string | null;
     ownerKey?: string;
     status: AdStatus;
     budget?: number;
@@ -35,22 +41,48 @@ type AdHistoryRow = {
     spend?: number;
     remainingBudget?: number;
     promoCode?: string | null;
+    activeLink?: string;
     walletTransferId?: number | null;
     startedAt?: string | null;
+    activeStartTime?: string | null;
+    pausedAt?: string | null;
+    lastResumedAt?: string | null;
+    completedAt?: string | null;
+    accumulatedActiveMs?: number;
+    durationRemainingMs?: number;
+    durationElapsedMs?: number;
+    durationTotalMs?: number;
     campaignPath?: string;
     editDraft?: Record<string, unknown>;
 };
 
 const STATUS_FILTERS: Array<{ label: StatusFilter; slug: string; icon: string }> = [
-    { label: "All Ads", slug: "all", icon: "receipt-outline" },
-    { label: "Under Review", slug: "under-review", icon: "time-outline" },
-    { label: "Active", slug: "active", icon: "radio-button-on-outline" },
-    { label: "Paused", slug: "paused", icon: "pause-circle-outline" },
-    { label: "Completed", slug: "completed", icon: "checkmark-done-outline" },
-    { label: "Cancelled", slug: "cancelled", icon: "close-circle-outline" },
+    { label: "All Ads",      slug: "all",          icon: "receipt-outline" },
+    { label: "Under Review", slug: "under-review",  icon: "time-outline" },
+    { label: "Active",       slug: "active",        icon: "radio-button-on-outline" },
+    { label: "Paused",       slug: "paused",        icon: "pause-circle-outline" },
+    { label: "Completed",    slug: "completed",     icon: "checkmark-done-outline" },
+    { label: "Cancelled",    slug: "cancelled",     icon: "close-circle-outline" },
 ];
 
 const VALID_STATUSES: AdStatus[] = ["Under Review", "Active", "Paused", "Completed", "Cancelled"];
+
+
+function supportsRemainingBudgetRefund(campaignType: string) {
+    const normalized = campaignType.trim().toLowerCase();
+    return normalized === "product promote"
+        || normalized === "photo promote"
+        || normalized === "video promote"
+        || normalized === "photo and video"
+        || normalized === "photo & video";
+}
+
+function getCampaignEditorPath(campaignType: string) {
+    const normalized = campaignType.trim().toLowerCase();
+    if (normalized === "product promote") return "/dashboard/ad-campaign/product-promote";
+    if (normalized === "profile promote") return "/dashboard/ad-campaign/profile-promote";
+    return "/dashboard/ad-campaign/photo-video";
+}
 
 function normalizeStatus(status: unknown): AdStatus {
     return VALID_STATUSES.includes(status as AdStatus) ? (status as AdStatus) : "Under Review";
@@ -65,9 +97,11 @@ function getInitialFilter(): StatusFilter {
 function normalizeApiAds(input: any[]) {
     return input
         .map((data): AdHistoryRow => ({
-            adId: typeof data.adId === "string" ? data.adId.slice(-10) : "",
+            adId: typeof data.adId === "string" ? data.adId : "",
+            displayAdId: typeof data.adId === "string" ? data.adId.slice(-10) : "",
             campaignType: typeof data.campaignType === "string" ? data.campaignType : "Ad Campaign",
             createdAt: typeof data.createdAt === "string" ? data.createdAt : new Date().toISOString(),
+            publishedAt: typeof data.publishedAt === "string" ? data.publishedAt : (typeof data.published_at === "string" ? data.published_at : null),
             ownerKey: typeof data.ownerKey === "string" ? data.ownerKey : undefined,
             status: normalizeStatus(data.status),
             budget: typeof data.budget === "number" ? data.budget : Number(data.budget || 0),
@@ -94,10 +128,23 @@ function normalizeApiAds(input: any[]) {
             spend: typeof data.spend === "number" ? data.spend : Number(data.spend || 0),
             remainingBudget: typeof data.remainingBudget === "number" ? data.remainingBudget : Number(data.remainingBudget || 0),
             promoCode: typeof data.promoCode === "string" ? data.promoCode : (typeof data.promo_code === "string" ? data.promo_code : null),
+            activeLink: typeof data.active_link === "string" ? data.active_link : "",
             walletTransferId: data.walletTransferId ?? data.wallet_transfer_id ?? null,
             startedAt: typeof data.startedAt === "string" ? data.startedAt : (typeof data.started_at === "string" ? data.started_at : null),
-            campaignPath: typeof data.campaignPath === "string" ? data.campaignPath : "/dashboard/ad-campaign/photo-video",
-            editDraft: data.editDraft && typeof data.editDraft === "object" ? data.editDraft : undefined,
+            activeStartTime: typeof data.activeStartTime === "string" ? data.activeStartTime : (typeof data.active_start_time === "string" ? data.active_start_time : null),
+            pausedAt: typeof data.pausedAt === "string" ? data.pausedAt : (typeof data.paused_at === "string" ? data.paused_at : null),
+            lastResumedAt: typeof data.lastResumedAt === "string" ? data.lastResumedAt : (typeof data.last_resumed_at === "string" ? data.last_resumed_at : null),
+            completedAt: typeof data.completedAt === "string" ? data.completedAt : (typeof data.completed_at === "string" ? data.completed_at : null),
+            accumulatedActiveMs: typeof data.accumulatedActiveMs === "number" ? data.accumulatedActiveMs : Number(data.accumulatedActiveMs ?? data.accumulated_active_ms ?? 0),
+            durationRemainingMs: typeof data.durationRemainingMs === "number" ? data.durationRemainingMs : Number(data.durationRemainingMs ?? data.duration_remaining_ms ?? 0),
+            durationElapsedMs: typeof data.durationElapsedMs === "number" ? data.durationElapsedMs : Number(data.durationElapsedMs ?? data.duration_elapsed_ms ?? 0),
+            durationTotalMs: typeof data.durationTotalMs === "number" ? data.durationTotalMs : Number(data.durationTotalMs ?? data.duration_total_ms ?? 0),
+            campaignPath: typeof data.campaignPath === "string" && data.campaignPath.trim().length > 0
+                ? data.campaignPath
+                : getCampaignEditorPath(typeof data.campaignType === "string" ? data.campaignType : "Ad Campaign"),
+            editDraft: data.editDraft && typeof data.editDraft === "object"
+                ? data.editDraft
+                : (data.edit_draft && typeof data.edit_draft === "object" ? data.edit_draft : {}),
         }))
         .sort((first, second) => new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime());
 }
@@ -111,6 +158,105 @@ function getAdGallery(ad: AdHistoryRow) {
 
 function getPrimaryMedia(ad: AdHistoryRow) {
     return getAdGallery(ad)[0] || ad.mediaPreview || "";
+}
+
+function isRawPhotoVideoAd(ad: AdHistoryRow) {
+    const campaignType = ad.campaignType.trim().toLowerCase();
+    const isPhotoVideo = campaignType === "photo and video" || campaignType === "photo & video";
+    if (!isPhotoVideo) return false;
+
+    const activeLink = String(ad.activeLink || ad.editDraft?.activeLink || ad.editDraft?.active_link || "").trim();
+    if (activeLink) return false;
+
+    const primaryMedia = getPrimaryMedia(ad).trim();
+    if (!primaryMedia) return false;
+    return !/^https?:\/\//i.test(primaryMedia) || /\/uploads?\//i.test(primaryMedia);
+}
+
+function formatDateTimeLabel(value: string) {
+    const parsedDate = new Date(value);
+    if (Number.isNaN(parsedDate.getTime())) return "Unknown time";
+    const dateLabel = parsedDate.toLocaleDateString(undefined, {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+    });
+    const timeLabel = parsedDate.toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+    return `${dateLabel}, ${timeLabel}`;
+}
+
+function formatRelativeDuration(ms: number) {
+    const safeMs = Math.max(0, Math.floor(ms));
+    const totalSeconds = Math.floor(safeMs / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
+}
+
+function getLiveDurationRemainingMs(ad: AdHistoryRow, nowMs: number) {
+    const totalMs = Number(ad.durationTotalMs ?? (Number(ad.durationDays || 0) * 24 * 60 * 60 * 1000));
+    if (totalMs <= 0) return 0;
+
+    const baseElapsed = Math.max(0, Number(ad.accumulatedActiveMs || 0));
+    const lastResumedMs = ad.lastResumedAt ? new Date(ad.lastResumedAt).getTime() : NaN;
+    const liveElapsed = ad.status === "Active" && Number.isFinite(lastResumedMs)
+        ? Math.max(0, nowMs - lastResumedMs)
+        : 0;
+
+    return Math.max(0, totalMs - Math.min(totalMs, baseElapsed + liveElapsed));
+}
+
+function getDurationStatusLabel(ad: AdHistoryRow, nowMs: number) {
+    const totalDays = Number(ad.durationDays || 0);
+    const totalMs = Number(ad.durationTotalMs ?? (totalDays * 24 * 60 * 60 * 1000));
+    const remainingMs = getLiveDurationRemainingMs(ad, nowMs);
+
+    if (totalMs <= 0 || totalDays <= 0) return `${totalDays} ${totalDays === 1 ? "day" : "days"}`;
+    if (ad.status === "Under Review") return `${totalDays} ${totalDays === 1 ? "day" : "days"}`;
+    if (ad.status === "Completed") return `0 of ${totalDays} ${totalDays === 1 ? "day" : "days"} left`;
+    return `${formatRelativeDuration(remainingMs)} left`;
+}
+
+function getAdStartTime(ad: AdHistoryRow) {
+    return ad.activeStartTime || ad.startedAt || ad.publishedAt || ad.createdAt || null;
+}
+
+function getAdEndTime(ad: AdHistoryRow) {
+    const start = getAdStartTime(ad);
+    const durationMs = Number(ad.durationTotalMs ?? (Number(ad.durationDays || 0) * 24 * 60 * 60 * 1000));
+    if (!start || durationMs <= 0) return null;
+
+    const startMs = new Date(start).getTime();
+    if (!Number.isFinite(startMs)) return null;
+    return new Date(startMs + durationMs).toISOString();
+}
+
+function getAdRemainingTimeLabel(ad: AdHistoryRow, nowMs: number) {
+    const remainingMs = getLiveDurationRemainingMs(ad, nowMs);
+    if (ad.status === "Completed") return "Completed";
+    if (ad.status === "Cancelled") return "Cancelled";
+    if (ad.status === "Under Review") return "Under Review";
+    if (ad.status === "Paused") return `${formatRelativeDuration(remainingMs)} left`;
+    return `${formatRelativeDuration(remainingMs)} left`;
+}
+
+function getPublishedTimeLabel(ad: AdHistoryRow, nowMs: number) {
+    const label = ad.activeStartTime ? "Published" : "Created";
+    const source = ad.activeStartTime || ad.publishedAt || ad.createdAt;
+    if (!source) return `${label}: Unknown time`;
+
+    const sourceMs = new Date(source).getTime();
+    const elapsedMs = Number.isFinite(sourceMs) ? Math.max(0, nowMs - sourceMs) : 0;
+    return `${label}: ${formatDateTimeLabel(source)} (${formatRelativeDuration(elapsedMs)} ago)`;
 }
 
 function formatDateTime(value: string) {
@@ -133,21 +279,6 @@ function formatCurrency(value?: number) {
 
 function isPromoFreeAd(ad: AdHistoryRow) {
     return !ad.walletTransferId;
-}
-
-function isProfilePromoteAd(ad: AdHistoryRow) {
-    return ad.campaignType === "Profile Promote";
-}
-
-function getDurationLabel(ad: AdHistoryRow) {
-    const total = ad.durationDays || 0;
-    if (ad.status === "Active" && ad.startedAt) {
-        const elapsedMs = Date.now() - new Date(ad.startedAt).getTime();
-        const elapsedDays = Math.floor(elapsedMs / (1000 * 60 * 60 * 24));
-        const remaining = Math.max(0, total - elapsedDays);
-        return `${remaining} of ${total} ${total === 1 ? "day" : "days"} left`;
-    }
-    return `${total} ${total === 1 ? "day" : "days"}`;
 }
 
 function formatReachCount(value: number) {
@@ -206,14 +337,30 @@ export default function AdCenterPage() {
     const [ads, setAds] = useState<AdHistoryRow[]>([]);
     const [activeFilter, setActiveFilter] = useState<StatusFilter>("All Ads");
     const [selectedAd, setSelectedAd] = useState<AdHistoryRow | null>(null);
+    const [analyticsAd, setAnalyticsAd] = useState<AdHistoryRow | null>(null);
     const [cancelTarget, setCancelTarget] = useState<AdHistoryRow | null>(null);
     const [currentPage, setCurrentPage] = useState(1);
+    const [actionError, setActionError] = useState<string | null>(null);
+    const [nowMs, setNowMs] = useState(() => Date.now());
+    const [showExpiryPopup, setShowExpiryPopup] = useState(false);
+    const [expiryPopupDismissed, setExpiryPopupDismissed] = useState(false);
+    const [expiryPopupMediaType, setExpiryPopupMediaType] = useState<"photo" | "video">("photo");
+    const [expiryPopupRemainingLabel, setExpiryPopupRemainingLabel] = useState("soon");
+    const planExpiryMsRef = useRef<number>(0);
+    const isBasicPlanRef = useRef(false);
+    const shownAdIdsRef = useRef<Set<string>>(new Set());
+    const adsRef = useRef<AdHistoryRow[]>([]);
+
+    useEffect(() => {
+        const timerId = window.setInterval(() => setNowMs(Date.now()), 1000);
+        return () => window.clearInterval(timerId);
+    }, []);
 
     useEffect(() => {
         const refreshAds = async () => {
             try {
-                const nextAds = await adsService.getMyAds();
-                setAds(normalizeApiAds(nextAds));
+                const nextAds = normalizeApiAds(await adsService.getMyAds());
+                setAds(nextAds);
             } catch (error) {
                 console.error("Failed to fetch ads:", error);
                 setAds([]);
@@ -242,6 +389,64 @@ export default function AdCenterPage() {
         };
     }, []);
 
+    // Keep adsRef current so the interval closure always reads latest ads
+    useEffect(() => { adsRef.current = ads; }, [ads]);
+
+    // Load plan expiry once, keep ref updated
+    useEffect(() => {
+        const loadPlan = async () => {
+            try {
+                const plan = await subscriptionService.getMyPlan();
+                isBasicPlanRef.current = !!plan?.is_basic;
+                if (!isBasicPlanRef.current) { planExpiryMsRef.current = 0; return; }
+                planExpiryMsRef.current = BASIC_RAW_MEDIA_EXPIRY_MS;
+            } catch { isBasicPlanRef.current = false; planExpiryMsRef.current = 0; }
+        };
+        void loadPlan();
+        window.addEventListener('subscription:changed', loadPlan);
+        return () => window.removeEventListener('subscription:changed', loadPlan);
+    }, []);
+
+    // Real-time expiry popup — checks every 3 seconds
+    useEffect(() => {
+        const formatRemaining = (ms: number) => {
+            if (ms >= 24 * 60 * 60 * 1000) { const d = Math.ceil(ms / (24*60*60*1000)); return `${d} ${d===1?"day":"days"}`; }
+            if (ms >= 60 * 60 * 1000) { const h = Math.ceil(ms / (60*60*1000)); return `${h} ${h===1?"hour":"hours"}`; }
+            if (ms >= 60 * 1000) { const m = Math.ceil(ms / (60*1000)); return `${m} ${m===1?"minute":"minutes"}`; }
+            const s = Math.ceil(ms / 1000); return `${s} ${s===1?"second":"seconds"}`;
+        };
+
+        const check = () => {
+            if (expiryPopupDismissed) return;
+            const expiryMs = planExpiryMsRef.current;
+            if (expiryMs <= 0) return;
+            if (!isBasicPlanRef.current) return;
+            const triggerMs = Math.min(BASIC_RAW_MEDIA_WARNING_MS, expiryMs);
+            const now = Date.now();
+            for (const ad of adsRef.current) {
+                if (!isRawPhotoVideoAd(ad)) continue;
+                if (ad.status !== "Active") continue;
+                if (shownAdIdsRef.current.has(ad.adId)) continue;
+                const refTime = ad.activeStartTime || ad.startedAt;
+                const refMs = new Date(refTime || "").getTime();
+                if (!Number.isFinite(refMs)) continue;
+                const elapsed = now - refMs;
+                if (elapsed >= triggerMs) {
+                    shownAdIdsRef.current.add(ad.adId);
+                    const remaining = Math.max(0, expiryMs - elapsed);
+                    setExpiryPopupMediaType(ad.mediaType === "video" ? "video" : "photo");
+                    setExpiryPopupRemainingLabel(remaining > 0 ? formatRemaining(remaining) : "soon");
+                    setShowExpiryPopup(true);
+                    break;
+                }
+            }
+        };
+
+        check();
+        const id = window.setInterval(check, 3000);
+        return () => window.clearInterval(id);
+    }, [expiryPopupDismissed]);
+
     const filteredAds = activeFilter === "All Ads" ? ads : ads.filter((ad) => ad.status === activeFilter);
     const totalPages = Math.max(1, Math.ceil(filteredAds.length / ADS_PER_PAGE));
     const paginatedAds = filteredAds.slice((currentPage - 1) * ADS_PER_PAGE, currentPage * ADS_PER_PAGE);
@@ -253,6 +458,12 @@ export default function AdCenterPage() {
     useEffect(() => {
         setCurrentPage((page) => Math.min(page, totalPages));
     }, [totalPages]);
+
+    useEffect(() => {
+        if (!selectedAd) return;
+        const refreshedAd = ads.find((ad) => ad.adId === selectedAd.adId);
+        setSelectedAd(refreshedAd || null);
+    }, [ads, selectedAd]);
 
     const counts = useMemo(
         () =>
@@ -276,8 +487,11 @@ export default function AdCenterPage() {
             setAds(normalizeApiAds(nextAds));
             window.dispatchEvent(new Event("googer-wallet-updated"));
             window.dispatchEvent(new Event("googer-ad-history-updated"));
-        } catch {
-            return;
+            setActionError(null);
+            return true;
+        } catch (error: any) {
+            setActionError(error?.message || "Failed to cancel ad.");
+            return false;
         }
     };
 
@@ -292,21 +506,51 @@ export default function AdCenterPage() {
         }
     };
 
-    const handleEdit = (ad: AdHistoryRow) => {
-        if (ad.status !== "Under Review" || !ad.editDraft || !ad.campaignPath) return;
-        const draftKey = `googer-ad-draft-${ad.campaignType.toLowerCase().replace(/\s+/g, "-")}`;
-        window.localStorage.setItem(draftKey, JSON.stringify({
-            version: 1,
-            editingAdId: ad.adId,
-            mediaPreview: ad.mediaPreview,
-            mediaGallery: ad.mediaGallery || [],
-            mediaType: ad.mediaType,
-            ...ad.editDraft,
-        }));
-        router.push(ad.campaignPath);
+    const handleResume = async (adId: string) => {
+        try {
+            await adsService.updateAd(adId, { status: "Active" });
+            const nextAds = await adsService.getMyAds();
+            setAds(normalizeApiAds(nextAds));
+            window.dispatchEvent(new Event("googer-ad-history-updated"));
+        } catch {
+            return;
+        }
     };
 
     return (
+        <>
+        {showExpiryPopup && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+                <div className="relative w-full max-w-sm rounded-[2rem] border border-white/10 bg-[#1a1614] p-6 shadow-[0_32px_80px_rgba(0,0,0,0.6)]">
+                    <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-400/10 border border-amber-400/20">
+                        <IonIcon name="images-outline" className="text-xl text-amber-300" />
+                    </div>
+                    <h2 className="text-base font-black tracking-tight text-white">
+                        Your {expiryPopupMediaType} will be removed in {expiryPopupRemainingLabel}
+                    </h2>
+                    <p className="mt-2 text-[12px] leading-relaxed text-white/55">
+                        Your {expiryPopupMediaType} ad will be removed from the feed in {expiryPopupRemainingLabel}. Subscribe to a plan to keep it on your profile.
+                    </p>
+                    <div className="mt-5 flex flex-col gap-2">
+                        <button
+                            type="button"
+                            onClick={() => { setShowExpiryPopup(false); router.push("/dashboard/wallet/subscription"); }}
+                            className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-amber-400 text-[11px] font-black uppercase tracking-widest text-black transition hover:bg-amber-300 active:scale-[0.98]"
+                        >
+                            <IonIcon name="star-outline" className="text-sm" />
+                            Get Subscription
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => { setShowExpiryPopup(false); setExpiryPopupDismissed(true); }}
+                            className="flex h-10 w-full items-center justify-center rounded-xl text-[11px] font-black uppercase tracking-widest text-white/40 transition hover:text-white/70"
+                        >
+                            Dismiss
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
         <div className="min-h-screen pb-10">
             <div className="mb-4">
                 <button
@@ -370,9 +614,9 @@ export default function AdCenterPage() {
                                             <IonIcon name="megaphone-outline" className="text-lg" />
                                         </div>
                                         <div>
-                                            <h2 className="text-[15px] font-black tracking-[0.04em] text-white">Ad ID: {ad.adId}</h2>
+                                            <h2 className="text-[15px] font-black tracking-[0.04em] text-white">Ad ID: {ad.displayAdId}</h2>
                                             <p className="mt-1 text-[9px] font-black uppercase tracking-[0.08em] text-white/35">
-                                                {ad.campaignType} • {formatDateTime(ad.createdAt)}
+                                                {ad.campaignType} - {getPublishedTimeLabel(ad, nowMs)}
                                             </p>
                                         </div>
                                     </div>
@@ -381,6 +625,14 @@ export default function AdCenterPage() {
                                             <p className="text-[8px] font-black uppercase tracking-[0.12em] text-white/28">Total Budget</p>
                                             <p className="mt-1 text-[1.35rem] font-black tracking-tight text-white">{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.budget)}</p>
                                         </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setAnalyticsAd(ad)}
+                                            title="Analytics"
+                                            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-violet-500/20 bg-violet-500/[0.08] text-violet-300/70 transition hover:bg-violet-500/[0.15] hover:text-violet-200"
+                                        >
+                                            <IonIcon name="stats-chart" className="text-base" />
+                                        </button>
                                         <button
                                             type="button"
                                             onClick={() => setSelectedAd(ad)}
@@ -431,15 +683,7 @@ export default function AdCenterPage() {
                                         </div>
 
                                         <div className="flex items-center justify-end gap-2 lg:flex-col lg:justify-center">
-                                            {ad.status === "Under Review" ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleEdit(ad)}
-                                                    className="inline-flex min-w-[76px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-[8px] font-black uppercase tracking-[0.08em] text-white/70 transition hover:bg-white/[0.09] hover:text-white"
-                                                >
-                                                    Edit
-                                                </button>
-                                            ) : ad.status === "Active" ? (
+                                            {ad.status === "Active" ? (
                                                 <button
                                                     type="button"
                                                     onClick={() => handlePause(ad.adId)}
@@ -447,11 +691,22 @@ export default function AdCenterPage() {
                                                 >
                                                     Pause
                                                 </button>
-                                            ) : null}
-                                            {ad.status === "Under Review" && (
+                                            ) : ad.status === "Paused" ? (
                                                 <button
                                                     type="button"
-                                                    onClick={() => setCancelTarget(ad)}
+                                                    onClick={() => handleResume(ad.adId)}
+                                                    className="inline-flex min-w-[76px] items-center justify-center rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-[8px] font-black uppercase tracking-[0.08em] text-emerald-100 transition hover:bg-emerald-400/16 hover:text-white"
+                                                >
+                                                    Resume
+                                                </button>
+                                            ) : null}
+                                            {(["Under Review", "Active", "Paused"] as AdStatus[]).includes(ad.status) && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setActionError(null);
+                                                        setCancelTarget(ad);
+                                                    }}
                                                     className="inline-flex min-w-[76px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-[8px] font-black uppercase tracking-[0.08em] text-white/70 transition hover:bg-white/[0.09] hover:text-white"
                                                 >
                                                     Cancel
@@ -459,10 +714,9 @@ export default function AdCenterPage() {
                                             )}
                                         </div>
                                     </div>
-
-                                    {isProfilePromoteAd(ad) && ad.status === "Active" && (
-                                        <div className="mt-3 rounded-[0.95rem] border border-amber-400/16 bg-amber-400/8 px-3 py-2 text-[9px] font-bold leading-4 text-amber-100/80">
-                                            Users can cancel their promotion at any time while under review, but active promotions cannot be cancelled.
+                                    {actionError && cancelTarget?.adId === ad.adId && (
+                                        <div className="mt-3 rounded-[0.95rem] border border-rose-400/16 bg-rose-500/8 px-3 py-2 text-[9px] font-bold leading-4 text-rose-100/85">
+                                            {actionError}
                                         </div>
                                     )}
 
@@ -476,7 +730,7 @@ export default function AdCenterPage() {
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Duration</span>
-                                                    <span>{getDurationLabel(ad)}</span>
+                                                    <span>{getDurationStatusLabel(ad, nowMs)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Age</span>
@@ -496,6 +750,18 @@ export default function AdCenterPage() {
                                         <div className="rounded-[0.95rem] border border-white/8 bg-[#0b0b0b] p-2">
                                             <p className="text-[8px] font-black uppercase tracking-[0.1em] text-white/38">Ad Performance</p>
                                             <div className="mt-2 grid gap-1 text-[9px] font-black text-white">
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <span className="text-white/55">Start</span>
+                                                    <span>{getAdStartTime(ad) ? formatDateTimeLabel(getAdStartTime(ad) || "") : "Not started"}</span>
+                                                </div>
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <span className="text-white/55">End</span>
+                                                    <span>{getAdEndTime(ad) ? formatDateTimeLabel(getAdEndTime(ad) || "") : "Not set"}</span>
+                                                </div>
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <span className="text-white/55">Remaining</span>
+                                                    <span>{getAdRemainingTimeLabel(ad, nowMs)}</span>
+                                                </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Reach</span>
                                                     <span>{formatReachCount(ad.currentReach ?? ad.reach ?? 0)}</span>
@@ -570,6 +836,15 @@ export default function AdCenterPage() {
                 </div>
             )}
 
+            {analyticsAd && (
+                <AdAnalyticsModal
+                    adId={analyticsAd.adId}
+                    adTitle={analyticsAd.title}
+                    campaignType={analyticsAd.campaignType}
+                    onClose={() => setAnalyticsAd(null)}
+                />
+            )}
+
             {selectedAd && (
                 <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-4">
                     <button
@@ -582,7 +857,7 @@ export default function AdCenterPage() {
                         <div className="flex items-start justify-between border-b border-white/6 px-4 py-4 sm:px-5">
                             <div>
                                 <h2 className="text-[1.35rem] font-black uppercase tracking-[0.04em] text-white">Ad Summary</h2>
-                                <p className="mt-1 text-[9px] font-black uppercase tracking-[0.12em] text-white/30">Ad ID: {selectedAd.adId}</p>
+                                <p className="mt-1 text-[9px] font-black uppercase tracking-[0.12em] text-white/30">Ad ID: {selectedAd.displayAdId}</p>
                             </div>
                             <button
                                 type="button"
@@ -650,14 +925,20 @@ export default function AdCenterPage() {
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
                                             <span>Duration</span>
-                                            <span className="text-white">{getDurationLabel(selectedAd)}</span>
+                                            <span className="text-white">{getDurationStatusLabel(selectedAd, nowMs)}</span>
                                         </div>
-                                        {selectedAd.startedAt && (
-                                            <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
-                                                <span>Started</span>
-                                                <span className="text-white">{formatDateTime(selectedAd.startedAt)}</span>
-                                            </div>
-                                        )}
+                                        <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
+                                            <span>Start</span>
+                                            <span className="text-white">{getAdStartTime(selectedAd) ? formatDateTimeLabel(getAdStartTime(selectedAd) || "") : "Not started"}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
+                                            <span>End</span>
+                                            <span className="text-white">{getAdEndTime(selectedAd) ? formatDateTimeLabel(getAdEndTime(selectedAd) || "") : "Not set"}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
+                                            <span>Remaining</span>
+                                            <span className="text-white">{getAdRemainingTimeLabel(selectedAd, nowMs)}</span>
+                                        </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
                                             <span>Age</span>
                                             <span className="text-white">{getAgeLabel(selectedAd)}</span>
@@ -703,7 +984,11 @@ export default function AdCenterPage() {
                             Cancel Ad?
                         </h3>
                         <p className="mt-2 text-[10px] font-bold leading-5 text-white/50">
-                            This will cancel your ad while it is still under review. Your payment will be automatically refunded.
+                            {cancelTarget.status === "Under Review"
+                                ? "This will cancel your ad while it is still under review. Your payment will be automatically refunded."
+                                : supportsRemainingBudgetRefund(cancelTarget.campaignType)
+                                    ? "This will cancel your active ad and refund only the current remaining budget amount."
+                                    : "This will cancel your ad immediately. Because this ad is no longer under review, no refund will be given."}
                         </p>
                         <div className="mt-5 grid grid-cols-2 gap-2">
                             <button
@@ -715,18 +1000,26 @@ export default function AdCenterPage() {
                             </button>
                             <button
                                 type="button"
-                                onClick={() => {
-                                    handleCancel(cancelTarget.adId);
-                                    setCancelTarget(null);
+                                onClick={async () => {
+                                    const didCancel = await handleCancel(cancelTarget.adId);
+                                    if (didCancel) {
+                                        setCancelTarget(null);
+                                    }
                                 }}
                                 className="inline-flex h-10 items-center justify-center rounded-xl border border-rose-500/25 bg-rose-500/12 text-[9px] font-black uppercase tracking-[0.08em] text-rose-200 transition hover:bg-rose-500/18"
                             >
                                 Confirm
                             </button>
                         </div>
+                        {actionError && (
+                            <p className="mt-3 text-[10px] font-bold leading-5 text-rose-200/90">
+                                {actionError}
+                            </p>
+                        )}
                     </div>
                 </div>
             )}
         </div>
+        </>
     );
 }

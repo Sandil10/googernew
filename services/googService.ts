@@ -142,4 +142,28 @@ export const googService = {
         const data = await requestJson(`/googs/user/${userId}`);
         return data.data || [];
     },
+
+    toggleSave: async (id: number): Promise<{ saved: boolean; message?: string }> => {
+        const cleanId = String(id).replace(/^(goog-|write-)/, "");
+        try {
+            const data = await requestJson(`/googs/${cleanId}/save`, { method: 'POST' });
+            return { saved: !!data.saved, message: data.message };
+        } catch (e: any) {
+            return { saved: false, message: e.message };
+        }
+    },
+
+    getSavedGoogs: async () => {
+        const data = await requestJson('/googs/saved');
+        return data.data || [];
+    },
+
+    getSavedStatus: async (): Promise<number[]> => {
+        try {
+            const data = await requestJson('/googs/saved/status');
+            return data.savedIds || [];
+        } catch {
+            return [];
+        }
+    },
 };

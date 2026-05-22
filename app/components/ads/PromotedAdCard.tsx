@@ -10,7 +10,7 @@ import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
 
 type PromotedAdCardProps = {
   ad: any;
-  source?: "home" | "shop";
+  source?: "home" | "shop" | "profile";
   isMenuOpen?: boolean;
   onToggleMenu?: (adId: any) => void;
   onCloseMenu?: () => void;
@@ -29,12 +29,16 @@ type PromotedAdCardProps = {
   canShowCollectCoin?: (ad: any) => boolean;
   currentUser?: any;
   compact?: boolean;
+  onToggleSave?: (ad: any) => void | Promise<void>;
+  isSaved?: boolean;
+  showExpiryWarning?: boolean;
 };
 
 const EMPTY_OBJECT = {};
 
 export function PromotedAdCard({
   ad,
+  source,
   isMenuOpen = false,
   onToggleMenu,
   onCloseMenu,
@@ -53,6 +57,9 @@ export function PromotedAdCard({
   canShowCollectCoin,
   currentUser,
   compact,
+  onToggleSave,
+  isSaved,
+  showExpiryWarning,
 }: PromotedAdCardProps) {
   const normalized = normalizeAdData(ad);
   const actionAd = normalized.raw || ad;
@@ -113,6 +120,13 @@ export function PromotedAdCard({
     comments_count: liveState.comments_count ?? liveState.commentCount ?? normalized.comments_count,
     shareCount: liveState.shares_count ?? liveState.shareCount ?? normalized.shareCount,
     shares_count: liveState.shares_count ?? liveState.shareCount ?? normalized.shares_count,
+    current_reach: liveState.current_reach ?? liveState.reach ?? normalized.current_reach,
+    reach: liveState.current_reach ?? liveState.reach ?? normalized.reach,
+    clicks: liveState.clicks ?? liveState.link_actions ?? normalized.clicks,
+    link_actions: liveState.clicks ?? liveState.link_actions ?? normalized.link_actions,
+    message_clicks: liveState.message_clicks ?? normalized.message_clicks,
+    visit_clicks: liveState.visit_clicks ?? normalized.visit_clicks,
+    call_clicks: liveState.call_clicks ?? normalized.call_clicks,
   };
   const campaignType = String(merged.campaign_type || merged.campaignType || actionAd?.campaign_type || actionAd?.campaignType || "").trim();
   const isProductPromote = campaignType.toLowerCase() === "product promote";
@@ -198,6 +212,10 @@ export function PromotedAdCard({
       onCollectCoin={onCollectCoin || (() => {})}
       onNavigateToProfile={onNavigateToProfile || (() => {})}
       canShowCollectCoin={guardedCanShowCollectCoin || (() => false)}
+      showSaveButton={source === "profile" && !!onToggleSave}
+      onToggleSave={onToggleSave}
+      isSaved={isSaved}
+      showExpiryWarning={showExpiryWarning}
     />
   );
 }

@@ -35,6 +35,7 @@ export type SharedAdSecondViewModalProps = AdSecondViewHandlers & {
     kind: AdSecondViewKind;
     images?: string[];
     onVideoWatchEligible?: (ad: any, watchedSeconds: number) => void;
+    requiredWatchSeconds?: number;
 };
 
 const normalizeMediaUrl = (value: string) => {
@@ -59,6 +60,7 @@ export function SharedAdSecondViewModal({
     onNavigateToProfile,
     canShowCollectCoin,
     onVideoWatchEligible,
+    requiredWatchSeconds = 5,
 }: SharedAdSecondViewModalProps) {
     const normalizedAd = React.useMemo(() => (ad?.type ? ad : normalizeAdData(ad)), [ad]);
     const raw = normalizedAd?.raw || {};
@@ -112,10 +114,36 @@ export function SharedAdSecondViewModal({
         };
     }, [liveState, normalizedAd]);
     const canShowCollectCoinButton = canShowCollectCoin(mergedAd);
+    const safeRequiredWatchSeconds = Math.max(1, Math.floor(Number(requiredWatchSeconds || 5)));
+
+    // Hoisted so the effect and onTimeUpdate handler can both reference it.
+    const uploadedVideoCandidate = String(
+        (mergedAd as any)?.media_url ||
+        (mergedAd as any)?.video_url ||
+        (mergedAd as any)?.video ||
+        (mergedAd as any)?.media_preview ||
+        raw?.media_preview ||
+        raw?.media_url ||
+        raw?.video_url ||
+        raw?.video ||
+        "",
+    ).trim();
+    const isUploadedVideo =
+        /video/i.test(String(mergedAd?.media_type || raw?.media_type || "")) ||
+        /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(uploadedVideoCandidate);
 
     const [currentIndex, setCurrentIndex] = useState(0);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const swipeStartX = useRef<number | null>(null);
+
+    // Watch-time rule applies only to actual uploaded video files.
+    // Image ads, image-link ads, and video-link ads count as viewed immediately on open.
+    React.useEffect(() => {
+        if (videoWatchEligibleSentRef.current) return;
+        if (kind === "video" && isUploadedVideo) return;
+        videoWatchEligibleSentRef.current = true;
+        onVideoWatchEligible?.(mergedAd, 0);
+    }, [isUploadedVideo, kind, mergedAd, onVideoWatchEligible]);
 
     const moveSlide = (direction: "prev" | "next") => {
         setCurrentIndex((prev) => {
@@ -126,20 +154,6 @@ export function SharedAdSecondViewModal({
     };
 
     if (kind !== "image") {
-        const uploadedVideoCandidate = String(
-            (mergedAd as any)?.media_url ||
-            (mergedAd as any)?.video_url ||
-            (mergedAd as any)?.video ||
-            (mergedAd as any)?.media_preview ||
-            raw?.media_preview ||
-            raw?.media_url ||
-            raw?.video_url ||
-            raw?.video ||
-            "",
-        ).trim();
-        const isUploadedVideo =
-            /video/i.test(String(mergedAd?.media_type || raw?.media_type || "")) ||
-            /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(uploadedVideoCandidate);
         const uploadedVideoUrl = (isUploadedVideo && uploadedVideoCandidate)
             ? normalizeMediaUrl(uploadedVideoCandidate)
             : "";
@@ -188,7 +202,7 @@ export function SharedAdSecondViewModal({
                                     <span className="text-[9px] font-bold tracking-widest text-white/45">Ad</span>
                                     <div className="h-0.5 w-0.5 rounded-full bg-white/25" />
                                     <span className="text-[9px] font-bold tracking-widest text-white/45">
-                                        <RelativeTime timestamp={normalizedAd?.createdAt || normalizedAd?.created_at || raw.created_at || raw.createdAt} />
+                                        <RelativeTime timestamp={normalizedAd?.activeStartTime || normalizedAd?.active_start_time || raw.active_start_time || raw.activeStartTime || normalizedAd?.createdAt || normalizedAd?.created_at} />
                                     </span>
                                 </div>
                             </div>
@@ -257,8 +271,9 @@ export function SharedAdSecondViewModal({
                                 autoPlay
                                 playsInline
                                 onTimeUpdate={(event) => {
+                                    if (!isUploadedVideo || videoWatchEligibleSentRef.current) return;
                                     const watchedSeconds = Math.floor(event.currentTarget.currentTime || 0);
-                                    if (watchedSeconds < 5 || videoWatchEligibleSentRef.current) return;
+                                    if (watchedSeconds < safeRequiredWatchSeconds) return;
                                     videoWatchEligibleSentRef.current = true;
                                     onVideoWatchEligible?.(mergedAd, watchedSeconds);
                                 }}
@@ -367,7 +382,7 @@ export function SharedAdSecondViewModal({
                                 <span className="text-[9px] font-bold tracking-widest text-white/45">Ad</span>
                                 <div className="h-0.5 w-0.5 rounded-full bg-white/25" />
                                 <span className="text-[9px] font-bold tracking-widest text-white/45">
-                                    <RelativeTime timestamp={normalizedAd?.createdAt || normalizedAd?.created_at || raw.created_at || raw.createdAt} />
+                                    <RelativeTime timestamp={normalizedAd?.activeStartTime || normalizedAd?.active_start_time || raw.active_start_time || raw.activeStartTime || normalizedAd?.createdAt || normalizedAd?.created_at} />
                                 </span>
                             </div>
                         </div>

@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import { authService } from "@/services/authService";
 import IonIcon from "./IonIcon";
+import { openLoginRequired } from "@/app/lib/loginRequired";
 
 const menuItems = [
     { name: "Home", icon: "home", href: "/dashboard" },
@@ -21,6 +22,7 @@ interface SidebarProps {
 
 export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
     const pathname = usePathname();
+    const router = useRouter();
     const [showUserMenu, setShowUserMenu] = useState(false);
     const [user, setUser] = useState<any>(null);
     const [loading, setLoading] = useState(true);
@@ -87,10 +89,18 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
             <nav className="flex-1 overflow-y-auto px-4 space-y-1 mt-4">
                 {menuItems.map((item) => {
                     const isActive = pathname === item.href;
+                    const isProtectedItem = item.name === "Wallet" || item.name === "Chats";
                     return (
-                        <Link
+                        <button
                             key={item.name}
-                            href={item.href}
+                            type="button"
+                            onClick={() => {
+                                if (isProtectedItem && !authService.isAuthenticated()) {
+                                    openLoginRequired({ message: `Please log in to open ${item.name.toLowerCase()}.` });
+                                    return;
+                                }
+                                router.push(item.href);
+                            }}
                             className={`flex items-center gap-4 px-3 py-3 rounded-lg transition-colors group ${isActive ? "bg-white/10 text-white" : "text-gray-400 hover:bg-white/5 hover:text-white"
                                 } ${isCollapsed ? "justify-center" : ""}`}
                             title={isCollapsed ? item.name : ""}
@@ -101,7 +111,7 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
                             {!isCollapsed && (
                                 <span className="font-medium text-sm transition-opacity duration-200">{item.name}</span>
                             )}
-                        </Link>
+                        </button>
                     );
                 })}
             </nav>
@@ -171,16 +181,23 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
                                         </span>
                                         <span>Profile</span>
                                     </Link>
-                                    <Link
-                                        href="/dashboard/wallet"
+                                    <button
+                                        type="button"
                                         className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm text-white"
-                                        onClick={() => setShowUserMenu(false)}
+                                        onClick={() => {
+                                            setShowUserMenu(false);
+                                            if (!authService.isAuthenticated()) {
+                                                openLoginRequired({ message: "Please log in to open your wallet." });
+                                                return;
+                                            }
+                                            router.push("/dashboard/wallet");
+                                        }}
                                     >
                                         <span className="text-lg">
                                             <IonIcon name="wallet-outline" />
                                         </span>
                                         <span>Wallet</span>
-                                    </Link>
+                                    </button>
                                     <button
                                         onClick={handleLogout}
                                         className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm text-red-400"

@@ -5,6 +5,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { useRouter, useSearchParams } from "next/navigation";
 import { authService } from "@/services/authService";
 import { marketService } from "@/services/marketService";
+import { googService } from "@/services/googService";
+import { adsService } from "@/services/adsService";
+import { GoogCard, type WritePost } from "@/app/components/googs/GoogCard";
 import IonIcon from "@/app/components/IonIcon";
 import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
@@ -20,6 +23,16 @@ import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondViewModal";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
+import { subscriptionService } from "@/services/subscriptionService";
+
+const BADGE_COLOR_CLASS: Record<string, string> = {
+    silver: "text-zinc-300",
+    blue:   "text-blue-400",
+    gold:   "text-amber-400",
+    green:  "text-emerald-400",
+    purple: "text-purple-400",
+    red:    "text-red-400",
+};
 
 type UserRecord = {
     id?: number;
@@ -236,6 +249,8 @@ export default function ProfilePage() {
     const [loading, setLoading] = useState(true);
     const [user, setUser] = useState<UserRecord | null>(null);
     const [marketAds, setMarketAds] = useState<any[]>([]);
+    const [googs, setGoogs] = useState<WritePost[]>([]);
+    const [profileAds, setProfileAds] = useState<any[]>([]);
     const syncAds = useAdStore((state) => state.syncAds);
     const updateAdState = useAdStore((state) => state.updateAdState);
     const setViewerContext = useAdStore((state) => state.setViewerContext);
@@ -265,7 +280,8 @@ export default function ProfilePage() {
     const [posts, setPosts] = useState<PostRecord[]>([]);
 
     const [openMenuProductId, setOpenMenuProductId] = useState<number | null>(null);
-    const [hiddenPostIds, setHiddenPostIds] = useState<number[]>([]);
+    const [openMenuAdId, setOpenMenuAdId] = useState<string | number | null>(null);
+    const [hiddenPostIds, setHiddenPostIds] = useState<string[]>([]);
     const [notification, setNotification] = useState<{ type: "success" | "error"; title?: string; message: string } | null>(null);
     const [showShareModal, setShowShareModal] = useState(false);
     const [shareProduct, setShareProduct] = useState<any>(null);
@@ -274,10 +290,18 @@ export default function ProfilePage() {
 
     const [isBottomSheetOpen, setIsBottomSheetOpen] = useState(false);
     const [isBottomSheetLoading, setIsBottomSheetLoading] = useState(false);
+    const [isBottomSheetGoog, setIsBottomSheetGoog] = useState(false);
     const [bottomSheetType, setBottomSheetType] = useState<SheetType>("comments");
     const [interactionProduct, setInteractionProduct] = useState<any>(null);
     const [bottomSheetData, setBottomSheetData] = useState<any[]>([]);
     const [adPreviewModal, setAdPreviewModal] = useState<{ ad: any; type: "ad" | "product"; kind?: any } | null>(null);
+    const [shareUrlOverride, setShareUrlOverride] = useState<string | null>(null);
+    const [badge, setBadge] = useState<{ color: string } | null>(null);
+    const [savedAdIds, setSavedAdIds] = useState<Set<string>>(new Set());
+    const [adSaveLimitToast, setAdSaveLimitToast] = useState<string | null>(null);
+    const [viewerHasPaidPlan, setViewerHasPaidPlan] = useState(false);
+    const [adSaveCounts, setAdSaveCounts] = useState<{ photo: number; video: number }>({ photo: 0, video: 0 });
+    const [adSaveLimits, setAdSaveLimits] = useState<{ photo: number | null; video: number | null }>({ photo: null, video: null });
 
     const updateAdLocalState = useCallback((id: string | number, updates: any) => {
         setPosts((prev) => prev.map((post) => {
@@ -353,10 +377,16 @@ export default function ProfilePage() {
                 setViewerContext(nextUser);
                 setIsOwnProfile(false);
 
-                const userProducts = await marketService.getItems({ user_id: profileData.id, status: "active,approved" });
+                const [userProducts, userGoogs, ownerAds] = await Promise.all([
+                    marketService.getItems({ user_id: profileData.id, status: "active,approved" }),
+                    googService.getUserPosts(profileData.id!),
+                    adsService.getActiveAdsByUser(profileData.id!),
+                ]);
                 const filtered = (userProducts || []).filter(isLiveMarketPost);
                 setPosts(filtered);
-                syncAds(filtered.filter((p: any) => p.is_sponsored || p.campaign_type));
+                setGoogs(userGoogs || []);
+                setProfileAds(ownerAds || []);
+                syncAds(ownerAds || []);
             } else if (profileShareCode) {
                 const shared = await marketService.getUnifiedShareItem(profileShareCode);
                 if (!shared?.success || shared?.type !== "profile" || !shared?.data) {
@@ -370,10 +400,16 @@ export default function ProfilePage() {
                 setViewerContext(nextUser);
                 setIsOwnProfile(false);
 
-                const userProducts = await marketService.getItems({ user_id: profileData.id, status: "active,approved" });
+                const [userProducts, userGoogs, ownerAds] = await Promise.all([
+                    marketService.getItems({ user_id: profileData.id, status: "active,approved" }),
+                    googService.getUserPosts(profileData.id!),
+                    adsService.getActiveAdsByUser(profileData.id!),
+                ]);
                 const filtered = (userProducts || []).filter(isLiveMarketPost);
                 setPosts(filtered);
-                syncAds(filtered.filter((p: any) => p.is_sponsored || p.campaign_type));
+                setGoogs(userGoogs || []);
+                setProfileAds(ownerAds || []);
+                syncAds(ownerAds || []);
             } else if (profileId) {
                 profileData = await authService.getUserProfile(profileId);
                 const localUser = JSON.parse(localStorage.getItem("user") || "{}");
@@ -381,10 +417,16 @@ export default function ProfilePage() {
                 setCurrentUser(nextUser);
                 setViewerContext(nextUser);
                 setIsOwnProfile(nextUser?.id === Number(profileId));
-                const userProducts = await marketService.getItems({ user_id: profileId, status: "active,approved" });
+                const [userProducts, userGoogs, ownerAds] = await Promise.all([
+                    marketService.getItems({ user_id: profileId, status: "active,approved" }),
+                    googService.getUserPosts(profileId),
+                    adsService.getActiveAdsByUser(profileId),
+                ]);
                 const filtered = (userProducts || []).filter(isLiveMarketPost);
                 setPosts(filtered);
-                syncAds(filtered.filter((p: any) => p.is_sponsored || p.campaign_type));
+                setGoogs(userGoogs || []);
+                setProfileAds(ownerAds || []);
+                syncAds(ownerAds || []);
             } else {
                 if (!authService.isAuthenticated()) {
                     router.push("/");
@@ -394,16 +436,31 @@ export default function ProfilePage() {
                 setCurrentUser(profileData);
                 setViewerContext(profileData);
                 setIsOwnProfile(true);
-                const myProducts = await marketService.getItems({ user_id: profileData.id, status: "active,approved" });
+                const [myProducts, myGoogs, ownerAds] = await Promise.all([
+                    marketService.getItems({ user_id: profileData.id, status: "active,approved" }),
+                    googService.getUserPosts(profileData.id!),
+                    adsService.getActiveAdsByUser(profileData.id!),
+                ]);
                 const filtered = (myProducts || []).filter(isLiveMarketPost);
                 setPosts(filtered);
-                syncAds(filtered.filter((p: any) => p.is_sponsored || p.campaign_type));
+                setGoogs(myGoogs || []);
+                setProfileAds(ownerAds || []);
+                syncAds(ownerAds || []);
             }
             setUser(profileData);
             setSubscriberCount(Number(profileData?.subscriber_count || 0));
             setIsSubscribed(!!profileData?.is_subscribed);
             setProfileViewsCount(Number(profileData?.profile_views_count || 0));
             setFollowingCount(Number(profileData?.following_count || 0));
+            const uid = profileData?.id || profileData?.user_id;
+            if (uid) subscriptionService.getBadgeForUser(uid).then(setBadge).catch(() => {});
+            adsService.getSavedAdIds().then((ids) => setSavedAdIds(new Set(ids.map(String)))).catch(() => {});
+            subscriptionService.getMyPlan().then((plan) => {
+                setViewerHasPaidPlan(plan != null && !plan.is_basic);
+            }).catch(() => setViewerHasPaidPlan(false));
+            adsService.getSavedAdCounts().then((data) => {
+                if (data) { setAdSaveCounts(data.counts); setAdSaveLimits(data.limits); }
+            }).catch(() => {});
         } catch (error) {
             console.error("Error fetching profile:", error);
             setViewerContext(null);
@@ -448,6 +505,13 @@ export default function ProfilePage() {
         window.addEventListener("click", close);
         return () => window.removeEventListener("click", close);
     }, [openMenuProductId]);
+
+    useEffect(() => {
+        if (!openMenuAdId) return;
+        const close = () => setOpenMenuAdId(null);
+        window.addEventListener("click", close);
+        return () => window.removeEventListener("click", close);
+    }, [openMenuAdId]);
 
     useEffect(() => {
         if (!showMenu) return;
@@ -536,29 +600,87 @@ export default function ProfilePage() {
         }));
     }, [followerUsers.length, followingUsers.length]);
 
-    const openBottomSheet = async (type: SheetType, product: any) => {
+    const openBottomSheet = async (type: SheetType, product: any, isGoog = false) => {
         setBottomSheetType(type);
         setInteractionProduct(product);
         setIsBottomSheetOpen(true);
         setBottomSheetData([]);
         setIsBottomSheetLoading(true);
+        setIsBottomSheetGoog(isGoog);
         try {
             let data = [];
-            if (type === "comments") data = await marketService.getComments(product.id);
-            if (type === "likes") data = (await marketService.getLikes?.(product.id)) || [];
-            if (type === "shares") data = (await marketService.getShares?.(product.id)) || [];
-            if (type === "views") data = (await marketService.getViews?.(product.id)) || [];
+            if (isGoog) {
+                if (type === "comments") data = await googService.getComments(product.id);
+                else if (type === "likes") data = await googService.getLikes(product.id);
+                else if (type === "shares") data = await googService.getShares(product.id);
+                else if (type === "views") data = await googService.getViews(product.id);
+            } else {
+                if (type === "comments") data = await marketService.getComments(product.id);
+                if (type === "likes") data = (await marketService.getLikes?.(product.id)) || [];
+                if (type === "shares") data = (await marketService.getShares?.(product.id)) || [];
+                if (type === "views") data = (await marketService.getViews?.(product.id)) || [];
+            }
             setBottomSheetData(data || []);
         } finally { setIsBottomSheetLoading(false); }
     };
 
+    const isPromotedAdTarget = (item: any) => {
+        const raw = item?.raw || item || {};
+        return !!(
+            raw.is_sponsored ||
+            raw.isAd ||
+            raw.campaign_type ||
+            raw.adId ||
+            raw.ad_id ||
+            String(raw.id || item?.id || "").startsWith("ad-")
+        );
+    };
+
+    const handleAdToggleLike = async (item: any) => {
+        if (!item) return;
+        const target = item.raw || item;
+        const liveState = useAdStore.getState().getAdState(target);
+        const isLiked = !!(liveState.user_liked ?? item.user_liked ?? item.liked ?? item.raw?.user_liked);
+        const isLocked = !!(
+            liveState.ad_like_locked ||
+            liveState.ad_coin_collected ||
+            item.ad_like_locked ||
+            item.ad_coin_collected ||
+            item.coinCollected ||
+            item.raw?.ad_like_locked ||
+            item.raw?.ad_coin_collected
+        );
+
+        if (isLiked && isLocked) {
+            updateAdState(target, { user_liked: true, ad_like_locked: true });
+            setNotification({
+                type: "error",
+                title: "Like Locked",
+                message: "You already collected coins for this ad. You cannot unlike.",
+            });
+            return;
+        }
+
+        try {
+            await adActions.like(target);
+        } catch (error: any) {
+            if (error?.locked) return;
+            console.error("Ad like toggle failed:", error);
+        }
+    };
+
     const handleToggleLike = async (item: any) => {
+        if (isPromotedAdTarget(item)) {
+            await handleAdToggleLike(item);
+            return;
+        }
+
         const id = typeof item === 'object' ? item.id : item;
         const currentPost = typeof item === 'object' ? item : posts.find((p) => p.id === id);
         if (!currentPost) return;
 
-        if (currentPost.is_sponsored || currentPost.campaign_type) {
-            await adActions.like(currentPost);
+        if (isPromotedAdTarget(currentPost)) {
+            await handleAdToggleLike(currentPost);
             return;
         }
 
@@ -578,6 +700,20 @@ export default function ProfilePage() {
         }
     };
 
+    const handleGoogToggleLike = useCallback(async (goog: WritePost) => {
+        const wasLiked = !!goog.user_liked;
+        const willBeLiked = !wasLiked;
+        setGoogs((prev) => prev.map((g) => g.id === goog.id ? { ...g, user_liked: willBeLiked, likes_count: Math.max(0, (g.likes_count || 0) + (willBeLiked ? 1 : -1)) } : g));
+        try {
+            const serverLiked = await googService.toggleLike(goog.id);
+            if (serverLiked !== willBeLiked) {
+                setGoogs((prev) => prev.map((g) => g.id === goog.id ? { ...g, user_liked: serverLiked, likes_count: Math.max(0, (g.likes_count || 0) + (serverLiked ? 1 : -1)) } : g));
+            }
+        } catch {
+            setGoogs((prev) => prev.map((g) => g.id === goog.id ? { ...g, user_liked: wasLiked, likes_count: Math.max(0, (g.likes_count || 0) + (wasLiked ? 1 : -1)) } : g));
+        }
+    }, []);
+
     const handleLogShare = async (id: number) => {
         await marketService.logShare(id);
         setPosts((prev) => prev.map((p) => p.id === id ? { ...p, shares_count: (p.shares_count || 0) + 1 } : p));
@@ -586,6 +722,7 @@ export default function ProfilePage() {
 
     const handleShareClick = (product: any, view: "share" | "resell" = "share") => {
         if (!product) return;
+        setShareUrlOverride(null);
         if (view === "resell") {
             let enabled = false;
             try {
@@ -601,6 +738,76 @@ export default function ProfilePage() {
         setShareProduct(product);
         setShowShareModal(true);
         handleLogShare(product.id);
+    };
+
+    const getSaveableAdId = (target: any) => {
+        const raw = target?.raw || target || {};
+        return String(
+            raw.adId ||
+            raw.ad_id ||
+            target?.adId ||
+            target?.ad_id ||
+            ""
+        ).replace(/^ad-/, "");
+    };
+
+    const isAdSaved = (target: any) => {
+        const adId = getSaveableAdId(target);
+        return !!adId && savedAdIds.has(adId);
+    };
+
+    const handleToggleAdSave = async (target: any) => {
+        const targetAdId = getSaveableAdId(target);
+        if (!targetAdId) {
+            setAdSaveLimitToast("This ad cannot be saved because its ad ID is missing.");
+            setTimeout(() => setAdSaveLimitToast(null), 3500);
+            return;
+        }
+
+        const wasSaved = savedAdIds.has(targetAdId);
+        setSavedAdIds((prev) => {
+            const next = new Set(prev);
+            if (wasSaved) next.delete(targetAdId);
+            else next.add(targetAdId);
+            return next;
+        });
+
+        const result = await adsService.toggleSave(targetAdId);
+        if (!result.ok) {
+            setSavedAdIds((prev) => {
+                const next = new Set(prev);
+                if (wasSaved) next.add(targetAdId);
+                else next.delete(targetAdId);
+                return next;
+            });
+            setAdSaveLimitToast(result.message || "You have reached your ad save limit. Please upgrade to a higher plan.");
+            setTimeout(() => setAdSaveLimitToast(null), 3500);
+            return;
+        }
+
+        setSavedAdIds((prev) => {
+            const next = new Set(prev);
+            if (result.saved) next.add(targetAdId);
+            else next.delete(targetAdId);
+            return next;
+        });
+        // Update save counts in real-time
+        const mediaType = (result.mediaType || "photo") as "photo" | "video";
+        setAdSaveCounts((prev) => ({
+            ...prev,
+            [mediaType]: Math.max(0, prev[mediaType] + (result.saved ? 1 : -1)),
+        }));
+    };
+
+    const isAdSaveAtLimit = (target: any): boolean => {
+        if (isAdSaved(target)) return false; // already saved — can unsave
+        const raw = (target as any);
+        const isVideo = raw?.type === "video" || raw?.mediaType === "video" ||
+            String(raw?.media_type || "").toLowerCase().includes("video");
+        const key = isVideo ? "video" : "photo";
+        const limit = adSaveLimits[key];
+        if (limit === null || limit < 0) return false;
+        return adSaveCounts[key] >= limit;
     };
 
     const handleLogView = async (id: number) => {
@@ -936,7 +1143,7 @@ export default function ProfilePage() {
     const canShowMail = Boolean((isOwnProfile && (user?.contact_email || user?.email)) || (!isOwnProfile && user?.contact_email && user?.contact_email_visibility !== "only_me"));
     const canShowContact = Boolean((isOwnProfile && (user?.contact_phone || user?.shipping_address?.phone || user?.shipping_address?.phone2)) || (!isOwnProfile && user?.contact_phone && user?.contact_phone_visibility !== "only_me"));
     const visiblePosts = useMemo(
-        () => posts.filter((post) => !hiddenPostIds.includes(post.id)),
+        () => posts.filter((post) => !hiddenPostIds.some((hiddenId) => matchesAdIdentity(post, hiddenId) || String(post.id) === hiddenId)),
         [hiddenPostIds, posts],
     );
     const renderPosts = useMemo(() => {
@@ -965,6 +1172,30 @@ export default function ProfilePage() {
             return nextPost || post;
         });
     }, [visiblePosts]);
+
+    // Interleaved feed: googs with profile owner's ads every 4 posts (same ratio as Home feed)
+    // If no googs, still show all ads
+    const googsFeed = useMemo(() => {
+        type FeedItem = { type: 'goog'; data: WritePost } | { type: 'ad'; data: any };
+        const visibleProfileAds = profileAds.filter((ad) => !hiddenPostIds.some((hiddenId) => matchesAdIdentity(ad, hiddenId) || String(ad?.id) === hiddenId));
+        if (!googs.length) return visibleProfileAds.map((a): FeedItem => ({ type: 'ad', data: a }));
+        if (!visibleProfileAds.length) return googs.map((g): FeedItem => ({ type: 'goog', data: g }));
+        const result: FeedItem[] = [];
+        let adIndex = 0;
+        googs.forEach((g, i) => {
+            result.push({ type: 'goog', data: g });
+            if ((i + 1) % 4 === 0) {
+                if (visibleProfileAds.length) {
+                    result.push({ type: 'ad', data: visibleProfileAds[adIndex % visibleProfileAds.length] });
+                }
+                adIndex++;
+            }
+        });
+        if (adIndex === 0 && visibleProfileAds.length) {
+            result.push({ type: 'ad', data: visibleProfileAds[0] });
+        }
+        return result;
+    }, [googs, hiddenPostIds, profileAds]);
 
     if (loading) return <div className="flex min-h-[60vh] items-center justify-center text-zinc-400">Loading profile</div>;
     if (!user) return null;
@@ -1093,12 +1324,22 @@ export default function ProfilePage() {
                         <div className="flex items-start justify-between gap-4">
                             <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-3">
-                                    <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-full border border-white/10 bg-white shadow-lg min-[960px]:h-[72px] min-[960px]:w-[72px]">
-                                        {profileImage ? <Image src={profileImage} alt={displayName} fill className="object-cover" unoptimized /> : <div className="flex h-full w-full items-center justify-center bg-zinc-800 text-xl font-black">{getInitials(displayName)}</div>}
+                                    <div className="relative shrink-0">
+                                        <div className="relative h-16 w-16 overflow-hidden rounded-full border border-white/10 bg-white shadow-lg min-[960px]:h-[72px] min-[960px]:w-[72px]">
+                                            {profileImage ? <Image src={profileImage} alt={displayName} fill className="object-cover" unoptimized /> : <div className="flex h-full w-full items-center justify-center bg-zinc-800 text-xl font-black">{getInitials(displayName)}</div>}
+                                        </div>
+                                        {badge && (
+                                            <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-[#0a0a0a] border-2 border-black flex items-center justify-center">
+                                                <IonIcon name="checkmark-circle" className={`text-base ${BADGE_COLOR_CLASS[badge.color] || "text-zinc-300"}`} />
+                                            </div>
+                                        )}
                                     </div>
                                     <div className="min-w-0">
-                                        <h1 className="truncate text-[22px] font-black tracking-tight text-white min-[960px]:text-[26px]">
-                                            {displayName}
+                                        <h1 className="flex items-center gap-1.5 text-[22px] font-black tracking-tight text-white min-[960px]:text-[26px]">
+                                            <span className="truncate">{displayName}</span>
+                                            {badge && (
+                                                <IonIcon name="checkmark-circle" className={`shrink-0 text-xl ${BADGE_COLOR_CLASS[badge.color] || "text-zinc-300"}`} />
+                                            )}
                                         </h1>
                                         <p className="mt-1 truncate text-[13px] font-medium text-zinc-300">
                                             @{username}
@@ -1230,7 +1471,10 @@ export default function ProfilePage() {
                                             <PromotedAdCard
                                                 key={`${post.id}-${index}`}
                                                 ad={normalizedAd}
-                                                source="shop"
+                                                source="profile"
+                                                isMenuOpen={String(openMenuAdId) === String(normalizedAd.id)}
+                                                onToggleMenu={(adId) => setOpenMenuAdId(openMenuAdId === adId ? null : adId)}
+                                                onCloseMenu={() => setOpenMenuAdId(null)}
                                                 onProductClick={(p) => setAdPreviewModal({ ad: p, type: "product" })}
                                                 onAddToBagClick={(p) => setAdPreviewModal({ ad: p, type: "product" })}
                                                 onOpenSecondView={(targetAd) => setAdPreviewModal({
@@ -1238,18 +1482,22 @@ export default function ProfilePage() {
                                                     type: "ad",
                                                     kind: normalizedAd.type === "video" ? "video" : "image",
                                                 })}
-                                                onToggleLike={(item) => handleToggleLike(item)}
+                                                onToggleLike={(item) => handleAdToggleLike(item)}
                                                 onOpenSheet={(type, p) => openBottomSheet(type as any, p)}
                                                 onShare={handleShareClick}
                                                 onLogView={handleLogView}
                                                 onReport={(p) => setReportingProduct(p)}
-                                                onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, Number(id)])}
+                                                onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, String(id)])}
                                                 onCollectCoin={(event, p) => adActions.handleAdCoinClick(event, p)}
                                                 canShowCollectCoin={(p) => adActions.canShowCollectCoin(p)}
                                                 onNavigateToProfile={(event, userId) => {
                                                     if (userId) router.push(`/dashboard/profile?id=${userId}`);
                                                 }}
                                                 currentUser={currentUser}
+                                                isSaved={isAdSaved(normalizedAd)}
+                                                onToggleSave={viewerHasPaidPlan ? handleToggleAdSave : undefined}
+                                                showExpiryWarning={viewerHasPaidPlan && (normalizedAd.type === "photo" || normalizedAd.type === "video")}
+                                                saveAtLimit={isAdSaveAtLimit(normalizedAd)}
                                             />
                                         );
                                     }
@@ -1266,7 +1514,7 @@ export default function ProfilePage() {
                                             onShare={handleShareClick}
                                             onLogView={handleLogView}
                                             onReport={(p) => setReportingProduct(p)}
-                                            onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, Number(id)])}
+                                            onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, String(id)])}
                                             onCollectCoin={(event, p) => adActions.handleAdCoinClick(event, p)}
                                             canShowCollectCoin={(p) => adActions.canShowCollectCoin(p)}
                                             onNavigateToProfile={(event, userId) => {
@@ -1284,7 +1532,70 @@ export default function ProfilePage() {
                                 })}
                             </div>
                         ) : <div className="px-5 py-14 text-center text-zinc-400">No active market posts are available for this profile yet.</div>
-                    ) : <div className="px-5 py-14 text-center text-zinc-400">Posts will show here.</div>}
+                    ) : googsFeed.length > 0 ? (
+                        <div className="flex flex-col">
+                            {googsFeed.map((item, index) => {
+                                if (item.type === 'ad') {
+                                    const normalizedAd = normalizeAdData(item.data);
+                                    return (
+                                        <article key={`ad-${item.data.id}-${index}`} className="px-4 py-4 transition-colors sm:px-7">
+                                            <div className="mx-auto w-full max-w-[360px]">
+                                                <PromotedAdCard
+                                                    ad={normalizedAd}
+                                                    source="profile"
+                                                    isMenuOpen={String(openMenuAdId) === String(normalizedAd.id)}
+                                                    onToggleMenu={(adId) => setOpenMenuAdId(openMenuAdId === adId ? null : adId)}
+                                                    onCloseMenu={() => setOpenMenuAdId(null)}
+                                                    onProductClick={(p) => setAdPreviewModal({ ad: p, type: "product" })}
+                                                    onAddToBagClick={(p) => setAdPreviewModal({ ad: p, type: "product" })}
+                                                    onOpenSecondView={(targetAd) => setAdPreviewModal({
+                                                        ad: targetAd,
+                                                        type: "ad",
+                                                        kind: normalizedAd.type === "video" ? "video" : "image",
+                                                    })}
+                                                    onToggleLike={(p) => handleAdToggleLike(p)}
+                                                    onOpenSheet={(type, p) => openBottomSheet(type as any, p)}
+                                                    onShare={handleShareClick}
+                                                    onLogView={handleLogView}
+                                                    onReport={(p) => setReportingProduct(p)}
+                                                    onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, String(id)])}
+                                                    onCollectCoin={(event, p) => adActions.handleAdCoinClick(event, p)}
+                                                    canShowCollectCoin={(p) => adActions.canShowCollectCoin(p)}
+                                                    onNavigateToProfile={(event, userId) => {
+                                                        if (userId) router.push(`/dashboard/profile?id=${userId}`);
+                                                    }}
+                                                    currentUser={currentUser}
+                                                    isSaved={isAdSaved(normalizedAd)}
+                                                    onToggleSave={viewerHasPaidPlan ? handleToggleAdSave : undefined}
+                                                    showExpiryWarning={viewerHasPaidPlan && (normalizedAd.type === "photo" || normalizedAd.type === "video")}
+                                                    saveAtLimit={isAdSaveAtLimit(normalizedAd)}
+                                                />
+                                            </div>
+                                        </article>
+                                    );
+                                }
+                                return (
+                                    <GoogCard
+                                        key={item.data.id}
+                                        post={item.data}
+                                        showSubscribe={false}
+                                        onNavigateToProfile={(event, userId) => {
+                                            if (userId) router.push(`/dashboard/profile?id=${userId}`);
+                                        }}
+                                        onToggleLike={() => handleGoogToggleLike(item.data)}
+                                        onOpenSheet={(type, g) => openBottomSheet(type as SheetType, g, true)}
+                                        onSharePost={() => {
+                                            setShareUrlOverride(getShareUrlForItem(item.data, "goog"));
+                                            setShareProduct(item.data);
+                                            setInitialShareView("share");
+                                            setShowShareModal(true);
+                                            googService.logShare(item.data.id).catch(() => {});
+                                        }}
+                                    />
+                                );
+                            })}
+                        </div>
+                    ) : (googsFeed.length === 0 ? <div className="px-5 py-14 text-center text-zinc-400">No Googs posted yet.</div> : null)}
                 </div>
             </section>
 
@@ -1619,13 +1930,19 @@ export default function ProfilePage() {
                 </div>
             )}
 
+            {adSaveLimitToast && (
+                <div className="fixed bottom-6 left-1/2 z-[200] -translate-x-1/2 rounded-2xl border border-orange-400/30 bg-[#1a1614] px-4 py-3 text-[12px] font-black text-orange-200 shadow-[0_18px_45px_rgba(0,0,0,0.55)]">
+                    {adSaveLimitToast}
+                </div>
+            )}
+
             {reportingProduct && <div className="fixed inset-0 z-[110] flex items-center justify-center p-4"><div className="absolute inset-0 bg-black/80" onClick={() => setReportingProduct(null)} /><div className="relative w-full max-w-md rounded-2xl border border-white/10 bg-[#151515] p-5"><h3 className="text-sm font-black uppercase tracking-widest">Report Post</h3><p className="mt-2 text-xs text-white/60">Product {reportingProduct.id} reported to admin for review.</p><div className="mt-4 flex justify-end"><button onClick={() => setReportingProduct(null)} className="rounded-xl bg-white px-4 py-2 text-xs font-black uppercase tracking-widest text-black">Close</button></div></div></div>}
 
             <ShareModal
                 isOpen={showShareModal}
-                onClose={() => setShowShareModal(false)}
-                title={shareProduct?.title || "Check out this product"}
-                url={shareProduct ? getShareUrlForItem(shareProduct, "product") : ""}
+                onClose={() => { setShowShareModal(false); setShareUrlOverride(null); }}
+                title={shareProduct?.title || "Check out this post"}
+                url={shareUrlOverride || (shareProduct ? getShareUrlForItem(shareProduct, "product") : "")}
                 description={shareProduct?.description}
                 product={shareProduct}
                 initialView={initialShareView}
@@ -1637,35 +1954,57 @@ export default function ProfilePage() {
                 type={bottomSheetType}
                 product={interactionProduct}
                 data={bottomSheetData}
-                onTabChange={(type) => interactionProduct && openBottomSheet(type, interactionProduct)}
+                onTabChange={(type) => interactionProduct && openBottomSheet(type, interactionProduct, isBottomSheetGoog)}
                 onAddComment={async (text, parentId) => {
                     if (!interactionProduct) return;
-                    const comment = await marketService.addComment(interactionProduct.id, text, parentId);
-                    setBottomSheetData((prev) => [...prev, { ...comment, username: currentUser?.username || "You", profile_picture: currentUser?.profile_picture }]);
-                    setPosts((prev) => prev.map((p) => p.id === interactionProduct.id ? { ...p, comments_count: (p.comments_count || 0) + 1 } : p));
-                    updateAdState(interactionProduct, (prev) => ({ comments_count: (prev.comments_count || 0) + 1 }));
+                    if (isBottomSheetGoog) {
+                        const comment = await googService.addComment(interactionProduct.id, text, parentId);
+                        setBottomSheetData((prev) => [...prev, { ...comment, username: currentUser?.username || "You", profile_picture: currentUser?.profile_picture }]);
+                        setGoogs((prev) => prev.map((g) => g.id === interactionProduct.id ? { ...g, comments: (g.comments || 0) + 1 } : g));
+                    } else {
+                        const comment = await marketService.addComment(interactionProduct.id, text, parentId);
+                        setBottomSheetData((prev) => [...prev, { ...comment, username: currentUser?.username || "You", profile_picture: currentUser?.profile_picture }]);
+                        setPosts((prev) => prev.map((p) => p.id === interactionProduct.id ? { ...p, comments_count: (p.comments_count || 0) + 1 } : p));
+                        updateAdState(interactionProduct, (prev) => ({ comments_count: (prev.comments_count || 0) + 1 }));
+                    }
                 }}
                 onDeleteComment={async (commentId) => {
-                    const result = await marketService.deleteComment(commentId);
-                    const deletedCount = Math.max(1, Number(result?.deletedCount || 1));
-                    setBottomSheetData((prev) => prev.filter((c) => c.id !== commentId && c.parent_id !== commentId));
-                    if (interactionProduct?.id) {
-                        setPosts((prev) => prev.map((p) => p.id === interactionProduct.id ? { ...p, comments_count: Math.max((p.comments_count || 0) - deletedCount, 0) } : p));
-                        updateAdState(interactionProduct, (prev) => ({ comments_count: Math.max((prev.comments_count || 0) - deletedCount, 0) }));
+                    if (isBottomSheetGoog) {
+                        await googService.deleteComment(commentId);
+                        setBottomSheetData((prev) => prev.filter((c) => c.id !== commentId && c.parent_id !== commentId));
+                        if (interactionProduct?.id) {
+                            setGoogs((prev) => prev.map((g) => g.id === interactionProduct.id ? { ...g, comments: Math.max((g.comments || 0) - 1, 0) } : g));
+                        }
+                    } else {
+                        const result = await marketService.deleteComment(commentId);
+                        const deletedCount = Math.max(1, Number(result?.deletedCount || 1));
+                        setBottomSheetData((prev) => prev.filter((c) => c.id !== commentId && c.parent_id !== commentId));
+                        if (interactionProduct?.id) {
+                            setPosts((prev) => prev.map((p) => p.id === interactionProduct.id ? { ...p, comments_count: Math.max((p.comments_count || 0) - deletedCount, 0) } : p));
+                            updateAdState(interactionProduct, (prev) => ({ comments_count: Math.max((prev.comments_count || 0) - deletedCount, 0) }));
+                        }
                     }
                 }}
                 onLikeComment={async (commentId) => {
-                    await marketService.likeComment(Number(commentId));
-                    if (interactionProduct?.id) setBottomSheetData((await marketService.getComments(interactionProduct.id)) || []);
+                    if (!isBottomSheetGoog) {
+                        await marketService.likeComment(Number(commentId));
+                        if (interactionProduct?.id) setBottomSheetData((await marketService.getComments(interactionProduct.id)) || []);
+                    }
                 }}
                 onDislikeComment={async (commentId) => {
-                    await marketService.dislikeComment(Number(commentId));
-                    if (interactionProduct?.id) setBottomSheetData((await marketService.getComments(interactionProduct.id)) || []);
+                    if (!isBottomSheetGoog) {
+                        await marketService.dislikeComment(Number(commentId));
+                        if (interactionProduct?.id) setBottomSheetData((await marketService.getComments(interactionProduct.id)) || []);
+                    }
                 }}
-                onReportComment={async (commentId) => { await marketService.reportComment(Number(commentId)); }}
+                onReportComment={async (commentId) => { if (!isBottomSheetGoog) await marketService.reportComment(Number(commentId)); }}
                 onRefresh={async () => {
                     if (interactionProduct?.id) {
-                        setBottomSheetData((await marketService.getComments(interactionProduct.id)) || []);
+                        if (isBottomSheetGoog) {
+                            setBottomSheetData((await googService.getComments(interactionProduct.id)) || []);
+                        } else {
+                            setBottomSheetData((await marketService.getComments(interactionProduct.id)) || []);
+                        }
                     }
                 }}
                 currentUser={currentUser}
@@ -1690,7 +2029,7 @@ export default function ProfilePage() {
                     onClose={() => setAdPreviewModal(null)}
                     ad={adPreviewModal.ad}
                     kind={adPreviewModal.kind || "image"}
-                    onToggleLike={(item) => handleToggleLike(item)}
+                    onToggleLike={(item) => handleAdToggleLike(item)}
                     onOpenSheet={openBottomSheet}
                     onShare={(ad) => handleShareClick(ad.raw || ad)}
                     onReport={() => {}}

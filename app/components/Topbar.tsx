@@ -8,6 +8,7 @@ import { authService } from "@/services/authService";
 import { chatService } from "@/services/chatService";
 import IonIcon from "@/app/components/IonIcon";
 import { useCart } from "@/app/context/CartContext";
+import { openLoginModal, openLoginRequired } from "@/app/lib/loginRequired";
 
 const menuItems = [
     { name: "Home", icon: "home", href: "/dashboard" },
@@ -32,6 +33,13 @@ export default function Topbar() {
     const [loading, setLoading] = useState(true);
     const { cartCount, setIsCartOpen, isCartOpen, isGoogerPaymentCartLocked } = useCart();
     const isCartLocked = isGoogerPaymentCartLocked;
+    const openProtectedArea = (href: string, label: string) => {
+        if (!authService.isAuthenticated()) {
+            openLoginRequired({ message: `Please log in to open ${label.toLowerCase()}.` });
+            return;
+        }
+        router.push(href);
+    };
 
     useEffect(() => {
         const fetchUser = async () => {
@@ -41,14 +49,14 @@ export default function Topbar() {
                     setUser(profile);
                 } else {
                     // No token at all — show logged-out state silently
-                    console.error('Not logged in');
+                    setUser(null);
                 }
             } catch (error: any) {
-                console.error("Error fetching user:", error);
-                // If token was invalid (cleared by authService), redirect to login
                 if (!authService.isAuthenticated()) {
-                    router.push('/');
+                    setUser(null);
+                    return;
                 }
+                console.error("Error fetching user:", error);
             } finally {
                 setLoading(false);
             }
@@ -254,9 +262,10 @@ export default function Topbar() {
                         {menuItems.slice(2).map((item) => {
                             const isActive = pathname === item.href;
                             return (
-                                <Link
+                                <button
                                     key={item.name}
-                                    href={item.href}
+                                    type="button"
+                                    onClick={() => openProtectedArea(item.href, item.name)}
                                     className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all duration-300 group ${isActive
                                         ? "bg-white/10 text-white shadow-lg shadow-white/5"
                                         : "text-gray-400 hover:bg-white/5 hover:text-white"
@@ -266,7 +275,7 @@ export default function Topbar() {
                                         <IonIcon name={isActive ? item.icon : item.icon + "-outline"} />
                                     </div>
                                     <span className="font-bold text-[10px] uppercase tracking-widest">{item.name}</span>
-                                </Link>
+                                </button>
                             );
                         })}
                     </>
@@ -440,12 +449,13 @@ export default function Topbar() {
                             />
                         </Link>
                     ) : (
-                        <Link
-                            href="/"
+                        <button
+                            type="button"
+                            onClick={() => openLoginModal()}
                             className="relative block w-9 h-9 rounded-full overflow-hidden border-2 border-white/10 flex items-center justify-center bg-slate-800 hover:border-purple-500/50 transition-all"
                         >
                             <IonIcon name="person-outline" className="text-slate-400" />
-                        </Link>
+                        </button>
                     )}
                 </div>
             </div>

@@ -20,6 +20,8 @@ import { ProfilePromoteCarousel } from "@/app/components/ads/ProfilePromoteCarou
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { SharedProductCard } from "@/app/components/market/SharedProductCard";
 import { normalizeAdData, resolveAdDisplayTitle } from "@/app/lib/ads/adNormalizer";
+import { adsService } from "@/services/adsService";
+import { AdExpiryWarning } from "@/app/components/ads/AdExpiryWarning";
 import { getAdInteractionId, matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { canShowCollectCoinButton as canShowAdCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
 import { resolveProductPromoteProduct } from "@/app/lib/ads/resolveProductPromoteProduct";
@@ -111,6 +113,65 @@ const normalizeExternalUrl = (value: string) => {
   return /^https?:\/\//i.test(value) ? value : `https://${value}`;
 };
 
+const getNormalizedUrl = (value: string) => {
+  const normalized = normalizeExternalUrl(value);
+  if (!normalized) return null;
+
+  try {
+    return new URL(normalized);
+  } catch {
+    return null;
+  }
+};
+
+const getGoogleImageSourceUrl = (value: string) => {
+  const url = getNormalizedUrl(value);
+  if (!url) return "";
+
+  const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+  if (!host.includes("google.") || url.pathname !== "/imgres") return "";
+
+  const imageUrl = url.searchParams.get("imgurl");
+  return imageUrl ? decodeURIComponent(imageUrl) : "";
+};
+
+const getYouTubeThumbnailUrl = (value: string) => {
+  try {
+    const url = new URL(normalizeExternalUrl(value));
+    const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+
+    let videoId = "";
+    if (host === "youtu.be") {
+      videoId = url.pathname.split("/").filter(Boolean)[0] || "";
+    } else if (host.includes("youtube.com")) {
+      if (url.pathname.startsWith("/shorts/") || url.pathname.startsWith("/embed/")) {
+        videoId = url.pathname.split("/").filter(Boolean)[1] || "";
+      } else {
+        videoId = url.searchParams.get("v") || "";
+      }
+    }
+
+    return videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : "";
+  } catch {
+    return "";
+  }
+};
+
+const getSponsoredLinkPreviewImage = (value: string) => {
+  const normalized = normalizeExternalUrl(value);
+  if (!normalized) return "";
+
+  const imagePattern = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
+  const googleImageSource = getGoogleImageSourceUrl(normalized);
+  if (googleImageSource) return googleImageSource;
+  if (imagePattern.test(normalized)) return normalized;
+
+  const youtubeThumbnail = getYouTubeThumbnailUrl(normalized);
+  if (youtubeThumbnail) return youtubeThumbnail;
+
+  return `https://api.microlink.io?url=${encodeURIComponent(normalized)}&screenshot=true&meta=false&embed=screenshot.url`;
+};
+
 const getYouTubeEmbedUrl = (value: string) => {
   try {
     const url = new URL(normalizeExternalUrl(value));
@@ -182,6 +243,7 @@ const getSponsoredLinkPreviewType = (value: string) => {
   const imagePattern = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
   const videoPattern = /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i;
 
+  if (getGoogleImageSourceUrl(normalized)) return "image";
   if (imagePattern.test(normalized)) return "image";
   if (videoPattern.test(normalized)) return "video";
   if (getSponsoredSocialEmbedUrl(normalized)) return "embed";
@@ -1167,6 +1229,7 @@ const mapPublicActiveAdToShopAd = (ad: any) => {
   const commentsCount = Number(ad?.comments_count ?? ad?.commentCount ?? ad?.comments ?? 0);
   const sharesCount = Number(ad?.shares_count ?? ad?.shareCount ?? ad?.shares ?? 0);
   const viewsCount = Number(ad?.views_count ?? ad?.viewCount ?? ad?.views ?? ad?.impressions ?? 0);
+  const activeStartTime = ad?.active_start_time || ad?.activeStartTime || ad?.started_at || ad?.startedAt || null;
 
   return {
     ...ad,
@@ -1198,7 +1261,12 @@ const mapPublicActiveAdToShopAd = (ad: any) => {
     shareCount: sharesCount,
     views_count: viewsCount,
     viewCount: viewsCount,
-    created_at: ad?.created_at || ad?.createdAt,
+    created_at: activeStartTime || ad?.created_at || ad?.createdAt,
+    createdAt: activeStartTime || ad?.createdAt || ad?.created_at,
+    active_start_time: activeStartTime,
+    activeStartTime,
+    started_at: ad?.started_at || ad?.startedAt || activeStartTime,
+    startedAt: ad?.startedAt || ad?.started_at || activeStartTime,
     profile_picture: ad?.profile_picture || ad?.user?.profile_picture || null,
     product_code: productCode,
     share_code: shareCode,
@@ -1284,12 +1352,15 @@ export default function ShopPage() {
   const [reportDetail, setReportDetail] = useState<string>("");
   const [pendingAdCoinProduct, setPendingAdCoinProduct] = useState<any>(null);
   const [adVideoCoinEligibility, setAdVideoCoinEligibility] = useState<Record<string, boolean>>({});
+  const [requiredAdWatchSeconds, setRequiredAdWatchSeconds] = useState(5);
   const [localLoadingId, setLocalLoadingId] = useState<number | null>(null);
   const [ordersCurrentPage, setOrdersCurrentPage] = useState(1);
   const [selectedOrderIds, setSelectedOrderIds] = useState<number[]>([]);
   const [orderToCancel, setOrderToCancel] = useState<any>(null); // 'bulk' or item object
   const [orderToDeliver, setOrderToDeliver] = useState<any>(null); // State for delivery confirmation modal
   const [marketAds, setMarketAds] = useState<any[]>([]);
+  const [showAdExpiryPopup, setShowAdExpiryPopup] = useState(false);
+  const prevActivePhotoVideoIds = useRef<Set<string>>(new Set());
   const syncAds = useAdStore((state) => state.syncAds);
   const updateAdState = useAdStore((state) => state.updateAdState);
   const setViewerContext = useAdStore((state) => state.setViewerContext);
@@ -1405,7 +1476,7 @@ export default function ShopPage() {
         let hasMore = true;
 
         while (hasMore && !cancelled) {
-          const response = await fetch(`/api/ads/active-public?limit=${limit}&offset=${offset}`, {
+          const response = await fetch(`/api/ads/active-public?limit=${limit}&offset=${offset}&shuffle=${encodeURIComponent(shopAdShuffleSeed)}`, {
             cache: "no-store",
             headers,
           });
@@ -1439,12 +1510,82 @@ export default function ShopPage() {
       }
     };
 
+    const refreshActiveShopAds = () => {
+      void loadActiveShopAds();
+    };
+
     void loadActiveShopAds();
+    window.addEventListener("googer-ad-history-updated", refreshActiveShopAds);
+    window.addEventListener("focus", refreshActiveShopAds);
 
     return () => {
       cancelled = true;
+      window.removeEventListener("googer-ad-history-updated", refreshActiveShopAds);
+      window.removeEventListener("focus", refreshActiveShopAds);
     };
-  }, [activeTab, syncAds]);
+  }, [activeTab, shopAdShuffleSeed, syncAds]);
+
+  // Real-time ad expiry watcher — same engine as home feed
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    let mounted = true;
+
+    const checkExpiry = async () => {
+      try {
+        const myAds: any[] = await adsService.getMyAds();
+        if (!mounted) return;
+
+        const prevActive = prevActivePhotoVideoIds.current;
+        let justExpired = false;
+
+        myAds.forEach((ad) => {
+          const isPhotoVideo =
+            String(ad.campaignType || ad.campaign_type || "").trim().toLowerCase() === "photo and video" ||
+            String(ad.campaignType || ad.campaign_type || "").trim().toLowerCase() === "photo & video";
+          const adId = String(ad.adId || ad.ad_id || "");
+          if (!isPhotoVideo || !adId) return;
+
+          if ((ad.status === "Expired" || ad.status === "Completed") && prevActive.has(adId)) {
+            const shownKey = `googer_expiry_shown_${adId}`;
+            if (!localStorage.getItem(shownKey)) {
+              localStorage.setItem(shownKey, "1");
+              justExpired = true;
+            }
+            setMarketAds((prev) => prev.filter((feedAd) => {
+              const feedId = String(feedAd.adId || feedAd.ad_id || feedAd.id || "").replace(/^ad-/, "");
+              return feedId !== adId.replace(/^ad-/, "");
+            }));
+          }
+        });
+
+        if (justExpired) setShowAdExpiryPopup(true);
+
+        prevActivePhotoVideoIds.current = new Set(
+          myAds
+            .filter((ad) => {
+              const isPhotoVideo =
+                String(ad.campaignType || ad.campaign_type || "").trim().toLowerCase() === "photo and video" ||
+                String(ad.campaignType || ad.campaign_type || "").trim().toLowerCase() === "photo & video";
+              return isPhotoVideo && ad.status === "Active";
+            })
+            .map((ad) => String(ad.adId || ad.ad_id || ""))
+            .filter(Boolean)
+        );
+      } catch {
+        // non-critical
+      }
+    };
+
+    void checkExpiry();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") void checkExpiry();
+    }, 10000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(interval);
+    };
+  }, [currentUser?.id]);
 
   const liveSelectedProduct = useMemo(() => {
     if (!selectedProduct) return null;
@@ -1512,26 +1653,19 @@ export default function ShopPage() {
 
   const getAdCoinEligibilityKey = (product: any) => String(product?.id || "");
 
-  const isSponsoredVideoAdProduct = (product: any) => {
+  const isWatchTimedSponsoredAdProduct = (product: any) => {
     if (!product?.is_sponsored) return false;
     if (isProductPromoteItem(product)) return false;
     const campaignType = String(product?.campaign_type || product?.campaignType || "").trim().toLowerCase();
-    const isPhotoVideoPromoteCampaign = campaignType.includes("photo") && campaignType.includes("video");
-    if (!isPhotoVideoPromoteCampaign) return false;
-    const externalUrl = normalizeExternalUrl(product?.active_link || "");
-    const previewType = getSponsoredLinkPreviewType(externalUrl);
-    return previewType === "video" || previewType === "embed" || /video/i.test(String(product?.media_type || ""));
+    if (!(campaignType.includes("photo") || campaignType.includes("video"))) return false;
+    // Watch-time applies only to actual uploaded video files, not images or link-based ads.
+    const mediaType = String(product?.media_type || product?.mediaType || "").trim().toLowerCase();
+    return mediaType === "video";
   };
 
   const getSponsoredCollectionId = (product: any) => {
     if (!product?.is_sponsored) return product?.id;
     return String(product?.id || "").startsWith("ad-") ? product.id : (product?.adId ? `ad-${product.adId}` : product?.id);
-  };
-
-  const trackSponsoredAdClick = (product: any) => {
-    if (!product?.is_sponsored && !String(product?.id || "").startsWith("ad-")) return;
-    const clickId = getSponsoredCollectionId(product);
-    if (clickId) void marketService.logAdClick(clickId);
   };
 
   const getUserIdentity = (user: any) => (
@@ -1588,7 +1722,7 @@ export default function ShopPage() {
     setSelectedProduct(originalProduct);
     setSelectedVariantIndex(null);
     setActivePreviewIndex(0);
-    handleLogView(originalProduct.adId ? `ad-${originalProduct.adId}` : originalProduct.id);
+    handleLogView(originalProduct.adId ? `ad-${originalProduct.adId}` : originalProduct.id, product);
   };
 
   const subscribeButtonClass =
@@ -2094,8 +2228,30 @@ export default function ShopPage() {
     },
   });
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadAdCoinSettings = async () => {
+      try {
+        const settings = await marketService.getAdCoinSettingsPublic();
+        if (cancelled) return;
+        setRequiredAdWatchSeconds(Math.max(1, Math.floor(Number(settings?.required_watch_seconds || 5))));
+      } catch {
+        if (!cancelled) setRequiredAdWatchSeconds(5);
+      }
+    };
+
+    void loadAdCoinSettings();
+    const intervalId = window.setInterval(() => {
+      void loadAdCoinSettings();
+    }, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
   const confirmAdVideoWatchEligible = async (product: any, watchedSeconds = 5) => {
-    if (!product?.is_sponsored || !isSponsoredVideoAdProduct(product)) return;
+    if (!product?.is_sponsored || !isWatchTimedSponsoredAdProduct(product)) return;
     const productKey = getAdCoinEligibilityKey(product);
     if (adVideoCoinEligibility[productKey]) return;
 
@@ -2136,6 +2292,15 @@ export default function ShopPage() {
   };
 
   const handleAdCoinClick = (event: React.MouseEvent, product: any) => {
+    if (isWatchTimedSponsoredAdProduct(product) && !adVideoCoinEligibility[getAdCoinEligibilityKey(product)]) {
+      event.stopPropagation();
+      setNotification({
+        type: "error",
+        title: "Watch Required",
+        message: `Please watch this ad for ${requiredAdWatchSeconds} seconds before collecting the coin.`,
+      });
+      return;
+    }
     adActions.handleAdCoinClick(event, product);
   };
 
@@ -2330,13 +2495,30 @@ export default function ShopPage() {
     );
   };
 
-  const handleLogView = async (id: number) => {
-    if (!authService.isAuthenticated() || !currentUser?.id) {
-      return;
-    }
+  const handleLogView = async (id: number | string, item?: any) => {
     try {
       const result = await marketService.logView(id);
-      // Only increment local view count when the backend explicitly confirmed a new unique view
+      const isSponsoredTarget =
+        !!item?.is_sponsored ||
+        String(item?.id || "").startsWith("ad-") ||
+        String(id).startsWith("ad-");
+      if (result?.success) {
+        if (isSponsoredTarget) {
+          updateAdState(item || id, {
+            views_count: Number(result.impressions || 0),
+            viewCount: Number(result.impressions || 0),
+            current_reach: Number(result.current_reach ?? result.reach ?? 0),
+            reach: Number(result.current_reach ?? result.reach ?? 0),
+            clicks: Number(result.clicks || result.link_actions || 0),
+            link_actions: Number(result.link_actions || result.clicks || 0),
+            message_clicks: Number(result.message_clicks || 0),
+            visit_clicks: Number(result.visit_clicks || 0),
+            call_clicks: Number(result.call_clicks || 0),
+          });
+          return;
+        }
+      }
+      // Only increment local market product view count when the backend explicitly confirmed a new unique view
       if (result?.incremented === true) {
         setProducts((prev) =>
           prev.map((p) =>
@@ -2373,7 +2555,7 @@ export default function ShopPage() {
       ad: product,
       kind: "image",
     });
-    handleLogView(product.id);
+    handleLogView(product.id, product);
   };
 
   // InteractionButton is now outside ShopPage
@@ -2550,7 +2732,7 @@ export default function ShopPage() {
         }
 
         setSelectedProduct(product);
-        handleLogView(product.id);
+        handleLogView(product.id, product);
       }
     };
 
@@ -4396,7 +4578,6 @@ export default function ShopPage() {
                   className="col-span-2 sm:col-span-2 lg:col-span-4 px-4 py-4 transition-colors sm:px-7"
                   cardsPerView={4}
                   onProductClick={(previewProduct) => {
-                    trackSponsoredAdClick(previewProduct);
                     void openProductPromoteSecondView(previewProduct);
                   }}
                   onProfileClick={(profileAd) => {
@@ -4427,13 +4608,11 @@ export default function ShopPage() {
                       onToggleMenu={(id) => setOpenMenuProductId(openMenuProductId === id ? null : id)}
                       onCloseMenu={() => setOpenMenuProductId(null)}
                       onProductClick={(p) => {
-                        trackSponsoredAdClick(p);
                         if (isProductPromoteCard) {
                           void openProductPromoteSecondView(p);
                         }
                       }}
                       onAddToBagClick={(p) => {
-                        trackSponsoredAdClick(p);
                         if (isProductPromoteCard) {
                           void openProductPromoteSecondView(p);
                         }
@@ -4441,9 +4620,8 @@ export default function ShopPage() {
                       onOpenSecondView={() => {
                         if (isProductPromoteCard) return;
                         const kind = getSponsoredSecondViewKind(product, sponsoredLinkPreviewType);
-                        trackSponsoredAdClick(product);
                         setSharedAdPreviewModal({ ad: product, kind });
-                        handleLogView(product.id);
+                        handleLogView(product.id, product);
                       }}
                       onToggleLike={handleToggleLike}
                       onOpenSheet={(type, targetAd) => openBottomSheet(type, targetAd)}
@@ -4472,7 +4650,6 @@ export default function ShopPage() {
                     isAd={isProductPromoteCard}
                     currentUser={currentUser}
                     onProductClick={(p) => {
-                      trackSponsoredAdClick(p);
                       if (isProductPromoteCard) {
                         void openProductPromoteSecondView(p);
                       } else {
@@ -4483,7 +4660,6 @@ export default function ShopPage() {
                       }
                     }}
                     onAddToBagClick={(p) => {
-                      trackSponsoredAdClick(p);
                       if (isProductPromoteCard) {
                         void openProductPromoteSecondView(p);
                       } else {
@@ -4526,6 +4702,40 @@ export default function ShopPage() {
           >
             {isLoadingMoreProducts ? "Loading..." : "See more"}
           </button>
+        </div>
+      )}
+
+      <AdExpiryWarning userId={currentUser?.id} />
+
+      {/* Ad expiry popup */}
+      {showAdExpiryPopup && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="relative w-full max-w-sm rounded-[2rem] border border-white/10 bg-[#1a1614] p-6 shadow-[0_32px_80px_rgba(0,0,0,0.6)]">
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-orange-400/10 border border-orange-400/20">
+              <IonIcon name="timer-outline" className="text-xl text-orange-300" />
+            </div>
+            <h2 className="text-base font-black tracking-tight text-white">Your ad has been removed</h2>
+            <p className="mt-2 text-[12px] leading-relaxed text-white/55">
+              Your Photo &amp; Video ad expired and has been removed from the feed. Get a subscription package to keep your ads running longer.
+            </p>
+            <div className="mt-5 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => { setShowAdExpiryPopup(false); router.push("/dashboard/wallet/subscription"); }}
+                className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-orange-400 text-[11px] font-black uppercase tracking-widest text-black transition hover:bg-orange-300 active:scale-[0.98]"
+              >
+                <IonIcon name="star-outline" className="text-sm" />
+                Get Subscription
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAdExpiryPopup(false)}
+                className="flex h-10 w-full items-center justify-center rounded-xl text-[11px] font-black uppercase tracking-widest text-white/40 transition hover:text-white/70"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -4574,6 +4784,7 @@ export default function ShopPage() {
           onCollectCoin={(event, ad) => handleAdCoinClick(event, ad)}
           onNavigateToProfile={(event, ad) => navigateToProfile(event, ad.user_id)}
           canShowCollectCoin={canShowCollectCoinButton}
+          requiredWatchSeconds={requiredAdWatchSeconds}
           onVideoWatchEligible={(ad, watchedSeconds) => {
             void confirmAdVideoWatchEligible(ad, watchedSeconds);
           }}

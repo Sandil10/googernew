@@ -14,6 +14,13 @@ export default function ProfileRedirectPage() {
     const [user, setUser] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [notFound, setNotFound] = useState(false);
+    const [currentUserId, setCurrentUserId] = useState<number | null>(null);
+
+    useEffect(() => {
+        authService.getProfile().then((p: any) => {
+            if (p?.id) setCurrentUserId(Number(p.id));
+        }).catch(() => {});
+    }, []);
 
     useEffect(() => {
         const resolveUser = async () => {
@@ -106,7 +113,7 @@ export default function ProfileRedirectPage() {
                     <IonIcon name="grid-outline" className="text-base" />
                     Go to Dashboard
                 </button>
-                <PublicProfileView user={user} isPublic={true} />
+                <PublicProfileView user={user} isPublic={true} currentUserId={currentUserId} />
             </div>
         </main>
     );

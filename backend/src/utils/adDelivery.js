@@ -1,5 +1,19 @@
 const normalizeText = (value) => String(value || '').trim().toLowerCase();
 
+const REACH_FIRST_CAMPAIGN_TYPES = new Set([
+    'product promote',
+    'photo promote',
+    'video promote',
+    'photo and video',
+    'photo & video',
+]);
+
+const isReachFirstCampaign = (adRow) => {
+    const type = normalizeText(adRow?.campaign_type || adRow?.campaignType || '');
+    return REACH_FIRST_CAMPAIGN_TYPES.has(type);
+};
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 const safeJsonParse = (value, fallback = null) => {
     if (!value) return fallback;
     if (typeof value !== 'string') return value;
@@ -42,6 +56,173 @@ const hasTableColumn = async (pool, tableName, columnName) => {
 };
 
 const getDraft = (adRow) => safeJsonParse(adRow?.edit_draft || adRow?.editDraft, {}) || {};
+
+const getTimestampMs = (value) => {
+    if (!value) return null;
+    const raw = value instanceof Date
+        ? value.toISOString()
+        : String(value).trim().replace(' ', 'T');
+    const parsed = new Date(raw.endsWith('Z') ? raw : `${raw}Z`).getTime();
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const calculateAdDurationState = (adRow, nowMs = Date.now()) => {
+    const durationDays = Number(adRow?.duration_days || adRow?.durationDays || 0);
+    const totalMs = durationDays > 0 ? durationDays * DAY_MS : 0;
+    const status = String(adRow?.status || '').trim();
+    const activeStartTimeMs = getTimestampMs(adRow?.active_start_time || adRow?.activeStartTime || adRow?.started_at || adRow?.startedAt);
+    const lastResumedAtMs = getTimestampMs(adRow?.last_resumed_at || adRow?.lastResumedAt);
+    const accumulatedActiveMs = Math.max(0, Number(adRow?.accumulated_active_ms ?? adRow?.accumulatedActiveMs ?? 0) || 0);
+    const liveSegmentMs = status === 'Active' && lastResumedAtMs
+        ? Math.max(0, nowMs - lastResumedAtMs)
+        : 0;
+    const elapsedMs = totalMs > 0
+        ? Math.min(totalMs, accumulatedActiveMs + liveSegmentMs)
+        : 0;
+    const remainingMs = totalMs > 0
+        ? Math.max(0, totalMs - elapsedMs)
+        : 0;
+
+    return {
+        totalMs,
+        elapsedMs,
+        remainingMs,
+        activeStartTimeMs,
+        lastResumedAtMs,
+        accumulatedActiveMs,
+        isExpired: totalMs > 0 && remainingMs <= 0,
+    };
+};
+
+const REACH_FIRST_SQL_LIST = "('product promote','photo promote','video promote','photo and video','photo & video')";
+const BASIC_RAW_PHOTO_VIDEO_EXPIRY_INTERVAL = "INTERVAL '10 minutes'";
+const RAW_PHOTO_VIDEO_UPLOAD_SQL = `
+    LOWER(COALESCE(a.campaign_type, '')) IN ('photo and video', 'photo & video')
+    AND COALESCE(NULLIF(TRIM(a.media_preview), ''), NULLIF(TRIM(a.media_type), '')) IS NOT NULL
+    AND COALESCE(NULLIF(TRIM(a.active_link), ''), NULLIF(TRIM(a.edit_draft->>'activeLink'), ''), NULLIF(TRIM(a.edit_draft->>'active_link'), '')) IS NULL
+    AND (
+        COALESCE(a.media_preview, '') = ''
+        OR COALESCE(a.media_preview, '') !~* '^https?://'
+        OR COALESCE(a.media_preview, '') ~* '/uploads?/'
+    )
+`;
+
+const syncExpiredAds = async (pool, adId = null) => {
+    const params = [];
+    const adFilter = adId ? ' AND ad_id = $1' : '';
+    if (adId) params.push(adId);
+
+    // Duration-based expiry — skip reach-first campaign types (Product Promote, Photo/Video).
+    // Those ads complete only when their target reach is met, not when duration runs out.
+    await pool.query(
+        `UPDATE ads
+         SET status = 'Completed',
+             accumulated_active_ms = LEAST(
+                 GREATEST(COALESCE(duration_days, 0), 0) * ${DAY_MS},
+                 COALESCE(accumulated_active_ms, 0) + GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(last_resumed_at, CURRENT_TIMESTAMP))) * 1000))
+             ),
+             last_resumed_at = NULL,
+             paused_at = NULL,
+             completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE status = 'Active'
+           AND COALESCE(duration_days, 0) > 0
+           ${adFilter}
+           AND LOWER(COALESCE(campaign_type, '')) NOT IN ${REACH_FIRST_SQL_LIST}
+           AND (
+               COALESCE(accumulated_active_ms, 0) + GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(last_resumed_at, CURRENT_TIMESTAMP))) * 1000))
+           ) >= (GREATEST(COALESCE(duration_days, 0), 0) * ${DAY_MS})`,
+        params
+    );
+
+    // If another system approves an ad directly in the database, lock the approval-time
+    // fallback before expiry checks run. Never use created_at/publish time for this flow.
+    await pool.query(
+        `UPDATE ads a
+         SET active_start_time = COALESCE(
+                 a.active_start_time,
+                 a.started_at,
+                 a.last_resumed_at,
+                 CASE WHEN a.updated_at IS NOT NULL AND a.updated_at > a.created_at THEN a.updated_at ELSE CURRENT_TIMESTAMP END
+             ),
+             started_at = COALESCE(
+                 a.started_at,
+                 a.active_start_time,
+                 a.last_resumed_at,
+                 CASE WHEN a.updated_at IS NOT NULL AND a.updated_at > a.created_at THEN a.updated_at ELSE CURRENT_TIMESTAMP END
+             ),
+             last_resumed_at = COALESCE(
+                 a.last_resumed_at,
+                 a.active_start_time,
+                 a.started_at,
+                 CASE WHEN a.updated_at IS NOT NULL AND a.updated_at > a.created_at THEN a.updated_at ELSE CURRENT_TIMESTAMP END
+             ),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE a.status = 'Active'
+           ${adId ? 'AND a.ad_id = $1' : ''}
+           AND a.active_start_time IS NULL
+           AND ${RAW_PHOTO_VIDEO_UPLOAD_SQL}`,
+        adId ? [adId] : []
+    );
+
+    // Basic-plan expiry for raw uploaded Photo & Video ads only.
+    // Link ads and paid-plan users are deliberately excluded. The clock starts at
+    // active_start_time, which is set when the admin approves the ad. This product
+    // rule is fixed: warn at 2 minutes in the UI, complete at 10 minutes here.
+    await pool.query(
+        `WITH expiring_ads AS (
+             SELECT
+                 a.ad_id,
+                 ${BASIC_RAW_PHOTO_VIDEO_EXPIRY_INTERVAL} AS expiry_interval
+             FROM ads a
+             WHERE a.status = 'Active'
+               AND ${RAW_PHOTO_VIDEO_UPLOAD_SQL}
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM user_plan_subscriptions ups
+                   JOIN subscription_plans sp ON sp.id = ups.plan_id
+                   WHERE ups.user_id = a.user_id
+                     AND ups.status = 'active'
+                     AND (ups.expires_at IS NULL OR ups.expires_at > NOW())
+                     AND LOWER(COALESCE(sp.slug, '')) <> 'basic'
+               )
+               ${adId ? 'AND a.ad_id = $1' : ''}
+         )
+         UPDATE ads a
+         SET status = 'Completed',
+             last_resumed_at = NULL,
+             paused_at = NULL,
+             completed_at = COALESCE(a.completed_at, CURRENT_TIMESTAMP),
+             updated_at = CURRENT_TIMESTAMP
+         FROM expiring_ads up
+         WHERE a.ad_id = up.ad_id
+           AND up.expiry_interval IS NOT NULL
+           AND a.active_start_time IS NOT NULL
+           AND a.active_start_time < NOW() - up.expiry_interval`,
+        adId ? [adId] : []
+    );
+
+    // Reach-cap completion — applies to all campaign types.
+    // For reach-first campaigns this is the primary exit; for others it is a secondary guard.
+    // Budget is zeroed for reach-first types: they paid for reach, and reach is now fulfilled.
+    await pool.query(
+        `UPDATE ads
+         SET status = 'Completed',
+             remaining_budget = CASE
+                 WHEN LOWER(COALESCE(campaign_type, '')) IN ${REACH_FIRST_SQL_LIST}
+                 THEN 0
+                 ELSE remaining_budget
+             END,
+             completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE status = 'Active'
+           AND max_reach_cap IS NOT NULL
+           AND max_reach_cap > 0
+           AND COALESCE(current_reach, 0) >= max_reach_cap
+           ${adFilter}`,
+        params
+    );
+};
 
 const getAdTargeting = (adRow) => {
     const draft = getDraft(adRow);
@@ -137,7 +318,7 @@ const matchesGender = (targetGender, viewerGender) => {
     const target = normalizeText(targetGender);
     if (!target || target === 'all' || target === 'any') return true;
     const viewer = normalizeText(viewerGender);
-    if (!viewer) return false;
+    if (!viewer) return true;
     return viewer === target || viewer.startsWith(target) || target.startsWith(viewer);
 };
 
@@ -146,7 +327,7 @@ const matchesAnyText = (targets, values) => {
     if (!targetTexts.length) return true;
 
     const valueTexts = uniqueTexts(values).map(normalizeText).filter(Boolean);
-    if (!valueTexts.length) return false;
+    if (!valueTexts.length) return true;
 
     return targetTexts.some((target) => valueTexts.some((value) => (
         value === target || value.includes(target) || target.includes(value)
@@ -154,6 +335,8 @@ const matchesAnyText = (targets, values) => {
 };
 
 const adMatchesViewer = (adRow, viewerProfile) => {
+    if (viewerProfile?.isAnonymous) return true;
+
     const targeting = getAdTargeting(adRow);
     if (!matchesGender(targeting.gender, viewerProfile?.gender)) return false;
     if (!matchesAnyText(targeting.countries, viewerProfile?.countries || [])) return false;
@@ -172,12 +355,11 @@ const adIsWithinDeliveryRules = (adRow) => {
     );
     if (Number.isFinite(cap) && cap > 0 && currentReach >= cap) return false;
 
-    const durationDays = Number(adRow?.duration_days || adRow?.durationDays || 0);
-    const startedAt = adRow?.started_at || adRow?.startedAt;
-    if (durationDays > 0 && startedAt) {
-        const startedTime = new Date(startedAt).getTime();
-        const endTime = startedTime + durationDays * 24 * 60 * 60 * 1000;
-        if (Number.isFinite(startedTime) && Date.now() >= endTime) return false;
+    // Reach-first campaigns (Product Promote, Photo/Video) complete only when target reach is
+    // met — duration elapsed does not end delivery for these types.
+    if (!isReachFirstCampaign(adRow)) {
+        const durationState = calculateAdDurationState(adRow);
+        if (durationState.isExpired) return false;
     }
 
     const budget = Number(adRow?.budget || 0);
@@ -192,6 +374,7 @@ const filterDeliverableAds = (rows, viewerProfile) => (
 );
 
 const recordAdImpression = async (pool, adId, amount = 1) => {
+    await syncExpiredAds(pool, adId);
     const increment = Math.max(1, Number.parseInt(String(amount), 10) || 1);
     const result = await pool.query(
         `UPDATE ads
@@ -209,7 +392,14 @@ const recordAdImpression = async (pool, adId, amount = 1) => {
     if (row && row.max_reach_cap !== null && Number(row.current_reach || 0) >= Number(row.max_reach_cap)) {
         await pool.query(
             `UPDATE ads
-             SET status = 'Completed', updated_at = CURRENT_TIMESTAMP
+             SET status = 'Completed',
+                 remaining_budget = CASE
+                     WHEN LOWER(COALESCE(campaign_type, '')) IN ${REACH_FIRST_SQL_LIST}
+                     THEN 0
+                     ELSE remaining_budget
+                 END,
+                 completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+                 updated_at = CURRENT_TIMESTAMP
              WHERE ad_id = $1 AND status = 'Active'`,
             [adId]
         );
@@ -233,11 +423,14 @@ const recordAdClick = async (pool, adId) => {
 module.exports = {
     adIsWithinDeliveryRules,
     adMatchesViewer,
+    calculateAdDurationState,
     filterDeliverableAds,
     getAdTargeting,
+    isReachFirstCampaign,
     loadViewerAdProfile,
     normalizeText,
     recordAdClick,
     recordAdImpression,
     safeJsonParse,
+    syncExpiredAds,
 };

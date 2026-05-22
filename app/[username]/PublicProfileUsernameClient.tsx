@@ -11,6 +11,13 @@ export default function PublicProfileUsernameClient({ username }: { username: st
     const [user, setUser] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [notFound, setNotFound] = useState(false);
+    const [currentUserId, setCurrentUserId] = useState<number | null>(null);
+
+    useEffect(() => {
+        authService.getProfile().then((p: any) => {
+            if (p?.id) setCurrentUserId(Number(p.id));
+        }).catch(() => {});
+    }, []);
 
     useEffect(() => {
         if (!username) {
@@ -96,7 +103,7 @@ export default function PublicProfileUsernameClient({ username }: { username: st
                     <IonIcon name="home-outline" className="text-base" />
                     Home
                 </button>
-                <PublicProfileView user={user} isPublic={true} />
+                <PublicProfileView user={user} isPublic={true} currentUserId={currentUserId} />
             </div>
         </main>
     );

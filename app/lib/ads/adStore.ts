@@ -18,6 +18,13 @@ export interface AdLiveState {
     commentCount?: number;
     shares_count?: number;
     shareCount?: number;
+    current_reach?: number;
+    reach?: number;
+    clicks?: number;
+    link_actions?: number;
+    message_clicks?: number;
+    visit_clicks?: number;
+    call_clicks?: number;
     is_subscribed?: boolean;
     // New fields for Product Promote ads
     selected_size?: string | null;
@@ -80,6 +87,10 @@ export const useAdStore = create<AdStore>((set, get) => ({
                 ...(next.shareCount !== undefined && next.shares_count === undefined ? { shares_count: next.shareCount } : {}),
                 ...(next.views_count !== undefined && next.viewCount === undefined ? { viewCount: next.views_count } : {}),
                 ...(next.viewCount !== undefined && next.views_count === undefined ? { views_count: next.viewCount } : {}),
+                ...(next.current_reach !== undefined && next.reach === undefined ? { reach: next.current_reach } : {}),
+                ...(next.reach !== undefined && next.current_reach === undefined ? { current_reach: next.reach } : {}),
+                ...(next.clicks !== undefined && next.link_actions === undefined ? { link_actions: next.clicks } : {}),
+                ...(next.link_actions !== undefined && next.clicks === undefined ? { clicks: next.link_actions } : {}),
             };
             const nextViewerStates = {
                 ...viewerStates,
@@ -141,6 +152,18 @@ export const useAdStore = create<AdStore>((set, get) => ({
                 const nextSharesCount = numberOrUndefined(ad.shares_count ?? ad.shareCount);
                 if (nextSharesCount !== current.shares_count) incoming.shares_count = nextSharesCount;
                 if (incoming.shares_count !== undefined) incoming.shareCount = incoming.shares_count;
+                const nextReach = numberOrUndefined(ad.current_reach ?? ad.reach);
+                if (nextReach !== current.current_reach) incoming.current_reach = nextReach;
+                if (incoming.current_reach !== undefined) incoming.reach = incoming.current_reach;
+                const nextClicks = numberOrUndefined(ad.clicks ?? ad.link_actions);
+                if (nextClicks !== current.clicks) incoming.clicks = nextClicks;
+                if (incoming.clicks !== undefined) incoming.link_actions = incoming.clicks;
+                const nextMessageClicks = numberOrUndefined(ad.message_clicks);
+                if (nextMessageClicks !== current.message_clicks) incoming.message_clicks = nextMessageClicks;
+                const nextVisitClicks = numberOrUndefined(ad.visit_clicks);
+                if (nextVisitClicks !== current.visit_clicks) incoming.visit_clicks = nextVisitClicks;
+                const nextCallClicks = numberOrUndefined(ad.call_clicks);
+                if (nextCallClicks !== current.call_clicks) incoming.call_clicks = nextCallClicks;
 
                 // Simple shallow comparison to avoid unnecessary state updates
                 const merged = { ...current, ...incoming };

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
+import { useAdStore } from "@/app/lib/ads/adStore";
 import { getItemUsername } from "@/app/lib/userDisplay";
 import { marketService } from "@/services/marketService";
 
@@ -21,6 +22,23 @@ export function ProfilePromoteCarousel({
   cardsPerView = 3,
 }: ProfilePromoteCarouselProps) {
   const [profilePromoteIndex, setProfilePromoteIndex] = useState(0);
+  const containerRef = useRef<HTMLElement>(null);
+  const [isInViewport, setIsInViewport] = useState(false);
+
+  // Only log views once the carousel has actually scrolled into the viewport
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setIsInViewport(true); // SSR / old-browser fallback
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) setIsInViewport(true); },
+      { threshold: 0.1 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     setProfilePromoteIndex((current) => (ads.length ? current % ads.length : 0));
@@ -33,9 +51,37 @@ export function ProfilePromoteCarousel({
   const visibleAds = canSlide
     ? Array.from({ length: visibleCount }, (_, offset) => ads[(profilePromoteIndex + offset) % ads.length])
     : ads.slice(0, visibleCount);
+  const visibleAdsKey = visibleAds
+    .map((profileAd) => String(profileAd?.id || profileAd?.adId || profileAd?.ad_id || ""))
+    .join("|");
+
+  useEffect(() => {
+    if (!visibleAds.length || !isInViewport) return;
+    const updateAdState = useAdStore.getState().updateAdState;
+    visibleAds.forEach((profileAd) => {
+      // Use the ad-prefixed ID so the backend routes this as a sponsored ad view
+      const adId = profileAd?.adId || profileAd?.ad_id;
+      const viewId = adId ? `ad-${adId}` : String(profileAd?.id || "");
+      if (!viewId) return;
+      void marketService.logView(viewId).then((result: any) => {
+        if (!result?.success) return;
+        updateAdState(profileAd, {
+          views_count: Number(result.impressions || 0),
+          viewCount: Number(result.impressions || 0),
+          current_reach: Number(result.current_reach ?? result.reach ?? 0),
+          reach: Number(result.current_reach ?? result.reach ?? 0),
+          clicks: Number(result.clicks || result.link_actions || 0),
+          link_actions: Number(result.link_actions || result.clicks || 0),
+          message_clicks: Number(result.message_clicks || 0),
+          visit_clicks: Number(result.visit_clicks || 0),
+          call_clicks: Number(result.call_clicks || 0),
+        });
+      });
+    });
+  }, [visibleAdsKey, isInViewport]);
 
   return (
-    <article className={className}>
+    <article ref={containerRef} className={className}>
       <div className="mx-auto w-full max-w-[1120px]">
         <div className="mb-3 flex items-center justify-end gap-2">
           {canSlide && (
@@ -67,8 +113,6 @@ export function ProfilePromoteCarousel({
                   ad={profileAd}
                   onProductClick={onProductClick}
                   onProfileClick={(clickedAd) => {
-                    const clickId = clickedAd?.id || clickedAd?.adId || clickedAd?.ad_id || profileAd?.id || profileAd?.adId || profileAd?.ad_id;
-                    if (clickId) void marketService.logAdClick(clickId);
                     if (clickedAd) {
                       onProfileClick(clickedAd);
                       return;

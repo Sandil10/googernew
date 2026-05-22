@@ -8,6 +8,7 @@ import { authService } from "@/services/authService";
 import { walletService } from "@/services/walletService";
 import { adsService } from "@/services/adsService";
 import { marketService } from "@/services/marketService";
+import { subscriptionService } from "@/services/subscriptionService";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { addAdWalletRefund, getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
 import { calcReach, type ReachTier } from "@/utils/reachCalc";
@@ -322,7 +323,9 @@ function getLinkPreviewType(value: string): LinkPreviewType {
 
     const imagePattern = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
     const videoPattern = /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i;
+    const googleImageSource = getGoogleImageSourceUrl(normalized);
 
+    if (googleImageSource) return "image";
     if (imagePattern.test(normalized)) return "image";
     if (videoPattern.test(normalized)) return "video";
     return "website";
@@ -331,6 +334,36 @@ function getLinkPreviewType(value: string): LinkPreviewType {
 function normalizeUrl(value: string) {
     if (!value.trim()) return "";
     return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+}
+
+function getGoogleImageSourceUrl(value: string) {
+    try {
+        const url = new URL(normalizeUrl(value));
+        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+        if (!host.includes("google.") || url.pathname !== "/imgres") return "";
+        const imageUrl = url.searchParams.get("imgurl");
+        return imageUrl ? decodeURIComponent(imageUrl) : "";
+    } catch {
+        return "";
+    }
+}
+
+function getLinkPreviewThumbnail(value: string) {
+    const normalized = normalizeUrl(value);
+    if (!normalized) return "";
+
+    const googleImageSource = getGoogleImageSourceUrl(normalized);
+    if (googleImageSource) return googleImageSource;
+
+    const imagePattern = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
+    if (imagePattern.test(normalized)) return normalized;
+
+    const youtubeThumbnail = getYouTubeVideoId(normalized)
+        ? `https://img.youtube.com/vi/${getYouTubeVideoId(normalized)}/hqdefault.jpg`
+        : "";
+    if (youtubeThumbnail) return youtubeThumbnail;
+
+    return `https://api.microlink.io?url=${encodeURIComponent(normalized)}&screenshot=true&meta=false&embed=screenshot.url`;
 }
 
 function getDomainLabel(value: string) {
@@ -535,6 +568,43 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [profilePromoteSlideIndex, setProfilePromoteSlideIndex] = useState(0);
     const [profilePromoteAvailableSlideIndex, setProfilePromoteAvailableSlideIndex] = useState(0);
     const [profileLinkCopied, setProfileLinkCopied] = useState(false);
+    const [userHasPaidSubscription, setUserHasPaidSubscription] = useState<boolean | null>(null);
+    const [adsExpiryLabel, setAdsExpiryLabel] = useState<string>("30 days");
+
+    useEffect(() => {
+        let active = true;
+        const fetchSubscription = async () => {
+            try {
+                const [sub, plan] = await Promise.all([
+                    subscriptionService.getMySubscription(),
+                    subscriptionService.getMyPlan(),
+                ]);
+                if (active) {
+                    setUserHasPaidSubscription(!!sub && sub.plan_slug !== 'basic');
+                    const expiryValue = Number(plan?.extra?.ads_expiry_value ?? plan?.extra?.ads_expiry_days ?? 0);
+                    const expiryUnit = String(plan?.extra?.ads_expiry_unit || 'days').toLowerCase();
+                    if (expiryValue > 0) {
+                        if (expiryUnit === 'minutes') {
+                            setAdsExpiryLabel(`${expiryValue} minute${expiryValue === 1 ? '' : 's'}`);
+                        } else if (expiryUnit === 'hours') {
+                            setAdsExpiryLabel(`${expiryValue} hour${expiryValue === 1 ? '' : 's'}`);
+                        } else {
+                            setAdsExpiryLabel(`${expiryValue} day${expiryValue === 1 ? '' : 's'}`);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error("Failed to load subscription status:", error);
+                if (active) {
+                    setUserHasPaidSubscription(false);
+                }
+            }
+        };
+        void fetchSubscription();
+        return () => {
+            active = false;
+        };
+    }, []);
     const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
     const [pendingVideoCrop, setPendingVideoCrop] = useState<PendingVideoCrop | null>(null);
     const [trimStartSeconds, setTrimStartSeconds] = useState(0);
@@ -2027,9 +2097,10 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const embedUrl = getSocialEmbedUrl(activeLink) || "";
         const videoId = getYouTubeVideoId(activeLink);
         if (!videoId) {
+            const thumbnail = getLinkPreviewThumbnail(activeLink);
             setLinkPreviewMeta({
                 title: getDefaultLinkTitle(activeLink),
-                thumbnail: "",
+                thumbnail,
                 isYouTube: false,
                 platform,
                 embedUrl,
@@ -2048,7 +2119,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
                     setLinkPreviewMeta((current) => ({
                         title: data.title || current?.title || getDefaultLinkTitle(activeLink),
-                        thumbnail: data.thumbnail_url || current?.thumbnail || "",
+                        thumbnail: data.thumbnail_url || current?.thumbnail || thumbnail,
                         isYouTube: false,
                         platform,
                         embedUrl,
@@ -3740,6 +3811,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         )}
 
                         <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-white/8 pt-4">
+                            {campaignType === "Photo and Video" && userHasPaidSubscription === false && (
+                                <p className="w-full text-right text-[10px] text-white/40 mb-2 mt-0.5 leading-relaxed">
+                                    This ad will be deleted from your profile in {adsExpiryLabel}. Get a subscription package to keep it on your profile.
+                                </p>
+                            )}
                             <button
                                 type="button"
                                 onClick={() => setShowCancelConfirm(true)}

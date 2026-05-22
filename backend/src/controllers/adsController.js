@@ -2,14 +2,82 @@ const pool = require('../config/database');
 const { saveUploadedFiles } = require('../utils/localUpload');
 const jwt = require('jsonwebtoken');
 const {
+    adIsWithinDeliveryRules,
+    adMatchesViewer,
+    calculateAdDurationState,
     filterDeliverableAds,
     loadViewerAdProfile,
     recordAdImpression,
+    syncExpiredAds,
 } = require('../utils/adDelivery');
+const { getUserPlanLimits, getUserSubscriptionFeatures } = require('../utils/planLimits');
+
+let adSavesTableReady = false;
+const ensureAdSavesSchema = async () => {
+    if (adSavesTableReady) return;
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS ad_saves (
+            id              SERIAL PRIMARY KEY,
+            user_id         INTEGER     NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            ad_id           VARCHAR(20) NOT NULL,
+            ad_media_type   VARCHAR(10) NOT NULL,   -- 'photo' | 'video'
+            ad_source_type  VARCHAR(10) NOT NULL,   -- 'upload' | 'link'
+            created_at      TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, ad_id)
+        );
+    `);
+    await pool.query(`
+        ALTER TABLE ad_saves
+            ADD COLUMN IF NOT EXISTS ad_media_type VARCHAR(10),
+            ADD COLUMN IF NOT EXISTS ad_source_type VARCHAR(10),
+            ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+        ALTER TABLE ad_saves
+            ALTER COLUMN ad_id TYPE VARCHAR(80),
+            ALTER COLUMN ad_media_type SET DEFAULT 'photo',
+            ALTER COLUMN ad_source_type SET DEFAULT 'upload';
+        UPDATE ad_saves
+           SET ad_media_type = COALESCE(ad_media_type, 'photo'),
+               ad_source_type = COALESCE(ad_source_type, 'upload')
+         WHERE ad_media_type IS NULL OR ad_source_type IS NULL;
+        ALTER TABLE ad_saves
+            ALTER COLUMN ad_media_type SET NOT NULL,
+            ALTER COLUMN ad_source_type SET NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_ad_saves_user ON ad_saves(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ad_saves_count ON ad_saves(user_id, ad_media_type, ad_source_type);
+    `);
+    adSavesTableReady = true;
+};
+
+// Classifies an ad row into media_type (photo|video) and source_type (upload|link).
+// Source rule: link ads are any ad whose primary delivery is an active external link
+// (no uploaded media file). Uploaded ads have a non-empty media_preview that is not
+// itself an http(s) link pasted by the user — we treat anything stored under our own
+// /uploads path or as a relative path as "upload".
+const classifyAdForSave = (row) => {
+    const mediaType = String(row.media_type || '').toLowerCase();
+    const mediaPreview = String(row.media_preview || '').trim();
+    const activeLink = String(row.active_link || (row.edit_draft && (row.edit_draft.activeLink || row.edit_draft.active_link)) || '').trim();
+
+    const isVideo = mediaType.includes('video') || /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(mediaPreview);
+    const ad_media_type = isVideo ? 'video' : 'photo';
+
+    // Link ad: has an active_link AND no uploaded preview, OR media_preview is itself
+    // a fully-qualified external URL (user pasted a link instead of uploading).
+    const previewIsExternalUrl = /^https?:\/\//i.test(mediaPreview) && !/\/uploads?\//i.test(mediaPreview);
+    const isLink = (!!activeLink && (!mediaPreview || previewIsExternalUrl)) || previewIsExternalUrl;
+    const ad_source_type = isLink ? 'link' : 'upload';
+
+    return { ad_media_type, ad_source_type };
+};
 
 let adsTableReady = false;
-const VALID_STATUSES = new Set(['Under Review', 'Active', 'Paused', 'Completed', 'Cancelled']);
+const VALID_STATUSES = new Set(['Under Review', 'Pending Approval', 'Approved', 'Active', 'Paused', 'Completed', 'Expired', 'Cancelled', 'Removed']);
+const DAY_MS = 24 * 60 * 60 * 1000;
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
+const canonicalAdStatus = (status) => {
+    if (status === 'Approved') return 'Active';
+    return status;
+};
 const stripDataUrl = (value) => {
     const text = String(value || '').trim();
     return text.startsWith('data:') ? '' : text;
@@ -29,6 +97,15 @@ const getRawMediaValue = (value) => {
         return String(value.url || value.image_url || value.image || value.src || value.path || '').trim();
     }
     return '';
+};
+
+const toUtcIso = (value) => {
+    if (!value) return null;
+    const raw = value instanceof Date
+        ? value.toISOString()
+        : String(value).trim().replace(' ', 'T');
+    const parsed = new Date(raw.endsWith('Z') ? raw : `${raw}Z`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 };
 
 const normalizeMediaGallery = (value, fallback = []) => {
@@ -146,6 +223,9 @@ const ensureAdsTable = async () => {
         ADD COLUMN IF NOT EXISTS likes_count INTEGER DEFAULT 0,
         ADD COLUMN IF NOT EXISTS comments_count INTEGER DEFAULT 0,
         ADD COLUMN IF NOT EXISTS shares_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS active_link TEXT,
+        ADD COLUMN IF NOT EXISTS cta_topic VARCHAR(80),
+        ADD COLUMN IF NOT EXISTS cta_value TEXT,
         ADD COLUMN IF NOT EXISTS linked_product_id INTEGER,
         ADD COLUMN IF NOT EXISTS linked_product_share_code VARCHAR(32),
         ADD COLUMN IF NOT EXISTS original_product_id INTEGER,
@@ -169,6 +249,78 @@ const ensureAdsTable = async () => {
     `);
 
     await pool.query(`
+        ALTER TABLE ads
+            ADD COLUMN IF NOT EXISTS active_start_time TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS last_resumed_at TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS paused_at TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS accumulated_active_ms BIGINT DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;
+    `);
+
+    await pool.query(`
+        UPDATE ads
+        SET active_start_time = COALESCE(active_start_time, started_at)
+        WHERE active_start_time IS NULL
+          AND started_at IS NOT NULL;
+    `);
+
+    // Trigger: auto-set active_start_time when the admin panel (or any system)
+    // flips status to 'Active' without going through our update API.
+    await pool.query(`
+        CREATE OR REPLACE FUNCTION _ads_set_active_start_time()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            IF NEW.status = 'Active' AND (OLD.status IS DISTINCT FROM 'Active') THEN
+                IF NEW.active_start_time IS NULL THEN
+                    NEW.active_start_time := NOW();
+                END IF;
+                IF NEW.started_at IS NULL THEN
+                    NEW.started_at := NOW();
+                END IF;
+                IF NEW.last_resumed_at IS NULL THEN
+                    NEW.last_resumed_at := NOW();
+                END IF;
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    `);
+
+    await pool.query(`
+        DO $$ BEGIN
+            CREATE TRIGGER ads_auto_active_start_time
+            BEFORE UPDATE ON ads
+            FOR EACH ROW EXECUTE FUNCTION _ads_set_active_start_time();
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+    `);
+
+    await pool.query(`
+        UPDATE ads
+        SET status = 'Active',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'Approved';
+    `);
+
+    // Backfill: fix all ads (Active OR Completed) that have no active_start_time.
+    // Uses completed_at for completed ads (closest proxy to approval time),
+    // updated_at/created_at as fallback.
+    await pool.query(`
+        UPDATE ads
+        SET active_start_time = CASE
+                WHEN status = 'Completed' THEN COALESCE(started_at, completed_at, updated_at, created_at)
+                ELSE COALESCE(started_at, updated_at, created_at)
+            END,
+            started_at = COALESCE(started_at, updated_at, created_at),
+            last_resumed_at = CASE
+                WHEN status = 'Active' THEN COALESCE(last_resumed_at, started_at, updated_at, created_at)
+                ELSE last_resumed_at
+            END
+        WHERE active_start_time IS NULL
+          AND status IN ('Active', 'Completed', 'Expired', 'Paused');
+    `);
+
+    await pool.query(`
         UPDATE ads
         SET current_reach = GREATEST(COALESCE(current_reach, 0), COALESCE(impressions, 0)),
             reach = GREATEST(COALESCE(reach, 0), COALESCE(impressions, 0)),
@@ -189,6 +341,33 @@ const ensureAdsTable = async () => {
     adsTableReady = true;
 };
 
+const getSeededRandom = (seedText) => {
+    let hash = 2166136261;
+    const text = String(seedText || '');
+    for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0) / 4294967295;
+};
+
+const shuffleRowsWithSeed = (rows, seed, getKey) => {
+    return [...(rows || [])].sort((first, second) => {
+        const firstScore = getSeededRandom(`${seed}:${getKey(first)}`);
+        const secondScore = getSeededRandom(`${seed}:${getKey(second)}`);
+        return firstScore - secondScore;
+    });
+};
+
+const supportsRemainingBudgetRefund = (campaignType) => {
+    const normalized = String(campaignType || '').trim().toLowerCase();
+    return normalized === 'product promote'
+        || normalized === 'photo promote'
+        || normalized === 'video promote'
+        || normalized === 'photo and video'
+        || normalized === 'photo & video';
+};
+
 const mapRow = (row) => {
     const isProductPromote = String(row.campaign_type || '').trim().toLowerCase() === 'product promote';
     const originalProductId = row.original_product_id ?? row.linked_product_id ?? null;
@@ -196,6 +375,7 @@ const mapRow = (row) => {
     const linkedProductId = row.linked_product_id ?? originalProductId ?? null;
     const linkedProductShareCode = row.linked_product_share_code ?? originalProductCode ?? null;
 
+    const durationState = calculateAdDurationState(row);
     return {
     id: row.id,
     adId: row.ad_id,
@@ -259,12 +439,87 @@ const mapRow = (row) => {
     currentReach: getDisplayReach(row),
     promoCode: row.promo_code || null,
     editDraft: row.edit_draft || {},
-    createdAt: row.created_at ? new Date(String(row.created_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
-    created_at: row.created_at ? new Date(String(row.created_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
-    startedAt: row.started_at ? new Date(String(row.started_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
-    started_at: row.started_at ? new Date(String(row.started_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
-    updatedAt: row.updated_at ? new Date(String(row.updated_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
-    updated_at: row.updated_at ? new Date(String(row.updated_at).trim().replace(' ', 'T') + 'Z').toISOString() : null,
+    createdAt: toUtcIso(row.created_at),
+    created_at: toUtcIso(row.created_at),
+    publishedAt: toUtcIso(row.created_at),
+    published_at: toUtcIso(row.created_at),
+    activeStartTime: toUtcIso(row.active_start_time || row.started_at),
+    active_start_time: toUtcIso(row.active_start_time || row.started_at),
+    startedAt: toUtcIso(row.started_at || row.active_start_time),
+    started_at: toUtcIso(row.started_at || row.active_start_time),
+    pausedAt: toUtcIso(row.paused_at),
+    paused_at: toUtcIso(row.paused_at),
+    lastResumedAt: toUtcIso(row.last_resumed_at),
+    last_resumed_at: toUtcIso(row.last_resumed_at),
+    completedAt: toUtcIso(row.completed_at),
+    completed_at: toUtcIso(row.completed_at),
+    accumulatedActiveMs: durationState.accumulatedActiveMs,
+    accumulated_active_ms: durationState.accumulatedActiveMs,
+    durationRemainingMs: durationState.remainingMs,
+    duration_remaining_ms: durationState.remainingMs,
+    durationElapsedMs: durationState.elapsedMs,
+    duration_elapsed_ms: durationState.elapsedMs,
+    durationTotalMs: durationState.totalMs,
+    duration_total_ms: durationState.totalMs,
+    updatedAt: toUtcIso(row.updated_at),
+    updated_at: toUtcIso(row.updated_at),
+    };
+};
+
+const buildTimingUpdateState = (existingRow, nextStatus) => {
+    const now = new Date();
+    const currentStatus = String(existingRow?.status || '').trim();
+    const activeStartTime = existingRow?.active_start_time || existingRow?.started_at || null;
+    const lastResumedAt = existingRow?.last_resumed_at || null;
+    const accumulatedActiveMs = Math.max(0, Number(existingRow?.accumulated_active_ms ?? 0) || 0);
+
+    let nextActiveStartTime = activeStartTime;
+    let nextStartedAt = existingRow?.started_at || activeStartTime || null;
+    let nextLastResumedAt = existingRow?.last_resumed_at || null;
+    let nextPausedAt = existingRow?.paused_at || null;
+    let nextAccumulatedActiveMs = accumulatedActiveMs;
+    let nextCompletedAt = existingRow?.completed_at || null;
+
+    const consumeCurrentSegment = () => {
+        if (!lastResumedAt) return;
+        const lastResumeMs = new Date(lastResumedAt).getTime();
+        if (!Number.isFinite(lastResumeMs)) return;
+        nextAccumulatedActiveMs += Math.max(0, now.getTime() - lastResumeMs);
+    };
+
+    if (nextStatus === 'Active') {
+        if (!nextActiveStartTime) nextActiveStartTime = now;
+        if (!nextStartedAt) nextStartedAt = nextActiveStartTime;
+        if (currentStatus !== 'Active') {
+            nextLastResumedAt = now;
+        } else if (!nextLastResumedAt) {
+            nextLastResumedAt = now;
+        }
+        nextPausedAt = null;
+        nextCompletedAt = null;
+    } else if (currentStatus === 'Active' && nextStatus === 'Paused') {
+        consumeCurrentSegment();
+        nextLastResumedAt = null;
+        nextPausedAt = now;
+    } else if (currentStatus === 'Active' && (nextStatus === 'Completed' || nextStatus === 'Cancelled')) {
+        consumeCurrentSegment();
+        nextLastResumedAt = null;
+        nextPausedAt = null;
+        if (nextStatus === 'Completed') nextCompletedAt = now;
+    } else if (currentStatus === 'Paused' && nextStatus === 'Completed') {
+        nextPausedAt = null;
+        nextCompletedAt = now;
+    } else if (currentStatus === 'Paused' && nextStatus === 'Cancelled') {
+        nextPausedAt = null;
+    }
+
+    return {
+        activeStartTime: nextActiveStartTime,
+        startedAt: nextStartedAt,
+        lastResumedAt: nextLastResumedAt,
+        pausedAt: nextPausedAt,
+        accumulatedActiveMs: Math.max(0, Math.round(nextAccumulatedActiveMs)),
+        completedAt: nextCompletedAt,
     };
 };
 
@@ -421,7 +676,7 @@ const normalizePayload = (body = {}, fallback = {}) => {
         durationDays: hasOwn(body, 'durationDays') ? (Number.isFinite(Number(body.durationDays)) ? Number(body.durationDays) : 0) : Number(fallback.durationDays || 0),
         spend: hasOwn(body, 'spend') ? (Number.isFinite(Number(body.spend)) ? Number(body.spend) : 0) : Number(fallback.spend || 0),
         remainingBudget: hasOwn(body, 'remainingBudget') ? (Number.isFinite(Number(body.remainingBudget)) ? Number(body.remainingBudget) : 0) : Number(fallback.remainingBudget || 0),
-        status: typeof body.status === 'string' && VALID_STATUSES.has(body.status) ? body.status : (fallback.status || 'Under Review'),
+        status: typeof body.status === 'string' && VALID_STATUSES.has(body.status) ? canonicalAdStatus(body.status) : (fallback.status || 'Under Review'),
         campaignPath: typeof body.campaignPath === 'string' ? body.campaignPath : (fallback.campaignPath || ''),
         walletTransferId: hasOwn(body, 'walletTransferId') ? (body.walletTransferId ?? null) : (fallback.walletTransferId ?? null),
         productId: hasOwn(body, 'productId') ? body.productId : (body.product_id ?? fallback.productId ?? fallback.product_id ?? null),
@@ -457,6 +712,17 @@ async function resolveGoogerMainWalletUserId(client) {
         if (configuredResult.rows.length > 0) {
             return configuredResult.rows[0].id;
         }
+    }
+
+    const adminResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+
+    if (adminResult.rows.length > 0) {
+        return adminResult.rows[0].id;
     }
 
     const googerResult = await client.query(
@@ -512,6 +778,30 @@ exports.createAd = async (req, res) => {
         }
 
         const payload = normalizePayload(body, { status: 'Under Review' });
+
+        const limits = await getUserPlanLimits(userId);
+        const features = await getUserSubscriptionFeatures(userId);
+        const campaignTypeLower = String(payload.campaignType || '').trim().toLowerCase();
+        const isPhotoVideoCampaign = campaignTypeLower === 'photo and video' || campaignTypeLower === 'photo & video';
+        const isProfilePromote     = campaignTypeLower === 'profile promote';
+
+        if (isPhotoVideoCampaign) {
+            const isVideo = String(payload.mediaType || '').toLowerCase().includes('video') ||
+                            (payload.mediaPreview && payload.mediaPreview.toLowerCase().match(/\.(mp4|webm|ogg)$/));
+        }
+
+        // Free profile promote — only allowed when plan grants it
+        if (isProfilePromote && !features.free_profile_ad_promo) {
+            const promo = String(payload.promoCode || '').trim().toUpperCase();
+            const isFreeRequest = Number(payload.promoDiscount || 0) >= 100 || promo === 'FREE_PROFILE_PROMO';
+            if (isFreeRequest) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Free profile promotion is not included in your current plan. Please upgrade.',
+                });
+            }
+        }
+
         const productPromoteIdentity = await resolveProductPromoteIdentity(payload);
         if (String(payload.campaignType || '').trim().toLowerCase() === 'product promote'
             && !productPromoteIdentity.linkedProductId
@@ -560,6 +850,7 @@ exports.createAd = async (req, res) => {
                 wallet_transfer_id, edit_draft,
                 tier_id, estimated_reach_min, estimated_reach_max, max_reach_cap,
                 promo_code, promo_discount,
+                active_start_time, started_at, last_resumed_at, paused_at, accumulated_active_ms, completed_at,
                 created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
@@ -568,19 +859,43 @@ exports.createAd = async (req, res) => {
                 $23, $24, $25, $26, $27, $28,
                 $29, $30, $31, $32,
                 $33, $34,
-                COALESCE($35, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP
+                $35, $36, $37, $38, $39, $40,
+                COALESCE($41, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP
             )
             RETURNING *`,
             [
+                ...(function buildCreateParams() {
+                    const initialStatus = isAdmin ? payload.status : 'Under Review';
+                    const initialTiming = initialStatus === 'Active'
+                        ? {
+                            activeStartTime: payload.createdAt && !Number.isNaN(payload.createdAt.getTime()) ? payload.createdAt : new Date(),
+                            startedAt: payload.createdAt && !Number.isNaN(payload.createdAt.getTime()) ? payload.createdAt : new Date(),
+                            lastResumedAt: payload.createdAt && !Number.isNaN(payload.createdAt.getTime()) ? payload.createdAt : new Date(),
+                            pausedAt: null,
+                            accumulatedActiveMs: 0,
+                            completedAt: null,
+                        }
+                        : {
+                            activeStartTime: null,
+                            startedAt: null,
+                            lastResumedAt: null,
+                            pausedAt: null,
+                            accumulatedActiveMs: 0,
+                            completedAt: initialStatus === 'Completed' ? new Date() : null,
+                        };
+                    return [
                 payload.adId, userId, owner.user_id, owner.username, payload.campaignType, payload.title, payload.description,
                 payload.mediaPreview, JSON.stringify(payload.mediaGallery), payload.mediaType, payload.genderTarget, payload.ageMin, payload.ageMax, payload.reach, payload.impressions,
-                payload.clicks, payload.budget, payload.durationDays, payload.spend, payload.remainingBudget, isAdmin ? payload.status : 'Under Review', payload.campaignPath,
+                payload.clicks, payload.budget, payload.durationDays, payload.spend, payload.remainingBudget, initialStatus, payload.campaignPath,
                 productPromoteIdentity.linkedProductId, productPromoteIdentity.linkedProductShareCode,
                 productPromoteIdentity.originalProductId, productPromoteIdentity.originalProductCode,
                 payload.walletTransferId, JSON.stringify(payload.editDraft),
                 payload.tierId ?? null, payload.estimatedReachMin ?? null, payload.estimatedReachMax ?? null, payload.maxReachCap ?? null,
                 payload.promoCode ?? null, payload.promoDiscount ?? null,
+                initialTiming.activeStartTime, initialTiming.startedAt, initialTiming.lastResumedAt, initialTiming.pausedAt, initialTiming.accumulatedActiveMs, initialTiming.completedAt,
                 payload.createdAt && !Number.isNaN(payload.createdAt.getTime()) ? payload.createdAt : null,
+                    ];
+                })(),
             ]
         );
 
@@ -598,6 +913,7 @@ exports.updateAd = async (req, res) => {
         const { adId } = req.params;
         const userId = req.user.id;
         const isAdmin = await assertAdmin(userId);
+        await syncExpiredAds(pool, adId);
         const existingResult = await client.query(
             'SELECT * FROM ads WHERE ad_id = $1 LIMIT 1',
             [adId]
@@ -608,6 +924,7 @@ exports.updateAd = async (req, res) => {
         }
 
         const existingAd = mapRow(existingResult.rows[0]);
+        const existingRow = existingResult.rows[0];
         const isOwner = Number(existingAd.userId) === Number(userId);
 
         if (!isOwner && !isAdmin) {
@@ -628,16 +945,6 @@ exports.updateAd = async (req, res) => {
         }
 
         const payload = normalizePayload(body, existingAd);
-        const isProfilePromote = String(existingAd.campaignType || '').trim().toLowerCase() === 'profile promote';
-        if (
-            existingAd.status === 'Active' &&
-            payload.status === 'Cancelled'
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: 'Active ads cannot be cancelled.',
-            });
-        }
         const productPromoteIdentity = await resolveProductPromoteIdentity(payload, existingAd);
         if (String(payload.campaignType || '').trim().toLowerCase() === 'product promote'
             && !productPromoteIdentity.linkedProductId
@@ -692,13 +999,25 @@ exports.updateAd = async (req, res) => {
             }
 
             if (hasOwn(req.body, 'status')) {
+                const currentStatus = String(existingAd.status || '');
                 const canChangeStatus =
-                    requestedStatus === existingAd.status
-                    || requestedStatus === 'Cancelled'
-                    || requestedStatus === 'Under Review'
-                    || requestedStatus === 'Paused';
+                    requestedStatus === currentStatus
+                    || (requestedStatus === 'Cancelled' && ['Under Review', 'Active', 'Paused'].includes(currentStatus))
+                    || (requestedStatus === 'Paused' && currentStatus === 'Active')
+                    || (requestedStatus === 'Active' && currentStatus === 'Paused')
+                    || (requestedStatus === 'Under Review' && currentStatus === 'Under Review');
                 if (!canChangeStatus) {
                     return res.status(403).json({ success: false, message: 'Only admins can approve or complete ads.' });
+                }
+            }
+        }
+
+        if (requestedStatus === 'Active' && existingAd.status === 'Paused' && (String(payload.campaignType || '').trim().toLowerCase() === 'photo and video' || String(payload.campaignType || '').trim().toLowerCase() === 'photo & video')) {
+            const limits = await getUserPlanLimits(userId);
+            if (limits.adsExpiryDays > 0) {
+                const ageDays = (Date.now() - new Date(existingAd.createdAt).getTime()) / (1000 * 60 * 60 * 24);
+                if (ageDays >= limits.adsExpiryDays) {
+                    return res.status(403).json({ success: false, message: 'This ad has expired and cannot be resumed on your current plan. Please upgrade to a higher plan.' });
                 }
             }
         }
@@ -711,7 +1030,7 @@ exports.updateAd = async (req, res) => {
             && Number(existingAd.walletTransferId) > 0
         ) {
             const transferResult = await client.query(
-                `SELECT id, sender_id, receiver_id, amount, status
+                `SELECT id, sender_id, receiver_id, amount, status, type, note
                  FROM wallet_transfers
                  WHERE id = $1
                  LIMIT 1
@@ -723,35 +1042,32 @@ exports.updateAd = async (req, res) => {
                 const transfer = transferResult.rows[0];
                 const refundAmount = Number(transfer.amount || 0);
                 const advertiserUserId = Number(transfer.sender_id || existingAd.userId);
-                const creditedGoogerUserId = Number(transfer.receiver_id || 0);
                 const canonicalGoogerUserId = await resolveGoogerMainWalletUserId(client);
-                const googerUserId = creditedGoogerUserId || canonicalGoogerUserId;
+                const googerUserId = Number(canonicalGoogerUserId || 0);
+                const transferStatus = String(transfer.status || '').toLowerCase();
+                const transferType = String(transfer.type || '').toLowerCase();
+                const isLegacyAdHold = transferType === 'order_hold' && /ad promote/i.test(String(transfer.note || ''));
 
-                if (refundAmount > 0 && advertiserUserId > 0 && googerUserId > 0) {
-                    const googerBalanceResult = await client.query(
-                        'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
-                        [googerUserId]
-                    );
-
-                    if (!googerBalanceResult.rows.length) {
-                        await client.query('ROLLBACK');
-                        return res.status(500).json({ success: false, message: 'Googer wallet account not found for refund.' });
-                    }
-
-                    const googerBalance = Number(googerBalanceResult.rows[0].wallet_balance || 0);
-                    if (googerBalance < refundAmount) {
-                        await client.query('ROLLBACK');
-                        return res.status(400).json({ success: false, message: 'Googer main wallet has insufficient balance for refund reversal.' });
-                    }
-
-                    await client.query(
-                        'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-                        [refundAmount, googerUserId]
-                    );
+                if (
+                    refundAmount > 0
+                    && advertiserUserId > 0
+                    && googerUserId > 0
+                    && transferStatus !== 'cancelled'
+                    && transferStatus !== 'refunded'
+                ) {
                     await client.query(
                         'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
                         [refundAmount, advertiserUserId]
                     );
+
+                    if (isLegacyAdHold) {
+                        await client.query(
+                            `UPDATE users
+                             SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1)
+                             WHERE id = $2`,
+                            [refundAmount, advertiserUserId]
+                        );
+                    }
 
                     await client.query(
                         `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, created_at, updated_at)
@@ -763,10 +1079,77 @@ exports.updateAd = async (req, res) => {
                             `Ad Refund - ${existingAd.adId} (${existingAd.campaignType}) - Cancelled During Review`,
                         ]
                     );
+
+                    await client.query(
+                        `UPDATE wallet_transfers
+                         SET status = 'cancelled',
+                             updated_at = CURRENT_TIMESTAMP
+                         WHERE id = $1`,
+                        [transfer.id]
+                    );
+                }
+            }
+        }
+        if (
+            ['Active', 'Paused'].includes(String(existingAd.status || ''))
+            && payload.status === 'Cancelled'
+            && Number(existingAd.walletTransferId) > 0
+            && supportsRemainingBudgetRefund(existingAd.campaignType)
+        ) {
+            const transferResult = await client.query(
+                `SELECT id, sender_id, receiver_id, amount, status, type, note, commission
+                 FROM wallet_transfers
+                 WHERE id = $1
+                 LIMIT 1
+                 FOR UPDATE`,
+                [existingAd.walletTransferId]
+            );
+
+            if (transferResult.rows.length > 0) {
+                const transfer = transferResult.rows[0];
+                const advertiserUserId = Number(transfer.sender_id || existingAd.userId);
+                const refundAmount = Math.max(0, Number(existingAd.remainingBudget || 0));
+                const transferStatus = String(transfer.status || '').toLowerCase();
+
+                if (
+                    refundAmount > 0
+                    && advertiserUserId > 0
+                    && transferStatus === 'accepted'
+                ) {
+                    await client.query(
+                        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
+                        [refundAmount, advertiserUserId]
+                    );
+
+                    await client.query(
+                        `INSERT INTO wallet_transfers (
+                            sender_id,
+                            receiver_id,
+                            amount,
+                            note,
+                            type,
+                            status,
+                            commission,
+                            commission_percentage,
+                            created_at,
+                            updated_at
+                         )
+                         VALUES ($1, $2, $3, $4, 'ad_refund', 'accepted', $5, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                        [
+                            Number(transfer.receiver_id || 0) || advertiserUserId,
+                            advertiserUserId,
+                            refundAmount,
+                            `Ad Remaining Budget Refund - ${existingAd.adId} (${existingAd.campaignType}) - Cancelled After Activation`,
+                            -refundAmount,
+                        ]
+                    );
+
+                    payload.remainingBudget = 0;
                 }
             }
         }
 
+        const timingState = buildTimingUpdateState(existingRow, payload.status);
         const result = await client.query(
             `UPDATE ads
              SET campaign_type = $1,
@@ -797,9 +1180,14 @@ exports.updateAd = async (req, res) => {
                  estimated_reach_min = COALESCE($26, estimated_reach_min),
                  estimated_reach_max = COALESCE($27, estimated_reach_max),
                  max_reach_cap = $28,
-                 started_at = CASE WHEN $17::varchar = 'Active' AND started_at IS NULL THEN CURRENT_TIMESTAMP ELSE started_at END,
+                 active_start_time = COALESCE($29, active_start_time),
+                 started_at = COALESCE($30, started_at),
+                 last_resumed_at = $31,
+                 paused_at = $32,
+                 accumulated_active_ms = COALESCE($33, accumulated_active_ms),
+                 completed_at = $34,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE ad_id = $29
+             WHERE ad_id = $35
              RETURNING *`,
             [
                 payload.campaignType, payload.title, payload.description, payload.mediaPreview, JSON.stringify(payload.mediaGallery), payload.mediaType,
@@ -809,6 +1197,12 @@ exports.updateAd = async (req, res) => {
                 productPromoteIdentity.originalProductId, productPromoteIdentity.originalProductCode,
                 payload.walletTransferId, JSON.stringify(payload.editDraft),
                 payload.tierId ?? null, payload.estimatedReachMin ?? null, payload.estimatedReachMax ?? null, payload.maxReachCap ?? null,
+                timingState.activeStartTime,
+                timingState.startedAt,
+                timingState.lastResumedAt,
+                timingState.pausedAt,
+                timingState.accumulatedActiveMs,
+                timingState.completedAt,
                 adId,
             ]
         );
@@ -832,11 +1226,12 @@ exports.updateAd = async (req, res) => {
 exports.getMyAds = async (req, res) => {
     try {
         await ensureAdsTable();
+        await syncExpiredAds(pool);
         const result = await pool.query(
             `SELECT a.*, u.username AS owner_username_joined, u.profile_picture
-             FROM ads a 
-             LEFT JOIN users u ON a.user_id = u.id 
-             WHERE a.user_id = $1 
+             FROM ads a
+             LEFT JOIN users u ON a.user_id = u.id
+             WHERE a.user_id = $1
              ORDER BY a.created_at DESC`,
             [req.user.id]
         );
@@ -851,6 +1246,7 @@ exports.getMyAds = async (req, res) => {
 exports.getMyAdById = async (req, res) => {
     try {
         await ensureAdsTable();
+        await syncExpiredAds(pool, req.params.adId);
         const result = await pool.query(
             `SELECT a.*, u.username AS owner_username_joined, u.profile_picture
              FROM ads a
@@ -874,15 +1270,19 @@ exports.getMyAdById = async (req, res) => {
 exports.getAllAds = async (req, res) => {
     try {
         await ensureAdsTable();
+        await syncExpiredAds(pool);
         const isAdmin = await assertAdmin(req.user.id);
         if (!isAdmin) {
             return res.status(403).json({ success: false, message: 'Admin access required' });
         }
 
+        const includeAll = String(req.query.include_all || req.query.includeAll || '').toLowerCase() === 'true';
+        const approvalOnlyWhere = includeAll ? '' : "WHERE a.status IN ('Under Review', 'Pending Approval')";
         const result = await pool.query(
             `SELECT a.*, u.username AS owner_username_joined, u.profile_picture
              FROM ads a 
              LEFT JOIN users u ON a.user_id = u.id 
+             ${approvalOnlyWhere}
              ORDER BY a.created_at DESC`
         );
 
@@ -896,12 +1296,15 @@ exports.getAllAds = async (req, res) => {
 exports.getActiveAdsPublic = async (req, res) => {
     try {
         await ensureAdsTable();
+        await syncExpiredAds(pool);
         const viewerId = getOptionalViewerId(req);
         if (viewerId) await ensureAdEngagementTables();
         const limitRaw = Number.parseInt(req.query.limit, 10);
         const offsetRaw = Number.parseInt(req.query.offset, 10);
+        const shuffleSeed = String(req.query.shuffle || req.query.feedSession || '').trim();
         const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 20;
         const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
+        const ownerUserId = req.query.user_id ? Number.parseInt(req.query.user_id, 10) : null;
         const viewerSelect = viewerId
             ? `,
                 EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $3) AS user_liked,
@@ -911,19 +1314,41 @@ exports.getActiveAdsPublic = async (req, res) => {
                 FALSE AS ad_coin_collected`;
         const fetchLimit = Math.min(limit * 4 + 1, 200);
         const queryParams = viewerId ? [fetchLimit, offset, viewerId] : [fetchLimit, offset];
+        const ownerFilter = (ownerUserId && Number.isFinite(ownerUserId))
+            ? `AND a.user_id = ${ownerUserId}` : '';
         const result = await pool.query(
             `SELECT a.*, u.username AS owner_username_joined, u.profile_picture${viewerSelect}
              FROM ads a
              LEFT JOIN users u ON a.user_id = u.id
              WHERE a.status = 'Active'
                AND (a.max_reach_cap IS NULL OR COALESCE(a.current_reach, 0) < a.max_reach_cap)
-             ORDER BY a.created_at DESC
+               ${ownerFilter}
+             ORDER BY COALESCE(a.active_start_time, a.created_at) DESC
              LIMIT $1 OFFSET $2`,
             queryParams
         );
 
         const viewerProfile = await loadViewerAdProfile(pool, viewerId, req);
-        const rows = filterDeliverableAds(result.rows || [], viewerProfile);
+        const eligibleRows = (result.rows || []).filter((row) => adIsWithinDeliveryRules(row));
+        let rows;
+
+        if (viewerProfile?.isAnonymous) {
+            rows = eligibleRows;
+        } else {
+            const targetedRows = eligibleRows.filter((row) => adMatchesViewer(row, viewerProfile || {}));
+            const targetedIds = new Set(targetedRows.map((row) => String(row.ad_id || row.id)));
+            const fallbackRows = eligibleRows.filter((row) => !targetedIds.has(String(row.ad_id || row.id)));
+            rows = [...targetedRows, ...fallbackRows];
+        }
+
+        if (shuffleSeed) {
+            rows = shuffleRowsWithSeed(
+                rows,
+                `${shuffleSeed}:${viewerId || 'guest'}`,
+                (row) => String(row?.ad_id || row?.id || Math.random())
+            );
+        }
+
         const ads = rows.slice(0, limit).map((row) => {
             const ad = {
                 ...mapRow(row),
@@ -1089,7 +1514,7 @@ exports.getActiveAdsPublic = async (req, res) => {
                 limit,
                 offset,
                 nextOffset: offset + hydratedAds.length,
-                hasMore: rows.length > limit,
+                hasMore: rows.length > limit || result.rows.length > limit,
             },
         });
     } catch (error) {
@@ -1101,6 +1526,7 @@ exports.getActiveAdsPublic = async (req, res) => {
 exports.getAdPublic = async (req, res) => {
     try {
         await ensureAdsTable();
+        await syncExpiredAds(pool, req.params.adId);
         const { adId } = req.params;
         const result = await pool.query(
             `SELECT a.*, u.username AS owner_username_joined, u.profile_picture
@@ -1142,5 +1568,330 @@ exports.updateAdReach = async (req, res) => {
     } catch (error) {
         console.error('updateAdReach error:', error);
         return res.status(500).json({ success: false, message: 'Failed to update ad reach' });
+    }
+};
+
+exports.getAdAnalytics = async (req, res) => {
+    try {
+        await ensureAdsTable();
+        const { adId } = req.params;
+        const userId = req.user.id;
+
+        // Flush any pending reach/budget changes before reading stats
+        await syncExpiredAds(pool, adId);
+
+        // Verify ownership and grab the live ad row
+        const ownerCheck = await pool.query(
+            'SELECT id, ad_id, campaign_type, gender_target, age_min, age_max, current_reach, impressions, clicks FROM ads WHERE ad_id = $1 AND user_id = $2 LIMIT 1',
+            [adId, userId]
+        );
+        if (!ownerCheck.rows.length) {
+            return res.status(404).json({ success: false, message: 'Ad not found' });
+        }
+        const adRow = ownerCheck.rows[0];
+
+        // Totals from ad_views
+        const viewTotals = await pool.query(
+            `SELECT COALESCE(SUM(view_count), 0) AS impressions,
+                    COUNT(*) AS reach
+             FROM ad_views WHERE ad_id = $1`,
+            [adId]
+        );
+
+        // Total likes
+        const likeTotals = await pool.query(
+            `SELECT COUNT(*) AS likes FROM ad_likes WHERE ad_id = $1`,
+            [adId]
+        );
+
+        // Total clicks from ad_click_events
+        const clickTotals = await pool.query(
+            `SELECT COUNT(*) AS clicks FROM ad_click_events WHERE ad_id = $1`,
+            [adId]
+        );
+
+        // Clicks by type
+        const clicksByType = await pool.query(
+            `SELECT COALESCE(action_type, 'visit') AS label, COUNT(*) AS clicks
+             FROM ad_click_events WHERE ad_id = $1
+             GROUP BY action_type ORDER BY clicks DESC`,
+            [adId]
+        );
+
+        // Views by gender (join users via user_id — anon rows have user_id NULL)
+        const byGender = await pool.query(
+            `SELECT COALESCE(NULLIF(u.gender, ''), 'Unknown') AS label,
+                    COUNT(*) AS reach,
+                    COALESCE(SUM(av.view_count), 0) AS impressions
+             FROM ad_views av
+             LEFT JOIN users u ON av.user_id = u.id
+             WHERE av.ad_id = $1
+             GROUP BY COALESCE(NULLIF(u.gender, ''), 'Unknown')
+             ORDER BY reach DESC`,
+            [adId]
+        );
+
+        // Views by country
+        const byCountry = await pool.query(
+            `SELECT COALESCE(NULLIF(u.country, ''), 'Unknown') AS label,
+                    COUNT(*) AS reach,
+                    COALESCE(SUM(av.view_count), 0) AS impressions
+             FROM ad_views av
+             LEFT JOIN users u ON av.user_id = u.id
+             WHERE av.ad_id = $1
+             GROUP BY COALESCE(NULLIF(u.country, ''), 'Unknown')
+             ORDER BY reach DESC
+             LIMIT 20`,
+            [adId]
+        );
+
+        // Views by age group (using date_of_birth)
+        const byAge = await pool.query(
+            `SELECT
+                CASE
+                    WHEN u.date_of_birth IS NULL THEN 'Unknown'
+                    WHEN DATE_PART('year', AGE(u.date_of_birth)) < 18 THEN 'Under 18'
+                    WHEN DATE_PART('year', AGE(u.date_of_birth)) BETWEEN 18 AND 24 THEN '18–24'
+                    WHEN DATE_PART('year', AGE(u.date_of_birth)) BETWEEN 25 AND 34 THEN '25–34'
+                    WHEN DATE_PART('year', AGE(u.date_of_birth)) BETWEEN 35 AND 44 THEN '35–44'
+                    WHEN DATE_PART('year', AGE(u.date_of_birth)) BETWEEN 45 AND 54 THEN '45–54'
+                    ELSE '55+'
+                END AS label,
+                COUNT(*) AS reach,
+                COALESCE(SUM(av.view_count), 0) AS impressions
+             FROM ad_views av
+             LEFT JOIN users u ON av.user_id = u.id
+             WHERE av.ad_id = $1
+             GROUP BY label
+             ORDER BY reach DESC`,
+            [adId]
+        );
+
+        // Likes by gender
+        const likesByGender = await pool.query(
+            `SELECT COALESCE(NULLIF(u.gender, ''), 'Unknown') AS label, COUNT(*) AS likes
+             FROM ad_likes al
+             LEFT JOIN users u ON al.user_id = u.id
+             WHERE al.ad_id = $1
+             GROUP BY COALESCE(NULLIF(u.gender, ''), 'Unknown')
+             ORDER BY likes DESC`,
+            [adId]
+        );
+
+        // Likes by country
+        const likesByCountry = await pool.query(
+            `SELECT COALESCE(NULLIF(u.country, ''), 'Unknown') AS label, COUNT(*) AS likes
+             FROM ad_likes al
+             LEFT JOIN users u ON al.user_id = u.id
+             WHERE al.ad_id = $1
+             GROUP BY COALESCE(NULLIF(u.country, ''), 'Unknown')
+             ORDER BY likes DESC
+             LIMIT 20`,
+            [adId]
+        );
+
+        // Clicks by gender
+        const clicksByGender = await pool.query(
+            `SELECT COALESCE(NULLIF(u.gender, ''), 'Unknown') AS label, COUNT(*) AS clicks
+             FROM ad_click_events ace
+             LEFT JOIN users u ON ace.user_id = u.id
+             WHERE ace.ad_id = $1
+             GROUP BY COALESCE(NULLIF(u.gender, ''), 'Unknown')
+             ORDER BY clicks DESC`,
+            [adId]
+        );
+
+        // Use ads table as the single source of truth so analytics always matches
+        // the numbers displayed on the ad card in the dashboard.
+        const totals = {
+            views: Number(adRow.impressions || 0),
+            reach: Number(adRow.current_reach || 0),
+            impressions: Number(adRow.impressions || 0),
+            clicks: Number(adRow.clicks || 0),
+            likes: Number(likeTotals.rows[0]?.likes || 0),
+        };
+
+        return res.status(200).json({
+            success: true,
+            analytics: {
+                adId,
+                totals,
+                byGender: byGender.rows.map((r) => ({
+                    label: r.label,
+                    reach: Number(r.reach),
+                    impressions: Number(r.impressions),
+                })),
+                byCountry: byCountry.rows.map((r) => ({
+                    label: r.label,
+                    reach: Number(r.reach),
+                    impressions: Number(r.impressions),
+                })),
+                byAge: byAge.rows.map((r) => ({
+                    label: r.label,
+                    reach: Number(r.reach),
+                    impressions: Number(r.impressions),
+                })),
+                byClickType: clicksByType.rows.map((r) => ({
+                    label: r.label,
+                    clicks: Number(r.clicks),
+                })),
+                likesByGender: likesByGender.rows.map((r) => ({
+                    label: r.label,
+                    likes: Number(r.likes),
+                })),
+                likesByCountry: likesByCountry.rows.map((r) => ({
+                    label: r.label,
+                    likes: Number(r.likes),
+                })),
+                clicksByGender: clicksByGender.rows.map((r) => ({
+                    label: r.label,
+                    clicks: Number(r.clicks),
+                })),
+                adTargeting: {
+                    gender: adRow.gender_target || 'All',
+                    ageMin: Number(adRow.age_min || 18),
+                    ageMax: Number(adRow.age_max || 65),
+                    campaignType: adRow.campaign_type,
+                },
+            },
+        });
+    } catch (error) {
+        console.error('getAdAnalytics error:', error);
+        return res.status(500).json({ success: false, message: 'Failed to fetch analytics' });
+    }
+};
+
+// ------------------------------------------------------------------
+// Ad saves (Profile-page only) — count-limited by photo_ads_save_limit
+// and video_ads_save_limit on the user's subscription plan.
+// Link ads do not count toward the limit (they are still savable).
+// ------------------------------------------------------------------
+
+exports.toggleAdSave = async (req, res) => {
+    try {
+        await ensureAdsTable();
+        await ensureAdSavesSchema();
+        const userId = req.user?.id || req.user?.userId;
+        if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+        const adId = String(req.params.adId || '').trim().replace(/^ad-/, '');
+        if (!adId) return res.status(400).json({ success: false, message: 'Invalid ad id' });
+
+        const adRes = await pool.query(
+            `SELECT ad_id, campaign_type, media_type, media_preview, active_link, edit_draft
+             FROM ads
+             WHERE ad_id = $1 OR id::text = $1
+             LIMIT 1`,
+            [adId]
+        );
+        if (adRes.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Ad not found' });
+        }
+        const ad = adRes.rows[0];
+        const canonicalAdId = String(ad.ad_id || adId);
+        const campaignTypeLower = String(ad.campaign_type || '').trim().toLowerCase();
+        const isPhotoVideo = campaignTypeLower === 'photo and video' || campaignTypeLower === 'photo & video';
+        if (!isPhotoVideo) {
+            return res.status(400).json({ success: false, message: 'Only Photo & Video ads can be saved.' });
+        }
+
+        // Toggle off if already saved
+        const existing = await pool.query(
+            'SELECT id FROM ad_saves WHERE user_id = $1 AND ad_id = $2',
+            [userId, canonicalAdId]
+        );
+        if (existing.rows.length > 0) {
+            await pool.query('DELETE FROM ad_saves WHERE user_id = $1 AND ad_id = $2', [userId, canonicalAdId]);
+            return res.json({ success: true, saved: false });
+        }
+
+        const { ad_media_type, ad_source_type } = classifyAdForSave(ad);
+
+        // Enforce per-media-type save limits for upload-source ads only.
+        if (ad_source_type === 'upload') {
+            const features = await getUserSubscriptionFeatures(userId);
+            const limit = ad_media_type === 'video'
+                ? features.video_ads_save_limit
+                : features.photo_ads_save_limit;
+
+            if (limit !== null && limit >= 0) {
+                const countRes = await pool.query(
+                    `SELECT COUNT(*)::int AS c FROM ad_saves
+                     WHERE user_id = $1 AND ad_media_type = $2 AND ad_source_type = 'upload'`,
+                    [userId, ad_media_type]
+                );
+                const current = countRes.rows[0]?.c || 0;
+                if (current >= limit) {
+                    return res.status(403).json({
+                        success: false,
+                        code: 'AD_SAVE_LIMIT',
+                        media_type: ad_media_type,
+                        limit,
+                        message: 'You have reached your ad save limit. Please upgrade to a higher plan.',
+                    });
+                }
+            }
+        }
+
+        await pool.query(
+            `INSERT INTO ad_saves (user_id, ad_id, ad_media_type, ad_source_type)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (user_id, ad_id) DO NOTHING`,
+            [userId, canonicalAdId, ad_media_type, ad_source_type]
+        );
+
+        return res.json({ success: true, saved: true, ad_media_type, ad_source_type });
+    } catch (err) {
+        console.error('[ads] toggleAdSave error:', err);
+        const detail = process.env.NODE_ENV === 'production' ? '' : `: ${err.message}`;
+        return res.status(500).json({ success: false, message: `Failed to save ad${detail}` });
+    }
+};
+
+exports.getMySavedAdIds = async (req, res) => {
+    try {
+        await ensureAdSavesSchema();
+        const userId = req.user?.id || req.user?.userId;
+        if (!userId) return res.json({ success: true, savedAdIds: [] });
+
+        const { rows } = await pool.query(
+            'SELECT ad_id FROM ad_saves WHERE user_id = $1',
+            [userId]
+        );
+        return res.json({ success: true, savedAdIds: rows.map(r => r.ad_id) });
+    } catch (err) {
+        console.error('[ads] getMySavedAdIds error:', err);
+        return res.json({ success: true, savedAdIds: [] });
+    }
+};
+
+exports.getMySavedAdCounts = async (req, res) => {
+    try {
+        await ensureAdSavesSchema();
+        const userId = req.user?.id || req.user?.userId;
+        if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+        const { rows } = await pool.query(
+            `SELECT ad_media_type, COUNT(*)::int AS c
+             FROM ad_saves
+             WHERE user_id = $1 AND ad_source_type = 'upload'
+             GROUP BY ad_media_type`,
+            [userId]
+        );
+        const counts = { photo: 0, video: 0 };
+        for (const r of rows) counts[r.ad_media_type] = r.c;
+
+        const features = await getUserSubscriptionFeatures(userId);
+        return res.json({
+            success: true,
+            counts,
+            limits: {
+                photo: features.photo_ads_save_limit,
+                video: features.video_ads_save_limit,
+            },
+        });
+    } catch (err) {
+        console.error('[ads] getMySavedAdCounts error:', err);
+        return res.status(500).json({ success: false, message: 'Failed to fetch counts' });
     }
 };

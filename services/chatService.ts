@@ -49,7 +49,7 @@ export const chatService = {
 
     sendMessage: async (payload: {
         receiverId: number;
-        type: 'text' | 'image';
+        type: 'text' | 'image' | 'sticker';
         text?: string;
         image_url?: string;
         file_name?: string;

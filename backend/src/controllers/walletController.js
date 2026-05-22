@@ -89,6 +89,17 @@ async function resolveGoogerMainWalletUserId(client) {
         }
     }
 
+    const adminResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+
+    if (adminResult.rows.length > 0) {
+        return adminResult.rows[0].id;
+    }
+
     const googerResult = await client.query(
         `SELECT id FROM users
          WHERE LOWER(username) = 'googer'
@@ -654,6 +665,8 @@ exports.payOrder = async (req, res) => {
         }
 
         const holdAmount = parseFloat(amount);
+        const normalizedNote = String(note || '');
+        const isAdPromotionCharge = /\bad promote(?: update)?\b/i.test(normalizedNote);
 
         await client.query('BEGIN');
 
@@ -680,26 +693,59 @@ exports.payOrder = async (req, res) => {
         }
 
         // Move amount from wallet_balance → hold_balance (on hold for this order)
-        await client.query(
-            'UPDATE users SET wallet_balance = wallet_balance - $1, hold_balance = COALESCE(hold_balance, 0) + $1 WHERE id = $2',
-            [holdAmount, userId]
-        );
+        let transferRes;
+        if (isAdPromotionCharge) {
+            const googerUserId = await resolveGoogerMainWalletUserId(client);
+            if (!googerUserId) {
+                await client.query('ROLLBACK');
+                return res.status(500).json({ success: false, message: 'Googer wallet account not found' });
+            }
 
-        // Record as a pending order hold transaction
-        const txNote = note || (orderId ? `Payment on hold for Order #${orderId}` : 'Payment on hold for Googer Order');
-        const transferRes = await client.query(
-            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'order_hold', 'pending', ${UTC_NOW_SQL}, ${UTC_NOW_SQL}) RETURNING id`,
-            [userId, userId, holdAmount, txNote]
-        );
+            await client.query(
+                'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
+                [holdAmount, userId]
+            );
+
+            const txNote = note || (orderId ? `Ad Promote - ${orderId}` : 'Ad Promote');
+            transferRes = await client.query(
+                `INSERT INTO wallet_transfers (
+                    sender_id,
+                    receiver_id,
+                    amount,
+                    note,
+                    type,
+                    status,
+                    commission,
+                    commission_percentage,
+                    created_at,
+                    updated_at
+                 )
+                 VALUES ($1, $2, $3, $4, 'transfer', 'accepted', $3, 100, ${UTC_NOW_SQL}, ${UTC_NOW_SQL}) RETURNING id`,
+                [userId, googerUserId, holdAmount, txNote]
+            );
+        } else {
+            await client.query(
+                'UPDATE users SET wallet_balance = wallet_balance - $1, hold_balance = COALESCE(hold_balance, 0) + $1 WHERE id = $2',
+                [holdAmount, userId]
+            );
+
+            const txNote = note || (orderId ? `Payment on hold for Order #${orderId}` : 'Payment on hold for Googer Order');
+            transferRes = await client.query(
+                `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, 'order_hold', 'pending', ${UTC_NOW_SQL}, ${UTC_NOW_SQL}) RETURNING id`,
+                [userId, userId, holdAmount, txNote]
+            );
+        }
 
         await client.query('COMMIT');
 
         res.status(200).json({
             success: true,
-            message: 'Payment placed on hold. It will be released to the seller once your order is delivered.',
+            message: isAdPromotionCharge
+                ? 'Ad payment processed successfully.'
+                : 'Payment placed on hold. It will be released to the seller once your order is delivered.',
             currentBalance: wallet_balance - holdAmount,
-            holdBalance: current_hold + holdAmount,
+            holdBalance: isAdPromotionCharge ? current_hold : current_hold + holdAmount,
             transferId: transferRes.rows[0].id
         });
 
@@ -724,7 +770,7 @@ exports.payOrder = async (req, res) => {
     }
 };
 
-// Direct payment for Profile Promote ads — deducts from user wallet and credits Googer main wallet immediately
+// Direct payment for Profile Promote ads — deducts from user wallet and records Googer credit through wallet_transfers.commission
 exports.payProfilePromote = async (req, res) => {
     const client = await pool.connect();
     try {

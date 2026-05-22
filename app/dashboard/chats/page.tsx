@@ -7,6 +7,8 @@ import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
 import { walletService } from "@/services/walletService";
 import { chatService } from "@/services/chatService";
+import { useSubscriptionFeatures, refreshSubscriptionFeatures } from "@/app/lib/subscriptionFeatures";
+import { ChatRichText, CHAT_COLOR_PALETTE, wrapWithColorTag } from "@/app/components/chat/ChatRichText";
 
 const getProfileImageSrc = (profilePicture?: string | null, name?: string) => {
     if (profilePicture) {
@@ -24,12 +26,16 @@ const getConversationKey = (currentUserId?: number | string | null, participantI
     return `googer-chat-${members.join("-")}`;
 };
 
+const stripColorTags = (text: string) =>
+    String(text || "").replace(/\[c=[^\]]+\]/gi, "").replace(/\[\/c\]/gi, "").trim();
+
 const getMessagePreview = (message: any) => {
     if (!message) return "No messages yet";
     if (message.type === "image") return "Sent an image";
+    if (message.type === "sticker") return "Sent a sticker 🎨";
     if (message.type === "call") return message.text || "Call update";
     if (message.type === "call_record") return message.text || "Call update";
-    return message.text || "New message";
+    return stripColorTags(message.text) || "New message";
 };
 
 const getPresenceKey = (userId?: number | string | null) => {
@@ -70,6 +76,23 @@ export default function ChatsPage() {
         lastSeen: null,
     });
     const chatImageInputRef = useRef<HTMLInputElement | null>(null);
+    const messageTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const contentEditableRef = useRef<HTMLDivElement | null>(null);
+    const savedRangeRef = useRef<Range | null>(null);
+    const speechRecognitionRef = useRef<any>(null);
+    const [isListening, setIsListening] = useState(false);
+    const [speakingMessageId, setSpeakingMessageId] = useState<number | string | null>(null);
+    const features = useSubscriptionFeatures();
+    const [showMobileChat, setShowMobileChat] = useState(false);
+    const [videoQuality, setVideoQuality] = useState<"240p" | "360p">("240p");
+    const [stickerPanelOpen, setStickerPanelOpen] = useState(false);
+    const [stickerLockMessage, setStickerLockMessage] = useState<string | null>(null);
+    const [colorPickerOpen, setColorPickerOpen] = useState(false);
+    const [pickedColor, setPickedColor] = useState("#ef4444");
+    const [activeTypingColor, setActiveTypingColor] = useState<string | null>(null);
+    const [activeStickerCategory, setActiveStickerCategory] = useState<string>("trending");
+    const [giphyStickers, setGiphyStickers] = useState<{ id: string; url: string; title: string }[]>([]);
+    const [giphyLoading, setGiphyLoading] = useState(false);
     const [pendingAttachments, setPendingAttachments] = useState<any[]>([]);
     const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
     const [uploadError, setUploadError] = useState<string | null>(null);
@@ -300,6 +323,9 @@ export default function ChatsPage() {
         };
 
         fetchUser();
+        // Always fetch fresh plan features on mount so sticker/color buttons
+        // reflect the current subscription without requiring a full page reload.
+        void refreshSubscriptionFeatures();
     }, []);
 
     useEffect(() => {
@@ -486,6 +512,7 @@ export default function ChatsPage() {
         preferredParticipantIdRef.current = String(participant?.id || "");
         activeConversationRef.current = participant;
         setActiveConversation(participant);
+        setShowMobileChat(true);
         setMessages(conversation);
         setParticipantPresence({
             status: participant?.status === "online" ? "online" : "offline",
@@ -519,8 +546,192 @@ export default function ChatsPage() {
         setNewChatResults([]);
     };
 
+    useEffect(() => {
+        return () => {
+            try { speechRecognitionRef.current?.stop?.(); } catch {}
+            if (typeof window !== "undefined" && "speechSynthesis" in window) {
+                try { window.speechSynthesis.cancel(); } catch {}
+            }
+        };
+    }, []);
+
+    const getEditableContent = (): string => {
+        const el = contentEditableRef.current;
+        if (!el) return messageInput;
+        // Handle both <font color="..."> (execCommand output) and <span style="color:...">
+        return el.innerHTML
+            .replace(/<font color="([^"]+)">([\s\S]*?)<\/font>/gi, '[c=$1]$2[/c]')
+            .replace(/<span[^>]*style="[^"]*color:\s*([^;"]+)[^"]*"[^>]*>([\s\S]*?)<\/span>/gi, '[c=$1]$2[/c]')
+            .replace(/<div>/gi, '\n').replace(/<\/div>/gi, '')
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+            .trim();
+    };
+
+    const clearEditable = () => {
+        if (contentEditableRef.current) contentEditableRef.current.innerHTML = "";
+        setMessageInput("");
+        setActiveTypingColor(null);
+    };
+
+    // applyColorTag — uses execCommand so it:
+    // 1. Colors any currently selected text
+    // 2. Sets the typing color so ALL new text typed after is in that color
+    const applyColorTag = (color: string) => {
+        const el = contentEditableRef.current;
+        if (!el) return;
+        el.focus();
+        document.execCommand("foreColor", false, color);
+        setActiveTypingColor(color);
+        setColorPickerOpen(false);
+        setMessageInput(getEditableContent());
+    };
+
+    const toggleSpeechToText = () => {
+        if (typeof window === "undefined") return;
+        const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (!SR) {
+            setUploadError("Voice input not supported in this browser.");
+            setTimeout(() => setUploadError(null), 3000);
+            return;
+        }
+        if (isListening && speechRecognitionRef.current) {
+            try { speechRecognitionRef.current.stop(); } catch {}
+            setIsListening(false);
+            return;
+        }
+        const recognition = new SR();
+        recognition.lang = "en-US";
+        recognition.interimResults = true;
+        recognition.continuous = true;
+        let baseHTML = contentEditableRef.current?.innerHTML || "";
+        recognition.onstart = () => { setIsListening(true); baseHTML = contentEditableRef.current?.innerHTML || ""; };
+        recognition.onresult = (event: any) => {
+            let finalText = "";
+            let interim = "";
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const res = event.results[i];
+                if (res.isFinal) finalText += res[0].transcript;
+                else             interim   += res[0].transcript;
+            }
+            const el = contentEditableRef.current;
+            if (!el) return;
+            if (finalText) {
+                el.innerHTML = baseHTML;
+                const textNode = document.createTextNode((el.textContent?.trim() ? " " : "") + finalText.trim());
+                el.appendChild(textNode);
+                baseHTML = el.innerHTML;
+                setMessageInput(getEditableContent());
+            } else if (interim) {
+                el.innerHTML = baseHTML;
+                const textNode = document.createTextNode((el.textContent?.trim() ? " " : "") + interim);
+                el.appendChild(textNode);
+            }
+        };
+        recognition.onerror = () => { setIsListening(false); };
+        recognition.onend   = () => { setIsListening(false); };
+        speechRecognitionRef.current = recognition;
+        try { recognition.start(); } catch { setIsListening(false); }
+    };
+
+    const STICKER_CATEGORIES = [
+        { id: "trending", label: "🔥 Trending" },
+        { id: "happy",    label: "😄 Happy" },
+        { id: "love",     label: "❤️ Love" },
+        { id: "funny",    label: "😂 Funny" },
+        { id: "cute",     label: "🐱 Cute" },
+    ];
+
+    const fetchGiphyStickers = async (category: string) => {
+        setGiphyLoading(true);
+        setGiphyStickers([]);
+        try {
+            const token = localStorage.getItem("token") || "";
+            const endpoint = category === "trending"
+                ? "/api/stickers/trending"
+                : `/api/stickers/search?q=${encodeURIComponent(category)}`;
+            const resp = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+            if (!resp.ok) throw new Error("fetch failed");
+            const json = await resp.json();
+            setGiphyStickers(Array.isArray(json.stickers) ? json.stickers.filter((s: any) => s.url) : []);
+        } catch {
+            setGiphyStickers([]);
+        } finally {
+            setGiphyLoading(false);
+        }
+    };
+
+    const handleStickerButtonClick = () => {
+        const opening = !stickerPanelOpen;
+        setStickerPanelOpen(opening);
+        if (opening && features.chat_stickers) {
+            fetchGiphyStickers(activeStickerCategory);
+        }
+    };
+
+    const handleStickerCategoryChange = (cat: string) => {
+        setActiveStickerCategory(cat);
+        if (features.chat_stickers) fetchGiphyStickers(cat);
+    };
+
+    const sendSticker = async (stickerUrl: string) => {
+        if (!activeConversation || !currentUser) return;
+        const receiverId = Number(activeConversation.id);
+        if (!receiverId) return;
+
+        setStickerPanelOpen(false);
+
+        setMessages((prev) => [
+            ...prev,
+            {
+                id: Date.now() + Math.random(),
+                type: "sticker",
+                sender_id: currentUser.id,
+                sender_name: currentUser.username || "You",
+                text: stickerUrl,
+                status: "sending",
+                created_at: new Date().toISOString(),
+            },
+        ]);
+
+        try {
+            await chatService.sendMessage({ receiverId, type: "sticker", text: stickerUrl });
+            const fresh = await chatService.getMessages(receiverId, false);
+            setMessages(Array.isArray(fresh) ? fresh : []);
+            refreshConversations(String(receiverId));
+        } catch (err: any) {
+            const msg = err?.message || String(err || "");
+            if (/higher plan|stickers/i.test(msg)) {
+                setStickerLockMessage("Stickers require Plan 02. Please upgrade.");
+                setTimeout(() => setStickerLockMessage(null), 3500);
+            } else {
+                setUploadError(msg || "Unable to send sticker.");
+                setTimeout(() => setUploadError(null), 3000);
+            }
+        }
+    };
+
+    const speakMessage = (id: number | string, raw: string) => {
+        if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+        if (speakingMessageId === id) {
+            window.speechSynthesis.cancel();
+            setSpeakingMessageId(null);
+            return;
+        }
+        window.speechSynthesis.cancel();
+        const plain = String(raw || "").replace(/\[c=[^\]]+\]/g, "").replace(/\[\/c\]/g, "");
+        const utter = new SpeechSynthesisUtterance(plain);
+        utter.lang = "en-US";
+        utter.onend = () => setSpeakingMessageId(null);
+        utter.onerror = () => setSpeakingMessageId(null);
+        setSpeakingMessageId(id);
+        window.speechSynthesis.speak(utter);
+    };
+
     const handleSendMessage = async () => {
-        const trimmed = messageInput.trim();
+        const trimmed = getEditableContent().trim();
         if ((!trimmed && pendingAttachments.length === 0) || !currentUser?.id || !activeConversation?.id) return;
 
         const nextMessages = [...messages];
@@ -551,7 +762,7 @@ export default function ChatsPage() {
             });
         }
 
-        setMessageInput("");
+        clearEditable();
         setPendingAttachments([]);
         setMessages(nextMessages);
 
@@ -673,6 +884,38 @@ export default function ChatsPage() {
         }, 1200);
     };
 
+    const availableQualities: ("240p" | "360p")[] = (() => {
+        const q = String(features.video_call_quality || "");
+        const out: ("240p" | "360p")[] = [];
+        if (q.includes("240p")) out.push("240p");
+        if (q.includes("360p")) out.push("360p");
+        return out;
+    })();
+
+    const videoConstraints = (quality: "240p" | "360p") =>
+        quality === "360p"
+            ? { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { max: 30 } }
+            : { width: { ideal: 426 }, height: { ideal: 240 }, frameRate: { max: 30 } };
+
+    const handleChangeVideoQuality = async (q: "240p" | "360p") => {
+        setVideoQuality(q);
+        if (!callLocalStreamRef.current || !callPeerRef.current) return;
+        try {
+            const newStream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: videoConstraints(q),
+            });
+            const newTrack = newStream.getVideoTracks()[0];
+            if (!newTrack) return;
+            const sender = callPeerRef.current.getSenders().find(s => s.track?.kind === "video");
+            if (sender) await sender.replaceTrack(newTrack);
+            // swap out old video track in local stream
+            callLocalStreamRef.current.getVideoTracks().forEach(t => { t.stop(); callLocalStreamRef.current!.removeTrack(t); });
+            callLocalStreamRef.current.addTrack(newTrack);
+            if (localVideoRef.current) localVideoRef.current.srcObject = callLocalStreamRef.current;
+        } catch { /* ignore — keep current quality */ }
+    };
+
     const startOutgoingCall = async (mode: "voice" | "video") => {
         setCallError(null);
         if (!currentUser?.id || !activeConversation?.id) return;
@@ -684,7 +927,7 @@ export default function ChatsPage() {
 
             const localStream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
-                video: mode === "video",
+                video: mode === "video" ? videoConstraints(videoQuality) : false,
             });
             callLocalStreamRef.current = localStream;
             if (localVideoRef.current) localVideoRef.current.srcObject = localStream;
@@ -758,7 +1001,7 @@ export default function ChatsPage() {
 
             const localStream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
-                video: incomingCall.call_type === "video",
+                video: incomingCall.call_type === "video" ? videoConstraints(videoQuality) : false,
             });
             callLocalStreamRef.current = localStream;
             if (localVideoRef.current) localVideoRef.current.srcObject = localStream;
@@ -980,10 +1223,10 @@ export default function ChatsPage() {
     }
 
     return (
-        <div className="h-[calc(100vh-7rem)] overflow-hidden">
-            <div className="grid grid-cols-1 md:grid-cols-[320px_1fr] h-full overflow-hidden">
-                <aside className="border-r border-white/10 bg-white/[0.02] flex flex-col min-h-0">
-                    <div className="px-5 py-5 border-b border-white/10">
+        <div className="-mx-3 sm:-mx-4 md:-mx-8 -my-5 sm:-my-6 h-[calc(100dvh-9rem)] md:h-[calc(100dvh-7rem)] overflow-hidden">
+            <div className="grid h-full overflow-hidden md:grid-cols-[300px_1fr]">
+                <aside className={`border-r border-white/10 bg-white/[0.02] flex-col min-h-0 ${showMobileChat ? "hidden" : "flex"} md:flex`}>
+                    <div className="px-4 py-4 border-b border-white/10">
                         <h1 className="text-lg font-black text-white uppercase tracking-[0.2em]">Chats</h1>
                         <p className="text-[10px] font-bold text-white/30 uppercase tracking-widest mt-1">
                             Buyers & Sellers
@@ -1187,7 +1430,7 @@ export default function ChatsPage() {
                     </div>
                 </aside>
 
-                <section className="flex flex-col min-h-0 h-full overflow-hidden bg-transparent">
+                <section className={`flex-col min-h-0 h-full overflow-hidden bg-transparent ${showMobileChat ? "flex" : "hidden"} md:flex`}>
                     {activeConversation ? (
                         <>
                             {incomingCall && (
@@ -1242,7 +1485,7 @@ export default function ChatsPage() {
                                 <div className="fixed inset-0 z-[55] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
                                     <div className="w-full max-w-3xl rounded-3xl border border-white/10 bg-[#0f0f12] shadow-2xl overflow-hidden">
                                         <div className="p-4 border-b border-white/10 flex items-center justify-between gap-3">
-                                            <div className="min-w-0">
+                                            <div className="min-w-0 flex-1">
                                                 <div className="text-[10px] font-black text-white uppercase tracking-[0.18em] truncate">
                                                     {activeConversation.name}
                                                 </div>
@@ -1250,10 +1493,28 @@ export default function ChatsPage() {
                                                     {activeCall.call_type === "video" ? "Video" : "Voice"} Call • {callPhase === "outgoing" ? "Ringing" : callPhase === "connecting" ? "Connecting" : callPhase === "active" ? "Active" : "Ended"}
                                                 </div>
                                             </div>
+                                            {activeCall.call_type === "video" && availableQualities.length > 1 && (
+                                                <div className="flex items-center gap-1 shrink-0">
+                                                    {availableQualities.map((q) => (
+                                                        <button
+                                                            key={q}
+                                                            type="button"
+                                                            onClick={() => handleChangeVideoQuality(q)}
+                                                            className={`px-2.5 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all ${
+                                                                videoQuality === q
+                                                                    ? "bg-white text-black"
+                                                                    : "bg-white/10 text-white/50 hover:bg-white/20"
+                                                            }`}
+                                                        >
+                                                            {q}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
                                             <button
                                                 type="button"
                                                 onClick={hangUpCall}
-                                                className="h-10 px-4 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-300 text-[9px] font-black uppercase tracking-widest hover:bg-red-500/25 transition-all"
+                                                className="h-10 px-4 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-300 text-[9px] font-black uppercase tracking-widest hover:bg-red-500/25 transition-all shrink-0"
                                             >
                                                 Hang Up
                                             </button>
@@ -1335,12 +1596,19 @@ export default function ChatsPage() {
                                 </div>
                             )}
 
-                            <div className="px-5 py-4 border-b border-white/10 bg-white/[0.02] flex items-center justify-between gap-3">
-                                <div className="flex items-center gap-3 min-w-0">
-                                    <div className="relative w-11 h-11 rounded-xl overflow-hidden bg-white/5 border border-white/10 shrink-0">
+                            <div className="px-3 md:px-5 py-3 md:py-4 border-b border-white/10 bg-white/[0.02] flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowMobileChat(false)}
+                                        className="md:hidden w-8 h-8 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-white/70 shrink-0"
+                                    >
+                                        <IonIcon name="arrow-back-outline" className="text-base" />
+                                    </button>
+                                    <div className="relative w-9 h-9 md:w-11 md:h-11 rounded-xl overflow-hidden bg-white/5 border border-white/10 shrink-0">
                                         <Image
                                             src={getProfileImageSrc(activeConversation.profile_picture, activeConversation.name)}
-                                            alt={activeConversation.name}
+                                            alt={activeConversation.name || "User"}
                                             fill
                                             className="object-cover"
                                         />
@@ -1361,25 +1629,49 @@ export default function ChatsPage() {
                                         </div>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-1.5">
+                                    {features.video_calls && availableQualities.length > 1 && (
+                                        <div className="flex items-center gap-0.5 bg-white/5 border border-white/10 rounded-lg p-0.5">
+                                            {availableQualities.map((q) => (
+                                                <button
+                                                    key={q}
+                                                    type="button"
+                                                    onClick={() => setVideoQuality(q)}
+                                                    className={`px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-widest transition-all ${
+                                                        videoQuality === q ? "bg-white text-black" : "text-white/40 hover:text-white/70"
+                                                    }`}
+                                                >
+                                                    {q}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
                                     <button
                                         type="button"
                                         onClick={() => handleStartCall("voice")}
-                                        className={`w-10 h-10 rounded-xl border transition-all flex items-center justify-center ${callMode === "voice" ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-white/5 hover:bg-white/10 text-white/70 border-white/10"}`}
+                                        className={`w-9 h-9 md:w-10 md:h-10 rounded-xl border transition-all flex items-center justify-center ${callMode === "voice" ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-white/5 hover:bg-white/10 text-white/70 border-white/10"}`}
                                     >
                                         <IonIcon name="call-outline" className="text-base" />
                                     </button>
                                     <button
                                         type="button"
-                                        onClick={() => handleStartCall("video")}
-                                        className={`w-10 h-10 rounded-xl border transition-all flex items-center justify-center ${callMode === "video" ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-white/5 hover:bg-white/10 text-white/70 border-white/10"}`}
+                                        onClick={() => features.video_calls ? handleStartCall("video") : undefined}
+                                        disabled={!features.video_calls}
+                                        title={features.video_calls ? `Video call (${videoQuality})` : "Video calls require Plan 03. Please upgrade."}
+                                        className={`w-9 h-9 md:w-10 md:h-10 rounded-xl border transition-all flex items-center justify-center ${
+                                            !features.video_calls
+                                                ? "bg-white/[0.02] text-white/20 border-white/5 cursor-not-allowed opacity-40"
+                                                : callMode === "video"
+                                                    ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                                                    : "bg-white/5 hover:bg-white/10 text-white/70 border-white/10"
+                                        }`}
                                     >
                                         <IonIcon name="videocam-outline" className="text-base" />
                                     </button>
                                 </div>
                             </div>
 
-                            <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-transparent">
+                            <div className="flex-1 overflow-y-auto p-3 md:p-5 space-y-3 bg-transparent">
                                 {combinedMessages.length > 0 ? (
                                     combinedMessages.map((message) => {
                                         const isMine = String(message.sender_id) === String(currentUser?.id);
@@ -1390,7 +1682,7 @@ export default function ChatsPage() {
                                                     onDoubleClick={() => {
                                                         if (isMine) setPendingDeleteMessageId(message.id);
                                                     }}
-                                                    className={`relative max-w-[68%] rounded-[1.1rem] px-3 py-2.5 border ${message.type === "call"
+                                                    className={`relative max-w-[80%] md:max-w-[68%] rounded-[1.1rem] px-3 py-2.5 border ${message.type === "call"
                                                     ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-300"
                                                     : message.type === "call_record"
                                                         ? "bg-white/5 border-white/10 text-white/70"
@@ -1403,7 +1695,33 @@ export default function ChatsPage() {
                                                         {isMine ? "You" : activeConversation.name}
                                                     </div>
                                                     {message.type === "text" && (
-                                                        <p className="text-[10px] leading-relaxed break-words">{message.text}</p>
+                                                        <div className="flex items-start gap-2">
+                                                            <ChatRichText
+                                                                text={message.text}
+                                                                className="text-[10px] leading-relaxed break-words flex-1"
+                                                            />
+                                                            {features.text_to_voice && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={(e) => { e.stopPropagation(); speakMessage(message.id, message.text); }}
+                                                                    aria-label={speakingMessageId === message.id ? "Stop" : "Speak message"}
+                                                                    className="shrink-0 text-white/40 hover:text-white/80 transition active:scale-90"
+                                                                >
+                                                                    <IonIcon name={speakingMessageId === message.id ? "volume-mute-outline" : "volume-high-outline"} className="text-xs" />
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                    {message.type === "sticker" && (
+                                                        <div className="p-1">
+                                                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                                                            <img
+                                                                src={message.text}
+                                                                alt="sticker"
+                                                                className="w-16 h-16 object-contain rounded"
+                                                                draggable={false}
+                                                            />
+                                                        </div>
                                                     )}
                                                     {message.type === "call" && (
                                                         <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest">
@@ -1474,7 +1792,7 @@ export default function ChatsPage() {
                                 )}
                             </div>
 
-                            <div className="p-3 border-t border-white/10 bg-white/[0.02]">
+                            <div className="p-2 md:p-3 border-t border-white/10 bg-white/[0.02]">
                                 <input
                                     ref={chatImageInputRef}
                                     type="file"
@@ -1488,13 +1806,164 @@ export default function ChatsPage() {
                                         {uploadError || "Uploading..."}
                                     </div>
                                 )}
+                                {/* Color picker popup */}
+                                {features.chat_text_colors && colorPickerOpen && (
+                                    <div className="mb-2 rounded-xl border border-white/10 bg-[#0f1115] p-2">
+                                        <div className="flex items-center gap-2 mb-2">
+                                            <input
+                                                type="color"
+                                                value={pickedColor}
+                                                onMouseDown={(e) => e.preventDefault()}
+                                                onChange={(e) => setPickedColor(e.target.value)}
+                                                className="w-8 h-8 rounded-lg border-0 cursor-pointer bg-transparent shrink-0"
+                                            />
+                                            <span className="text-[8px] font-mono text-white/50 flex-1">{pickedColor}</span>
+                                            <button
+                                                type="button"
+                                                onMouseDown={(e) => e.preventDefault()}
+                                                onClick={() => { applyColorTag(pickedColor); setColorPickerOpen(false); }}
+                                                className="px-3 h-7 rounded-lg text-[8px] font-black uppercase tracking-widest text-white shrink-0"
+                                                style={{ backgroundColor: pickedColor }}
+                                            >
+                                                Apply
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onMouseDown={(e) => e.preventDefault()}
+                                                onClick={() => setColorPickerOpen(false)}
+                                                className="text-white/30 hover:text-white/70 shrink-0"
+                                            >
+                                                <IonIcon name="close-outline" className="text-sm" />
+                                            </button>
+                                        </div>
+                                        <div className="flex flex-wrap gap-1">
+                                            {["#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#8b5cf6","#ec4899","#ffffff","#9ca3af","#f472b6","#fb923c","#a3e635","#34d399","#38bdf8","#c084fc"].map((hex) => (
+                                                <button
+                                                    key={hex}
+                                                    type="button"
+                                                    onMouseDown={(e) => e.preventDefault()}
+                                                    onClick={() => setPickedColor(hex)}
+                                                    className={`w-5 h-5 rounded-full border-2 transition-all hover:scale-110 ${pickedColor === hex ? "border-white scale-110" : "border-white/10"}`}
+                                                    style={{ backgroundColor: hex }}
+                                                />
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {stickerLockMessage && (
+                                    <div className="mb-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[10px] font-bold text-amber-200">
+                                        {stickerLockMessage}
+                                    </div>
+                                )}
+                                {stickerPanelOpen && (
+                                    <div className="mb-2 rounded-2xl border border-white/10 bg-[#0f1115] p-2">
+                                        {/* Category tabs */}
+                                        <div className="mb-2 flex items-center gap-1 overflow-x-auto scrollbar-hide pb-0.5">
+                                            {STICKER_CATEGORIES.map((cat) => (
+                                                <button
+                                                    key={cat.id}
+                                                    type="button"
+                                                    onClick={() => handleStickerCategoryChange(cat.id)}
+                                                    className={`shrink-0 rounded-lg px-2.5 py-1 text-[9px] font-bold transition whitespace-nowrap ${activeStickerCategory === cat.id ? "bg-white text-black" : "bg-white/5 text-white/60 hover:bg-white/10"}`}
+                                                >
+                                                    {cat.label}
+                                                </button>
+                                            ))}
+                                            <button
+                                                type="button"
+                                                onClick={() => setStickerPanelOpen(false)}
+                                                aria-label="Close stickers"
+                                                className="ml-auto shrink-0 rounded-lg bg-white/5 px-2 py-1 text-white/50 hover:bg-white/10"
+                                            >
+                                                <IonIcon name="close-outline" className="text-xs" />
+                                            </button>
+                                        </div>
+
+                                        {/* Sticker grid */}
+                                        {!features.chat_stickers ? (
+                                            <div className="py-5 flex flex-col items-center gap-2 text-center">
+                                                <IonIcon name="lock-closed-outline" className="text-2xl text-amber-400/70" />
+                                                <p className="text-[10px] font-bold text-amber-300/80">Stickers require Plan 02</p>
+                                                <p className="text-[9px] text-white/35">Upgrade to unlock all sticker packs.</p>
+                                            </div>
+                                        ) : giphyLoading ? (
+                                            <div className="py-4 flex justify-center">
+                                                <div className="w-5 h-5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                                            </div>
+                                        ) : giphyStickers.length === 0 ? (
+                                            <div className="py-4 text-center text-[10px] text-white/30">No stickers found</div>
+                                        ) : (
+                                            <div className="grid grid-cols-6 gap-1 max-h-44 overflow-y-auto">
+                                                {giphyStickers.map((sticker) => (
+                                                    <button
+                                                        key={sticker.id}
+                                                        type="button"
+                                                        title={sticker.title}
+                                                        onClick={() => sendSticker(sticker.url)}
+                                                        className="w-12 h-12 rounded-md bg-white/[0.04] flex items-center justify-center transition hover:bg-white/10 hover:scale-110 active:scale-95 p-0.5"
+                                                    >
+                                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                                        <img
+                                                            src={sticker.url}
+                                                            alt={sticker.title}
+                                                            className="w-10 h-10 object-contain"
+                                                            draggable={false}
+                                                            loading="lazy"
+                                                        />
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
                                 <div className="flex items-end gap-2">
                                     <button
                                         type="button"
                                         onClick={() => chatImageInputRef.current?.click()}
-                                    className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/10 text-white/70 border border-white/10 transition-all flex items-center justify-center shrink-0"
+                                        className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/10 text-white/70 border border-white/10 transition-all flex items-center justify-center shrink-0"
                                     >
                                         <IonIcon name="add-outline" className="text-base" />
+                                    </button>
+                                    {features.chat_text_colors && (
+                                        <button
+                                            type="button"
+                                            onMouseDown={(e) => e.preventDefault()}
+                                            onClick={() => { setColorPickerOpen((v) => !v); setStickerPanelOpen(false); }}
+                                            aria-label="Text color picker"
+                                            title={activeTypingColor ? `Active color: ${activeTypingColor}` : "Set text color"}
+                                            className="w-8 h-8 rounded-xl border transition-all flex items-center justify-center shrink-0 relative"
+                                            style={activeTypingColor
+                                                ? { backgroundColor: activeTypingColor + "33", borderColor: activeTypingColor, color: activeTypingColor }
+                                                : { backgroundColor: "rgba(255,255,255,0.05)", borderColor: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.7)" }
+                                            }
+                                        >
+                                            <IonIcon name="color-palette-outline" className="text-base" />
+                                        </button>
+                                    )}
+                                    {features.voice_to_text && (
+                                        <button
+                                            type="button"
+                                            onClick={toggleSpeechToText}
+                                            aria-label={isListening ? "Stop voice input" : "Start voice input (English)"}
+                                            title={isListening ? "Stop voice input" : "Speak to type (English)"}
+                                            className={`w-8 h-8 rounded-xl border transition-all flex items-center justify-center shrink-0 ${isListening ? "bg-red-500/20 border-red-400/40 text-red-200 animate-pulse" : "bg-white/5 hover:bg-white/10 text-white/70 border-white/10"}`}
+                                        >
+                                            <IonIcon name={isListening ? "mic" : "mic-outline"} className="text-base" />
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={handleStickerButtonClick}
+                                        aria-label="Stickers"
+                                        title={features.chat_stickers ? "Stickers" : "Stickers – Plan 02 required"}
+                                        className="w-8 h-8 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 transition-all flex items-center justify-center shrink-0 relative"
+                                    >
+                                        <IonIcon name="happy-outline" className="text-base" />
+                                        {!features.chat_stickers && (
+                                            <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-[#111] border border-white/20 flex items-center justify-center">
+                                                <IonIcon name="lock-closed" className="text-[7px] text-white/50" />
+                                            </span>
+                                        )}
                                     </button>
                                     <div className="flex-1 rounded-[1rem] bg-white/5 border border-white/10 px-3 py-2">
                                         {pendingAttachments.length > 0 && (
@@ -1525,18 +1994,20 @@ export default function ChatsPage() {
                                                 ))}
                                             </div>
                                         )}
-                                        <textarea
-                                            value={messageInput}
-                                            onChange={(e) => setMessageInput(e.target.value)}
+                                        <style>{`.chat-editable:empty:before{content:attr(data-placeholder);color:rgba(255,255,255,0.2);pointer-events:none;display:block}`}</style>
+                                        <div
+                                            ref={contentEditableRef}
+                                            contentEditable
+                                            suppressContentEditableWarning
+                                            data-placeholder={`Message ${activeConversation.name || "..."}`}
+                                            onInput={(e) => setMessageInput((e.currentTarget as HTMLDivElement).textContent || "")}
                                             onKeyDown={(e) => {
                                                 if (e.key === "Enter" && !e.shiftKey) {
                                                     e.preventDefault();
                                                     handleSendMessage();
                                                 }
                                             }}
-                                            rows={1}
-                                            placeholder={`Message ${activeConversation.name}`}
-                                            className="w-full bg-transparent resize-none outline-none text-[10px] leading-5 text-white placeholder:text-white/20 max-h-24"
+                                            className="chat-editable w-full bg-transparent outline-none text-[10px] leading-5 text-white max-h-24 overflow-y-auto"
                                         />
                                         <div className="mt-1 text-[6px] font-black uppercase tracking-widest text-white/20">
                                             Images up to 3 MB each
@@ -1553,12 +2024,19 @@ export default function ChatsPage() {
                             </div>
                         </>
                     ) : (
-                        <div className="flex-1 flex items-center justify-center text-center">
+                        <div className="flex-1 flex items-center justify-center text-center p-6">
                             <div>
                                 <IonIcon name="chatbubbles-outline" className="text-5xl text-white/10 mb-4" />
                                 <p className="text-[11px] font-black text-white/25 uppercase tracking-[0.2em]">
                                     Select a conversation
                                 </p>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowMobileChat(false)}
+                                    className="md:hidden mt-4 px-5 py-2 rounded-full bg-white/5 border border-white/10 text-[10px] font-black text-white/50 uppercase tracking-widest"
+                                >
+                                    View Chats
+                                </button>
                             </div>
                         </div>
                     )}

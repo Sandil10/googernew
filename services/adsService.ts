@@ -25,6 +25,52 @@ const getHeaders = () => {
 };
 
 export const adsService = {
+    getActiveAdsByUser: async (userId: string | number) => {
+        const response = await fetch(`${API_URL}/ads/active-public?user_id=${encodeURIComponent(userId)}&limit=50`, {
+            method: 'GET',
+        });
+        const result = await safeJson(response);
+        return result?.ads || [];
+    },
+
+    toggleSave: async (adId: string | number): Promise<{ ok: boolean; saved: boolean; message?: string; limit?: number; mediaType?: string }> => {
+        const response = await fetch(`${API_URL}/ads/${encodeURIComponent(String(adId))}/save`, {
+            method: 'POST',
+            headers: getHeaders(),
+        });
+        const data = await safeJson(response);
+        if (!response.ok) {
+            return {
+                ok: false,
+                saved: false,
+                message: data?.message || 'Failed to save ad',
+                limit: data?.limit,
+                mediaType: data?.media_type,
+            };
+        }
+        return { ok: true, saved: !!data?.saved, mediaType: data?.ad_media_type };
+    },
+
+    getSavedAdIds: async (): Promise<string[]> => {
+        const response = await fetch(`${API_URL}/ads/saves/ids`, {
+            method: 'GET',
+            headers: getHeaders(),
+        });
+        const data = await safeJson(response);
+        return data?.savedAdIds || [];
+    },
+
+    getSavedAdCounts: async (): Promise<{ counts: { photo: number; video: number }; limits: { photo: number | null; video: number | null } } | null> => {
+        const response = await fetch(`${API_URL}/ads/saves/counts`, {
+            method: 'GET',
+            headers: getHeaders(),
+        });
+        if (!response.ok) return null;
+        const data = await safeJson(response);
+        if (!data?.success) return null;
+        return { counts: data.counts, limits: data.limits };
+    },
+
     getMyAds: async () => {
         const response = await fetch(`${API_URL}/ads/my`, {
             method: 'GET',
@@ -134,4 +180,31 @@ export const adsService = {
         if (!response.ok) throw new Error(result?.message || 'Failed to redeem promo code');
         return result as { redeemed: boolean; code: string; discount_type: string; discount_value: number };
     },
+
+    getAdAnalytics: async (adId: string) => {
+        const response = await fetch(`${API_URL}/ads/${encodeURIComponent(adId)}/analytics`, {
+            method: 'GET',
+            headers: getHeaders(),
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(result?.message || 'Failed to fetch analytics');
+        return result?.analytics as AdAnalytics;
+    },
+};
+
+export type AnalyticsBreakdown = { label: string; reach: number; impressions: number };
+export type ClickBreakdown = { label: string; clicks: number };
+export type LikeBreakdown = { label: string; likes: number };
+
+export type AdAnalytics = {
+    adId: string;
+    totals: { views: number; reach: number; impressions: number; clicks: number; likes: number };
+    byGender: AnalyticsBreakdown[];
+    byCountry: AnalyticsBreakdown[];
+    byAge: AnalyticsBreakdown[];
+    byClickType: ClickBreakdown[];
+    likesByGender: LikeBreakdown[];
+    likesByCountry: LikeBreakdown[];
+    clicksByGender: ClickBreakdown[];
+    adTargeting: { gender: string; ageMin: number; ageMax: number; campaignType: string };
 };

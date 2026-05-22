@@ -94,6 +94,9 @@ export const SharedProductCard = memo(({
   const displayViewsCount = liveState.views_count ?? liveState.viewCount ?? Number(product.views_count || product.viewCount || 0);
   const displayCommentsCount = liveState.comments_count ?? liveState.commentCount ?? Number(product.comments_count || product.commentCount || 0);
   const displaySharesCount = liveState.shares_count ?? liveState.shareCount ?? Number(product.shares_count || product.shareCount || 0);
+  const displayTimestamp = isAd
+    ? (product.active_start_time || product.activeStartTime || product.started_at || product.startedAt || product.created_at || product.createdAt)
+    : (product.created_at || product.createdAt);
 
   // For the canShowCollectCoin callback, we want to pass a normalized-like object that has the merged state
   const mergedForCallback = useMemo(() => ({
@@ -246,7 +249,7 @@ export const SharedProductCard = memo(({
               </span>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="text-[5px] md:text-[7px] text-slate-500 font-bold tracking-widest">
-                  <RelativeTime timestamp={product.created_at || (product as any).createdAt} />
+                  <RelativeTime timestamp={displayTimestamp} />
                 </span>
                 {isAd && (
                   <span className="text-[6px] md:text-[8px] font-bold text-white px-1">

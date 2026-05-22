@@ -11,6 +11,10 @@ router.use(authMiddleware);
 
 router.get('/my', adsController.getMyAds);
 router.get('/all', adsController.getAllAds);
+router.get('/saves/ids', adsController.getMySavedAdIds);
+router.get('/saves/counts', adsController.getMySavedAdCounts);
+router.post('/:adId/save', adsController.toggleAdSave);
+router.get('/:adId/analytics', adsController.getAdAnalytics);
 router.get('/:adId', adsController.getMyAdById);
 router.post('/', upload.array('images', 5), adsController.createAd);
 router.put('/:adId', upload.array('images', 5), adsController.updateAd);

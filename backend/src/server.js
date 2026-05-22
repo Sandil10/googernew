@@ -101,6 +101,15 @@ const googRoutes = require('./routes/googs');
 const feedRoutes = require('./routes/feed');
 const promoCodesRoutes = require('./routes/promoCodes');
 const adminCustomizationRoutes = require('./routes/adminCustomization');
+const verificationRoutes = require('./routes/verification');
+const withdrawalAdminRoutes = require('./routes/withdrawalAdmin');
+const withdrawalsRoutes = require('./routes/withdrawals');
+const coinRequestsRoutes = require('./routes/coinRequests');
+const p2pAdsRoutes = require('./routes/p2pAds');
+const p2pSellAdsRoutes = require('./routes/p2pSellAds');
+const subscriptionsRoutes = require('./routes/subscriptions');
+const subscriptionPlansRoutes = require('./routes/subscriptionPlans');
+const stickersRoutes = require('./routes/stickers');
 
 // API Versioning & Routing (Compatible with existing web app)
 const apiRoutes = express.Router();
@@ -117,6 +126,15 @@ apiRoutes.use('/cart', cartRoutes);
 apiRoutes.use('/feed', feedRoutes);
 apiRoutes.use('/promo-codes', promoCodesRoutes);
 apiRoutes.use('/admin/customization', adminCustomizationRoutes);
+apiRoutes.use('/verification', verificationRoutes);
+apiRoutes.use('/withdrawal-admin', withdrawalAdminRoutes);
+apiRoutes.use('/withdrawals', withdrawalsRoutes);
+apiRoutes.use('/coin-requests', coinRequestsRoutes);
+apiRoutes.use('/p2p-ads', p2pAdsRoutes);
+apiRoutes.use('/p2p-sell-ads', p2pSellAdsRoutes);
+apiRoutes.use('/subscriptions', subscriptionsRoutes);
+apiRoutes.use('/subscription-plans', subscriptionPlansRoutes);
+apiRoutes.use('/stickers', stickersRoutes);
 
 // Mount API routes
 app.use('/api', apiRoutes);
@@ -134,6 +152,14 @@ app.use('/cart', cartRoutes);
 app.use('/feed', feedRoutes);
 app.use('/promo-codes', promoCodesRoutes);
 app.use('/admin/customization', adminCustomizationRoutes);
+app.use('/verification', verificationRoutes);
+app.use('/withdrawal-admin', withdrawalAdminRoutes);
+app.use('/withdrawals', withdrawalsRoutes);
+app.use('/coin-requests', coinRequestsRoutes);
+app.use('/p2p-ads', p2pAdsRoutes);
+app.use('/p2p-sell-ads', p2pSellAdsRoutes);
+app.use('/subscriptions', subscriptionsRoutes);
+app.use('/subscription-plans', subscriptionPlansRoutes);
 
 app.get('/api/test', (req, res) => {
     res.json({ success: true, message: 'New routes are live' });

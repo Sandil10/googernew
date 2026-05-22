@@ -44,6 +44,11 @@ export type SharedPhotoVideoAdCardProps = AdCardHandlers & {
     isMenuOpen: boolean;
     onToggleMenu: (adId: any) => void;
     onCloseMenu: () => void;
+    showSaveButton?: boolean;
+    onToggleSave?: (ad: any) => void | Promise<void>;
+    isSaved?: boolean;
+    saveAtLimit?: boolean;
+    showExpiryWarning?: boolean;
 };
 
 const EMPTY_OBJECT_PHOTO = {};
@@ -62,6 +67,11 @@ export function SharedPhotoVideoAdCard({
     onCollectCoin,
     onNavigateToProfile,
     canShowCollectCoin,
+    showSaveButton,
+    onToggleSave,
+    isSaved,
+    saveAtLimit,
+    showExpiryWarning,
 }: SharedPhotoVideoAdCardProps) {
     const [likeLockMessage, setLikeLockMessage] = useState(false);
 
@@ -117,9 +127,22 @@ export function SharedPhotoVideoAdCard({
     ).trim();
     const videoPreviewSrc = rawVideoSource ? normalizeMediaSrc(rawVideoSource) : "";
     const canRenderVideoPreview = secondViewKind === "video" && !!videoPreviewSrc;
-    const trackAdClick = () => {
+    const trackAdClick = (actionType: "message" | "visit" | "call") => {
         const clickId = ad.id || ad.adId || ad.ad_id || raw.id || raw.adId || raw.ad_id;
-        if (clickId) void marketService.logAdClick(clickId);
+        if (!clickId) return;
+        void marketService.logAdClick(clickId, actionType).then((result) => {
+            if (!result?.success) return;
+            useAdStore.getState().updateAdState(ad.raw || ad, {
+                clicks: Number(result.clicks || result.link_actions || 0),
+                link_actions: Number(result.link_actions || result.clicks || 0),
+                message_clicks: Number(result.message_clicks || 0),
+                visit_clicks: Number(result.visit_clicks || 0),
+                call_clicks: Number(result.call_clicks || 0),
+                current_reach: Number(result.current_reach ?? result.reach ?? 0),
+                reach: Number(result.current_reach ?? result.reach ?? 0),
+                views_count: Number(result.impressions || 0),
+            });
+        });
     };
 
     const playOverlay = (secondViewKind === "video" || secondViewKind === "embed") ? (
@@ -137,7 +160,7 @@ export function SharedPhotoVideoAdCard({
         event.stopPropagation();
         const href = ctaHref || activeLink;
         if (!href) return;
-        trackAdClick();
+        trackAdClick("visit");
         window.open(href, "_blank", "noopener,noreferrer");
     };
 
@@ -145,7 +168,7 @@ export function SharedPhotoVideoAdCard({
         event.stopPropagation();
         const participantId = String(advertiserId || "").trim();
         if (!participantId) return;
-        trackAdClick();
+        trackAdClick("message");
         if (typeof window !== "undefined") {
             window.location.href = `/dashboard/chats?user=${encodeURIComponent(participantId)}`;
         }
@@ -232,7 +255,7 @@ export function SharedPhotoVideoAdCard({
                             </span>
                             <div className="w-0.5 h-0.5 rounded-full bg-slate-700 shrink-0" />
                             <span className="block font-bold text-slate-500 text-[5px] md:text-[7px] tracking-widest">
-                                <RelativeTime timestamp={ad.createdAt || ad.created_at || raw.created_at || raw.createdAt} />
+                                <RelativeTime timestamp={ad.activeStartTime || ad.active_start_time || raw.active_start_time || raw.activeStartTime || ad.createdAt || ad.created_at} />
                             </span>
                         </div>
                     </div>
@@ -301,7 +324,6 @@ export function SharedPhotoVideoAdCard({
                 type="button"
                 onClick={(event) => {
                     event.stopPropagation();
-                    trackAdClick();
                     if (onOpenSecondView) onOpenSecondView(ad);
                 }}
                 className="block w-full text-left"
@@ -389,7 +411,7 @@ export function SharedPhotoVideoAdCard({
                                 onClick={(event) => {
                                     event.stopPropagation();
                                     if (!callHref) return;
-                                    trackAdClick();
+                                    trackAdClick("call");
                                     window.location.href = callHref;
                                 }}
                                 className={`rounded-full px-3 py-1.5 text-[9px] font-bold uppercase tracking-[0.14em] transition md:px-4 md:py-2 md:text-[10px] ${callHref ? "cursor-pointer bg-white text-black hover:bg-slate-200 active:scale-95" : "cursor-not-allowed bg-white/10 text-white/35"}`}
@@ -473,6 +495,36 @@ export function SharedPhotoVideoAdCard({
                             onLongPress={() => onOpenSheet("shares", ad.raw || ad)}
                             iconSize="text-[21px]"
                         />
+                        {showSaveButton && (
+                            <div className="flex flex-col items-center gap-1">
+                                <button
+                                    type="button"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (!saveAtLimit || isSaved) onToggleSave?.(ad.raw || ad);
+                                    }}
+                                    aria-label={isSaved ? "Unsave ad" : saveAtLimit ? "Save limit reached" : "Save ad"}
+                                    title={saveAtLimit && !isSaved ? "Ad save limit reached — upgrade your plan" : undefined}
+                                    className={`flex h-8 w-8 items-center justify-center rounded-full border transition active:scale-90 ${
+                                        isSaved
+                                            ? "border-red-400/40 bg-red-500/15 text-red-400 hover:bg-red-500/25"
+                                            : saveAtLimit
+                                            ? "border-white/5 bg-white/3 text-white/20 cursor-not-allowed"
+                                            : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10 hover:text-red-300"
+                                    }`}
+                                >
+                                    <IonIcon
+                                        name={isSaved ? "bookmark" : "bookmark-outline"}
+                                        className="text-[21px]"
+                                    />
+                                </button>
+                                {showExpiryWarning && (
+                                    <p className="text-[9px] font-semibold text-amber-400/80 text-center leading-tight max-w-[60px]">
+                                        {ad.type === "video" ? "Your video will be removed soon" : "Your photos will expire soon and will be deleted"}
+                                    </p>
+                                )}
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>

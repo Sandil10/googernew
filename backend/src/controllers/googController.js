@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
 const crypto = require('crypto');
+const { getUserPlanLimits } = require('../utils/planLimits');
 
 let schemaReady = false;
 let googShareCodesReady = false;
@@ -252,6 +253,9 @@ const ensureGoogSchema = async () => {
         CREATE INDEX IF NOT EXISTS idx_goog_reports_post ON goog_reports(goog_id);
     `);
 
+    // Widen text column so dynamic goog_letter_limit > 75 can be set by admin
+    await pool.query(`ALTER TABLE goog_posts ALTER COLUMN text TYPE TEXT`).catch(() => {});
+
     await ensureGoogShareCodes();
 
     schemaReady = true;
@@ -343,8 +347,43 @@ exports.createPost = async (req, res) => {
     try {
         await ensureGoogSchema();
         const userId = req.user.id;
-        const text = String(req.body?.text || '').trim().slice(0, 75);
+
+        // Fetch dynamic limits for this user
+        const limits = await getUserPlanLimits(userId);
+
+        // Enforce write goog count limit
+        const countRes = await pool.query(
+            'SELECT COUNT(*)::int AS c FROM goog_posts WHERE user_id = $1',
+            [userId]
+        );
+        if (countRes.rows[0].c >= limits.writeGoogLimit) {
+            return res.status(403).json({
+                success: false,
+                message: 'Limit reached. Subscribe to a higher plan to create more googs.',
+                code: 'WRITE_GOOG_LIMIT',
+                limit: limits.writeGoogLimit,
+            });
+        }
+
+        const text = String(req.body?.text || '').trim().slice(0, limits.googLetterLimit);
         const textColor = String(req.body?.textColor || '#FFFFFF').trim().slice(0, 20);
+
+        // Enforce colored goog limit if a non-default color is requested
+        const isColored = textColor && textColor.toUpperCase() !== '#FFFFFF' && textColor.toLowerCase() !== 'white';
+        if (isColored && limits.writeGoogColorLimit !== undefined) {
+            const colorCountRes = await pool.query(
+                `SELECT COUNT(*)::int AS c FROM goog_posts WHERE user_id = $1 AND UPPER(text_color) != '#FFFFFF' AND text_color IS NOT NULL AND text_color != ''`,
+                [userId]
+            );
+            if (colorCountRes.rows[0].c >= limits.writeGoogColorLimit) {
+                return res.status(403).json({
+                    success: false,
+                    message: `You have reached your colored Goog limit (${limits.writeGoogColorLimit}). Upgrade your plan to create more colored Googs.`,
+                    code: 'WRITE_GOOG_COLOR_LIMIT',
+                    limit: limits.writeGoogColorLimit,
+                });
+            }
+        }
 
         if (!text) return res.status(400).json({ success: false, message: 'Post text is required' });
 
@@ -371,7 +410,8 @@ exports.updatePost = async (req, res) => {
         await ensureGoogSchema();
         const userId = req.user.id;
         const id = parseInt(req.params.id, 10);
-        const text = String(req.body?.text || '').trim().slice(0, 75);
+        const limits = await getUserPlanLimits(userId);
+        const text = String(req.body?.text || '').trim().slice(0, limits.googLetterLimit);
         const textColor = String(req.body?.textColor || '#FFFFFF').trim().slice(0, 20);
 
         if (!text) return res.status(400).json({ success: false, message: 'Post text is required' });
@@ -833,5 +873,113 @@ exports.getUserPosts = async (req, res) => {
     } catch (error) {
         console.error('Error fetching user Goog posts:', error);
         res.status(500).json({ success: false, message: 'Server error fetching user posts' });
+    }
+};
+
+// ── Saved Googs ─────────────────────────────────────────────────────────────
+
+let savedGoogsReady = false;
+const ensureSavedGoogsSchema = async () => {
+    if (savedGoogsReady) return;
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS saved_googs (
+            id       SERIAL PRIMARY KEY,
+            user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            goog_id  INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+            saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, goog_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_saved_googs_user ON saved_googs(user_id, saved_at DESC);
+    `);
+    savedGoogsReady = true;
+};
+
+exports.toggleSave = async (req, res) => {
+    try {
+        await ensureGoogSchema();
+        await ensureSavedGoogsSchema();
+        const userId = req.user?.id || req.user?.userId;
+        if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+        const googId = parseInt(req.params.id, 10);
+        if (!googId) return res.status(400).json({ success: false, message: 'Invalid goog id' });
+
+        // Unsave if already saved
+        const existing = await pool.query(
+            'SELECT id FROM saved_googs WHERE user_id = $1 AND goog_id = $2',
+            [userId, googId]
+        );
+        if (existing.rows.length > 0) {
+            await pool.query('DELETE FROM saved_googs WHERE user_id = $1 AND goog_id = $2', [userId, googId]);
+            return res.json({ success: true, saved: false });
+        }
+
+        // Check save limit using getUserPlanLimits — respects both basic and paid plans
+        const limits = await getUserPlanLimits(userId);
+        const limit = limits.saveGoogLimit;
+        if (limit === 0) {
+            return res.status(403).json({ success: false, message: 'Subscribe to a plan to save Googs.' });
+        }
+
+        const countRes = await pool.query(
+            'SELECT COUNT(*)::int AS c FROM saved_googs WHERE user_id = $1',
+            [userId]
+        );
+        if ((countRes.rows[0]?.c || 0) >= limit) {
+            return res.status(403).json({
+                success: false,
+                message: `Your plan allows saving up to ${limit} Goog${limit === 1 ? '' : 's'}. Upgrade to save more.`,
+                limit,
+            });
+        }
+
+        await pool.query(
+            'INSERT INTO saved_googs (user_id, goog_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [userId, googId]
+        );
+        return res.json({ success: true, saved: true });
+    } catch (err) {
+        console.error('[googs] toggleSave error:', err);
+        return res.status(500).json({ success: false, message: 'Failed to save goog' });
+    }
+};
+
+exports.getSavedGoogs = async (req, res) => {
+    try {
+        await ensureGoogSchema();
+        await ensureSavedGoogsSchema();
+        const userId = req.user?.id || req.user?.userId;
+        if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+        const { rows } = await pool.query(
+            `SELECT gp.*, u.username, u.full_name, u.profile_picture, sg.saved_at,
+                    EXISTS(SELECT 1 FROM goog_likes gl WHERE gl.goog_id = gp.id AND gl.user_id = $1) AS user_liked
+             FROM saved_googs sg
+             JOIN goog_posts gp ON gp.id = sg.goog_id
+             JOIN users u ON u.id = gp.user_id
+             WHERE sg.user_id = $1
+             ORDER BY sg.saved_at DESC`,
+            [userId]
+        );
+        res.json({ success: true, data: rows.map(normalizePost) });
+    } catch (err) {
+        console.error('[googs] getSavedGoogs error:', err);
+        res.status(500).json({ success: false, message: 'Failed to get saved googs' });
+    }
+};
+
+exports.getSavedStatus = async (req, res) => {
+    try {
+        await ensureSavedGoogsSchema();
+        const userId = req.user?.id || req.user?.userId;
+        if (!userId) return res.json({ success: true, savedIds: [] });
+
+        const { rows } = await pool.query(
+            'SELECT goog_id FROM saved_googs WHERE user_id = $1',
+            [userId]
+        );
+        return res.json({ success: true, savedIds: rows.map(r => r.goog_id) });
+    } catch (err) {
+        return res.json({ success: true, savedIds: [] });
     }
 };

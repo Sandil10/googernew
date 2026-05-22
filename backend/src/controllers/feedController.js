@@ -257,8 +257,12 @@ const mapActiveAdToHomeAd = (row) => {
         shareCount: Number(row.shares_count || 0),
         views_count: Number(row.impressions || 0),
         viewCount: Number(row.impressions || 0),
-        createdAt: toUtcIso(row.created_at),
-        created_at: toUtcIso(row.created_at),
+        createdAt: toUtcIso(row.active_start_time || row.started_at || row.created_at),
+        created_at: toUtcIso(row.active_start_time || row.started_at || row.created_at),
+        activeStartTime: toUtcIso(row.active_start_time || row.started_at),
+        active_start_time: toUtcIso(row.active_start_time || row.started_at),
+        startedAt: toUtcIso(row.started_at || row.active_start_time),
+        started_at: toUtcIso(row.started_at || row.active_start_time),
         profile_picture: stripDataUrl(row.profile_picture) || null,
         product_code: isProductPromote ? (linkedProductShareCode || row.product_code || null) : row.ad_id,
         share_code: isProductPromote ? (linkedProductShareCode || row.share_code || null) : canonicalShareCode,
@@ -449,7 +453,7 @@ exports.getHomeFeed = async (req, res) => {
                         a.edit_draft, a.gender_target, a.age_min, a.age_max,
                         a.impressions, a.clicks, a.current_reach, a.max_reach_cap,
                         a.likes_count, a.comments_count, a.shares_count,
-                        a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.created_at,
+                        a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.active_start_time, a.created_at,
                         u.username AS owner_username_joined, u.profile_picture,
                         CASE WHEN $1::int IS NULL THEN FALSE
                              ELSE EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1)
@@ -469,7 +473,9 @@ exports.getHomeFeed = async (req, res) => {
         const postRows = postResult.rows || [];
         const posts = postRows.slice(0, limit).map(normalizePost);
         const viewerProfile = await loadViewerAdProfile(pool, userId, req);
-        const matchedAdRows = filterDeliverableAds(adResult.rows || [], viewerProfile);
+        const matchedAdRows = viewerProfile?.isAnonymous
+            ? (adResult.rows || [])
+            : filterDeliverableAds(adResult.rows || [], viewerProfile);
         const ads = await hydrateProductPromoteAds(matchedAdRows.map(mapActiveAdToHomeAd));
 
         res.status(200).json({

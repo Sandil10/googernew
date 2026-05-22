@@ -16,6 +16,7 @@ import {
 } from "@/app/lib/mediaOptimization";
 
 import { NormalizedAd } from "@/app/lib/ads/adTypes";
+import { useAdStore } from "@/app/lib/ads/adStore";
 
 type SharedProfilePromoteAdCardProps = {
   ad: NormalizedAd;
@@ -68,6 +69,20 @@ export function SharedProfilePromoteAdCard({
   const profilePic = getItemProfilePicture(raw);
   const username = getItemUsername(raw, "Advertiser");
   const showAdCoinButton = !!canShowCollectCoin?.(ad);
+
+  const trackAdClick = () => {
+    const clickId = ad.id || ad.adId || (ad as any).ad_id || raw.id || raw.adId || raw.ad_id;
+    if (!clickId) return;
+    void marketService.logAdClick(clickId, "visit").then((result: any) => {
+      if (!result?.success) return;
+      useAdStore.getState().updateAdState(ad.raw || ad, {
+        clicks: Number(result.clicks || result.link_actions || 0),
+        link_actions: Number(result.link_actions || result.clicks || 0),
+        current_reach: Number(result.current_reach ?? result.reach ?? 0),
+        reach: Number(result.current_reach ?? result.reach ?? 0),
+      });
+    });
+  };
   const displayProducts = loadingProducts
     ? Array.from({ length: 3 }).map((_, i) => ({ id: `ph-${i}`, _placeholder: true }))
     : adProducts.length > 0
@@ -78,6 +93,7 @@ export function SharedProfilePromoteAdCard({
     <div
       className="relative flex-shrink-0 w-[240px] sm:w-[260px] overflow-hidden rounded-2xl border border-white/10 bg-[#1a1a1a] shadow-[0_8px_28px_rgba(0,0,0,0.28)] transition hover:border-white/20"
       style={{ scrollSnapAlign: "start" }}
+      onClick={trackAdClick}
     >
       {showAdCoinButton && onCollectCoin && (
         <button

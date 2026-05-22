@@ -17,6 +17,71 @@ export const normalizeExternalUrl = (value: string) => {
     return /^https?:\/\//i.test(value) ? value : `https://${value}`;
 };
 
+const getNormalizedUrl = (value: string) => {
+    const normalized = normalizeExternalUrl(value);
+    if (!normalized) return null;
+
+    try {
+        return new URL(normalized);
+    } catch {
+        return null;
+    }
+};
+
+const getGoogleImageSourceUrl = (value: string) => {
+    const url = getNormalizedUrl(value);
+    if (!url) return "";
+
+    const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+    if (!host.includes("google.") || url.pathname !== "/imgres") return "";
+
+    const imageUrl = url.searchParams.get("imgurl");
+    return imageUrl ? decodeURIComponent(imageUrl) : "";
+};
+
+const getYouTubeThumbnailUrl = (value: string) => {
+    try {
+        const url = new URL(normalizeExternalUrl(value));
+        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+
+        let videoId = "";
+        if (host === "youtu.be") {
+            videoId = url.pathname.split("/").filter(Boolean)[0] || "";
+        } else if (host.includes("youtube.com")) {
+            if (url.pathname.startsWith("/shorts/") || url.pathname.startsWith("/embed/")) {
+                videoId = url.pathname.split("/").filter(Boolean)[1] || "";
+            } else {
+                videoId = url.searchParams.get("v") || "";
+            }
+        }
+
+        return videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : "";
+    } catch {
+        return "";
+    }
+};
+
+const getMicrolinkScreenshotUrl = (value: string) => {
+    const normalized = normalizeExternalUrl(value);
+    if (!normalized) return "";
+    return `https://api.microlink.io?url=${encodeURIComponent(normalized)}&screenshot=true&meta=false&embed=screenshot.url`;
+};
+
+export const getSponsoredLinkPreviewImage = (value: string) => {
+    const normalized = normalizeExternalUrl(value);
+    if (!normalized) return "";
+
+    const imagePattern = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
+    const googleImageSource = getGoogleImageSourceUrl(normalized);
+    if (googleImageSource) return googleImageSource;
+    if (imagePattern.test(normalized)) return normalized;
+
+    const youtubeThumbnail = getYouTubeThumbnailUrl(normalized);
+    if (youtubeThumbnail) return youtubeThumbnail;
+
+    return getMicrolinkScreenshotUrl(normalized);
+};
+
 export const getYouTubeEmbedUrl = (value: string) => {
     try {
         const url = new URL(normalizeExternalUrl(value));
@@ -88,6 +153,7 @@ export const getSponsoredLinkPreviewType = (value: string) => {
     const imagePattern = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
     const videoPattern = /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i;
 
+    if (getGoogleImageSourceUrl(normalized)) return "image";
     if (imagePattern.test(normalized)) return "image";
     if (videoPattern.test(normalized)) return "video";
     if (getSponsoredSocialEmbedUrl(normalized)) return "embed";
@@ -146,7 +212,8 @@ const extractMediaValue = (item: any) => {
 
 export const getAdPreviewImage = (ad: any, previewType: string | null) => {
     const activeLink = normalizeExternalUrl(ad?.active_link || "");
-    if (previewType === "image") return activeLink;
+    const linkPreviewImage = getSponsoredLinkPreviewImage(activeLink);
+    if (previewType === "image" && linkPreviewImage) return linkPreviewImage;
 
     const gallery = Array.isArray(ad?.media_gallery)
         ? ad.media_gallery
@@ -161,6 +228,7 @@ export const getAdPreviewImage = (ad: any, previewType: string | null) => {
         ad?.media_preview,
         ad?.media_url,
         ad?.video_url,
+        linkPreviewImage,
         ...gallery.map(extractMediaValue),
     ].find((item) => String(item || "").trim());
     const image = String(value || "https://picsum.photos/400/400").trim();
@@ -175,8 +243,7 @@ export const getSponsoredAdImages = (ad: any, fallbackImage?: string): string[] 
             : [];
 
     const activeLink = normalizeExternalUrl(ad?.active_link || "");
-    const linkPreviewType = getSponsoredLinkPreviewType(activeLink);
-    const linkImage = linkPreviewType === "image" ? activeLink : "";
+    const linkImage = getSponsoredLinkPreviewImage(activeLink);
 
     return Array.from(
         new Set(

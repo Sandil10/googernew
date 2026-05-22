@@ -550,19 +550,36 @@ export default function SettingsPage() {
 
                     <div className="space-y-4">
                         {isAdminUser && (
-                            <div className="rounded-3xl border border-cyan-500/20 bg-cyan-500/10 p-4">
-                                <div className="flex flex-col gap-3 min-[780px]:flex-row min-[780px]:items-center min-[780px]:justify-between">
-                                    <div>
-                                        <h2 className="text-sm font-black text-white">Admin Category Manager</h2>
-                                        <p className="mt-1 text-xs text-white/45">Manage the DB-backed category tree and commissions used by Add Product.</p>
+                            <div className="space-y-3">
+                                <div className="rounded-3xl border border-cyan-500/20 bg-cyan-500/10 p-4">
+                                    <div className="flex flex-col gap-3 min-[780px]:flex-row min-[780px]:items-center min-[780px]:justify-between">
+                                        <div>
+                                            <h2 className="text-sm font-black text-white">Admin Category Manager</h2>
+                                            <p className="mt-1 text-xs text-white/45">Manage the DB-backed category tree and commissions used by Add Product.</p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => router.push("/dashboard/categories")}
+                                            className="rounded-xl bg-white px-4 py-2.5 text-[11px] font-bold uppercase tracking-[0.16em] text-black transition hover:bg-zinc-200"
+                                        >
+                                            Open Categories
+                                        </button>
                                     </div>
-                                    <button
-                                        type="button"
-                                        onClick={() => router.push("/dashboard/categories")}
-                                        className="rounded-xl bg-white px-4 py-2.5 text-[11px] font-bold uppercase tracking-[0.16em] text-black transition hover:bg-zinc-200"
-                                    >
-                                        Open Categories
-                                    </button>
+                                </div>
+                                <div className="rounded-3xl border border-amber-500/20 bg-amber-500/10 p-4">
+                                    <div className="flex flex-col gap-3 min-[780px]:flex-row min-[780px]:items-center min-[780px]:justify-between">
+                                        <div>
+                                            <h2 className="text-sm font-black text-white">Ad Management</h2>
+                                            <p className="mt-1 text-xs text-white/45">Review, approve, pause or reject user-submitted ads.</p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => router.push("/dashboard/admin/ads")}
+                                            className="rounded-xl bg-amber-500 px-4 py-2.5 text-[11px] font-bold uppercase tracking-[0.16em] text-black transition hover:bg-amber-400"
+                                        >
+                                            Manage Ads
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         )}

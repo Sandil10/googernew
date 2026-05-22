@@ -7,9 +7,15 @@ import { useState, useEffect, useMemo } from "react";
 import Topbar from "@/app/components/Topbar";
 import IonIcon from "@/app/components/IonIcon";
 import AddProductModal from "@/app/components/AddProductModal";
+import ProductPlansModal from "@/app/components/ProductPlansModal";
 import CartSidebar from "@/app/components/CartSidebar";
+import LoginModal from "@/app/components/auth/LoginModal";
 import { useCart } from "@/app/context/CartContext";
 import { googService } from "@/services/googService";
+import { authService } from "@/services/authService";
+import { subscriptionService } from "@/services/subscriptionService";
+import { useSubscriptionFeatures } from "@/app/lib/subscriptionFeatures";
+import { LOGIN_REQUIRED_EVENT, OPEN_LOGIN_MODAL_EVENT } from "@/app/lib/loginRequired";
 
 // Mobile Bottom Nav Items
 const menuItems = [
@@ -34,12 +40,25 @@ export default function DashboardLayout({
     const [googTextColor, setGoogTextColor] = useState("#FFFFFF");
     const [editingGoogPost, setEditingGoogPost] = useState<any | null>(null);
     const [showPostSuccessToast, setShowPostSuccessToast] = useState(false);
+    const [postErrorToast, setPostErrorToast] = useState<string | null>(null);
+    const [showProductPlansModal, setShowProductPlansModal] = useState(false);
+    const [showGoogPlansModal, setShowGoogPlansModal] = useState(false);
+    const features = useSubscriptionFeatures();
+    const [colorPage, setColorPage] = useState(0);
     const [currentUser, setCurrentUser] = useState<any>(null);
     const [editingProduct, setEditingProduct] = useState<any>(null);
+    const [loginRequiredPrompt, setLoginRequiredPrompt] = useState<{ title: string; message: string; redirectTo: string } | null>(null);
+    const [showLoginModal, setShowLoginModal] = useState(false);
     const { setIsCartOpen, cartCount, isGoogerPaymentCartLocked } = useCart();
     const isCartLocked = isGoogerPaymentCartLocked;
-    const GOOG_TEXT_LIMIT = 75;
-    const GOOG_TEXT_COLORS = ["#FFFFFF", "#F87171", "#FB923C", "#FACC15", "#4ADE80", "#2DD4BF", "#60A5FA", "#A78BFA", "#F472B6", "#CBD5E1"];
+    const googLetterLimit = features.goog_letter_limit ?? 75;
+    const googTextColors = useMemo(() => {
+        const count = Math.max(1, features.write_goog_color_limit ?? 10);
+        return Array.from({ length: count }, (_, i) => {
+            const hue = Math.round((360 * i) / count);
+            return `hsl(${hue}, 85%, 65%)`;
+        });
+    }, [features.write_goog_color_limit]);
     const resolvedProfileImage = currentUser?.profile_picture
         ? (currentUser.profile_picture.startsWith("http") || currentUser.profile_picture.startsWith("data:")
             ? currentUser.profile_picture
@@ -125,6 +144,14 @@ export default function DashboardLayout({
 
     useEffect(() => {
         const handleOpenCreateMenu = () => {
+            if (!authService.isAuthenticated()) {
+                setLoginRequiredPrompt({
+                    title: "Login Required",
+                    message: "Please log in to create Googs, ads, or products.",
+                    redirectTo: "/",
+                });
+                return;
+            }
             setIsCreateActionMenuOpen((prev) => !prev);
         };
 
@@ -137,7 +164,7 @@ export default function DashboardLayout({
             const detail = (event as CustomEvent).detail;
             if (detail?.id) {
                 setEditingGoogPost(detail);
-                setGoogText(String(detail.text || "").slice(0, GOOG_TEXT_LIMIT));
+                setGoogText(String(detail.text || "").slice(0, googLetterLimit));
                 setGoogTextColor(detail.textColor || "#FFFFFF");
             } else {
                 setEditingGoogPost(null);
@@ -165,6 +192,41 @@ export default function DashboardLayout({
         }
     }, []);
 
+
+    useEffect(() => {
+        const handleLoginRequired = (event: Event) => {
+            const detail = (event as CustomEvent)?.detail || {};
+            setLoginRequiredPrompt({
+                title: detail.title || "Login Required",
+                message: detail.message || "Please log in to continue.",
+                redirectTo: detail.redirectTo || "/",
+            });
+        };
+
+        window.addEventListener(LOGIN_REQUIRED_EVENT, handleLoginRequired as EventListener);
+        return () => window.removeEventListener(LOGIN_REQUIRED_EVENT, handleLoginRequired as EventListener);
+    }, []);
+
+    useEffect(() => {
+        const handleOpenLoginModal = () => {
+            setLoginRequiredPrompt(null);
+            setShowLoginModal(true);
+        };
+
+        window.addEventListener(OPEN_LOGIN_MODAL_EVENT, handleOpenLoginModal);
+        return () => window.removeEventListener(OPEN_LOGIN_MODAL_EVENT, handleOpenLoginModal);
+    }, []);
+
+    const requireAuth = (message: string) => {
+        if (authService.isAuthenticated()) return true;
+        setLoginRequiredPrompt({
+            title: "Login Required",
+            message,
+            redirectTo: "/",
+        });
+        return false;
+    };
+
     const handleSuccess = (updatedProduct?: any) => {
         // Dispatch event for ShopPage to refresh with the actual product data
         window.dispatchEvent(new CustomEvent('product-added', { detail: updatedProduct }));
@@ -172,23 +234,38 @@ export default function DashboardLayout({
     };
 
     const toggleCreateActionMenu = () => {
+        if (!requireAuth("Please log in to create Googs, ads, or products.")) return;
         window.dispatchEvent(new CustomEvent('open-create-action-menu'));
     };
 
-    const handleCreateAction = (action: "googer" | "ad" | "product") => {
+    const handleCreateAction = async (action: "googer" | "ad" | "product") => {
+        if (!requireAuth("Please log in to create Googs, ads, or products.")) {
+            setIsCreateActionMenuOpen(false);
+            return;
+        }
         setIsCreateActionMenuOpen(false);
 
-        if (action === "product") {
-            window.dispatchEvent(new CustomEvent('open-add-product-modal'));
+        if (action === "ad") {
+            router.push("/dashboard/ad-campaign/photo-video");
             return;
         }
 
-        if (action === "googer") {
-            setIsWriteGoogsModalOpen(true);
-            return;
+        if (action === "googer" || action === "product") {
+            const usage = await subscriptionService.getMyUsage();
+            if (action === "googer") {
+                if (usage?.googAtLimit) {
+                    setShowGoogPlansModal(true);
+                } else {
+                    setIsWriteGoogsModalOpen(true);
+                }
+            } else {
+                if (usage?.productAtLimit) {
+                    setShowProductPlansModal(true);
+                } else {
+                    window.dispatchEvent(new CustomEvent('open-add-product-modal'));
+                }
+            }
         }
-
-        router.push("/dashboard/ad-campaign/photo-video");
     };
 
     const closeWriteGoogModal = () => {
@@ -196,10 +273,11 @@ export default function DashboardLayout({
         setGoogText("");
         setGoogTextColor("#FFFFFF");
         setEditingGoogPost(null);
+        setColorPage(0);
     };
 
     const postGoogNow = async () => {
-        const text = googText.trim().slice(0, GOOG_TEXT_LIMIT);
+        const text = googText.trim().slice(0, googLetterLimit);
         if (!text) return;
 
         try {
@@ -227,8 +305,10 @@ export default function DashboardLayout({
             setShowPostSuccessToast(true);
             window.setTimeout(() => setShowPostSuccessToast(false), 2200);
             router.push("/dashboard");
-        } catch (error) {
-            console.error("Failed to save Goog post:", error);
+        } catch (error: any) {
+            const msg = error?.message || "Failed to save Goog post.";
+            setPostErrorToast(msg);
+            window.setTimeout(() => setPostErrorToast(null), 4000);
         }
     };
 
@@ -273,6 +353,7 @@ export default function DashboardLayout({
 
                 {menuItems.slice(2).map((item) => {
                     const isActive = pathname === item.href;
+                    const isProtectedItem = item.name === "Wallet" || item.name === "Chats";
                     return (
                         <div key={item.name} className="relative flex flex-col items-center">
                             {/* Floating Cart Icon above Chat only on mobile */}
@@ -295,8 +376,12 @@ export default function DashboardLayout({
                                     )}
                                 </button>
                             )}
-                            <Link
-                                href={item.href}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    if (isProtectedItem && !requireAuth(`Please log in to open ${item.name.toLowerCase()}.`)) return;
+                                    router.push(item.href);
+                                }}
                                 className={`flex flex-col items-center justify-center p-2 rounded-lg transition-colors ${isActive ? "text-white" : "text-gray-500 hover:text-gray-300"
                                     }`}
                             >
@@ -304,7 +389,7 @@ export default function DashboardLayout({
                                     <IonIcon name={isActive ? item.icon : item.icon + "-outline"} />
                                 </div>
                                 <span className="text-[10px] mt-1 font-medium">{item.name}</span>
-                            </Link>
+                            </button>
                         </div>
                     );
                 })}
@@ -401,9 +486,16 @@ export default function DashboardLayout({
                                 </div>
                                 <textarea
                                     value={googText}
-                                    onChange={(e) => setGoogText(e.target.value.slice(0, GOOG_TEXT_LIMIT))}
+                                    onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (val.length > googLetterLimit) {
+                                            setGoogText(val.slice(0, googLetterLimit));
+                                            setShowGoogPlansModal(true);
+                                            return;
+                                        }
+                                        setGoogText(val);
+                                    }}
                                     placeholder="What's happening?"
-                                    maxLength={GOOG_TEXT_LIMIT}
                                     autoFocus
                                     rows={3}
                                     className="flex-1 resize-none bg-transparent text-base font-medium leading-relaxed outline-none placeholder:text-white/30 whitespace-pre-wrap break-words"
@@ -463,35 +555,38 @@ export default function DashboardLayout({
                             )}
 
                             {/* Color Selector */}
-                            <div className="flex items-center gap-2 border-t border-white/[0.06] pt-4">
-                                <p className="text-xs font-bold text-white/50">Text Color</p>
-                                <div className="flex flex-wrap items-center gap-2">
-                                    {GOOG_TEXT_COLORS.map((color) => (
+                            <div className="flex items-center gap-1.5 border-t border-white/[0.06] pt-3">
+                                <p className="text-[10px] font-bold text-white/50 shrink-0">Color</p>
+                                <button
+                                    type="button"
+                                    onClick={() => setColorPage(p => Math.max(0, p - 1))}
+                                    disabled={colorPage === 0}
+                                    className="h-4 w-4 flex items-center justify-center rounded text-white/40 hover:text-white/80 disabled:opacity-20 shrink-0 text-[10px]"
+                                >‹</button>
+                                <div className="flex items-center gap-1">
+                                    {googTextColors.slice(colorPage * 10, colorPage * 10 + 10).map((color) => (
                                         <button
                                             key={color}
                                             type="button"
                                             onClick={() => setGoogTextColor(color)}
-                                            className={`h-6 w-6 rounded-lg border-2 transition-all duration-200 active:scale-90 ${
+                                            className={`h-4 w-4 rounded border transition-all duration-150 active:scale-90 shrink-0 ${
                                                 googTextColor.toLowerCase() === color.toLowerCase()
-                                                    ? "border-white shadow-lg shadow-white/20"
-                                                    : "border-white/20 hover:border-white/40"
+                                                    ? "border-white shadow shadow-white/20"
+                                                    : "border-white/20 hover:border-white/50"
                                             }`}
                                             style={{ backgroundColor: color }}
-                                            aria-label={`Use text color ${color}`}
+                                            aria-label={`Color ${color}`}
                                         />
                                     ))}
-                                    <label className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-lg border-2 border-white/20 bg-white/[0.04] transition-all duration-200 hover:border-white/40 active:scale-90">
-                                        <input
-                                            type="color"
-                                            value={googTextColor}
-                                            onChange={(e) => setGoogTextColor(e.target.value)}
-                                            className="h-5 w-5 cursor-pointer border-0 bg-transparent p-0"
-                                            aria-label="Choose custom text color"
-                                        />
-                                    </label>
                                 </div>
-                                <span className="ml-auto text-xs font-medium text-white/40">
-                                    {googText.length}/{GOOG_TEXT_LIMIT}
+                                <button
+                                    type="button"
+                                    onClick={() => setColorPage(p => Math.min(Math.ceil(googTextColors.length / 10) - 1, p + 1))}
+                                    disabled={colorPage >= Math.ceil(googTextColors.length / 10) - 1}
+                                    className="h-4 w-4 flex items-center justify-center rounded text-white/40 hover:text-white/80 disabled:opacity-20 shrink-0 text-[10px]"
+                                >›</button>
+                                <span className={`ml-auto text-[10px] font-medium shrink-0 ${googText.length >= googLetterLimit ? "text-red-400" : googText.length >= googLetterLimit * 0.85 ? "text-amber-400" : "text-white/40"}`}>
+                                    {googText.length}/{googLetterLimit}
                                 </span>
                             </div>
                         </div>
@@ -513,10 +608,80 @@ export default function DashboardLayout({
 
             <CartSidebar />
 
+            {showProductPlansModal && (
+                <ProductPlansModal
+                    onClose={() => setShowProductPlansModal(false)}
+                    subtitle="Subscribe to list more products"
+                    limitMessage="If you have reached your product upload limit, please subscribe to a higher plan below."
+                />
+            )}
+
+            {showGoogPlansModal && (
+                <ProductPlansModal
+                    onClose={() => setShowGoogPlansModal(false)}
+                    subtitle="Subscribe to post more Googs"
+                    limitMessage="If you have reached your Goog posting limit, please subscribe to a higher plan below."
+                />
+            )}
+
             {showPostSuccessToast && (
                 <div className="fixed bottom-24 left-1/2 z-[200] -translate-x-1/2 rounded-full border border-[#00D4AA]/30 bg-[#151416] px-5 py-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)]">
                     <span className="text-[13px] font-semibold text-[#00D4AA]">Goog posted!</span>
                 </div>
+            )}
+
+            {postErrorToast && (
+                <div className="fixed bottom-24 left-1/2 z-[200] -translate-x-1/2 max-w-[90vw] rounded-full border border-red-500/30 bg-[#151416] px-5 py-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)]">
+                    <span className="text-[13px] font-semibold text-red-400">{postErrorToast}</span>
+                </div>
+            )}
+
+            {loginRequiredPrompt && (
+                <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/80 p-4 backdrop-blur-md">
+                    <div className="absolute inset-0" onClick={() => setLoginRequiredPrompt(null)} />
+                    <div className="relative w-full max-w-[360px] rounded-[2rem] border border-white/10 bg-[#151416] p-7 text-center shadow-[0_30px_100px_rgba(0,0,0,0.62)]">
+                        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-red-400/25 bg-red-500/10 text-red-300">
+                            <IonIcon name="lock-closed-outline" className="text-3xl" />
+                        </div>
+                        <h2 className="mt-5 text-lg font-black tracking-[0.04em] text-white">{loginRequiredPrompt.title}</h2>
+                        <p className="mt-2 text-sm font-medium leading-relaxed text-white/65">{loginRequiredPrompt.message}</p>
+                        <div className="mt-6 flex flex-col gap-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setLoginRequiredPrompt(null);
+                                    setShowLoginModal(true);
+                                }}
+                                className="w-full rounded-2xl bg-red-500 px-4 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white transition hover:bg-red-400"
+                            >
+                                Log In
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setLoginRequiredPrompt(null)}
+                                className="w-full rounded-2xl bg-white/5 px-4 py-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition hover:bg-white/10 hover:text-white"
+                            >
+                                Not Now
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showLoginModal && (
+                <LoginModal
+                    onClose={() => setShowLoginModal(false)}
+                    onSuccess={() => {
+                        setShowLoginModal(false);
+                        try {
+                            const storedUser = JSON.parse(localStorage.getItem("user") || "{}");
+                            setCurrentUser(storedUser?.id ? storedUser : null);
+                        } catch {
+                            setCurrentUser(null);
+                        }
+                        window.location.reload();
+                    }}
+                />
             )}
         </div>
     );

@@ -2,6 +2,21 @@
 const isClient = typeof window !== 'undefined';
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
 const getStoredToken = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null);
+const VIEWER_KEY_STORAGE_KEY = 'googer-viewer-key';
+
+const getViewerKey = () => {
+    if (typeof localStorage === 'undefined') return '';
+    let value = localStorage.getItem(VIEWER_KEY_STORAGE_KEY);
+    if (!value) {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            value = crypto.randomUUID();
+        } else {
+            value = `viewer-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+        }
+        localStorage.setItem(VIEWER_KEY_STORAGE_KEY, value);
+    }
+    return value;
+};
 
 const buildApiError = (response: Response, data: any, fallbackMessage: string) => {
     const message = data?.message
@@ -26,7 +41,8 @@ const getAuthHeaders = () => {
     const token = getStoredToken();
     return {
         'Content-Type': 'application/json',
-        'Authorization': token ? `Bearer ${token}` : ''
+        'Authorization': token ? `Bearer ${token}` : '',
+        'x-googer-viewer-key': getViewerKey(),
     };
 };
 
@@ -325,6 +341,21 @@ export const marketService = {
         }
     },
 
+    getAdCoinSettingsPublic: async () => {
+        try {
+            const response = await fetch(`${API_URL}/admin/customization/ad-coin-settings/public`, {
+                method: 'GET',
+                cache: 'no-store',
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Failed to fetch ad coin settings');
+            return data.settings || null;
+        } catch (error) {
+            console.error('Error fetching ad coin settings:', error);
+            throw error;
+        }
+    },
+
     addComment: async (id: string | number, text: string, parentId?: string | number) => {
         const engagementId = String(id);
         try {
@@ -438,12 +469,13 @@ export const marketService = {
         }
     },
 
-    logAdClick: async (id: string | number) => {
+    logAdClick: async (id: string | number, actionType?: "message" | "visit" | "call") => {
         const engagementId = String(id);
         try {
             const response = await fetch(`${API_URL}/market/${engagementId}/click`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
+                body: JSON.stringify(actionType ? { action_type: actionType } : {}),
             });
             return await response.json();
         } catch (error) {

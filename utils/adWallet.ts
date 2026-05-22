@@ -45,63 +45,22 @@ export function getCurrentUserIdentityKey() {
 const ADJUSTMENT_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 export function readAdWalletAdjustments() {
-    if (typeof window === "undefined") return [] as AdWalletAdjustment[];
-
-    try {
-        const rawValue = window.localStorage.getItem(AD_WALLET_ADJUSTMENTS_KEY);
-        if (!rawValue) return [];
-
-        const parsed = JSON.parse(rawValue);
-        if (!Array.isArray(parsed)) return [];
-
-        const now = Date.now();
-
-        const valid = parsed.filter((entry): entry is AdWalletAdjustment => {
-            return Boolean(
-                entry
-                && typeof entry.id === "string"
-                && typeof entry.adId === "string"
-                && typeof entry.ownerKey === "string"
-                && typeof entry.amount === "number"
-                && entry.kind === "refund"
-                && typeof entry.createdAt === "string"
-                && (now - new Date(entry.createdAt).getTime()) < ADJUSTMENT_TTL_MS
-            );
-        });
-
-        // Prune stale entries so they don't accumulate indefinitely
-        if (valid.length !== parsed.length) {
-            try { window.localStorage.setItem(AD_WALLET_ADJUSTMENTS_KEY, JSON.stringify(valid)); } catch { /* storage full */ }
-        }
-
-        return valid;
-    } catch {
-        return [];
+    if (typeof window !== "undefined") {
+        try { window.localStorage.removeItem(AD_WALLET_ADJUSTMENTS_KEY); } catch { /* ignore */ }
     }
+    return [] as AdWalletAdjustment[];
 }
 
 export function writeAdWalletAdjustments(adjustments: AdWalletAdjustment[]) {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem(AD_WALLET_ADJUSTMENTS_KEY, JSON.stringify(adjustments));
+    try { window.localStorage.removeItem(AD_WALLET_ADJUSTMENTS_KEY); } catch { /* ignore */ }
 }
 
 export function addAdWalletRefund(adId: string, ownerKey: string, amount: number, note?: string) {
-    if (typeof window === "undefined" || !ownerKey || amount <= 0) return null;
-
-    const nextEntry: AdWalletAdjustment = {
-        id: `refund-${adId}-${Date.now()}`,
-        adId,
-        ownerKey,
-        amount,
-        kind: "refund",
-        createdAt: new Date().toISOString(),
-        note,
-    };
-
-    const existing = readAdWalletAdjustments();
-    existing.push(nextEntry);
-    writeAdWalletAdjustments(existing);
-    return nextEntry;
+    if (typeof window !== "undefined") {
+        try { window.localStorage.removeItem(AD_WALLET_ADJUSTMENTS_KEY); } catch { /* ignore */ }
+    }
+    return null;
 }
 
 export function getAdRefundTotal(adId: string, ownerKey?: string) {
@@ -111,13 +70,7 @@ export function getAdRefundTotal(adId: string, ownerKey?: string) {
 }
 
 export function getWalletBalanceWithAdAdjustments(balance: number, ownerKey?: string) {
-    if (!ownerKey) return balance;
-
-    const refundTotal = readAdWalletAdjustments()
-        .filter((entry) => entry.ownerKey === ownerKey && entry.kind === "refund")
-        .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
-
-    return balance + refundTotal;
+    return balance;
 }
 
 export function getPublishedAdCountForUser(ownerKey?: string) {

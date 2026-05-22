@@ -29,6 +29,11 @@ export interface NormalizedProductAd {
   payment_methods?: any;
   commission_info?: any;
   created_at?: string;
+  createdAt?: string;
+  active_start_time?: string;
+  activeStartTime?: string;
+  started_at?: string;
+  startedAt?: string;
   product_code?: string;
   linked_product_code?: string;
   product_id?: string | number;
@@ -88,6 +93,8 @@ export function normalizeProductAd(rawItem: any): NormalizedProductAd {
   const sourceVariants = safeParseArray(source.variants);
   const sourceImages = safeParseArray(source.images);
   const sourceMediaGallery = safeParseArray(source.media_gallery);
+  const activeStartTime = source.active_start_time || source.activeStartTime || source.started_at || source.startedAt || null;
+  const createdAt = activeStartTime || source.created_at || source.createdAt;
   const primaryImageCandidate =
     source.image_url ||
     source.main_image ||
@@ -144,7 +151,12 @@ export function normalizeProductAd(rawItem: any): NormalizedProductAd {
       shipping_info: source.shipping_info,
       payment_methods: source.payment_methods,
       commission_info: source.commission_info,
-      created_at: source.created_at,
+      created_at: createdAt,
+      createdAt,
+      active_start_time: activeStartTime,
+      activeStartTime,
+      started_at: source.started_at || source.startedAt || activeStartTime,
+      startedAt: source.startedAt || source.started_at || activeStartTime,
       product_code: source.product_code,
       linked_product_code: source.linked_product_code,
       product_id: source.product_id,
@@ -159,6 +171,10 @@ export function normalizeProductAd(rawItem: any): NormalizedProductAd {
         main_price: price,
         product_price: price,
         promo_price: promoPrice,
+        created_at: createdAt,
+        createdAt,
+        active_start_time: activeStartTime,
+        activeStartTime,
       },
     };
   }
@@ -209,7 +225,12 @@ export function normalizeProductAd(rawItem: any): NormalizedProductAd {
     shipping_info: source.shipping_info,
     payment_methods: source.payment_methods,
     commission_info: source.commission_info,
-    created_at: source.created_at,
+    created_at: createdAt,
+    createdAt,
+    active_start_time: activeStartTime,
+    activeStartTime,
+    started_at: source.started_at || source.startedAt || activeStartTime,
+    startedAt: source.startedAt || source.started_at || activeStartTime,
     product_code: source.product_code,
     linked_product_code: source.linked_product_code,
     product_id: source.product_id,
@@ -224,6 +245,10 @@ export function normalizeProductAd(rawItem: any): NormalizedProductAd {
       main_price: price,
       product_price: price,
       promo_price: promoPrice,
+      created_at: createdAt,
+      createdAt,
+      active_start_time: activeStartTime,
+      activeStartTime,
     },
   };
 }

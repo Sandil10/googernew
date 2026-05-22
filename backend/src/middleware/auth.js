@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { error } = require('../utils/responseHandler');
+const pool = require('../config/database');
 
 const authMiddleware = (req, res, next) => {
     try {
@@ -22,6 +23,14 @@ const authMiddleware = (req, res, next) => {
         const decoded = jwt.verify(token, secret);
         console.log('[AUTH] Token Decoded:', { id: decoded.id, userId: decoded.userId });
         req.user = decoded;
+
+        // Fire-and-forget plan expiry cleanup
+        pool.query(`
+            UPDATE user_plan_subscriptions
+            SET status = 'expired'
+            WHERE status = 'active' AND expires_at < NOW()
+        `).catch(err => console.error('[AUTH] Plan expiry check failed:', err));
+
         next();
 
     } catch (err) {

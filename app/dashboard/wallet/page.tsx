@@ -19,8 +19,7 @@ export default function WalletPage() {
     const [copied, setCopied] = useState(false);
     const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
     const [user, setUser] = useState<any>(null);
-    const [idVerificationName, setIdVerificationName] = useState("");
-    const [subscriptionType, setSubscriptionType] = useState("Monthly Subscription");
+    // idVerificationName state removed — replaced by /wallet/verification page
     const [showShareModal, setShowShareModal] = useState(false);
     const [adCount, setAdCount] = useState(0);
 
@@ -261,12 +260,12 @@ export default function WalletPage() {
                         </Link>
                     ))}
 
-                    {/* ID Verification Name - Custom Container Box */}
-                    <div className="bg-[#070707] border border-gray-800 rounded-2xl p-5 md:p-6 transition-all hover:shadow-lg relative overflow-hidden h-full min-h-[180px]">
+                    {/* ID Verification - Navigate to verification page */}
+                    <Link href="/dashboard/wallet/verification" className="block bg-[#070707] border border-gray-800 rounded-2xl p-5 md:p-6 transition-all hover:shadow-lg hover:border-blue-500/30 relative overflow-hidden h-full min-h-[180px] group">
                         <div className="flex flex-col h-full relative z-10">
                             <div className="flex items-start justify-between mb-2">
                                 <div className="w-12 h-12 md:w-14 md:h-14 border border-white/10 bg-black/20 rounded-xl flex items-center justify-center text-2xl shrink-0">
-                                    <IonIcon name="person-circle-outline" className="text-white/75" />
+                                    <IonIcon name="shield-checkmark-outline" className="text-blue-400/80" />
                                 </div>
                                 <div className="text-right">
                                     <p className="text-[10px] md:text-xs text-gray-500 mb-1 font-medium tracking-wide uppercase">Identity</p>
@@ -274,49 +273,41 @@ export default function WalletPage() {
                                 </div>
                             </div>
                             <div className="flex-1">
-                                <h4 className="text-base font-bold text-white mb-3">ID Verification Name</h4>
-                                <input
-                                    type="text"
-                                    value={idVerificationName}
-                                    onChange={(e) => setIdVerificationName(e.target.value)}
-                                    className="w-full bg-[#030303] border border-gray-700/50 rounded-xl px-4 py-3 text-white text-center text-sm font-bold focus:outline-none focus:ring-1 focus:ring-white/30 shadow-inner"
-                                    placeholder="Enter Name"
-                                />
+                                <h4 className="text-base font-bold text-white mb-1">Get Verified</h4>
+                                <p className="text-[11px] text-white/40 leading-relaxed mb-3">Apply for a blue verification badge to build trust with your audience.</p>
+                                <div className="inline-flex items-center gap-1.5 rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-blue-300 transition group-hover:bg-blue-500/15">
+                                    <IonIcon name="arrow-forward-outline" className="text-xs" />
+                                    Apply Now
+                                </div>
                             </div>
                         </div>
-                    </div>
+                    </Link>
 
-                    {/* Subscription Type - Custom Container Box */}
-                    <div className="bg-[#070707] border border-gray-800 rounded-2xl p-5 md:p-6 transition-all hover:shadow-lg relative overflow-hidden h-full min-h-[180px]">
-                        <div className="flex flex-col h-full relative z-10">
-                            <div className="flex items-start justify-between mb-2">
-                                <div className="w-12 h-12 md:w-14 md:h-14 border border-white/10 bg-black/20 rounded-xl flex items-center justify-center text-2xl shrink-0">
-                                    <IonIcon name="card-outline" className="text-white/75" />
+                    {/* Subscription Plan - Click to open subscription page */}
+                    <Link href="/dashboard/wallet/subscription" className="block h-full group">
+                        <div className="bg-[#070707] border border-gray-800 rounded-2xl p-5 md:p-6 transition-all hover:shadow-lg hover:border-gray-700 relative overflow-hidden h-full min-h-[180px]">
+                            <div className="flex flex-col h-full relative z-10">
+                                <div className="flex items-start justify-between mb-2">
+                                    <div className="w-12 h-12 md:w-14 md:h-14 border border-white/10 bg-black/20 rounded-xl flex items-center justify-center text-2xl shrink-0">
+                                        <IonIcon name="card-outline" className="text-white/75" />
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-[10px] md:text-xs text-gray-500 mb-1 font-medium tracking-wide uppercase">Subscription</p>
+                                        <p className="text-sm font-bold text-white">Plan</p>
+                                    </div>
                                 </div>
-                                <div className="text-right">
-                                    <p className="text-[10px] md:text-xs text-gray-500 mb-1 font-medium tracking-wide uppercase">Subscription</p>
-                                    <p className="text-sm font-bold text-white">Plan</p>
-                                </div>
-                            </div>
-                            <div className="flex-1">
-                                <h4 className="text-base font-bold text-white mb-3">Select Subscription</h4>
-                                <div className="relative">
-                                    <select
-                                        value={subscriptionType}
-                                        onChange={(e) => setSubscriptionType(e.target.value)}
-                                        className="w-full bg-[#030303] border border-gray-700/50 rounded-xl px-4 py-3 text-white text-center text-xs font-bold focus:outline-none focus:ring-1 focus:ring-white/30 shadow-inner appearance-none transition-all hover:bg-[#0b0b0b] cursor-pointer"
-                                    >
-                                        <option value="Monthly Subscription">Monthly Subscription</option>
-                                        <option value="Yearly Subscription">Yearly Subscription</option>
-                                        <option value="Quarterly Subscription">Quarterly Subscription</option>
-                                    </select>
-                                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
-                                        <IonIcon name="chevron-down-outline" className="text-xs" />
+                                <div className="flex-1">
+                                    <h4 className="text-base font-bold text-white mb-3">View Subscription Plans</h4>
+                                    <div className="w-full bg-[#030303] border border-gray-700/50 rounded-xl px-4 py-3 text-white text-center text-sm font-bold shadow-inner transition-all group-hover:bg-[#0b0b0b]">
+                                        Choose a Package
+                                    </div>
+                                    <div className="mt-3 flex items-center justify-center gap-1 text-[10px] font-bold uppercase tracking-widest text-white/55">
+                                        Open <IonIcon name="arrow-forward" />
                                     </div>
                                 </div>
                             </div>
                         </div>
-                    </div>
+                    </Link>
 
                     {/* Ad Center - Custom Container Box */}
                     <Link href="/dashboard/wallet/ad-center" className="block h-full group">

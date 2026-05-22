@@ -143,8 +143,9 @@ export function normalizeAdData(ad: any): NormalizedAd {
     ad.owner?.profile_picture,
     ad.owner?.profilePicture
   );
+  const activeStartRaw = firstPresent(ad.active_start_time, ad.activeStartTime, ad.started_at, ad.startedAt);
   const createdAtRaw = firstPresent(ad.created_at, ad.createdAt, ad.created, ad.published_at, ad.updated_at);
-  const createdAt = normalizeAdTimestamp(createdAtRaw) || createdAtRaw;
+  const createdAt = normalizeAdTimestamp(activeStartRaw || createdAtRaw) || activeStartRaw || createdAtRaw;
   const activeLink = firstPresent(ad.active_link, ad.activeLink, ad.cta_link, ad.ctaLink);
   const ctaTopic = firstPresent(ad.cta_topic, ad.ctaTopic);
   const ctaValue = firstPresent(ad.cta_value, ad.ctaValue);
@@ -160,6 +161,11 @@ export function normalizeAdData(ad: any): NormalizedAd {
   const commentCount = Number(ad.comments_count ?? ad.commentCount ?? ad.comments ?? 0);
   const shareCount = Number(ad.shares_count ?? ad.shareCount ?? ad.shares ?? 0);
   const viewCount = Number(ad.views_count ?? ad.viewCount ?? ad.views ?? ad.impressions ?? 0);
+  const reachCount = Number(ad.current_reach ?? ad.reach ?? 0);
+  const clickCount = Number(ad.clicks ?? ad.link_actions ?? 0);
+  const messageClicks = Number(ad.message_clicks ?? 0);
+  const visitClicks = Number(ad.visit_clicks ?? 0);
+  const callClicks = Number(ad.call_clicks ?? 0);
 
   // Status
   const coinCollected = !!(ad.ad_coin_collected || ad.coinCollected || ad.isCollected);
@@ -207,6 +213,13 @@ export function normalizeAdData(ad: any): NormalizedAd {
     shares_count: shareCount,
     viewCount,
     views_count: viewCount,
+    current_reach: reachCount,
+    reach: reachCount,
+    clicks: clickCount,
+    link_actions: clickCount,
+    message_clicks: messageClicks,
+    visit_clicks: visitClicks,
+    call_clicks: callClicks,
     coinCollected,
     ad_coin_collected: coinCollected,
     price,
@@ -237,6 +250,13 @@ export function normalizeAdData(ad: any): NormalizedAd {
       shareCount,
       views_count: viewCount,
       viewCount,
+      current_reach: reachCount,
+      reach: reachCount,
+      clicks: clickCount,
+      link_actions: clickCount,
+      message_clicks: messageClicks,
+      visit_clicks: visitClicks,
+      call_clicks: callClicks,
       price,
       main_price: price,
       product_price: price,

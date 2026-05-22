@@ -18,11 +18,14 @@ export type WritePost = {
         img: string;
     };
     likes: number;
+    likes_count?: number;
     comments: number;
     views: number;
+    views_count?: number;
     reposts: number;
     shares: number;
     liked: boolean;
+    user_liked?: boolean;
 };
 
 type GoogLinkPreview = {
@@ -245,6 +248,9 @@ interface GoogCardProps {
     onViewPost?: (postId: number) => void;
     onSharePost?: (postId: number) => void;
     onToggleMenu?: (event: React.MouseEvent<HTMLButtonElement>, post: WritePost) => void;
+    onToggleSave?: (postId: number) => void;
+    isSaved?: boolean;
+    saveAtLimit?: boolean;
     showSubscribe?: boolean;
 }
 
@@ -256,6 +262,9 @@ export function GoogCard({
     onViewPost,
     onSharePost,
     onToggleMenu,
+    onToggleSave,
+    isSaved = false,
+    saveAtLimit = false,
     showSubscribe = true,
 }: GoogCardProps) {
     const preview = getGoogLinkPreview(post.text);
@@ -339,6 +348,17 @@ export function GoogCard({
                                 onLongPress={() => onOpenSheet?.("shares", post)}
                                 iconSize="text-[21px]"
                             />
+                            {onToggleSave && (
+                                <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); if (!saveAtLimit || isSaved) onToggleSave(post.id); }}
+                                    className={`flex touch-none select-none items-center gap-1 transition-all duration-300 active:scale-75 focus:outline-none ${isSaved ? "text-amber-400" : saveAtLimit ? "text-white/20 cursor-not-allowed" : "text-white/50 hover:text-white"}`}
+                                    aria-label={isSaved ? "Unsave" : saveAtLimit ? "Save limit reached" : "Save"}
+                                    title={isSaved ? "Unsave" : saveAtLimit ? "Goog save limit reached — upgrade your plan" : "Save"}
+                                >
+                                    <IonIcon name={isSaved ? "bookmark" : "bookmark-outline"} className="text-[21px]" />
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>
