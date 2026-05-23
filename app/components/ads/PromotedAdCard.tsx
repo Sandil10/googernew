@@ -7,6 +7,7 @@ import { SharedProductPromoteAdCard } from "@/app/components/ads/SharedProductPr
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
+import { isPhotoVideoPromotableAd } from "@/app/lib/ads/promoteAgain";
 
 type PromotedAdCardProps = {
   ad: any;
@@ -24,6 +25,7 @@ type PromotedAdCardProps = {
   onLogView?: (ad: any) => void;
   onReport?: (ad: any) => void;
   onNotInterested?: (id: string | number) => void;
+  onPromoteAgain?: (ad: any) => void | Promise<void>;
   onCollectCoin?: (event: React.MouseEvent, ad: any) => void;
   onNavigateToProfile?: (event: React.MouseEvent, ad: any) => void;
   canShowCollectCoin?: (ad: any) => boolean;
@@ -52,6 +54,7 @@ export function PromotedAdCard({
   onLogView,
   onReport,
   onNotInterested,
+  onPromoteAgain,
   onCollectCoin,
   onNavigateToProfile,
   canShowCollectCoin,
@@ -63,6 +66,7 @@ export function PromotedAdCard({
 }: PromotedAdCardProps) {
   const normalized = normalizeAdData(ad);
   const actionAd = normalized.raw || ad;
+  const nestedRawAd = (actionAd as any)?.raw || ad?.raw || {};
 
   // Resolve the ad promoter's identity — collect every possible owner ID from the raw ad.
   // The ads table may store users.user_id (sequential, e.g. 5) while currentUser.id is
@@ -70,13 +74,26 @@ export function PromotedAdCard({
   const adOwnerCandidates: string[] = [
     normalized.ad_owner_user_id,
     normalized.advertiser_id,
+    normalized.userId,
+    normalized.user_id,
+    normalized.owner_user_id,
     (actionAd as any)?.ad_owner_user_id,
     (actionAd as any)?.advertiser_id,
+    (actionAd as any)?.owner_user_id,
+    (actionAd as any)?.ownerUserId,
     ad?.ad_owner_user_id,
     ad?.advertiser_id,
+    ad?.owner_user_id,
+    ad?.ownerUserId,
     // Also check user_id on the raw ad (Product Promote sets this to the promoter's users.user_id)
     (actionAd as any)?.user_id,
     ad?.user_id,
+    (nestedRawAd as any)?.ad_owner_user_id,
+    (nestedRawAd as any)?.advertiser_id,
+    (nestedRawAd as any)?.owner_user_id,
+    (nestedRawAd as any)?.ownerUserId,
+    (nestedRawAd as any)?.user_id,
+    (nestedRawAd as any)?.userId,
   ]
     .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
     .map((v) => String(v));
@@ -130,6 +147,7 @@ export function PromotedAdCard({
   };
   const campaignType = String(merged.campaign_type || merged.campaignType || actionAd?.campaign_type || actionAd?.campaignType || "").trim();
   const isProductPromote = campaignType.toLowerCase() === "product promote";
+  const canPromotePhotoVideoAgain = isAdOwner && isPhotoVideoPromotableAd(merged);
 
   if (merged.type === "product" || isProductPromote) {
     const hydratedProduct = (normalized.raw as any) || actionAd || ad;
@@ -209,6 +227,7 @@ export function PromotedAdCard({
       onShare={onShare || (() => {})}
       onReport={onReport || (() => {})}
       onNotInterested={onNotInterested || (() => {})}
+      onPromoteAgain={canPromotePhotoVideoAgain ? onPromoteAgain : undefined}
       onCollectCoin={onCollectCoin || (() => {})}
       onNavigateToProfile={onNavigateToProfile || (() => {})}
       canShowCollectCoin={guardedCanShowCollectCoin || (() => false)}

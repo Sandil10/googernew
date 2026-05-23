@@ -7,11 +7,10 @@ import { adsService } from "@/services/adsService";
 import { AdAnalyticsModal } from "@/app/components/ads/AdAnalyticsModal";
 import { subscriptionService } from "@/services/subscriptionService";
 
-type AdStatus = "Under Review" | "Active" | "Paused" | "Completed" | "Cancelled";
+type AdStatus = "Under Review" | "Active" | "Paused" | "Removed" | "Completed" | "Expired" | "Cancelled";
 type StatusFilter = "All Ads" | AdStatus;
 const ADS_PER_PAGE = 5;
-const BASIC_RAW_MEDIA_WARNING_MS = 2 * 60 * 1000;
-const BASIC_RAW_MEDIA_EXPIRY_MS = 10 * 60 * 1000;
+const WARNING_LEAD_MS = 3 * 24 * 60 * 60 * 1000;
 
 type AdHistoryRow = {
     adId: string;
@@ -61,11 +60,13 @@ const STATUS_FILTERS: Array<{ label: StatusFilter; slug: string; icon: string }>
     { label: "Under Review", slug: "under-review",  icon: "time-outline" },
     { label: "Active",       slug: "active",        icon: "radio-button-on-outline" },
     { label: "Paused",       slug: "paused",        icon: "pause-circle-outline" },
+    { label: "Removed",      slug: "removed",       icon: "eye-off-outline" },
     { label: "Completed",    slug: "completed",     icon: "checkmark-done-outline" },
+    { label: "Expired",      slug: "expired",       icon: "hourglass-outline" },
     { label: "Cancelled",    slug: "cancelled",     icon: "close-circle-outline" },
 ];
 
-const VALID_STATUSES: AdStatus[] = ["Under Review", "Active", "Paused", "Completed", "Cancelled"];
+const VALID_STATUSES: AdStatus[] = ["Under Review", "Active", "Paused", "Removed", "Completed", "Expired", "Cancelled"];
 
 
 function supportsRemainingBudgetRefund(campaignType: string) {
@@ -173,6 +174,24 @@ function isRawPhotoVideoAd(ad: AdHistoryRow) {
     return !/^https?:\/\//i.test(primaryMedia) || /\/uploads?\//i.test(primaryMedia);
 }
 
+function getPlanExpiryMs(plan: any) {
+    const extra = plan?.extra || {};
+    const value = Number(extra.ads_expiry_value ?? extra.ads_expiry_days ?? 0);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    const unit = String(extra.ads_expiry_unit || (extra.ads_expiry_days != null ? "days" : "days")).toLowerCase();
+    if (unit === "minutes") return value * 60 * 1000;
+    if (unit === "hours") return value * 60 * 60 * 1000;
+    return value * 24 * 60 * 60 * 1000;
+}
+
+function getFinalRawAdExpiryMs(ad: AdHistoryRow, plan: any) {
+    const candidates = [
+        getPlanExpiryMs(plan),
+        Number(ad.durationDays || 0) * 24 * 60 * 60 * 1000,
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    return candidates.length ? Math.min(...candidates) : 0;
+}
+
 function formatDateTimeLabel(value: string) {
     const parsedDate = new Date(value);
     if (Number.isNaN(parsedDate.getTime())) return "Unknown time";
@@ -223,6 +242,7 @@ function getDurationStatusLabel(ad: AdHistoryRow, nowMs: number) {
     if (totalMs <= 0 || totalDays <= 0) return `${totalDays} ${totalDays === 1 ? "day" : "days"}`;
     if (ad.status === "Under Review") return `${totalDays} ${totalDays === 1 ? "day" : "days"}`;
     if (ad.status === "Completed") return `0 of ${totalDays} ${totalDays === 1 ? "day" : "days"} left`;
+    if (ad.status === "Expired") return `0 of ${totalDays} ${totalDays === 1 ? "day" : "days"} left`;
     return `${formatRelativeDuration(remainingMs)} left`;
 }
 
@@ -243,7 +263,9 @@ function getAdEndTime(ad: AdHistoryRow) {
 function getAdRemainingTimeLabel(ad: AdHistoryRow, nowMs: number) {
     const remainingMs = getLiveDurationRemainingMs(ad, nowMs);
     if (ad.status === "Completed") return "Completed";
+    if (ad.status === "Expired") return "Expired";
     if (ad.status === "Cancelled") return "Cancelled";
+    if (ad.status === "Removed") return `${formatRelativeDuration(remainingMs)} left`;
     if (ad.status === "Under Review") return "Under Review";
     if (ad.status === "Paused") return `${formatRelativeDuration(remainingMs)} left`;
     return `${formatRelativeDuration(remainingMs)} left`;
@@ -328,7 +350,8 @@ function getStatusClasses(status: AdStatus) {
     if (status === "Under Review") return "border-amber-400/25 bg-amber-400/10 text-amber-200";
     if (status === "Active") return "border-emerald-400/25 bg-emerald-400/10 text-emerald-200";
     if (status === "Paused") return "border-sky-400/25 bg-sky-400/10 text-sky-200";
-    if (status === "Completed") return "border-violet-400/25 bg-violet-400/10 text-violet-200";
+    if (status === "Removed") return "border-orange-400/25 bg-orange-400/10 text-orange-200";
+    if (status === "Completed" || status === "Expired") return "border-violet-400/25 bg-violet-400/10 text-violet-200";
     return "border-rose-400/25 bg-rose-400/10 text-rose-200";
 }
 
@@ -346,10 +369,9 @@ export default function AdCenterPage() {
     const [expiryPopupDismissed, setExpiryPopupDismissed] = useState(false);
     const [expiryPopupMediaType, setExpiryPopupMediaType] = useState<"photo" | "video">("photo");
     const [expiryPopupRemainingLabel, setExpiryPopupRemainingLabel] = useState("soon");
-    const planExpiryMsRef = useRef<number>(0);
-    const isBasicPlanRef = useRef(false);
     const shownAdIdsRef = useRef<Set<string>>(new Set());
     const adsRef = useRef<AdHistoryRow[]>([]);
+    const planRef = useRef<any>(null);
 
     useEffect(() => {
         const timerId = window.setInterval(() => setNowMs(Date.now()), 1000);
@@ -392,19 +414,17 @@ export default function AdCenterPage() {
     // Keep adsRef current so the interval closure always reads latest ads
     useEffect(() => { adsRef.current = ads; }, [ads]);
 
-    // Load plan expiry once, keep ref updated
     useEffect(() => {
         const loadPlan = async () => {
             try {
-                const plan = await subscriptionService.getMyPlan();
-                isBasicPlanRef.current = !!plan?.is_basic;
-                if (!isBasicPlanRef.current) { planExpiryMsRef.current = 0; return; }
-                planExpiryMsRef.current = BASIC_RAW_MEDIA_EXPIRY_MS;
-            } catch { isBasicPlanRef.current = false; planExpiryMsRef.current = 0; }
+                planRef.current = await subscriptionService.getMyPlan();
+            } catch {
+                planRef.current = null;
+            }
         };
         void loadPlan();
-        window.addEventListener('subscription:changed', loadPlan);
-        return () => window.removeEventListener('subscription:changed', loadPlan);
+        window.addEventListener("subscription:changed", loadPlan);
+        return () => window.removeEventListener("subscription:changed", loadPlan);
     }, []);
 
     // Real-time expiry popup — checks every 3 seconds
@@ -418,10 +438,6 @@ export default function AdCenterPage() {
 
         const check = () => {
             if (expiryPopupDismissed) return;
-            const expiryMs = planExpiryMsRef.current;
-            if (expiryMs <= 0) return;
-            if (!isBasicPlanRef.current) return;
-            const triggerMs = Math.min(BASIC_RAW_MEDIA_WARNING_MS, expiryMs);
             const now = Date.now();
             for (const ad of adsRef.current) {
                 if (!isRawPhotoVideoAd(ad)) continue;
@@ -430,8 +446,11 @@ export default function AdCenterPage() {
                 const refTime = ad.activeStartTime || ad.startedAt;
                 const refMs = new Date(refTime || "").getTime();
                 if (!Number.isFinite(refMs)) continue;
+                const expiryMs = getFinalRawAdExpiryMs(ad, planRef.current);
+                if (expiryMs <= 0) continue;
+                const triggerMs = Math.max(0, expiryMs - WARNING_LEAD_MS);
                 const elapsed = now - refMs;
-                if (elapsed >= triggerMs) {
+                if (elapsed >= triggerMs && elapsed < expiryMs) {
                     shownAdIdsRef.current.add(ad.adId);
                     const remaining = Math.max(0, expiryMs - elapsed);
                     setExpiryPopupMediaType(ad.mediaType === "video" ? "video" : "photo");
@@ -480,9 +499,12 @@ export default function AdCenterPage() {
         window.history.pushState(null, "", `/dashboard/wallet/ad-center?status=${filter.slug}`);
     };
 
-    const handleCancel = async (adId: string) => {
+    const handleCancel = async (ad: AdHistoryRow) => {
         try {
-            await adsService.updateAd(adId, { status: "Cancelled" });
+            const nextStatus: AdStatus = ["Active", "Paused"].includes(ad.status)
+                ? "Removed"
+                : "Cancelled";
+            await adsService.updateAd(ad.adId, { status: nextStatus });
             const nextAds = await adsService.getMyAds();
             setAds(normalizeApiAds(nextAds));
             window.dispatchEvent(new Event("googer-wallet-updated"));
@@ -490,7 +512,7 @@ export default function AdCenterPage() {
             setActionError(null);
             return true;
         } catch (error: any) {
-            setActionError(error?.message || "Failed to cancel ad.");
+            setActionError(error?.message || "Failed to update ad.");
             return false;
         }
     };
@@ -709,7 +731,7 @@ export default function AdCenterPage() {
                                                     }}
                                                     className="inline-flex min-w-[76px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-[8px] font-black uppercase tracking-[0.08em] text-white/70 transition hover:bg-white/[0.09] hover:text-white"
                                                 >
-                                                    Cancel
+                                                    {["Active", "Paused"].includes(ad.status) ? "Remove" : "Cancel"}
                                                 </button>
                                             )}
                                         </div>
@@ -981,10 +1003,12 @@ export default function AdCenterPage() {
                     />
                     <div className="relative z-[131] w-full max-w-[360px] rounded-[1.5rem] border border-white/10 bg-[#121212] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.45)]">
                         <h3 className="text-[1rem] font-black uppercase tracking-[0.06em] text-white">
-                            Cancel Ad?
+                            {["Active", "Paused"].includes(cancelTarget.status) ? "Remove From Feeds?" : "Cancel Ad?"}
                         </h3>
                         <p className="mt-2 text-[10px] font-bold leading-5 text-white/50">
-                            {cancelTarget.status === "Under Review"
+                            {["Active", "Paused"].includes(cancelTarget.status)
+                                ? "This will remove the ad from Home and Shop feeds only. It will stay visible in your Profile Googer section until its real expiry date."
+                                : cancelTarget.status === "Under Review"
                                 ? "This will cancel your ad while it is still under review. Your payment will be automatically refunded."
                                 : supportsRemainingBudgetRefund(cancelTarget.campaignType)
                                     ? "This will cancel your active ad and refund only the current remaining budget amount."
@@ -1001,7 +1025,7 @@ export default function AdCenterPage() {
                             <button
                                 type="button"
                                 onClick={async () => {
-                                    const didCancel = await handleCancel(cancelTarget.adId);
+                                    const didCancel = await handleCancel(cancelTarget);
                                     if (didCancel) {
                                         setCancelTarget(null);
                                     }

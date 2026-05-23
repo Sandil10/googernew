@@ -20,6 +20,7 @@ import { SharedProductCard } from "@/app/components/market/SharedProductCard";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { useAdActions } from "@/app/lib/ads/useAdActions";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
+import { promotePhotoVideoAdAgain } from "@/app/lib/ads/promoteAgain";
 import { matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondViewModal";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
@@ -338,6 +339,13 @@ export default function ProfilePage() {
         },
         onNotify: (n) => setNotification({ type: n.type, title: n.title, message: n.message }),
     });
+
+    const handlePromoteAgain = useCallback((ad: any) => {
+        void promotePhotoVideoAdAgain({
+            ad,
+            router,
+        });
+    }, [router]);
 
     useEffect(() => {
         if (!notification) return;
@@ -1185,14 +1193,16 @@ export default function ProfilePage() {
         googs.forEach((g, i) => {
             result.push({ type: 'goog', data: g });
             if ((i + 1) % 4 === 0) {
-                if (visibleProfileAds.length) {
-                    result.push({ type: 'ad', data: visibleProfileAds[adIndex % visibleProfileAds.length] });
+                if (adIndex < visibleProfileAds.length) {
+                    result.push({ type: 'ad', data: visibleProfileAds[adIndex] });
                 }
                 adIndex++;
             }
         });
-        if (adIndex === 0 && visibleProfileAds.length) {
-            result.push({ type: 'ad', data: visibleProfileAds[0] });
+        if (visibleProfileAds.length) {
+            visibleProfileAds.slice(adIndex).forEach((ad) => {
+                result.push({ type: 'ad', data: ad });
+            });
         }
         return result;
     }, [googs, hiddenPostIds, profileAds]);
@@ -1488,6 +1498,7 @@ export default function ProfilePage() {
                                                 onLogView={handleLogView}
                                                 onReport={(p) => setReportingProduct(p)}
                                                 onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, String(id)])}
+                                                onPromoteAgain={handlePromoteAgain}
                                                 onCollectCoin={(event, p) => adActions.handleAdCoinClick(event, p)}
                                                 canShowCollectCoin={(p) => adActions.canShowCollectCoin(p)}
                                                 onNavigateToProfile={(event, userId) => {
@@ -1559,6 +1570,7 @@ export default function ProfilePage() {
                                                     onLogView={handleLogView}
                                                     onReport={(p) => setReportingProduct(p)}
                                                     onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, String(id)])}
+                                                    onPromoteAgain={handlePromoteAgain}
                                                     onCollectCoin={(event, p) => adActions.handleAdCoinClick(event, p)}
                                                     canShowCollectCoin={(p) => adActions.canShowCollectCoin(p)}
                                                     onNavigateToProfile={(event, userId) => {

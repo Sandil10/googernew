@@ -8,8 +8,7 @@ import { subscriptionService } from "@/services/subscriptionService";
 
 const SESSION_KEY = "googer_expiry_warn_session";
 const SHOWN_PREFIX = "googer_expiry_warn_shown";
-const BASIC_RAW_MEDIA_WARNING_MS = 2 * 60 * 1000;
-const BASIC_RAW_MEDIA_EXPIRY_MS = 10 * 60 * 1000;
+const WARNING_LEAD_MS = 3 * 24 * 60 * 60 * 1000;
 
 // One random ID per browser session (cleared on tab close / new login tab)
 function getSessionId(): string {
@@ -32,11 +31,37 @@ function markShownToday(sessionId: string, adId: string): void {
 }
 
 function formatRemaining(ms: number) {
+    if (ms >= 24 * 60 * 60 * 1000) {
+        const days = Math.ceil(ms / (24 * 60 * 60 * 1000));
+        return `${days} ${days === 1 ? "day" : "days"}`;
+    }
+    if (ms >= 60 * 60 * 1000) {
+        const hours = Math.ceil(ms / (60 * 60 * 1000));
+        return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+    }
     const minutes = Math.max(1, Math.ceil(ms / (60 * 1000)));
     return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
 }
 
-function isBasicRawPhotoVideoAd(ad: any) {
+function getPlanExpiryMs(plan: any) {
+    const extra = plan?.extra || {};
+    const value = Number(extra.ads_expiry_value ?? extra.ads_expiry_days ?? 0);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    const unit = String(extra.ads_expiry_unit || (extra.ads_expiry_days != null ? "days" : "days")).toLowerCase();
+    if (unit === "minutes") return value * 60 * 1000;
+    if (unit === "hours") return value * 60 * 60 * 1000;
+    return value * 24 * 60 * 60 * 1000;
+}
+
+function getFinalRawAdExpiryMs(ad: any, plan: any) {
+    const candidates = [
+        getPlanExpiryMs(plan),
+        Number(ad.durationDays || ad.duration_days || 0) * 24 * 60 * 60 * 1000,
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    return candidates.length ? Math.min(...candidates) : 0;
+}
+
+function isRawPhotoVideoAd(ad: any) {
     const campaignType = String(ad.campaignType || ad.campaign_type || "").trim().toLowerCase();
     const isPhotoVideo = campaignType === "photo and video" || campaignType === "photo & video";
     if (!isPhotoVideo || ad.status !== "Active") return false;
@@ -55,7 +80,7 @@ export function AdExpiryWarning({ userId }: { userId?: string | number | null })
     const router = useRouter();
     const [show, setShow] = useState(false);
     const [mediaType, setMediaType] = useState<"photo" | "video">("photo");
-    const [remainingLabel, setRemainingLabel] = useState("8 minutes");
+    const [remainingLabel, setRemainingLabel] = useState("soon");
 
     useEffect(() => {
         if (!userId) return;
@@ -71,25 +96,28 @@ export function AdExpiryWarning({ userId }: { userId?: string | number | null })
                 ]);
 
                 if (!mounted) return;
-                if (!plan?.is_basic) return;
 
                 const warningAd = (myAds as any[]).find((ad) => {
-                    if (!isBasicRawPhotoVideoAd(ad)) return false;
+                    if (!isRawPhotoVideoAd(ad)) return false;
                     const adId = String(ad.adId || ad.ad_id || "").replace(/^ad-/, "");
                     if (!adId || wasShownToday(sessionId, adId)) return false;
                     const refTime = ad.activeStartTime || ad.active_start_time || ad.startedAt || ad.started_at;
                     const refMs = new Date(refTime || "").getTime();
                     if (!Number.isFinite(refMs)) return false;
 
+                    const expiryMs = getFinalRawAdExpiryMs(ad, plan);
+                    if (expiryMs <= 0) return false;
+                    const warningAtMs = Math.max(0, expiryMs - WARNING_LEAD_MS);
                     const elapsedMs = Date.now() - refMs;
-                    return elapsedMs >= BASIC_RAW_MEDIA_WARNING_MS && elapsedMs < BASIC_RAW_MEDIA_EXPIRY_MS;
+                    return elapsedMs >= warningAtMs && elapsedMs < expiryMs;
                 });
 
                 if (warningAd) {
                     const adId = String(warningAd.adId || warningAd.ad_id || "").replace(/^ad-/, "");
                     const refTime = warningAd.activeStartTime || warningAd.active_start_time || warningAd.startedAt || warningAd.started_at;
                     const elapsedMs = Date.now() - new Date(refTime || "").getTime();
-                    const remainingMs = Math.max(0, BASIC_RAW_MEDIA_EXPIRY_MS - elapsedMs);
+                    const expiryMs = getFinalRawAdExpiryMs(warningAd, plan);
+                    const remainingMs = Math.max(0, expiryMs - elapsedMs);
                     const rawMediaType = String(warningAd.mediaType || warningAd.media_type || "").toLowerCase();
                     setMediaType(rawMediaType.includes("video") ? "video" : "photo");
                     setRemainingLabel(formatRemaining(remainingMs));
@@ -102,7 +130,7 @@ export function AdExpiryWarning({ userId }: { userId?: string | number | null })
         };
 
         void check();
-        const interval = window.setInterval(check, 10000);
+        const interval = window.setInterval(check, 3000);
         return () => {
             mounted = false;
             window.clearInterval(interval);

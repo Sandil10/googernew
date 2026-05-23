@@ -84,6 +84,7 @@ type PublishedAdReview = {
     campaignPath?: string;
     editDraft?: {
         editingAdId?: string;
+        promoteAgain?: boolean;
         activeLink: string;
         linkInput: string;
         description: string;
@@ -561,6 +562,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [showCancelConfirm, setShowCancelConfirm] = useState(false);
     const [acceptedProfileNonRefundable, setAcceptedProfileNonRefundable] = useState(false);
     const [editingAdId, setEditingAdId] = useState("");
+    const [isPromoteAgain, setIsPromoteAgain] = useState(false);
     const [linkedProduct, setLinkedProduct] = useState<any | null>(null);
     const [profilePromoteUser, setProfilePromoteUser] = useState<any | null>(null);
     const [profilePromoteProducts, setProfilePromoteProducts] = useState<any[]>([]);
@@ -1293,7 +1295,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const ownerId = userProfile?.id ?? userProfile?._id ?? userProfile?.user_id;
         const ownerUsername = typeof userProfile?.username === "string" ? userProfile.username : "";
         const existingReview = editingAdId ? await adsService.getAdById(editingAdId).catch(() => null) : null;
-        const existingBudget = Number(existingReview?.budget || 0);
+        const existingBudget = isPromoteAgain ? 0 : Number(existingReview?.budget || 0);
         const nextAdId = existingReview?.adId && typeof existingReview.adId === "string" ? existingReview.adId : createNextAdId();
         const selectedBudget = budget ?? 0;
         const publishBudget = effectiveBudget ?? selectedBudget;
@@ -1329,8 +1331,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             ageMin,
             ageMax,
             reach: 0,
-            impressions: 0,
-            clicks: 0,
+            impressions: isPromoteAgain ? Number(existingReview?.impressions || existingReview?.views_count || existingReview?.viewCount || 0) : 0,
+            clicks: isPromoteAgain ? Number(existingReview?.clicks || 0) : 0,
             spend: 0,
             remainingBudget: selectedBudget,
             tierId: activeTier?.id ?? undefined,
@@ -1348,6 +1350,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         : "/dashboard/ad-campaign/photo-video",
             editDraft: {
                 editingAdId: nextAdId,
+                promoteAgain: isPromoteAgain,
                 activeLink,
                 linkInput,
                 description,
@@ -1410,7 +1413,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
             // Payment amount after promo discount
             const discountedBudget = (() => {
-                if (!hasPromoCodeAdded || !promoDiscount || existingReview) return publishBudget;
+                if (!hasPromoCodeAdded || !promoDiscount || (existingReview && !isPromoteAgain)) return publishBudget;
                 if (isProfilePromote) return 0; // Profile Promote + any promo = always free
                 if (promoDiscount.discount_type === "rupee") {
                     return Math.max(0, publishBudget - promoDiscount.discount_value);
@@ -1421,8 +1424,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 return publishBudget; // days promos: full budget charged, bonus is free
             })();
 
-            if ((!existingReview && discountedBudget > 0) || (existingReview && budgetDifference > 0)) {
-                const payAmount = existingReview ? budgetDifference : discountedBudget;
+            if (((!existingReview || isPromoteAgain) && discountedBudget > 0) || (existingReview && !isPromoteAgain && budgetDifference > 0)) {
+                const payAmount = existingReview && !isPromoteAgain ? budgetDifference : discountedBudget;
                 if (isProfilePromote) {
                     paymentResult = await walletService.payProfilePromote(payAmount, {
                         orderId: reviewRecord.adId,
@@ -1431,17 +1434,17 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 } else {
                     paymentResult = await walletService.payOrder(payAmount, {
                         orderId: reviewRecord.adId,
-                        note: `${existingReview ? "Ad Promote Update" : "Ad Promote"} - ${reviewRecord.adId} - ${promotionLabel}`,
+                        note: `${isPromoteAgain ? "Ad Promote" : existingReview ? "Ad Promote Update" : "Ad Promote"} - ${reviewRecord.adId} - ${promotionLabel}`,
                     });
                 }
             }
 
-            if (existingReview && budgetDifference < 0 && ownerKey) {
+            if (existingReview && !isPromoteAgain && budgetDifference < 0 && ownerKey) {
                 addAdWalletRefund(reviewRecord.adId, ownerKey, Math.abs(budgetDifference), `Ad Budget Refund - ${reviewRecord.adId}`);
             }
 
             // Record a $0 wallet entry for free promo ads so they appear in transaction history
-            if (!existingReview && discountedBudget === 0 && hasPromoCodeAdded && promoCode) {
+            if ((!existingReview || isPromoteAgain) && discountedBudget === 0 && hasPromoCodeAdded && promoCode) {
                 try {
                     await walletService.recordPromoAd(reviewRecord.adId, promotionLabel);
                 } catch {
@@ -1452,18 +1455,19 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             const currentBalance = Number(paymentResult?.currentBalance);
             if (Number.isFinite(currentBalance)) {
                 setWalletBalance(getWalletBalanceWithAdAdjustments(currentBalance, ownerKey));
-            } else if (existingReview && budgetDifference < 0) {
+            } else if (existingReview && !isPromoteAgain && budgetDifference < 0) {
                 setWalletBalance((current) => current + Math.abs(budgetDifference));
             } else {
-                setWalletBalance((current) => Math.max(0, current - (existingReview ? Math.max(0, budgetDifference) : discountedBudget)));
+                setWalletBalance((current) => Math.max(0, current - (existingReview && !isPromoteAgain ? Math.max(0, budgetDifference) : discountedBudget)));
             }
             window.dispatchEvent(new Event("googer-wallet-updated"));
 
             const savedAdPayload = {
                 ...reviewRecord,
                 walletTransferId: paymentResult?.transferId || existingReview?.walletTransferId,
-                spend: typeof existingReview?.spend === "number" ? existingReview.spend : reviewRecord.spend,
-                remainingBudget: (budget ?? 0) - (typeof existingReview?.spend === "number" ? existingReview.spend : 0),
+                promoteAgain: isPromoteAgain,
+                spend: isPromoteAgain ? 0 : (typeof existingReview?.spend === "number" ? existingReview.spend : reviewRecord.spend),
+                remainingBudget: isPromoteAgain ? (budget ?? 0) : ((budget ?? 0) - (typeof existingReview?.spend === "number" ? existingReview.spend : 0)),
             };
             const uploadAdPayload = uploadedFiles.length > 0
                 ? {
@@ -1490,7 +1494,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 : await adsService.createAd(payload as any);
 
             // Redeem promo AFTER ad is successfully created (increments uses_count)
-            if (hasPromoCodeAdded && promoCode && !existingReview) {
+            if (hasPromoCodeAdded && promoCode && (!existingReview || isPromoteAgain)) {
                 try {
                     await adsService.redeemPromoCode(promoCode, getAdTypeForCampaign(), reviewRecord.adId);
                 } catch {
@@ -1501,6 +1505,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             window.dispatchEvent(new Event("googer-ad-history-updated"));
             window.localStorage.removeItem(draftStorageKey);
             setEditingAdId("");
+            setIsPromoteAgain(false);
             setPublishedAd(savedAd || reviewRecord);
             setShowPublishedPopup(true);
         } catch (error: any) {
@@ -1881,6 +1886,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             }
 
             if (typeof parsed.editingAdId === "string") setEditingAdId(parsed.editingAdId);
+            setIsPromoteAgain(parsed.promoteAgain === true);
             // For Product Promote, never restore the previously promoted link/linkInput.
             // The page should always start empty unless the user arrives via query params.
             if (!isProductPromote) {
@@ -1973,6 +1979,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             window.localStorage.setItem(draftStorageKey, JSON.stringify({
                 version: AD_DRAFT_VERSION,
                 editingAdId,
+                promoteAgain: isPromoteAgain,
                 activeLink,
                 linkInput,
                 description,
@@ -1998,7 +2005,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         }, 250);
 
         return () => window.clearTimeout(timeoutId);
-    }, [activeLink, ageMax, ageMin, budget, ctaTopic, ctaValue, description, draftStorageKey, durationDays, editingAdId, genderTarget, hasPromoCodeAdded, historyMediaPreview, imageName, persistedImageGallery, linkInput, promoCode, publishedAd, selectedCountryCode, selectedInterestTopics, selectedLocationCodes, selectedPlacements, uploadedMediaType]);
+    }, [activeLink, ageMax, ageMin, budget, ctaTopic, ctaValue, description, draftStorageKey, durationDays, editingAdId, genderTarget, hasPromoCodeAdded, historyMediaPreview, imageName, isPromoteAgain, persistedImageGallery, linkInput, promoCode, publishedAd, selectedCountryCode, selectedInterestTopics, selectedLocationCodes, selectedPlacements, uploadedMediaType]);
 
     useEffect(() => {
         const justCrossedIntoInsufficientBalance = hasInsufficientBalance && !wasInsufficientBalanceRef.current;

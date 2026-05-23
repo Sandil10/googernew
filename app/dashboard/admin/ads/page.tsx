@@ -6,15 +6,17 @@ import Image from "next/image";
 import IonIcon from "@/app/components/IonIcon";
 import { adsService } from "@/services/adsService";
 
-type AdStatus = "Under Review" | "Active" | "Paused" | "Completed" | "Cancelled";
+type AdStatus = "Under Review" | "Active" | "Paused" | "Removed" | "Completed" | "Expired" | "Cancelled";
 
-const STATUS_TABS: Array<"All" | AdStatus> = ["All", "Under Review", "Active", "Paused", "Completed", "Cancelled"];
+const STATUS_TABS: Array<"All" | AdStatus> = ["All", "Under Review", "Active", "Paused", "Removed", "Completed", "Expired", "Cancelled"];
 
 const STATUS_CFG: Record<string, { color: string; bg: string; dot: string }> = {
     "Under Review": { color: "text-amber-400",   bg: "bg-amber-400/10 border-amber-400/20",   dot: "bg-amber-400" },
     Active:         { color: "text-emerald-400", bg: "bg-emerald-400/10 border-emerald-400/20", dot: "bg-emerald-400" },
     Paused:         { color: "text-blue-400",    bg: "bg-blue-400/10 border-blue-400/20",      dot: "bg-blue-400" },
+    Removed:        { color: "text-orange-400",  bg: "bg-orange-400/10 border-orange-400/20",  dot: "bg-orange-400" },
     Completed:      { color: "text-gray-400",    bg: "bg-gray-400/10 border-gray-400/20",      dot: "bg-gray-400" },
+    Expired:        { color: "text-gray-400",    bg: "bg-gray-400/10 border-gray-400/20",      dot: "bg-gray-400" },
     Cancelled:      { color: "text-red-400",     bg: "bg-red-500/10 border-red-500/20",        dot: "bg-red-400" },
 };
 
@@ -57,11 +59,14 @@ export default function AdminAdsPage() {
 
     const filtered = filter === "All" ? ads : ads.filter((a) => a.status === filter);
 
-    const doAction = async (adId: string, status: string) => {
+    const doAction = async (adId: string, status: string, ad?: any) => {
         setActionLoading(true);
         try {
-            await adsService.updateAd(adId, { status });
-            showToast(`Ad ${status === "Active" ? "approved" : status === "Cancelled" ? "rejected" : "updated"} successfully`);
+            const nextStatus = status === "Cancelled" && ad && ["Active", "Paused"].includes(String(ad.status || ""))
+                ? "Removed"
+                : status;
+            await adsService.updateAd(adId, { status: nextStatus });
+            showToast(`Ad ${nextStatus === "Active" ? "approved" : nextStatus === "Removed" ? "removed from feeds" : nextStatus === "Cancelled" ? "rejected" : "updated"} successfully`);
             setSelected(null);
             await load();
         } catch (e: any) {
@@ -288,10 +293,10 @@ export default function AdminAdsPage() {
                                 <button
                                     type="button"
                                     disabled={actionLoading}
-                                    onClick={() => doAction(selected.adId || selected.ad_id, "Cancelled")}
+                                    onClick={() => doAction(selected.adId || selected.ad_id, "Cancelled", selected)}
                                     className="flex-1 rounded-2xl bg-red-500/15 border border-red-500/30 py-3 text-sm font-black text-red-400 transition hover:bg-red-500/25 disabled:opacity-50"
                                 >
-                                    {actionLoading ? "…" : "Cancel"}
+                                    {actionLoading ? "…" : "Remove"}
                                 </button>
                             )}
                         </div>

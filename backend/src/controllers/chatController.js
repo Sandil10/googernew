@@ -1,6 +1,6 @@
 const pool = require('../config/database');
 const { success, error } = require('../utils/responseHandler');
-const { getUserPlanLimits, getUserSubscriptionFeatures } = require('../utils/planLimits');
+const { getUserPlanLimits, getUserSubscriptionFeatures, isPlan03Slug } = require('../utils/planLimits');
 
 // Track per-user prune timestamp so we don't hammer the DB on every fetch.
 const lastPruneAt = new Map();
@@ -36,6 +36,17 @@ const CALL_TYPES = new Set(['voice', 'video']);
 const CALL_STATUSES = new Set(['ringing', 'active', 'missed', 'completed', 'rejected']);
 const MESSAGE_TYPES = new Set(['text', 'image', 'sticker']);
 const MESSAGE_STATUSES = new Set(['sending', 'sent', 'delivered', 'read']);
+
+const getCallEncryptionMetadata = () => ({
+    media_encryption: 'webrtc-dtls-srtp',
+    end_to_end_encrypted: true,
+    signaling: 'server-relayed-sdp',
+});
+
+const userCanUseVideoCall = async (userId) => {
+    const features = await getUserSubscriptionFeatures(userId);
+    return isPlan03Slug(features.plan_slug) && features.video_calls !== false;
+};
 
 let tablesReadyPromise = null;
 
@@ -77,6 +88,7 @@ const ensureChatTables = async () => {
                     receiver_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     call_type VARCHAR(10) NOT NULL,
                     call_status VARCHAR(20) NOT NULL DEFAULT 'ringing',
+                    encryption JSONB NOT NULL DEFAULT '{}'::jsonb,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     answered_at TIMESTAMP,
                     ended_at TIMESTAMP,
@@ -84,6 +96,11 @@ const ensureChatTables = async () => {
                     CHECK (call_type IN ('voice', 'video')),
                     CHECK (call_status IN ('ringing', 'active', 'missed', 'completed', 'rejected'))
                 );
+            `);
+
+            await pool.query(`
+                ALTER TABLE chat_call_sessions
+                    ADD COLUMN IF NOT EXISTS encryption JSONB NOT NULL DEFAULT '{}'::jsonb;
             `);
 
             await pool.query(`
@@ -203,6 +220,8 @@ const mapCallRow = (row, userId) => {
         receiver_id: Number(row.receiver_id),
         call_type: row.call_type,
         call_status: row.call_status,
+        encryption: row.encryption || getCallEncryptionMetadata(),
+        end_to_end_encrypted: true,
         createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
         created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
         answered_at: row.answered_at,
@@ -603,14 +622,6 @@ exports.startCall = async (req, res) => {
         const callerId = Number(req.user.id);
         
         const callType = req.body.callType;
-        const limits = await getUserPlanLimits(callerId);
-        if (callType === 'voice' && !limits.voiceCalls) {
-            return error(res, 'Voice calls are not allowed on your current plan. Please upgrade.', 403);
-        }
-        if (callType === 'video' && !limits.videoCalls) {
-            return error(res, 'Video calls are not allowed on your current plan. Please upgrade.', 403);
-        }
-
         const receiverId = Number(req.body.receiverId);
         const offer = req.body.offer;
 
@@ -622,11 +633,27 @@ exports.startCall = async (req, res) => {
             return error(res, 'Invalid call type.', 400);
         }
 
+        const limits = await getUserPlanLimits(callerId);
+        if (callType === 'voice' && !limits.voiceCalls) {
+            return error(res, 'Voice calls are not allowed on your current plan. Please upgrade.', 403);
+        }
+        if (callType === 'video') {
+            const callerCanVideo = await userCanUseVideoCall(callerId);
+            const receiverCanVideo = await userCanUseVideoCall(receiverId);
+            if (!callerCanVideo) {
+                return error(res, 'Video calls require Plan 03. Please upgrade.', 403);
+            }
+            if (!receiverCanVideo) {
+                return error(res, 'This user needs Plan 03 to receive video calls.', 403);
+            }
+        }
+
         if (!offer || typeof offer !== 'object') {
             return error(res, 'WebRTC offer is required to start a call.', 400);
         }
 
-        const client = await pool.connect();
+            const client = await pool.connect();
+            const encryption = getCallEncryptionMetadata();
 
         try {
             await client.query('BEGIN');
@@ -634,12 +661,12 @@ exports.startCall = async (req, res) => {
             const callResult = await client.query(
                 `
                     INSERT INTO chat_call_sessions (
-                        caller_id, receiver_id, call_type, call_status
+                        caller_id, receiver_id, call_type, call_status, encryption
                     )
-                    VALUES ($1, $2, $3, 'ringing')
+                    VALUES ($1, $2, $3, 'ringing', $4::jsonb)
                     RETURNING *
                 `,
-                [callerId, receiverId, callType]
+                [callerId, receiverId, callType, JSON.stringify(encryption)]
             );
 
             const call = callResult.rows[0];
@@ -652,7 +679,7 @@ exports.startCall = async (req, res) => {
                     VALUES ($1, $2, $3, 'offer', $4::jsonb)
                     RETURNING id
                 `,
-                [call.id, callerId, receiverId, JSON.stringify(offer)]
+                [call.id, callerId, receiverId, JSON.stringify({ ...offer, encryption })]
             );
 
             await client.query('COMMIT');
@@ -764,6 +791,10 @@ exports.acceptCall = async (req, res) => {
             return error(res, `This call is already ${call.call_status}.`, 400);
         }
 
+        if (call.call_type === 'video' && !await userCanUseVideoCall(userId)) {
+            return error(res, 'Video calls require Plan 03. Please upgrade.', 403);
+        }
+
         const client = await pool.connect();
 
         try {
@@ -787,7 +818,7 @@ exports.acceptCall = async (req, res) => {
                     )
                     VALUES ($1, $2, $3, 'answer', $4::jsonb)
                 `,
-                [callId, userId, call.caller_id, JSON.stringify(answer)]
+                [callId, userId, call.caller_id, JSON.stringify({ ...answer, encryption: call.encryption || getCallEncryptionMetadata() })]
             );
 
             await client.query('COMMIT');
@@ -927,7 +958,7 @@ exports.sendSignal = async (req, res) => {
                 VALUES ($1, $2, $3, $4, $5::jsonb)
                 RETURNING id, created_at
             `,
-            [callId, senderId, receiverId, signalType, JSON.stringify(payload)]
+            [callId, senderId, receiverId, signalType, JSON.stringify({ ...payload, encryption: call.encryption || getCallEncryptionMetadata() })]
         );
 
         return success(res, signalResult.rows[0], 'Signal sent');

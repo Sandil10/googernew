@@ -22,7 +22,7 @@ export const FEATURES_DEFAULT: SubscriptionFeatures = {
     chat_text_colors: false,
     chat_stickers: false,
     text_messaging: true,
-    voice_calls: false,
+    voice_calls: true,
     video_calls: false,
     voice_to_text: false,
     text_to_voice: false,

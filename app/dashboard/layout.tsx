@@ -10,6 +10,7 @@ import AddProductModal from "@/app/components/AddProductModal";
 import ProductPlansModal from "@/app/components/ProductPlansModal";
 import CartSidebar from "@/app/components/CartSidebar";
 import LoginModal from "@/app/components/auth/LoginModal";
+import GlobalIncomingCallOverlay from "@/app/components/chat/GlobalIncomingCallOverlay";
 import { useCart } from "@/app/context/CartContext";
 import { googService } from "@/services/googService";
 import { authService } from "@/services/authService";
@@ -316,6 +317,7 @@ export default function DashboardLayout({
         <div className={`flex flex-col bg-[#1c1917] text-white font-sans ${isAdCampaignRoute ? "min-h-screen overflow-visible" : "h-screen overflow-hidden"}`}>
             {/* Topbar (Unified) */}
             <Topbar />
+            <GlobalIncomingCallOverlay />
 
             {/* Mobile Bottom Nav */}
             <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-zinc-900 border-t border-zinc-800 flex items-center justify-around z-50 px-2 transition-all duration-300">

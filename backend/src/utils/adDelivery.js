@@ -95,7 +95,6 @@ const calculateAdDurationState = (adRow, nowMs = Date.now()) => {
 };
 
 const REACH_FIRST_SQL_LIST = "('product promote','photo promote','video promote','photo and video','photo & video')";
-const BASIC_RAW_PHOTO_VIDEO_EXPIRY_INTERVAL = "INTERVAL '10 minutes'";
 const RAW_PHOTO_VIDEO_UPLOAD_SQL = `
     LOWER(COALESCE(a.campaign_type, '')) IN ('photo and video', 'photo & video')
     AND COALESCE(NULLIF(TRIM(a.media_preview), ''), NULLIF(TRIM(a.media_type), '')) IS NOT NULL
@@ -135,6 +134,23 @@ const syncExpiredAds = async (pool, adId = null) => {
         params
     );
 
+    // Stopped/removed ads are hidden from feeds but remain on the owner's
+    // profile until the original calendar expiry from approval time.
+    await pool.query(
+        `UPDATE ads
+         SET status = 'Completed',
+             last_resumed_at = NULL,
+             paused_at = NULL,
+             completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE status IN ('Paused', 'Removed')
+           AND COALESCE(duration_days, 0) > 0
+           ${adFilter}
+           AND active_start_time IS NOT NULL
+           AND active_start_time <= NOW() - (GREATEST(COALESCE(duration_days, 0), 0) * INTERVAL '1 day')`,
+        params
+    );
+
     // If another system approves an ad directly in the database, lock the approval-time
     // fallback before expiry checks run. Never use created_at/publish time for this flow.
     await pool.query(
@@ -165,31 +181,80 @@ const syncExpiredAds = async (pool, adId = null) => {
         adId ? [adId] : []
     );
 
-    // Basic-plan expiry for raw uploaded Photo & Video ads only.
-    // Link ads and paid-plan users are deliberately excluded. The clock starts at
-    // active_start_time, which is set when the admin approves the ad. This product
-    // rule is fixed: warn at 2 minutes in the UI, complete at 10 minutes here.
+    // Raw uploaded Photo & Video expiry only. Link ads are excluded.
+    // The clock starts when the admin approves the ad (active_start_time).
+    // Final expiry is whichever comes first: the plan raw-ad limit or the
+    // user-selected ad duration.
     await pool.query(
-        `WITH expiring_ads AS (
+        `WITH raw_ads AS (
              SELECT
                  a.ad_id,
-                 ${BASIC_RAW_PHOTO_VIDEO_EXPIRY_INTERVAL} AS expiry_interval
+                 COALESCE(
+                     (
+                         SELECT
+                             CASE
+                                 WHEN NULLIF(sp.extra->>'ads_expiry_value', '')::numeric > 0 THEN
+                                     NULLIF(sp.extra->>'ads_expiry_value', '')::numeric *
+                                     CASE LOWER(COALESCE(sp.extra->>'ads_expiry_unit', 'days'))
+                                         WHEN 'minutes' THEN INTERVAL '1 minute'
+                                         WHEN 'hours'   THEN INTERVAL '1 hour'
+                                         ELSE                INTERVAL '1 day'
+                                     END
+                                 WHEN NULLIF(sp.extra->>'ads_expiry_days', '')::numeric > 0 THEN
+                                     NULLIF(sp.extra->>'ads_expiry_days', '')::numeric * INTERVAL '1 day'
+                                 ELSE NULL
+                             END
+                         FROM user_plan_subscriptions ups
+                         JOIN subscription_plans sp ON sp.id = ups.plan_id
+                         WHERE ups.user_id = a.user_id
+                           AND ups.status = 'active'
+                           AND (ups.expires_at IS NULL OR ups.expires_at > NOW())
+                         ORDER BY ups.started_at DESC
+                         LIMIT 1
+                     ),
+                     (
+                         SELECT
+                             CASE
+                                 WHEN NULLIF(sp.extra->>'ads_expiry_value', '')::numeric > 0 THEN
+                                     NULLIF(sp.extra->>'ads_expiry_value', '')::numeric *
+                                     CASE LOWER(COALESCE(sp.extra->>'ads_expiry_unit', 'days'))
+                                         WHEN 'minutes' THEN INTERVAL '1 minute'
+                                         WHEN 'hours'   THEN INTERVAL '1 hour'
+                                         ELSE                INTERVAL '1 day'
+                                     END
+                                 WHEN NULLIF(sp.extra->>'ads_expiry_days', '')::numeric > 0 THEN
+                                     NULLIF(sp.extra->>'ads_expiry_days', '')::numeric * INTERVAL '1 day'
+                                 ELSE NULL
+                             END
+                         FROM subscription_plans sp
+                         WHERE sp.slug = 'basic' AND sp.is_active = TRUE
+                         LIMIT 1
+                     )
+                 ) AS plan_interval,
+                 CASE
+                     WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
+                     ELSE NULL
+                 END AS duration_interval
              FROM ads a
-             WHERE a.status = 'Active'
+             WHERE a.status IN ('Active', 'Paused', 'Removed')
                AND ${RAW_PHOTO_VIDEO_UPLOAD_SQL}
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM user_plan_subscriptions ups
-                   JOIN subscription_plans sp ON sp.id = ups.plan_id
-                   WHERE ups.user_id = a.user_id
-                     AND ups.status = 'active'
-                     AND (ups.expires_at IS NULL OR ups.expires_at > NOW())
-                     AND LOWER(COALESCE(sp.slug, '')) <> 'basic'
-               )
                ${adId ? 'AND a.ad_id = $1' : ''}
+         ),
+         expiring_ads AS (
+             SELECT
+                 ad_id,
+                 CASE
+                     WHEN plan_interval IS NOT NULL AND duration_interval IS NOT NULL THEN LEAST(plan_interval, duration_interval)
+                     ELSE COALESCE(plan_interval, duration_interval)
+                 END AS expiry_interval
+             FROM raw_ads
          )
          UPDATE ads a
          SET status = 'Completed',
+             accumulated_active_ms = CASE
+                 WHEN a.status = 'Active' THEN COALESCE(a.accumulated_active_ms, 0) + GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(a.last_resumed_at, CURRENT_TIMESTAMP))) * 1000))
+                 ELSE COALESCE(a.accumulated_active_ms, 0)
+             END,
              last_resumed_at = NULL,
              paused_at = NULL,
              completed_at = COALESCE(a.completed_at, CURRENT_TIMESTAMP),
@@ -198,7 +263,7 @@ const syncExpiredAds = async (pool, adId = null) => {
          WHERE a.ad_id = up.ad_id
            AND up.expiry_interval IS NOT NULL
            AND a.active_start_time IS NOT NULL
-           AND a.active_start_time < NOW() - up.expiry_interval`,
+           AND a.active_start_time <= NOW() - up.expiry_interval`,
         adId ? [adId] : []
     );
 

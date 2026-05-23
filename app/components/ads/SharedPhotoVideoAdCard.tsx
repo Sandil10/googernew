@@ -34,6 +34,7 @@ export type AdCardHandlers = {
     onLogView?: (ad: any) => void;
     onReport: (ad: any) => void;
     onNotInterested: (adId: string | number) => void;
+    onPromoteAgain?: (ad: any) => void | Promise<void>;
     onCollectCoin: (event: React.MouseEvent, ad: any) => void;
     onNavigateToProfile: (event: React.MouseEvent, ad: any) => void;
     canShowCollectCoin: (ad: any) => boolean;
@@ -64,6 +65,7 @@ export function SharedPhotoVideoAdCard({
     onShare,
     onReport,
     onNotInterested,
+    onPromoteAgain,
     onCollectCoin,
     onNavigateToProfile,
     canShowCollectCoin,
@@ -303,6 +305,20 @@ export function SharedPhotoVideoAdCard({
                                 <IonIcon name="share-social-outline" className="text-lg text-blue-400" />
                                 Share Link
                             </button>
+                            {onPromoteAgain && (
+                                <button
+                                    type="button"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        void onPromoteAgain(ad.raw || ad);
+                                        onCloseMenu();
+                                    }}
+                                    className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"
+                                >
+                                    <IonIcon name="megaphone-outline" className="text-lg text-emerald-400" />
+                                    Promote
+                                </button>
+                            )}
                             <button
                                 type="button"
                                 onClick={(event) => {

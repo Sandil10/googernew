@@ -18,6 +18,7 @@ import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondView
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { canShowCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
 import { resolveProductPromoteProduct } from "@/app/lib/ads/resolveProductPromoteProduct";
+import { promotePhotoVideoAdAgain } from "@/app/lib/ads/promoteAgain";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
@@ -426,6 +427,18 @@ const isHomeSponsoredAd = (item: any) => {
     );
 };
 
+const isRawPhotoVideoUploadAd = (ad: any) => {
+    const campaignType = String(ad?.campaignType || ad?.campaign_type || "").trim().toLowerCase();
+    if (campaignType !== "photo and video" && campaignType !== "photo & video") return false;
+    const draft = ad?.editDraft || ad?.edit_draft || {};
+    const activeLink = String(ad?.active_link || ad?.activeLink || draft.activeLink || draft.active_link || "").trim();
+    if (activeLink) return false;
+    const gallery = Array.isArray(ad?.mediaGallery) ? ad.mediaGallery : Array.isArray(ad?.media_gallery) ? ad.media_gallery : [];
+    const media = String(ad?.mediaPreview || ad?.media_preview || gallery[0] || "").trim();
+    if (!media) return false;
+    return !/^https?:\/\//i.test(media) || /\/uploads?\//i.test(media);
+};
+
 const mapPublicActiveAdToHomeAd = (ad: any) => {
     const draft = ad?.editDraft || ad?.edit_draft || {};
     const adId = ad?.adId || ad?.ad_id || String(ad?.id || "").replace(/^ad-/, "");
@@ -590,6 +603,12 @@ export default function DashboardPage() {
         const sourceAd = ads.find((ad) => getAdInteractionId(ad) === interactionId);
         return sourceAd ? getHomeLiveAd(sourceAd) : null;
     }, [ads, getHomeLiveAd]);
+    const handlePromoteAgain = useCallback((ad: any) => {
+        void promotePhotoVideoAdAgain({
+            ad,
+            router,
+        });
+    }, [router]);
     const liveHomeAds = useMemo(
         () => dedupeAdsByIdentity(ads.map((ad) => getHomeLiveAd(ad))),
         [ads, getHomeLiveAd],
@@ -712,11 +731,8 @@ export default function DashboardPage() {
                 let justExpired = false;
 
                 myAds.forEach((ad) => {
-                    const isPhotoVideo =
-                        String(ad.campaignType || ad.campaign_type || "").trim().toLowerCase() === "photo and video" ||
-                        String(ad.campaignType || ad.campaign_type || "").trim().toLowerCase() === "photo & video";
                     const adId = String(ad.adId || ad.ad_id || "");
-                    if (!isPhotoVideo || !adId) return;
+                    if (!isRawPhotoVideoUploadAd(ad) || !adId) return;
 
                     if ((ad.status === "Expired" || ad.status === "Completed") && prevActive.has(adId)) {
                         // Only fire popup once per ad — check localStorage
@@ -739,10 +755,7 @@ export default function DashboardPage() {
                 prevActivePhotoVideoIds.current = new Set(
                     myAds
                         .filter((ad) => {
-                            const isPhotoVideo =
-                                String(ad.campaignType || ad.campaign_type || "").trim().toLowerCase() === "photo and video" ||
-                                String(ad.campaignType || ad.campaign_type || "").trim().toLowerCase() === "photo & video";
-                            return isPhotoVideo && ad.status === "Active";
+                            return isRawPhotoVideoUploadAd(ad) && ad.status === "Active";
                         })
                         .map((ad) => String(ad.adId || ad.ad_id || ""))
                         .filter(Boolean)
@@ -1519,6 +1532,7 @@ export default function DashboardPage() {
                                                     setReportSubmitted(false);
                                                 }}
                                                 onNotInterested={hideAdFromHome}
+                                                onPromoteAgain={handlePromoteAgain}
                                                 onCollectCoin={handleAdCoinClick}
                                                 onNavigateToProfile={navigateToAdProfile}
                                                 canShowCollectCoin={canShowAdCollectCoin}

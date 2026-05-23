@@ -25,6 +25,7 @@ import { AdExpiryWarning } from "@/app/components/ads/AdExpiryWarning";
 import { getAdInteractionId, matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { canShowCollectCoinButton as canShowAdCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
 import { resolveProductPromoteProduct } from "@/app/lib/ads/resolveProductPromoteProduct";
+import { promotePhotoVideoAdAgain } from "@/app/lib/ads/promoteAgain";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { RelativeTime } from "@/app/components/RelativeTime";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
@@ -2495,6 +2496,13 @@ export default function ShopPage() {
     );
   };
 
+  const handlePromoteAgain = (ad: any) => {
+    void promotePhotoVideoAdAgain({
+      ad,
+      router,
+    });
+  };
+
   const handleLogView = async (id: number | string, item?: any) => {
     try {
       const result = await marketService.logView(id);
@@ -4628,6 +4636,7 @@ export default function ShopPage() {
                       onShare={() => handleShareClick(product)}
                       onReport={() => setReportingProduct(product)}
                       onNotInterested={(id) => handleNotInterested(Number(id))}
+                      onPromoteAgain={handlePromoteAgain}
                       onCollectCoin={(event) => handleAdCoinClick(event, product)}
                       onNavigateToProfile={(event) => navigateToProfile(event, product.user_id)}
                       canShowCollectCoin={canShowCollectCoinButton}

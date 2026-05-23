@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
@@ -55,6 +55,17 @@ const getChatRecentKey = (userId?: number | string | null, participantId?: numbe
 
 const MIN_CHAT_SEARCH_QUERY_LENGTH = 2;
 
+const isPlan03Slug = (slug?: string | null) => {
+    const normalized = String(slug || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+    return normalized === "plan03" || normalized === "plan3" || normalized === "03";
+};
+
+const getCallEncryptionMetadata = () => ({
+    media_encryption: "webrtc-dtls-srtp",
+    end_to_end_encrypted: true,
+    created_at: new Date().toISOString(),
+});
+
 export default function ChatsPage() {
     const searchParams = useSearchParams();
     const [currentUser, setCurrentUser] = useState<any>(null);
@@ -83,6 +94,8 @@ export default function ChatsPage() {
     const [isListening, setIsListening] = useState(false);
     const [speakingMessageId, setSpeakingMessageId] = useState<number | string | null>(null);
     const features = useSubscriptionFeatures();
+    const canUseVoiceCall = true;
+    const canUseVideoCall = isPlan03Slug(features.plan_slug) && features.video_calls !== false;
     const [showMobileChat, setShowMobileChat] = useState(false);
     const [videoQuality, setVideoQuality] = useState<"240p" | "360p">("240p");
     const [stickerPanelOpen, setStickerPanelOpen] = useState(false);
@@ -113,8 +126,10 @@ export default function ChatsPage() {
     const ringtoneAudioContextRef = useRef<AudioContext | null>(null);
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
     const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+    const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
     const activeConversationRef = useRef<any>(null);
     const preferredParticipantIdRef = useRef<string>("");
+    const [remoteMediaVersion, setRemoteMediaVersion] = useState(0);
 
     const formatMessageTime = (value?: string) =>
         new Date(value || Date.now()).toLocaleTimeString("en-GB", {
@@ -222,7 +237,38 @@ export default function ChatsPage() {
 
         if (localVideoRef.current) localVideoRef.current.srcObject = null;
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
     };
+
+    const attachRemoteCallStream = useCallback((stream: MediaStream) => {
+        callRemoteStreamRef.current = stream;
+        stream.getAudioTracks().forEach((track) => {
+            track.enabled = true;
+        });
+
+        const shouldUseVideoElement = activeCall?.call_type === "video" && remoteVideoRef.current;
+        if (shouldUseVideoElement && remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+            remoteVideoRef.current.play?.().catch(() => { });
+        }
+
+        if (remoteAudioRef.current && !shouldUseVideoElement) {
+            remoteAudioRef.current.srcObject = stream;
+            remoteAudioRef.current.muted = false;
+            remoteAudioRef.current.volume = 1;
+            remoteAudioRef.current.play?.().catch(() => {
+                setCallError("Tap the call screen once to allow audio playback.");
+            });
+        } else if (remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = null;
+        }
+    }, [activeCall?.call_type]);
+
+    const getCallAudioConstraints = (): MediaTrackConstraints => ({
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+    });
 
     const createPeerConnection = (callId: number, otherUserId: number) => {
         const pc = new RTCPeerConnection({
@@ -238,10 +284,12 @@ export default function ChatsPage() {
         };
 
         pc.ontrack = (event) => {
-            const stream = event.streams?.[0];
-            if (!stream) return;
-            callRemoteStreamRef.current = stream;
-            if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+            const stream = event.streams?.[0] || callRemoteStreamRef.current || new MediaStream();
+            if (!event.streams?.[0] && event.track && !stream.getTracks().some((track) => track.id === event.track.id)) {
+                stream.addTrack(event.track);
+            }
+            attachRemoteCallStream(stream);
+            setRemoteMediaVersion((current) => current + 1);
         };
 
         pc.onconnectionstatechange = () => {
@@ -884,12 +932,18 @@ export default function ChatsPage() {
         }, 1200);
     };
 
+    useEffect(() => {
+        if (!activeCall || !callRemoteStreamRef.current) return;
+        attachRemoteCallStream(callRemoteStreamRef.current);
+    }, [activeCall, attachRemoteCallStream, remoteMediaVersion]);
+
     const availableQualities: ("240p" | "360p")[] = (() => {
+        if (!canUseVideoCall) return [];
         const q = String(features.video_call_quality || "");
         const out: ("240p" | "360p")[] = [];
         if (q.includes("240p")) out.push("240p");
         if (q.includes("360p")) out.push("360p");
-        return out;
+        return out.length ? out : ["240p"];
     })();
 
     const videoConstraints = (quality: "240p" | "360p") =>
@@ -919,6 +973,10 @@ export default function ChatsPage() {
     const startOutgoingCall = async (mode: "voice" | "video") => {
         setCallError(null);
         if (!currentUser?.id || !activeConversation?.id) return;
+        if (mode === "video" && !canUseVideoCall) {
+            setCallError("Video calls require Plan 03. Please upgrade.");
+            return;
+        }
 
         try {
             setCallMode(mode);
@@ -926,8 +984,11 @@ export default function ChatsPage() {
             await cleanupCall(false);
 
             const localStream = await navigator.mediaDevices.getUserMedia({
-                audio: true,
+                audio: getCallAudioConstraints(),
                 video: mode === "video" ? videoConstraints(videoQuality) : false,
+            });
+            localStream.getAudioTracks().forEach((track) => {
+                track.enabled = true;
             });
             callLocalStreamRef.current = localStream;
             if (localVideoRef.current) localVideoRef.current.srcObject = localStream;
@@ -942,10 +1003,12 @@ export default function ChatsPage() {
             });
 
             pc.ontrack = (event) => {
-                const stream = event.streams?.[0];
-                if (!stream) return;
-                callRemoteStreamRef.current = stream;
-                if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+                const stream = event.streams?.[0] || callRemoteStreamRef.current || new MediaStream();
+                if (!event.streams?.[0] && event.track && !stream.getTracks().some((track) => track.id === event.track.id)) {
+                    stream.addTrack(event.track);
+                }
+                attachRemoteCallStream(stream);
+                setRemoteMediaVersion((current) => current + 1);
             };
 
             pc.onicecandidate = (event) => {
@@ -966,9 +1029,10 @@ export default function ChatsPage() {
 
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
+            const encryptedOffer = { ...offer, encryption: getCallEncryptionMetadata() };
 
             // Start call (stores offer in DB) and then flush buffered candidates.
-            const started = await chatService.startCall(receiverId, mode, offer);
+            const started = await chatService.startCall(receiverId, mode, encryptedOffer);
             const call = started?.call;
             if (!call?.id) throw new Error("Call start failed.");
 
@@ -1000,8 +1064,11 @@ export default function ChatsPage() {
             await cleanupCall(false);
 
             const localStream = await navigator.mediaDevices.getUserMedia({
-                audio: true,
+                audio: getCallAudioConstraints(),
                 video: incomingCall.call_type === "video" ? videoConstraints(videoQuality) : false,
+            });
+            localStream.getAudioTracks().forEach((track) => {
+                track.enabled = true;
             });
             callLocalStreamRef.current = localStream;
             if (localVideoRef.current) localVideoRef.current.srcObject = localStream;
@@ -1012,8 +1079,9 @@ export default function ChatsPage() {
 
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
+            const encryptedAnswer = { ...answer, encryption: incomingCall.offer?.encryption || getCallEncryptionMetadata() };
 
-            const accepted = await chatService.acceptCall(Number(incomingCall.id), answer);
+            const accepted = await chatService.acceptCall(Number(incomingCall.id), encryptedAnswer);
             setActiveCall(accepted);
             setIncomingCall(null);
             setCallPhase("active");
@@ -1077,6 +1145,10 @@ export default function ChatsPage() {
 
     const handleStartCall = (mode: "voice" | "video") => {
         if (!currentUser?.id || !activeConversation?.id) return;
+        if (mode === "video" && !canUseVideoCall) {
+            setCallError("Video calls require Plan 03. Please upgrade.");
+            return;
+        }
         startOutgoingCall(mode);
     };
 
@@ -1450,7 +1522,7 @@ export default function ChatsPage() {
                                                     {incomingCall.participant?.name || "Incoming Call"}
                                                 </div>
                                                 <div className="text-[9px] font-black uppercase tracking-widest mt-1 text-white/40">
-                                                    Incoming {incomingCall.call_type === "video" ? "Video" : "Voice"} Call
+                                                    Incoming {incomingCall.call_type === "video" ? "Video" : "Voice"} Call - End-to-end encrypted
                                                 </div>
                                             </div>
                                         </div>
@@ -1483,14 +1555,18 @@ export default function ChatsPage() {
 
                             {activeCall && (
                                 <div className="fixed inset-0 z-[55] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                                    <div className="w-full max-w-3xl rounded-3xl border border-white/10 bg-[#0f0f12] shadow-2xl overflow-hidden">
+                                    <div
+                                        className="w-full max-w-3xl rounded-3xl border border-white/10 bg-[#0f0f12] shadow-2xl overflow-hidden"
+                                        onClick={() => remoteAudioRef.current?.play?.().catch(() => { })}
+                                    >
+                                        <audio ref={remoteAudioRef} autoPlay />
                                         <div className="p-4 border-b border-white/10 flex items-center justify-between gap-3">
                                             <div className="min-w-0 flex-1">
                                                 <div className="text-[10px] font-black text-white uppercase tracking-[0.18em] truncate">
                                                     {activeConversation.name}
                                                 </div>
                                                 <div className="text-[9px] font-black uppercase tracking-widest mt-1 text-white/40">
-                                                    {activeCall.call_type === "video" ? "Video" : "Voice"} Call • {callPhase === "outgoing" ? "Ringing" : callPhase === "connecting" ? "Connecting" : callPhase === "active" ? "Active" : "Ended"}
+                                                    {activeCall.call_type === "video" ? "Video" : "Voice"} Call - {callPhase === "outgoing" ? "Ringing" : callPhase === "connecting" ? "Connecting" : callPhase === "active" ? "Active" : "Ended"} - End-to-end encrypted
                                                 </div>
                                             </div>
                                             {activeCall.call_type === "video" && availableQualities.length > 1 && (
@@ -1630,7 +1706,7 @@ export default function ChatsPage() {
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-1.5">
-                                    {features.video_calls && availableQualities.length > 1 && (
+                                    {canUseVideoCall && availableQualities.length > 1 && (
                                         <div className="flex items-center gap-0.5 bg-white/5 border border-white/10 rounded-lg p-0.5">
                                             {availableQualities.map((q) => (
                                                 <button
@@ -1649,17 +1725,19 @@ export default function ChatsPage() {
                                     <button
                                         type="button"
                                         onClick={() => handleStartCall("voice")}
+                                        disabled={!canUseVoiceCall}
+                                        title="Voice call (end-to-end encrypted)"
                                         className={`w-9 h-9 md:w-10 md:h-10 rounded-xl border transition-all flex items-center justify-center ${callMode === "voice" ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" : "bg-white/5 hover:bg-white/10 text-white/70 border-white/10"}`}
                                     >
                                         <IonIcon name="call-outline" className="text-base" />
                                     </button>
                                     <button
                                         type="button"
-                                        onClick={() => features.video_calls ? handleStartCall("video") : undefined}
-                                        disabled={!features.video_calls}
-                                        title={features.video_calls ? `Video call (${videoQuality})` : "Video calls require Plan 03. Please upgrade."}
+                                        onClick={() => canUseVideoCall ? handleStartCall("video") : undefined}
+                                        disabled={!canUseVideoCall}
+                                        title={canUseVideoCall ? `Video call (${videoQuality}, end-to-end encrypted)` : "Video calls require Plan 03. Please upgrade."}
                                         className={`w-9 h-9 md:w-10 md:h-10 rounded-xl border transition-all flex items-center justify-center ${
-                                            !features.video_calls
+                                            !canUseVideoCall
                                                 ? "bg-white/[0.02] text-white/20 border-white/5 cursor-not-allowed opacity-40"
                                                 : callMode === "video"
                                                     ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"

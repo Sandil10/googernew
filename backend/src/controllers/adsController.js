@@ -70,6 +70,33 @@ const classifyAdForSave = (row) => {
     return { ad_media_type, ad_source_type };
 };
 
+const RAW_PHOTO_VIDEO_UPLOAD_SQL = `
+    LOWER(COALESCE(a.campaign_type, '')) IN ('photo and video', 'photo & video')
+    AND COALESCE(NULLIF(TRIM(a.media_preview), ''), NULLIF(TRIM(a.media_type), '')) IS NOT NULL
+    AND COALESCE(NULLIF(TRIM(a.active_link), ''), NULLIF(TRIM(a.edit_draft->>'activeLink'), ''), NULLIF(TRIM(a.edit_draft->>'active_link'), '')) IS NULL
+    AND (
+        COALESCE(a.media_preview, '') = ''
+        OR COALESCE(a.media_preview, '') !~* '^https?://'
+        OR COALESCE(a.media_preview, '') ~* '/uploads?/'
+    )
+`;
+
+const isRawUploadedPhotoVideoAd = (row) => {
+    const campaignType = String(row?.campaign_type || row?.campaignType || '').trim().toLowerCase();
+    const isPhotoVideo = campaignType === 'photo and video' || campaignType === 'photo & video';
+    if (!isPhotoVideo) return false;
+
+    const draft = row?.edit_draft || row?.editDraft || {};
+    const activeLink = String(row?.active_link || row?.activeLink || draft.activeLink || draft.active_link || '').trim();
+    if (activeLink) return false;
+
+    const mediaPreview = String(row?.media_preview || row?.mediaPreview || '').trim();
+    const mediaType = String(row?.media_type || row?.mediaType || '').trim();
+    if (!mediaPreview && !mediaType) return false;
+
+    return !/^https?:\/\//i.test(mediaPreview) || /\/uploads?\//i.test(mediaPreview);
+};
+
 let adsTableReady = false;
 const VALID_STATUSES = new Set(['Under Review', 'Pending Approval', 'Approved', 'Active', 'Paused', 'Completed', 'Expired', 'Cancelled', 'Removed']);
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -119,6 +146,10 @@ const normalizeMediaGallery = (value, fallback = []) => {
 const getDisplayReach = (row) => {
     const currentReach = Number(row.current_reach || 0);
     if (currentReach > 0) return currentReach;
+
+    if (row?.edit_draft?.promoteAgain && row.current_reach !== null && row.current_reach !== undefined) {
+        return 0;
+    }
 
     const legacyReach = Number(row.reach || 0);
     if (legacyReach > 0) return legacyReach;
@@ -317,7 +348,7 @@ const ensureAdsTable = async () => {
                 ELSE last_resumed_at
             END
         WHERE active_start_time IS NULL
-          AND status IN ('Active', 'Completed', 'Expired', 'Paused');
+          AND status IN ('Active', 'Completed', 'Expired', 'Paused', 'Removed');
     `);
 
     await pool.query(`
@@ -501,7 +532,7 @@ const buildTimingUpdateState = (existingRow, nextStatus) => {
         consumeCurrentSegment();
         nextLastResumedAt = null;
         nextPausedAt = now;
-    } else if (currentStatus === 'Active' && (nextStatus === 'Completed' || nextStatus === 'Cancelled')) {
+    } else if (currentStatus === 'Active' && (nextStatus === 'Completed' || nextStatus === 'Cancelled' || nextStatus === 'Removed')) {
         consumeCurrentSegment();
         nextLastResumedAt = null;
         nextPausedAt = null;
@@ -509,7 +540,7 @@ const buildTimingUpdateState = (existingRow, nextStatus) => {
     } else if (currentStatus === 'Paused' && nextStatus === 'Completed') {
         nextPausedAt = null;
         nextCompletedAt = now;
-    } else if (currentStatus === 'Paused' && nextStatus === 'Cancelled') {
+    } else if (currentStatus === 'Paused' && (nextStatus === 'Cancelled' || nextStatus === 'Removed')) {
         nextPausedAt = null;
     }
 
@@ -524,6 +555,11 @@ const buildTimingUpdateState = (existingRow, nextStatus) => {
 };
 
 const isProductPromoteCampaign = (ad) => String(ad?.campaign_type || ad?.campaignType || '').trim().toLowerCase() === 'product promote';
+
+const isPhotoVideoCampaign = (ad) => {
+    const normalized = String(ad?.campaign_type || ad?.campaignType || '').trim().toLowerCase();
+    return normalized.includes('photo') && normalized.includes('video');
+};
 
 const getProductPromoteTarget = (ad) => {
     const productIdValue =
@@ -697,6 +733,7 @@ const normalizePayload = (body = {}, fallback = {}) => {
                 : (fallback.maxReachCap ?? fallback.max_reach_cap ?? fallback.estimatedReachMax ?? fallback.estimated_reach_max ?? null)),
         promoCode: typeof body.promoCode === 'string' ? body.promoCode.trim() || null : (fallback.promoCode ?? null),
         promoDiscount: hasOwn(body, 'promoDiscount') || hasOwn(body, 'promo_discount') ? (Number.isFinite(Number(body.promoDiscount ?? body.promo_discount)) ? Number(body.promoDiscount ?? body.promo_discount) : null) : (fallback.promoDiscount ?? fallback.promo_discount ?? null),
+        promoteAgain: body.promoteAgain === true || body.editDraft?.promoteAgain === true,
         editDraft: body.editDraft && typeof body.editDraft === 'object' ? body.editDraft : (fallback.editDraft || {}),
         createdAt: body.createdAt ? new Date(body.createdAt) : (fallback.createdAt ? new Date(fallback.createdAt) : null),
     };
@@ -971,6 +1008,14 @@ exports.updateAd = async (req, res) => {
             }
         }
         const requestedStatus = payload.status;
+        const isPromoteAgainRequest = payload.promoteAgain === true;
+        const existingRawPhotoVideoUpload = isRawUploadedPhotoVideoAd(existingRow);
+        const existingPhotoVideo = isPhotoVideoCampaign(existingRow);
+        const nextPhotoVideo = isPhotoVideoCampaign({
+            ...existingRow,
+            campaign_type: payload.campaignType,
+        });
+        const canPromoteAgainTarget = existingPhotoVideo && nextPhotoVideo;
         const contentChanged = [
             'campaignType',
             'title',
@@ -994,15 +1039,27 @@ exports.updateAd = async (req, res) => {
             || JSON.stringify(payload.editDraft || {}) !== JSON.stringify(existingAd.editDraft || {});
 
         if (!isAdmin) {
-            if (contentChanged && existingAd.status !== 'Under Review') {
+            if (isPromoteAgainRequest) {
+                if (!isOwner || !canPromoteAgainTarget) {
+                    return res.status(403).json({ success: false, message: 'Only your Photo & Video ads can be promoted.' });
+                }
+                payload.status = 'Under Review';
+                payload.reach = 0;
+                payload.spend = 0;
+                payload.remainingBudget = Number(payload.budget || 0);
+                payload.impressions = Number(existingAd.impressions || existingAd.views_count || existingAd.viewCount || 0);
+                payload.clicks = Number(existingAd.clicks || 0);
+                payload.editDraft = { ...(payload.editDraft || {}), promoteAgain: true, editingAdId: existingAd.adId };
+            } else if (contentChanged && existingAd.status !== 'Under Review') {
                 return res.status(403).json({ success: false, message: 'Active ads can no longer be edited.' });
             }
 
-            if (hasOwn(req.body, 'status')) {
+            if (!isPromoteAgainRequest && hasOwn(req.body, 'status')) {
                 const currentStatus = String(existingAd.status || '');
                 const canChangeStatus =
                     requestedStatus === currentStatus
                     || (requestedStatus === 'Cancelled' && ['Under Review', 'Active', 'Paused'].includes(currentStatus))
+                    || (requestedStatus === 'Removed' && ['Active', 'Paused'].includes(currentStatus))
                     || (requestedStatus === 'Paused' && currentStatus === 'Active')
                     || (requestedStatus === 'Active' && currentStatus === 'Paused')
                     || (requestedStatus === 'Under Review' && currentStatus === 'Under Review');
@@ -1020,6 +1077,13 @@ exports.updateAd = async (req, res) => {
                     return res.status(403).json({ success: false, message: 'This ad has expired and cannot be resumed on your current plan. Please upgrade to a higher plan.' });
                 }
             }
+        }
+
+        if (
+            payload.status === 'Cancelled'
+            && ['Active', 'Paused'].includes(String(existingAd.status || ''))
+        ) {
+            payload.status = 'Removed';
         }
 
         await client.query('BEGIN');
@@ -1180,14 +1244,15 @@ exports.updateAd = async (req, res) => {
                  estimated_reach_min = COALESCE($26, estimated_reach_min),
                  estimated_reach_max = COALESCE($27, estimated_reach_max),
                  max_reach_cap = $28,
-                 active_start_time = COALESCE($29, active_start_time),
-                 started_at = COALESCE($30, started_at),
-                 last_resumed_at = $31,
-                 paused_at = $32,
-                 accumulated_active_ms = COALESCE($33, accumulated_active_ms),
-                 completed_at = $34,
+                 active_start_time = CASE WHEN $29 THEN NULL ELSE COALESCE($30, active_start_time) END,
+                 started_at = CASE WHEN $29 THEN NULL ELSE COALESCE($31, started_at) END,
+                 last_resumed_at = CASE WHEN $29 THEN NULL ELSE $32 END,
+                 paused_at = CASE WHEN $29 THEN NULL ELSE $33 END,
+                 accumulated_active_ms = CASE WHEN $29 THEN 0 ELSE COALESCE($34, accumulated_active_ms) END,
+                 completed_at = CASE WHEN $29 THEN NULL ELSE $35 END,
+                 current_reach = COALESCE($36, current_reach),
                  updated_at = CURRENT_TIMESTAMP
-             WHERE ad_id = $35
+             WHERE ad_id = $37
              RETURNING *`,
             [
                 payload.campaignType, payload.title, payload.description, payload.mediaPreview, JSON.stringify(payload.mediaGallery), payload.mediaType,
@@ -1197,12 +1262,14 @@ exports.updateAd = async (req, res) => {
                 productPromoteIdentity.originalProductId, productPromoteIdentity.originalProductCode,
                 payload.walletTransferId, JSON.stringify(payload.editDraft),
                 payload.tierId ?? null, payload.estimatedReachMin ?? null, payload.estimatedReachMax ?? null, payload.maxReachCap ?? null,
+                isPromoteAgainRequest,
                 timingState.activeStartTime,
                 timingState.startedAt,
                 timingState.lastResumedAt,
                 timingState.pausedAt,
                 timingState.accumulatedActiveMs,
                 timingState.completedAt,
+                isPromoteAgainRequest ? 0 : null,
                 adId,
             ]
         );
@@ -1316,12 +1383,22 @@ exports.getActiveAdsPublic = async (req, res) => {
         const queryParams = viewerId ? [fetchLimit, offset, viewerId] : [fetchLimit, offset];
         const ownerFilter = (ownerUserId && Number.isFinite(ownerUserId))
             ? `AND a.user_id = ${ownerUserId}` : '';
+        const statusFilter = (ownerUserId && Number.isFinite(ownerUserId))
+            ? `(
+                   a.status = 'Active'
+                   OR a.status IN ('Removed', 'Paused')
+               )`
+            : `a.status = 'Active'`;
         const result = await pool.query(
             `SELECT a.*, u.username AS owner_username_joined, u.profile_picture${viewerSelect}
              FROM ads a
              LEFT JOIN users u ON a.user_id = u.id
-             WHERE a.status = 'Active'
-               AND (a.max_reach_cap IS NULL OR COALESCE(a.current_reach, 0) < a.max_reach_cap)
+             WHERE ${statusFilter}
+               AND (
+                   a.status <> 'Active'
+                   OR a.max_reach_cap IS NULL
+                   OR COALESCE(a.current_reach, 0) < a.max_reach_cap
+               )
                ${ownerFilter}
              ORDER BY COALESCE(a.active_start_time, a.created_at) DESC
              LIMIT $1 OFFSET $2`,
@@ -1329,10 +1406,17 @@ exports.getActiveAdsPublic = async (req, res) => {
         );
 
         const viewerProfile = await loadViewerAdProfile(pool, viewerId, req);
-        const eligibleRows = (result.rows || []).filter((row) => adIsWithinDeliveryRules(row));
+        const eligibleRows = (result.rows || []).filter((row) => {
+            if (ownerUserId && Number.isFinite(ownerUserId)) {
+                return ['Active', 'Removed', 'Paused'].includes(String(row.status || '').trim());
+            }
+            return adIsWithinDeliveryRules(row);
+        });
         let rows;
 
-        if (viewerProfile?.isAnonymous) {
+        if (ownerUserId && Number.isFinite(ownerUserId)) {
+            rows = eligibleRows;
+        } else if (viewerProfile?.isAnonymous) {
             rows = eligibleRows;
         } else {
             const targetedRows = eligibleRows.filter((row) => adMatchesViewer(row, viewerProfile || {}));

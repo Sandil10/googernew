@@ -20,7 +20,7 @@ const FALLBACK = {
     adVideos: false,
     adPhotos: false,
     textMessaging: false,
-    voiceCalls: false,
+    voiceCalls: true,
     videoCalls: false,
     chatAutoDeleteDays: 30,
     adsExpiryDays: 30,
@@ -28,6 +28,11 @@ const FALLBACK = {
 };
 
 const UNLIMITED = 999999;
+
+const isPlan03Slug = (slug = '') => {
+    const normalized = String(slug || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+    return normalized === 'plan03' || normalized === 'plan3' || normalized === '03';
+};
 
 /**
  * Returns effective plan limits for a user.
@@ -37,7 +42,7 @@ const getUserPlanLimits = async (userId) => {
     try {
         // Active paid subscription?
         const paidRes = await pool.query(
-            `SELECT sp.googs_limit, sp.verified_tick, sp.extra
+            `SELECT sp.slug, sp.googs_limit, sp.verified_tick, sp.extra
              FROM user_plan_subscriptions ups
              JOIN subscription_plans sp ON sp.id = ups.plan_id
              WHERE ups.user_id = $1 AND ups.status = 'active'
@@ -47,7 +52,7 @@ const getUserPlanLimits = async (userId) => {
         );
 
         if (paidRes.rows.length > 0) {
-            const { googs_limit, verified_tick, extra = {} } = paidRes.rows[0];
+            const { slug, googs_limit, verified_tick, extra = {} } = paidRes.rows[0];
             // admin stores color limit as write_goog_limit (labeled "Write Goog (color)")
             // ad limits stored as ad_videos / ad_photos
             const tmStr = String(extra.text_messaging ?? '');
@@ -64,8 +69,8 @@ const getUserPlanLimits = async (userId) => {
                 textMessaging:        extra.text_messaging !== false && extra.text_messaging != null,
                 chatTextColors:       tmStr.includes('colors'),
                 chatStickers:         tmStr.includes('stickers'),
-                voiceCalls:           extra.voice_calls !== false,
-                videoCalls:           extra.video_calls === true,
+                voiceCalls:           true,
+                videoCalls:           isPlan03Slug(slug) && extra.video_calls !== false,
                 voiceToText:          !!(extra.voice_notes_to_text || extra.voice_to_text || extra.speech_to_text),
                 textToVoice:          !!(extra.text_to_voice_note || extra.text_to_voice || extra.tts),
                 chatAutoDeleteDays:   extra.chat_auto_delete_days != null ? parseInt(extra.chat_auto_delete_days) : UNLIMITED,
@@ -95,8 +100,8 @@ const getUserPlanLimits = async (userId) => {
                 textMessaging:       extra.text_messaging !== false && extra.text_messaging != null,
                 chatTextColors:      false,
                 chatStickers:        false,
-                voiceCalls:          extra.voice_calls === true,
-                videoCalls:          extra.video_calls === true,
+                voiceCalls:          true,
+                videoCalls:          false,
                 voiceToText:         false,
                 textToVoice:         false,
                 chatAutoDeleteDays:  parseInt(extra.chat_auto_delete_days ?? FALLBACK.chatAutoDeleteDays),
@@ -222,8 +227,8 @@ const getUserSubscriptionFeatures = async (userId) => {
         chat_text_colors:         isBasic ? false : (extra.chat_text_colors != null ? asBool(extra.chat_text_colors) : tmHasColors),
         chat_stickers:            isBasic ? false : (extra.chat_stickers    != null ? asBool(extra.chat_stickers)    : tmHasStickers),
         text_messaging:           extra.text_messaging !== false && extra.text_messaging != null && extra.text_messaging !== 0,
-        voice_calls:              bool(extra.voice_calls ?? extra.voice_call, true),
-        video_calls:              isBasic ? false : extra.video_calls === true,
+        voice_calls:              true,
+        video_calls:              isPlan03Slug(plan?.slug) && extra.video_calls !== false,
         // Admin stores these as voice_notes_to_text / text_to_voice_note
         voice_to_text:            isBasic ? false : !!(extra.voice_notes_to_text || extra.voice_to_text || extra.speech_to_text || extra.microphone),
         text_to_voice:            isBasic ? false : !!(extra.text_to_voice_note || extra.text_to_voice || extra.tts || extra.speech),
@@ -241,6 +246,7 @@ module.exports = {
     getUserPlanLimits,
     getUserSubscriptionFeatures,
     toExpiryDays,
+    isPlan03Slug,
     FALLBACK,
     UNLIMITED,
 };
