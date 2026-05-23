@@ -505,19 +505,26 @@ const mapRow = (row) => {
     };
 };
 
+const toDateOrNull = (value) => {
+    if (!value) return null;
+    if (value instanceof Date) return value;
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) ? d : null;
+};
+
 const buildTimingUpdateState = (existingRow, nextStatus) => {
     const now = new Date();
     const currentStatus = String(existingRow?.status || '').trim();
-    const activeStartTime = existingRow?.active_start_time || existingRow?.started_at || null;
-    const lastResumedAt = existingRow?.last_resumed_at || null;
+    const activeStartTime = toDateOrNull(existingRow?.active_start_time || existingRow?.started_at);
+    const lastResumedAt = toDateOrNull(existingRow?.last_resumed_at);
     const accumulatedActiveMs = Math.max(0, Number(existingRow?.accumulated_active_ms ?? 0) || 0);
 
     let nextActiveStartTime = activeStartTime;
-    let nextStartedAt = existingRow?.started_at || activeStartTime || null;
-    let nextLastResumedAt = existingRow?.last_resumed_at || null;
-    let nextPausedAt = existingRow?.paused_at || null;
+    let nextStartedAt = toDateOrNull(existingRow?.started_at) || activeStartTime || null;
+    let nextLastResumedAt = toDateOrNull(existingRow?.last_resumed_at);
+    let nextPausedAt = toDateOrNull(existingRow?.paused_at);
     let nextAccumulatedActiveMs = accumulatedActiveMs;
-    let nextCompletedAt = existingRow?.completed_at || null;
+    let nextCompletedAt = toDateOrNull(existingRow?.completed_at);
 
     const consumeCurrentSegment = () => {
         if (!lastResumedAt) return;
