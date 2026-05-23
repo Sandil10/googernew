@@ -1283,7 +1283,14 @@ exports.updateAd = async (req, res) => {
         return res.status(200).json({ success: true, ad: mapRow(result.rows[0]) });
     } catch (error) {
         try { await client.query('ROLLBACK'); } catch {}
-        console.error('Update ad error:', error);
+        console.error('Update ad error:', {
+            message: error.message,
+            code: error.code,
+            detail: error.detail,
+            hint: error.hint,
+            where: error.where,
+            stack: error.stack,
+        });
         return res.status(500).json({ success: false, message: 'Failed to update ad' });
     } finally {
         client.release();

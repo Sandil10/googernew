@@ -62,7 +62,6 @@ const STATUS_FILTERS: Array<{ label: StatusFilter; slug: string; icon: string }>
     { label: "Paused",       slug: "paused",        icon: "pause-circle-outline" },
     { label: "Removed",      slug: "removed",       icon: "eye-off-outline" },
     { label: "Completed",    slug: "completed",     icon: "checkmark-done-outline" },
-    { label: "Expired",      slug: "expired",       icon: "hourglass-outline" },
     { label: "Cancelled",    slug: "cancelled",     icon: "close-circle-outline" },
 ];
 
@@ -364,6 +363,7 @@ export default function AdCenterPage() {
     const [cancelTarget, setCancelTarget] = useState<AdHistoryRow | null>(null);
     const [currentPage, setCurrentPage] = useState(1);
     const [actionError, setActionError] = useState<string | null>(null);
+    const [actionErrorAdId, setActionErrorAdId] = useState<string | null>(null);
     const [nowMs, setNowMs] = useState(() => Date.now());
     const [showExpiryPopup, setShowExpiryPopup] = useState(false);
     const [expiryPopupDismissed, setExpiryPopupDismissed] = useState(false);
@@ -518,24 +518,30 @@ export default function AdCenterPage() {
     };
 
     const handlePause = async (adId: string) => {
+        setActionError(null);
+        setActionErrorAdId(null);
         try {
             await adsService.updateAd(adId, { status: "Paused" });
             const nextAds = await adsService.getMyAds();
             setAds(normalizeApiAds(nextAds));
             window.dispatchEvent(new Event("googer-ad-history-updated"));
-        } catch {
-            return;
+        } catch (error: any) {
+            setActionError(error?.message || "Failed to pause ad.");
+            setActionErrorAdId(adId);
         }
     };
 
     const handleResume = async (adId: string) => {
+        setActionError(null);
+        setActionErrorAdId(null);
         try {
             await adsService.updateAd(adId, { status: "Active" });
             const nextAds = await adsService.getMyAds();
             setAds(normalizeApiAds(nextAds));
             window.dispatchEvent(new Event("googer-ad-history-updated"));
-        } catch {
-            return;
+        } catch (error: any) {
+            setActionError(error?.message || "Failed to resume ad.");
+            setActionErrorAdId(adId);
         }
     };
 
@@ -727,6 +733,7 @@ export default function AdCenterPage() {
                                                     type="button"
                                                     onClick={() => {
                                                         setActionError(null);
+                                                        setActionErrorAdId(null);
                                                         setCancelTarget(ad);
                                                     }}
                                                     className="inline-flex min-w-[76px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-[8px] font-black uppercase tracking-[0.08em] text-white/70 transition hover:bg-white/[0.09] hover:text-white"
@@ -736,7 +743,7 @@ export default function AdCenterPage() {
                                             )}
                                         </div>
                                     </div>
-                                    {actionError && cancelTarget?.adId === ad.adId && (
+                                    {actionError && (cancelTarget?.adId === ad.adId || actionErrorAdId === ad.adId) && (
                                         <div className="mt-3 rounded-[0.95rem] border border-rose-400/16 bg-rose-500/8 px-3 py-2 text-[9px] font-bold leading-4 text-rose-100/85">
                                             {actionError}
                                         </div>
