@@ -1,6 +1,14 @@
 const pool = require('../config/database');
 const { saveUploadedFiles } = require('../utils/localUpload');
 const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const path = require('path');
+const _logError = (label, err) => {
+    try {
+        const line = `[${new Date().toISOString()}] ${label}: ${err?.message} | code=${err?.code} | detail=${err?.detail} | stack=${(err?.stack||'').split('\n')[1]?.trim()}\n`;
+        fs.appendFileSync(path.resolve(__dirname, '../../../../ad_errors.log'), line);
+    } catch {}
+};
 const {
     adIsWithinDeliveryRules,
     adMatchesViewer,
@@ -1283,14 +1291,8 @@ exports.updateAd = async (req, res) => {
         return res.status(200).json({ success: true, ad: mapRow(result.rows[0]) });
     } catch (error) {
         try { await client.query('ROLLBACK'); } catch {}
-        console.error('Update ad error:', {
-            message: error.message,
-            code: error.code,
-            detail: error.detail,
-            hint: error.hint,
-            where: error.where,
-            stack: error.stack,
-        });
+        console.error('Update ad error:', error);
+        _logError('updateAd', error);
         return res.status(500).json({ success: false, message: 'Failed to update ad' });
     } finally {
         client.release();
