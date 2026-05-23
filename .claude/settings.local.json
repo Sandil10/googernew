@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PGPASSWORD='Asphalt10Rds#' psql -h googer-db.ctssuq0g0svg.ap-southeast-1.rds.amazonaws.com -p 5432 -U postgres -d Googer --no-password -c \"SELECT slug, name, extra->>'ads_expiry_days' AS ads_expiry_days, extra FROM subscription_plans WHERE slug = 'basic';\")"
+    ]
+  }
+}
