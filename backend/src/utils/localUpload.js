@@ -4,6 +4,19 @@ const path = require('path');
 
 const PUBLIC_UPLOAD_ROOT = path.resolve(__dirname, '../../../public/uploads');
 
+const useCloudinary = process.env.NODE_ENV === 'production' &&
+    !!(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
+
+let cloudinary = null;
+if (useCloudinary) {
+    cloudinary = require('cloudinary').v2;
+    cloudinary.config({
+        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+        api_key: process.env.CLOUDINARY_API_KEY,
+        api_secret: process.env.CLOUDINARY_API_SECRET,
+    });
+}
+
 const getSafeExtension = (file = {}) => {
     const originalExt = path.extname(file.originalname || '').toLowerCase();
     if (originalExt && originalExt.length <= 10) return originalExt;
@@ -22,8 +35,26 @@ const getSafeExtension = (file = {}) => {
     return mimeExt || '.bin';
 };
 
+const uploadToCloudinary = (file, folder) => {
+    return new Promise((resolve, reject) => {
+        const resourceType = String(file.mimetype || '').startsWith('video/') ? 'video' : 'image';
+        const stream = cloudinary.uploader.upload_stream(
+            { folder, resource_type: resourceType },
+            (error, result) => {
+                if (error) reject(error);
+                else resolve(result.secure_url);
+            }
+        );
+        stream.end(file.buffer);
+    });
+};
+
 const saveUploadedFile = async (file, folder = 'media') => {
     if (!file?.buffer) return '';
+
+    if (useCloudinary) {
+        return uploadToCloudinary(file, folder);
+    }
 
     const safeFolder = String(folder || 'media').replace(/[^a-z0-9-_]/gi, '').toLowerCase() || 'media';
     const uploadDir = path.join(PUBLIC_UPLOAD_ROOT, safeFolder);

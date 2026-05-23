@@ -1,7 +1,9 @@
 /** @type {import('next').NextConfig} */
+// BACKEND_URL: set this env var on the production server to point to the public backend host.
+// Falls back to localhost for local development.
+const BACKEND_ORIGIN = process.env.BACKEND_URL || 'http://127.0.0.1:5000';
+
 const nextConfig = {
-  // Fix HTTP 431 "Request Header Fields Too Large" caused by large cookies/JWT tokens.
-  // Raises the maximum allowed HTTP header size from the default 8KB to 32KB.
   experimental: {
   },
   images: {
@@ -32,11 +34,11 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://127.0.0.1:5000/api/:path*',
+        destination: `${BACKEND_ORIGIN}/api/:path*`,
       },
       {
         source: '/uploads/:path*',
-        destination: 'http://127.0.0.1:5000/uploads/:path*',
+        destination: `${BACKEND_ORIGIN}/uploads/:path*`,
       },
       {
         source: '/shop/:id',
