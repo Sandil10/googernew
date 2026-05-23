@@ -449,10 +449,7 @@ exports.register = async (req, res) => {
         console.error('Outer Registration Error:', error);
         res.status(500).json({
             success: false,
-            message: error.message || 'Database error occurred',
-            error: error.message,
-            detail: error.detail, // This will tell us the exact column/table issue
-            code: error.code
+            message: 'Registration failed. Please try again.',
         });
     }
 };
@@ -846,7 +843,7 @@ exports.updateProfile = async (req, res) => {
         });
     } catch (error) {
         console.error('Update profile error:', error);
-        res.status(500).json({ success: false, message: `Server error updating profile: ${error.message}` });
+        res.status(500).json({ success: false, message: 'Server error updating profile.' });
     }
 };
 
