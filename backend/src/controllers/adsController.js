@@ -1259,12 +1259,12 @@ exports.updateAd = async (req, res) => {
                  estimated_reach_min = COALESCE($26, estimated_reach_min),
                  estimated_reach_max = COALESCE($27, estimated_reach_max),
                  max_reach_cap = $28,
-                 active_start_time = CASE WHEN $29 THEN NULL ELSE COALESCE($30, active_start_time) END,
-                 started_at = CASE WHEN $29 THEN NULL ELSE COALESCE($31, started_at) END,
-                 last_resumed_at = CASE WHEN $29 THEN NULL ELSE $32 END,
-                 paused_at = CASE WHEN $29 THEN NULL ELSE $33 END,
+                 active_start_time = CASE WHEN $29 THEN NULL ELSE COALESCE($30::timestamp, active_start_time) END,
+                 started_at = CASE WHEN $29 THEN NULL ELSE COALESCE($31::timestamp, started_at) END,
+                 last_resumed_at = CASE WHEN $29 THEN NULL ELSE $32::timestamp END,
+                 paused_at = CASE WHEN $29 THEN NULL ELSE $33::timestamp END,
                  accumulated_active_ms = CASE WHEN $29 THEN 0 ELSE COALESCE($34, accumulated_active_ms) END,
-                 completed_at = CASE WHEN $29 THEN NULL ELSE $35 END,
+                 completed_at = CASE WHEN $29 THEN NULL ELSE $35::timestamp END,
                  current_reach = COALESCE($36, current_reach),
                  updated_at = CURRENT_TIMESTAMP
              WHERE ad_id = $37
