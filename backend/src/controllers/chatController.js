@@ -1,10 +1,50 @@
 const pool = require('../config/database');
 const { success, error } = require('../utils/responseHandler');
-const { getUserPlanLimits, getUserSubscriptionFeatures, isPlan03Slug } = require('../utils/planLimits');
+const { getUserPlanLimits, getUserSubscriptionFeatures } = require('../utils/planLimits');
 
 // Track per-user prune timestamp so we don't hammer the DB on every fetch.
 const lastPruneAt = new Map();
-const PRUNE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+const PRUNE_COOLDOWN_MS = 10 * 1000;
+
+const getChatRetentionMs = (extra = {}) => {
+    const unit = String(extra.chat_auto_delete_unit || '').trim().toLowerCase();
+    if (
+        unit === 'lifetime' ||
+        unit === 'life_time' ||
+        extra.chat_auto_delete_lifetime === true ||
+        extra.chat_auto_delete_lifetime === 'true'
+    ) {
+        return null;
+    }
+
+    let value = extra.chat_auto_delete_value;
+    let resolvedUnit = unit || 'days';
+
+    if (value === undefined || value === null || value === '') {
+        if (extra.chat_auto_delete_days !== undefined && extra.chat_auto_delete_days !== null && extra.chat_auto_delete_days !== '') {
+            value = extra.chat_auto_delete_days;
+            resolvedUnit = 'days';
+        } else if (extra.chat_auto_delete_24h === true || extra.chat_auto_delete_24h === 'true') {
+            value = 1;
+            resolvedUnit = 'days';
+        }
+    }
+
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue) || numericValue <= 0) return null;
+
+    if (resolvedUnit === 'minutes' || resolvedUnit === 'minute' || resolvedUnit === 'mins' || resolvedUnit === 'min') {
+        return Math.round(numericValue * 60 * 1000);
+    }
+    if (resolvedUnit === 'hours' || resolvedUnit === 'hour' || resolvedUnit === 'hrs' || resolvedUnit === 'hr') {
+        return Math.round(numericValue * 60 * 60 * 1000);
+    }
+    if (resolvedUnit === 'days' || resolvedUnit === 'day') {
+        return Math.round(numericValue * 24 * 60 * 60 * 1000);
+    }
+
+    return null;
+};
 
 // Removes chat messages older than the user's plan-defined retention window.
 // Per-user — value comes from subscription_plans.extra.chat_auto_delete_days
@@ -17,14 +57,20 @@ const pruneExpiredChatsForUser = async (userId) => {
         lastPruneAt.set(userId, Date.now());
 
         const features = await getUserSubscriptionFeatures(userId);
-        const days = Number(features.chat_auto_delete_days);
-        if (!Number.isFinite(days) || days <= 0) return;
+        const retentionMs = getChatRetentionMs(features.extra || {});
+        if (!retentionMs) return;
 
         await pool.query(
-            `DELETE FROM chat_messages
+            `UPDATE chat_messages
+             SET deleted_for = CASE
+                 WHEN deleted_for ? ($1::text) THEN deleted_for
+                 ELSE deleted_for || to_jsonb($1::text)
+             END
              WHERE (sender_id = $1 OR receiver_id = $1)
-               AND created_at < NOW() - ($2::int * INTERVAL '1 day')`,
-            [userId, days]
+               AND deleted_for_everyone = FALSE
+               AND NOT (deleted_for ? ($1::text))
+               AND created_at < NOW() - ($2::text || ' milliseconds')::interval`,
+            [userId, retentionMs]
         );
     } catch (err) {
         console.error('[chat] pruneExpiredChatsForUser error:', err.message);
@@ -34,7 +80,7 @@ const pruneExpiredChatsForUser = async (userId) => {
 const ACTIVE_SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate']);
 const CALL_TYPES = new Set(['voice', 'video']);
 const CALL_STATUSES = new Set(['ringing', 'active', 'missed', 'completed', 'rejected']);
-const MESSAGE_TYPES = new Set(['text', 'image', 'sticker']);
+const MESSAGE_TYPES = new Set(['text', 'image', 'sticker', 'voice_tts']);
 const MESSAGE_STATUSES = new Set(['sending', 'sent', 'delivered', 'read']);
 
 const getCallEncryptionMetadata = () => ({
@@ -45,7 +91,7 @@ const getCallEncryptionMetadata = () => ({
 
 const userCanUseVideoCall = async (userId) => {
     const features = await getUserSubscriptionFeatures(userId);
-    return isPlan03Slug(features.plan_slug) && features.video_calls !== false;
+    return features.video_calls === true;
 };
 
 let tablesReadyPromise = null;
@@ -67,9 +113,15 @@ const ensureChatTables = async () => {
                     delivered_at TIMESTAMP,
                     read_at TIMESTAMP,
                     deleted_for_everyone BOOLEAN NOT NULL DEFAULT FALSE,
+                    deleted_for JSONB NOT NULL DEFAULT '[]'::jsonb,
                     CHECK (message_type IN ('text', 'image')),
                     CHECK (status IN ('sending', 'sent', 'delivered', 'read'))
                 );
+            `);
+
+            await pool.query(`
+                ALTER TABLE chat_messages
+                    ADD COLUMN IF NOT EXISTS deleted_for JSONB NOT NULL DEFAULT '[]'::jsonb;
             `);
 
             await pool.query(`
@@ -79,6 +131,11 @@ const ensureChatTables = async () => {
                     last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+            `);
+
+            await pool.query(`
+                ALTER TABLE chat_presence
+                    ADD COLUMN IF NOT EXISTS typing_until TIMESTAMP;
             `);
 
             await pool.query(`
@@ -186,6 +243,7 @@ const mapMessageRow = (row) => ({
     created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
     delivered_at: row.delivered_at,
     read_at: row.read_at,
+    deleted_for: Array.isArray(row.deleted_for) ? row.deleted_for : [],
     sender_name: row.sender_name || null,
     receiver_name: row.receiver_name || null,
 });
@@ -322,6 +380,7 @@ exports.updatePresence = async (req, res) => {
                     delivered_at = COALESCE(delivered_at, CURRENT_TIMESTAMP)
                 WHERE receiver_id = $1
                   AND status = 'sent'
+                  AND NOT (deleted_for ? ($1::text))
             `,
             [userId]
         );
@@ -336,6 +395,7 @@ exports.updatePresence = async (req, res) => {
                     WHERE receiver_id = $1
                       AND sender_id = $2
                       AND status IN ('sent', 'delivered')
+                      AND NOT (deleted_for ? ($1::text))
                 `,
                 [userId, activeParticipantId]
             );
@@ -353,6 +413,7 @@ exports.getConversations = async (req, res) => {
         await ensureChatTables();
 
         const userId = Number(req.user.id);
+        void pruneExpiredChatsForUser(userId);
         const result = await pool.query(
             `
                 WITH user_conversations AS (
@@ -371,9 +432,12 @@ exports.getConversations = async (req, res) => {
                         status,
                         created_at,
                         delivered_at,
-                        read_at
+                        read_at,
+                        deleted_for
                     FROM chat_messages
-                    WHERE sender_id = $1 OR receiver_id = $1
+                    WHERE (sender_id = $1 OR receiver_id = $1)
+                      AND deleted_for_everyone = FALSE
+                      AND NOT (deleted_for ? ($1::text))
                 ),
                 latest_messages AS (
                     SELECT DISTINCT ON (participant_id)
@@ -388,7 +452,8 @@ exports.getConversations = async (req, res) => {
                         status,
                         created_at,
                         delivered_at,
-                        read_at
+                        read_at,
+                        deleted_for
                     FROM user_conversations
                     ORDER BY participant_id, created_at DESC, id DESC
                 ),
@@ -399,6 +464,8 @@ exports.getConversations = async (req, res) => {
                     FROM chat_messages
                     WHERE receiver_id = $1
                       AND status IN ('sent', 'delivered')
+                      AND deleted_for_everyone = FALSE
+                      AND NOT (deleted_for ? ($1::text))
                     GROUP BY sender_id
                 )
                 SELECT
@@ -419,6 +486,7 @@ exports.getConversations = async (req, res) => {
                     lm.created_at,
                     lm.delivered_at,
                     lm.read_at,
+                    lm.deleted_for,
                     COALESCE(uc.unread_count, 0) AS unread_count
                 FROM latest_messages lm
                 JOIN users participant ON participant.id = lm.participant_id
@@ -474,6 +542,7 @@ exports.getMessages = async (req, res) => {
                     WHERE receiver_id = $1
                       AND sender_id = $2
                       AND status IN ('sent', 'delivered')
+                      AND NOT (deleted_for ? ($1::text))
                 `,
                 [userId, participantId]
             );
@@ -486,6 +555,7 @@ exports.getMessages = async (req, res) => {
                     WHERE receiver_id = $1
                       AND sender_id = $2
                       AND status = 'sent'
+                      AND NOT (deleted_for ? ($1::text))
                 `,
                 [userId, participantId]
             );
@@ -503,6 +573,7 @@ exports.getMessages = async (req, res) => {
                 WHERE ((m.sender_id = $1 AND m.receiver_id = $2)
                     OR (m.sender_id = $2 AND m.receiver_id = $1))
                   AND m.deleted_for_everyone = FALSE
+                  AND NOT (m.deleted_for ? ($1::text))
                 ORDER BY m.created_at ASC, m.id ASC
             `,
             [userId, participantId]
@@ -528,12 +599,21 @@ exports.sendMessage = async (req, res) => {
 
         const receiverId = Number(req.body.receiverId);
         const rawType = String(req.body.type || 'text');
-        const type = rawType === 'image' ? 'image' : rawType === 'sticker' ? 'sticker' : 'text';
+        const type = rawType === 'image'
+            ? 'image'
+            : rawType === 'sticker'
+                ? 'sticker'
+                : rawType === 'voice_tts'
+                    ? 'voice_tts'
+                    : 'text';
 
-        if (type === 'sticker') {
+        if (type === 'sticker' || type === 'voice_tts') {
             const features = await getUserSubscriptionFeatures(senderId);
-            if (!features.chat_stickers) {
+            if (type === 'sticker' && !features.chat_stickers) {
                 return error(res, 'Stickers are available in higher plans. Please upgrade.', 403);
+            }
+            if (type === 'voice_tts' && !features.text_to_voice) {
+                return error(res, 'Text-to-voice messages are not enabled on your current plan. Please upgrade.', 403);
             }
         }
         const text = typeof req.body.text === 'string' ? req.body.text.trim() : '';
@@ -548,7 +628,7 @@ exports.sendMessage = async (req, res) => {
             return error(res, 'Invalid message type.', 400);
         }
 
-        if (type === 'text' && !text) {
+        if ((type === 'text' || type === 'voice_tts') && !text) {
             return error(res, 'Message text is required.', 400);
         }
 
@@ -590,7 +670,7 @@ exports.sendMessage = async (req, res) => {
                 senderId,
                 receiverId,
                 type,
-                (type === 'text' || type === 'sticker') ? text : null,
+                (type === 'text' || type === 'sticker' || type === 'voice_tts') ? text : null,
                 imageUrl,
                 fileName,
                 initialStatus,
@@ -641,10 +721,10 @@ exports.startCall = async (req, res) => {
             const callerCanVideo = await userCanUseVideoCall(callerId);
             const receiverCanVideo = await userCanUseVideoCall(receiverId);
             if (!callerCanVideo) {
-                return error(res, 'Video calls require Plan 03. Please upgrade.', 403);
+                return error(res, 'Video calls are not enabled on your current plan. Please upgrade.', 403);
             }
             if (!receiverCanVideo) {
-                return error(res, 'This user needs Plan 03 to receive video calls.', 403);
+                return error(res, 'This user needs a plan with video calls enabled to receive video calls.', 403);
             }
         }
 
@@ -792,7 +872,7 @@ exports.acceptCall = async (req, res) => {
         }
 
         if (call.call_type === 'video' && !await userCanUseVideoCall(userId)) {
-            return error(res, 'Video calls require Plan 03. Please upgrade.', 403);
+            return error(res, 'Video calls are not enabled on your current plan. Please upgrade.', 403);
         }
 
         const client = await pool.connect();
@@ -1105,5 +1185,56 @@ exports.getCallSummaries = async (req, res) => {
     } catch (err) {
         console.error('getCallSummaries error:', err);
         return error(res, 'Server error fetching call summaries', 500);
+    }
+};
+
+exports.updateTyping = async (req, res) => {
+    try {
+        await ensureChatTables();
+
+        const userId = Number(req.user.id);
+
+        await pool.query(
+            `
+                INSERT INTO chat_presence (user_id, last_seen_at, updated_at, typing_until)
+                VALUES ($1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '4 seconds')
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    typing_until = CURRENT_TIMESTAMP + INTERVAL '4 seconds',
+                    updated_at = CURRENT_TIMESTAMP
+            `,
+            [userId]
+        );
+
+        return success(res, { ok: true }, 'Typing updated');
+    } catch (err) {
+        console.error('updateTyping error:', err);
+        return error(res, 'Server error updating typing', 500);
+    }
+};
+
+exports.getTyping = async (req, res) => {
+    try {
+        await ensureChatTables();
+
+        const participantId = Number(req.params.participantId);
+
+        const result = await pool.query(
+            `
+                SELECT typing_until
+                FROM chat_presence
+                WHERE user_id = $1
+                LIMIT 1
+            `,
+            [participantId]
+        );
+
+        const typingUntil = result.rows[0]?.typing_until;
+        const isTyping = typingUntil && new Date(typingUntil).getTime() > Date.now();
+
+        return success(res, { is_typing: !!isTyping }, 'Typing status fetched');
+    } catch (err) {
+        console.error('getTyping error:', err);
+        return error(res, 'Server error fetching typing', 500);
     }
 };

@@ -26,7 +26,7 @@ function statusCfg(s: string) {
 
 function fmt(ts?: string | null) {
     if (!ts) return "—";
-    return new Date(ts).toLocaleString();
+    return new Date(ts).toLocaleString("en-GB", { timeZone: "Asia/Colombo", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 export default function AdminAdsPage() {

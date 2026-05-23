@@ -562,6 +562,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [showCancelConfirm, setShowCancelConfirm] = useState(false);
     const [acceptedProfileNonRefundable, setAcceptedProfileNonRefundable] = useState(false);
     const [editingAdId, setEditingAdId] = useState("");
+    const [editingOriginalBudget, setEditingOriginalBudget] = useState<number | null>(null);
     const [isPromoteAgain, setIsPromoteAgain] = useState(false);
     const [linkedProduct, setLinkedProduct] = useState<any | null>(null);
     const [profilePromoteUser, setProfilePromoteUser] = useState<any | null>(null);
@@ -655,7 +656,10 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 ? Math.max(0, budget - promoDiscount.discount_value)
                 : hasPromoCodeAdded && promoDiscount?.discount_type === "reach"
                     ? 0
-                    : budget;
+                    // Edit mode (Under Review): only the budget difference is charged, not the full new budget
+                    : editingAdId && !isPromoteAgain && editingOriginalBudget !== null
+                        ? Math.max(0, budget - editingOriginalBudget)
+                        : budget;
     const isFreeProfilePromotePromo = isProfilePromote && hasPromoCodeAdded;
     const showProfileNonRefundableNotice = isProfilePromote && !hasPromoCodeAdded;
     const hasInsufficientBalance = walletBalanceLoaded && budget !== null && effectivePaymentAmount > walletBalance;
@@ -1295,7 +1299,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const ownerId = userProfile?.id ?? userProfile?._id ?? userProfile?.user_id;
         const ownerUsername = typeof userProfile?.username === "string" ? userProfile.username : "";
         const existingReview = editingAdId ? await adsService.getAdById(editingAdId).catch(() => null) : null;
-        const existingBudget = isPromoteAgain ? 0 : Number(existingReview?.budget || 0);
+        // Fall back to editingOriginalBudget from draft if the API fetch failed, so we never charge the full budget on an edit
+        const existingBudget = isPromoteAgain ? 0 : Number(existingReview?.budget ?? editingOriginalBudget ?? 0);
         const nextAdId = existingReview?.adId && typeof existingReview.adId === "string" ? existingReview.adId : createNextAdId();
         const selectedBudget = budget ?? 0;
         const publishBudget = effectiveBudget ?? selectedBudget;
@@ -1308,7 +1313,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             ownerKey: ownerKey || undefined,
             ownerId: ownerId !== undefined && ownerId !== null ? String(ownerId) : undefined,
             ownerUsername: ownerUsername || undefined,
-            budget: effectiveBudget ?? 0,
+            budget: publishBudget,
             durationDays: effectiveDurationDays,
             title: isProductPromote && linkedProduct
                 ? linkedProduct.title
@@ -1424,8 +1429,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 return publishBudget; // days promos: full budget charged, bonus is free
             })();
 
-            if (((!existingReview || isPromoteAgain) && discountedBudget > 0) || (existingReview && !isPromoteAgain && budgetDifference > 0)) {
-                const payAmount = existingReview && !isPromoteAgain ? budgetDifference : discountedBudget;
+            // isEditMode: editing an existing Under Review ad (not promote-again)
+            // Works even if the API fetch for existingReview failed, by falling back to editingOriginalBudget
+            const isEditMode = !isPromoteAgain && (!!existingReview || (!!editingAdId && editingOriginalBudget !== null));
+            const payAmount = isEditMode ? budgetDifference : discountedBudget;
+            if ((isEditMode && budgetDifference > 0) || (!isEditMode && discountedBudget > 0)) {
                 if (isProfilePromote) {
                     paymentResult = await walletService.payProfilePromote(payAmount, {
                         orderId: reviewRecord.adId,
@@ -1439,12 +1447,12 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 }
             }
 
-            if (existingReview && !isPromoteAgain && budgetDifference < 0 && ownerKey) {
+            if (existingReview && isEditMode && budgetDifference < 0 && ownerKey) {
                 addAdWalletRefund(reviewRecord.adId, ownerKey, Math.abs(budgetDifference), `Ad Budget Refund - ${reviewRecord.adId}`);
             }
 
             // Record a $0 wallet entry for free promo ads so they appear in transaction history
-            if ((!existingReview || isPromoteAgain) && discountedBudget === 0 && hasPromoCodeAdded && promoCode) {
+            if (!isEditMode && discountedBudget === 0 && hasPromoCodeAdded && promoCode) {
                 try {
                     await walletService.recordPromoAd(reviewRecord.adId, promotionLabel);
                 } catch {
@@ -1455,10 +1463,10 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             const currentBalance = Number(paymentResult?.currentBalance);
             if (Number.isFinite(currentBalance)) {
                 setWalletBalance(getWalletBalanceWithAdAdjustments(currentBalance, ownerKey));
-            } else if (existingReview && !isPromoteAgain && budgetDifference < 0) {
+            } else if (isEditMode && budgetDifference < 0) {
                 setWalletBalance((current) => current + Math.abs(budgetDifference));
             } else {
-                setWalletBalance((current) => Math.max(0, current - (existingReview && !isPromoteAgain ? Math.max(0, budgetDifference) : discountedBudget)));
+                setWalletBalance((current) => Math.max(0, current - (isEditMode ? Math.max(0, budgetDifference) : discountedBudget)));
             }
             window.dispatchEvent(new Event("googer-wallet-updated"));
 
@@ -1885,7 +1893,12 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 return;
             }
 
-            if (typeof parsed.editingAdId === "string") setEditingAdId(parsed.editingAdId);
+            if (typeof parsed.editingAdId === "string") {
+                setEditingAdId(parsed.editingAdId);
+                if (typeof parsed.editingOriginalBudget === "number") {
+                    setEditingOriginalBudget(parsed.editingOriginalBudget);
+                }
+            }
             setIsPromoteAgain(parsed.promoteAgain === true);
             // For Product Promote, never restore the previously promoted link/linkInput.
             // The page should always start empty unless the user arrives via query params.

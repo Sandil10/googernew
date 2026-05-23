@@ -809,7 +809,7 @@ export default function WithdrawalPage() {
                                                 </div>
                                                 <div className="flex justify-between items-center">
                                                     <p className="text-[10px] text-gray-500 font-medium">
-                                                        {new Date(req.created_at).toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                                        {new Date(req.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Colombo' })}
                                                         {' · '}#{req.id}
                                                     </p>
                                                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md bg-gray-900/50 ${

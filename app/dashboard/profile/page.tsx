@@ -480,6 +480,23 @@ export default function ProfilePage() {
 
     useEffect(() => { fetchProfile(); }, [fetchProfile]);
 
+    useEffect(() => {
+        const refreshViewerSaveLimits = () => {
+            subscriptionService.getMyPlan().then((plan) => {
+                setViewerHasPaidPlan(plan != null && !plan.is_basic);
+            }).catch(() => setViewerHasPaidPlan(false));
+            adsService.getSavedAdCounts().then((data) => {
+                if (data) {
+                    setAdSaveCounts(data.counts);
+                    setAdSaveLimits(data.limits);
+                }
+            }).catch(() => {});
+        };
+
+        window.addEventListener("subscription:changed", refreshViewerSaveLimits);
+        return () => window.removeEventListener("subscription:changed", refreshViewerSaveLimits);
+    }, []);
+
 
 
     useEffect(() => {

@@ -770,7 +770,8 @@ exports.payOrder = async (req, res) => {
     }
 };
 
-// Direct payment for Profile Promote ads — deducts from user wallet and records Googer credit through wallet_transfers.commission
+// Direct payment for Profile Promote ads — deducts from user wallet and records Googer credit through wallet_transfers.commission.
+// The protected Super Admin wallet balance in users.wallet_balance is not adjusted by ad payments.
 exports.payProfilePromote = async (req, res) => {
     const client = await pool.connect();
     try {

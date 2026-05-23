@@ -110,6 +110,8 @@ const syncExpiredAds = async (pool, adId = null) => {
     const params = [];
     const adFilter = adId ? ' AND ad_id = $1' : '';
     if (adId) params.push(adId);
+    let expiredCount = 0;
+    try {
 
     // Duration-based expiry — skip reach-first campaign types (Product Promote, Photo/Video).
     // Those ads complete only when their target reach is met, not when duration runs out.
@@ -183,12 +185,13 @@ const syncExpiredAds = async (pool, adId = null) => {
 
     // Raw uploaded Photo & Video expiry only. Link ads are excluded.
     // The clock starts when the admin approves the ad (active_start_time).
-    // Final expiry is whichever comes first: the plan raw-ad limit or the
-    // user-selected ad duration.
+    // If the user selected an ad duration, the ad runs until that duration ends.
+    // The plan raw-ad expiry is only used when no explicit duration is set.
     await pool.query(
         `WITH raw_ads AS (
              SELECT
                  a.ad_id,
+                 a.status,
                  COALESCE(
                      (
                          SELECT
@@ -244,8 +247,8 @@ const syncExpiredAds = async (pool, adId = null) => {
              SELECT
                  ad_id,
                  CASE
-                     WHEN plan_interval IS NOT NULL AND duration_interval IS NOT NULL THEN LEAST(plan_interval, duration_interval)
-                     ELSE COALESCE(plan_interval, duration_interval)
+                     WHEN status = 'Removed' THEN plan_interval
+                     ELSE COALESCE(duration_interval, plan_interval)
                  END AS expiry_interval
              FROM raw_ads
          )
@@ -267,6 +270,42 @@ const syncExpiredAds = async (pool, adId = null) => {
         adId ? [adId] : []
     );
 
+    // Debug: log how many raw photo/video ads exist and what their expiry config looks like
+    try {
+        const debugResult = await pool.query(
+            `SELECT
+                 a.ad_id,
+                 a.status,
+                 a.active_start_time,
+                 a.duration_days,
+                 EXTRACT(EPOCH FROM (NOW() - a.active_start_time)) / 60 AS elapsed_minutes,
+                 (
+                     SELECT COALESCE(sp.extra->>'ads_expiry_value', 'NOT SET') || ' ' || COALESCE(sp.extra->>'ads_expiry_unit', 'days')
+                     FROM user_plan_subscriptions ups
+                     JOIN subscription_plans sp ON sp.id = ups.plan_id
+                     WHERE ups.user_id = a.user_id AND ups.status = 'active'
+                       AND (ups.expires_at IS NULL OR ups.expires_at > NOW())
+                     ORDER BY ups.started_at DESC LIMIT 1
+                 ) AS paid_plan_expiry,
+                 (
+                     SELECT COALESCE(sp.extra->>'ads_expiry_value', 'NOT SET') || ' ' || COALESCE(sp.extra->>'ads_expiry_unit', 'days')
+                     FROM subscription_plans sp
+                     WHERE sp.slug = 'basic' AND sp.is_active = TRUE LIMIT 1
+                 ) AS basic_plan_expiry
+             FROM ads a
+             WHERE a.status IN ('Active', 'Paused', 'Removed')
+               AND ${RAW_PHOTO_VIDEO_UPLOAD_SQL}
+               ${adId ? 'AND a.ad_id = $1' : ''}`,
+            adId ? [adId] : []
+        );
+        if (debugResult.rows.length > 0) {
+            console.log('[syncExpiredAds] Raw photo/video ads pending expiry check:', JSON.stringify(debugResult.rows, null, 2));
+        }
+        expiredCount = debugResult.rows.length;
+    } catch (debugErr) {
+        console.error('[syncExpiredAds] Debug query error:', debugErr.message);
+    }
+
     // Reach-cap completion — applies to all campaign types.
     // For reach-first campaigns this is the primary exit; for others it is a secondary guard.
     // Budget is zeroed for reach-first types: they paid for reach, and reach is now fulfilled.
@@ -287,6 +326,9 @@ const syncExpiredAds = async (pool, adId = null) => {
            ${adFilter}`,
         params
     );
+    } catch (err) {
+        console.error('[syncExpiredAds] Error during expiry sync:', err.message, err.stack);
+    }
 };
 
 const getAdTargeting = (adRow) => {

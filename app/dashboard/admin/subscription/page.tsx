@@ -32,6 +32,13 @@ type DraftPlan = Partial<SubscriptionPlan> & {
     videoAdsSaveLimit?: number | "";
     adExpiryValue?: number | "";
     adExpiryUnit?: "minutes" | "hours" | "days";
+    chatAutoDeleteValue?: number | "";
+    chatAutoDeleteUnit?: "minutes" | "hours" | "days" | "lifetime";
+    voiceCalls?: boolean;
+    videoCalls?: boolean;
+    videoCallQuality?: "240p" | "240p,360p";
+    voiceNotesToText?: boolean;
+    textToVoiceNote?: boolean;
 };
 
 const blankPlan = (): DraftPlan => ({
@@ -51,6 +58,13 @@ const blankPlan = (): DraftPlan => ({
     videoAdsSaveLimit: 5,
     adExpiryValue: 30,
     adExpiryUnit: "days",
+    chatAutoDeleteValue: 1,
+    chatAutoDeleteUnit: "days",
+    voiceCalls: true,
+    videoCalls: false,
+    videoCallQuality: "240p,360p",
+    voiceNotesToText: false,
+    textToVoiceNote: false,
 });
 
 export default function AdminSubscriptionPlansPage() {
@@ -97,6 +111,18 @@ export default function AdminSubscriptionPlansPage() {
             videoAdsSaveLimit: p.extra?.video_ads_save_limit ?? p.extra?.ad_videos ?? "",
             adExpiryValue: p.extra?.ads_expiry_value !== undefined ? Number(p.extra.ads_expiry_value) : 30,
             adExpiryUnit: (p.extra?.ads_expiry_unit as "minutes" | "hours" | "days") || "days",
+            chatAutoDeleteValue: p.extra?.chat_auto_delete_value !== undefined
+                ? Number(p.extra.chat_auto_delete_value)
+                : p.extra?.chat_auto_delete_days !== undefined
+                    ? Number(p.extra.chat_auto_delete_days)
+                    : "",
+            chatAutoDeleteUnit: (p.extra?.chat_auto_delete_unit as "minutes" | "hours" | "days" | "lifetime")
+                || (p.extra?.chat_auto_delete_lifetime ? "lifetime" : "days"),
+            voiceCalls: p.extra?.voice_calls !== false,
+            videoCalls: p.extra?.video_calls === true,
+            videoCallQuality: String(p.extra?.video_call_quality || "240p,360p").includes("360p") ? "240p,360p" : "240p",
+            voiceNotesToText: !!(p.extra?.voice_notes_to_text || p.extra?.voice_to_text || p.extra?.speech_to_text),
+            textToVoiceNote: !!(p.extra?.text_to_voice_note || p.extra?.text_to_voice || p.extra?.tts),
         });
         setModalOpen(true);
     };
@@ -120,6 +146,12 @@ export default function AdminSubscriptionPlansPage() {
                 return;
             }
             const expiryValue = draft.adExpiryValue === "" ? null : Number(draft.adExpiryValue);
+            const chatDeleteValue = draft.chatAutoDeleteValue === "" ? null : Number(draft.chatAutoDeleteValue);
+            if (draft.chatAutoDeleteUnit !== "lifetime" && (chatDeleteValue === null || !Number.isFinite(chatDeleteValue) || chatDeleteValue <= 0)) {
+                showToast("Chat delete value must be greater than 0, or choose lifetime", "error");
+                setSaving(false);
+                return;
+            }
             extraParsed = {
                 ...extraParsed,
                 photo_ads_save_limit: photoLimit,
@@ -128,6 +160,15 @@ export default function AdminSubscriptionPlansPage() {
                 ad_videos: videoLimit,
                 ads_expiry_value: expiryValue !== null && Number.isFinite(expiryValue) ? expiryValue : undefined,
                 ads_expiry_unit: draft.adExpiryUnit || "days",
+                chat_auto_delete_value: draft.chatAutoDeleteUnit === "lifetime" ? undefined : chatDeleteValue,
+                chat_auto_delete_unit: draft.chatAutoDeleteUnit || "days",
+                chat_auto_delete_days: draft.chatAutoDeleteUnit === "days" ? chatDeleteValue : undefined,
+                chat_auto_delete_lifetime: draft.chatAutoDeleteUnit === "lifetime",
+                voice_calls: !!draft.voiceCalls,
+                video_calls: !!draft.videoCalls,
+                video_call_quality: draft.videoCalls ? (draft.videoCallQuality || "240p,360p") : undefined,
+                voice_notes_to_text: !!draft.voiceNotesToText,
+                text_to_voice_note: !!draft.textToVoiceNote,
             };
 
             const payload: Partial<SubscriptionPlan> = {
@@ -249,12 +290,42 @@ export default function AdminSubscriptionPlansPage() {
                                             <IonIcon name={p.verified_tick ? "checkmark-circle" : "close-circle-outline"} className="text-xs" />
                                             Verified tick
                                         </span>
+                                        {p.extra?.voice_calls !== false && (
+                                            <span className="inline-flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+                                                <IonIcon name="call-outline" className="text-xs" />
+                                                Voice
+                                            </span>
+                                        )}
+                                        {p.extra?.video_calls === true && (
+                                            <span className="inline-flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+                                                <IonIcon name="videocam-outline" className="text-xs" />
+                                                Video {p.extra?.video_call_quality || "240p"}
+                                            </span>
+                                        )}
+                                        {(p.extra?.voice_notes_to_text || p.extra?.voice_to_text || p.extra?.speech_to_text) && (
+                                            <span className="inline-flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+                                                <IonIcon name="mic-outline" className="text-xs" />
+                                                Voice to text
+                                            </span>
+                                        )}
+                                        {(p.extra?.text_to_voice_note || p.extra?.text_to_voice || p.extra?.tts) && (
+                                            <span className="inline-flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+                                                <IonIcon name="volume-medium-outline" className="text-xs" />
+                                                Text to voice
+                                            </span>
+                                        )}
                                         {p.extra?.ads_expiry_value && (
                                             <span className="inline-flex items-center gap-1.5 bg-orange-500/10 border border-orange-500/30 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-orange-300">
                                                 <IonIcon name="timer-outline" className="text-xs" />
                                                 Ads expire {p.extra.ads_expiry_value} {p.extra.ads_expiry_unit || "days"}
                                             </span>
                                         )}
+                                        <span className="inline-flex items-center gap-1.5 bg-sky-500/10 border border-sky-500/30 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-sky-300">
+                                            <IonIcon name="chatbubbles-outline" className="text-xs" />
+                                            Chat {p.extra?.chat_auto_delete_unit === "lifetime" || p.extra?.chat_auto_delete_lifetime
+                                                ? "lifetime"
+                                                : `${p.extra?.chat_auto_delete_value ?? p.extra?.chat_auto_delete_days ?? 1} ${p.extra?.chat_auto_delete_unit || "days"}`}
+                                        </span>
                                         <span className="inline-flex items-center gap-1.5 bg-[#141414] border border-gray-700/60 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white/60">
                                             <IonIcon name="swap-vertical-outline" className="text-xs text-gray-500" />
                                             Order {p.sort_order ?? 0}
@@ -372,6 +443,29 @@ export default function AdminSubscriptionPlansPage() {
                                         <option value="days">Days</option>
                                     </select>
                                 </Field>
+                                <Field label="Chat Delete Value">
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        disabled={draft.chatAutoDeleteUnit === "lifetime"}
+                                        value={draft.chatAutoDeleteUnit === "lifetime" ? "" : (draft.chatAutoDeleteValue ?? "")}
+                                        onChange={(e) => setDraft({ ...draft, chatAutoDeleteValue: e.target.value === "" ? "" : Number(e.target.value) })}
+                                        className={inputCls}
+                                        placeholder="1"
+                                    />
+                                </Field>
+                                <Field label="Chat Delete Unit">
+                                    <select
+                                        value={draft.chatAutoDeleteUnit || "days"}
+                                        onChange={(e) => setDraft({ ...draft, chatAutoDeleteUnit: e.target.value as "minutes" | "hours" | "days" | "lifetime" })}
+                                        className={inputCls}
+                                    >
+                                        <option value="minutes">Minutes</option>
+                                        <option value="hours">Hours</option>
+                                        <option value="days">Days</option>
+                                        <option value="lifetime">Lifetime</option>
+                                    </select>
+                                </Field>
                                 <Field label="Sort Order">
                                     <input type="number" value={draft.sort_order ?? 0} onChange={(e) => setDraft({ ...draft, sort_order: Number(e.target.value) })} className={inputCls} />
                                 </Field>
@@ -387,6 +481,44 @@ export default function AdminSubscriptionPlansPage() {
                                         <option value="0">No</option>
                                     </select>
                                 </Field>
+                            </div>
+
+                            <div className="mt-4 rounded-2xl border border-gray-800 bg-[#050505] overflow-hidden">
+                                <ToggleRow
+                                    icon="call-outline"
+                                    label="Voice Calls"
+                                    checked={draft.voiceCalls !== false}
+                                    onChange={(checked) => setDraft({ ...draft, voiceCalls: checked })}
+                                />
+                                <ToggleRow
+                                    icon="videocam-outline"
+                                    label={`Video Calls (${draft.videoCallQuality || "240p,360p"})`}
+                                    checked={draft.videoCalls === true}
+                                    onChange={(checked) => setDraft({ ...draft, videoCalls: checked })}
+                                >
+                                    {draft.videoCalls && (
+                                        <select
+                                            value={draft.videoCallQuality || "240p,360p"}
+                                            onChange={(e) => setDraft({ ...draft, videoCallQuality: e.target.value as "240p" | "240p,360p" })}
+                                            className="h-8 rounded-lg border border-white/10 bg-black px-2 text-[10px] font-bold text-white outline-none"
+                                        >
+                                            <option value="240p">240p</option>
+                                            <option value="240p,360p">240p / 360p</option>
+                                        </select>
+                                    )}
+                                </ToggleRow>
+                                <ToggleRow
+                                    icon="mic-outline"
+                                    label="Voice Notes to Text"
+                                    checked={draft.voiceNotesToText === true}
+                                    onChange={(checked) => setDraft({ ...draft, voiceNotesToText: checked })}
+                                />
+                                <ToggleRow
+                                    icon="volume-medium-outline"
+                                    label="Text to Voice Note"
+                                    checked={draft.textToVoiceNote === true}
+                                    onChange={(checked) => setDraft({ ...draft, textToVoiceNote: checked })}
+                                />
                             </div>
 
                             <Field label="Features (one per line)" className="mt-3">
@@ -429,5 +561,35 @@ function Field({ label, children, className = "" }: { label: string; children: R
             <span className="block text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-1">{label}</span>
             {children}
         </label>
+    );
+}
+
+function ToggleRow({
+    icon,
+    label,
+    checked,
+    onChange,
+    children,
+}: {
+    icon: string;
+    label: string;
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+    children?: React.ReactNode;
+}) {
+    return (
+        <div className="flex items-center gap-3 border-b border-gray-800 px-3 py-3 last:border-b-0">
+            <IonIcon name={icon} className="text-base text-white/45" />
+            <span className="flex-1 text-sm font-semibold text-white">{label}</span>
+            {children}
+            <button
+                type="button"
+                onClick={() => onChange(!checked)}
+                className={`relative h-8 w-14 rounded-full transition ${checked ? "bg-emerald-500" : "bg-white/10"}`}
+                aria-pressed={checked}
+            >
+                <span className={`absolute top-1 h-6 w-6 rounded-full bg-white transition ${checked ? "left-7" : "left-1"}`} />
+            </button>
+        </div>
     );
 }

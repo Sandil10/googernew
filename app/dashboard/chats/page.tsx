@@ -29,9 +29,21 @@ const getConversationKey = (currentUserId?: number | string | null, participantI
 const stripColorTags = (text: string) =>
     String(text || "").replace(/\[c=[^\]]+\]/gi, "").replace(/\[\/c\]/gi, "").trim();
 
+const encodeTtsMessage = (text: string, gender: "male" | "female") =>
+    `[tts_voice=${gender}]${text}`;
+
+const decodeTtsMessage = (text: string): { text: string; gender: "male" | "female" } => {
+    const match = String(text || "").match(/^\[tts_voice=(male|female)\]([\s\S]*)$/i);
+    return {
+        text: match ? match[2] : String(text || ""),
+        gender: match?.[1]?.toLowerCase() === "male" ? "male" : "female",
+    };
+};
+
 const getMessagePreview = (message: any) => {
     if (!message) return "No messages yet";
     if (message.type === "image") return "Sent an image";
+    if (message.type === "voice_tts") return "Sent a voice message";
     if (message.type === "sticker") return "Sent a sticker 🎨";
     if (message.type === "call") return message.text || "Call update";
     if (message.type === "call_record") return message.text || "Call update";
@@ -55,15 +67,15 @@ const getChatRecentKey = (userId?: number | string | null, participantId?: numbe
 
 const MIN_CHAT_SEARCH_QUERY_LENGTH = 2;
 
-const isPlan03Slug = (slug?: string | null) => {
-    const normalized = String(slug || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
-    return normalized === "plan03" || normalized === "plan3" || normalized === "03";
-};
-
 const getCallEncryptionMetadata = () => ({
     media_encryption: "webrtc-dtls-srtp",
     end_to_end_encrypted: true,
     created_at: new Date().toISOString(),
+});
+
+const toRtcSessionDescription = (payload: any): RTCSessionDescriptionInit => ({
+    type: payload?.type,
+    sdp: payload?.sdp,
 });
 
 export default function ChatsPage() {
@@ -94,8 +106,12 @@ export default function ChatsPage() {
     const [isListening, setIsListening] = useState(false);
     const [speakingMessageId, setSpeakingMessageId] = useState<number | string | null>(null);
     const features = useSubscriptionFeatures();
-    const canUseVoiceCall = true;
-    const canUseVideoCall = isPlan03Slug(features.plan_slug) && features.video_calls !== false;
+    const canUseVoiceCall = features.voice_calls !== false;
+    const canUseVideoCall = features.video_calls === true;
+    const [ttsEnabled, setTtsEnabled] = useState(true);
+    const [ttsVoiceGender, setTtsVoiceGender] = useState<"male" | "female">("female");
+    const [ttsSettingsOpen, setTtsSettingsOpen] = useState(false);
+    const [composerMode, setComposerMode] = useState<"typed" | "stt">("typed");
     const [showMobileChat, setShowMobileChat] = useState(false);
     const [videoQuality, setVideoQuality] = useState<"240p" | "360p">("240p");
     const [stickerPanelOpen, setStickerPanelOpen] = useState(false);
@@ -124,6 +140,11 @@ export default function ChatsPage() {
     const callPollIntervalRef = useRef<number | null>(null);
     const ringtoneIntervalRef = useRef<number | null>(null);
     const ringtoneAudioContextRef = useRef<AudioContext | null>(null);
+    const ttsLongPressTimerRef = useRef<number | null>(null);
+    const ttsLongPressFiredRef = useRef(false);
+    const micLongPressTimerRef = useRef<number | null>(null);
+    const micLongPressActiveRef = useRef(false);
+    const speechBaseHtmlRef = useRef("");
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
     const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
     const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -131,10 +152,30 @@ export default function ChatsPage() {
     const preferredParticipantIdRef = useRef<string>("");
     const [remoteMediaVersion, setRemoteMediaVersion] = useState(0);
 
+    // --- New feature state ---
+    const [replyTo, setReplyTo] = useState<any>(null);
+    const [selectedMessages, setSelectedMessages] = useState<Set<string | number>>(new Set());
+    const [selectMode, setSelectMode] = useState(false);
+    const [forwardMessage, setForwardMessage] = useState<any>(null);
+    const [hoveredMessageId, setHoveredMessageId] = useState<string | number | null>(null);
+    const [pinnedChats, setPinnedChats] = useState<Set<string>>(() => {
+        try {
+            const raw = typeof localStorage !== "undefined" ? localStorage.getItem("googer-pinned-chats") : null;
+            return raw ? new Set(JSON.parse(raw)) : new Set();
+        } catch { return new Set(); }
+    });
+    const [participantTyping, setParticipantTyping] = useState(false);
+
+    const callStartTimeRef = useRef<number | null>(null);
+    const longPressTimerRef = useRef<number | null>(null);
+    const typingTimeoutRef = useRef<number | null>(null);
+    const isTypingSentRef = useRef(false);
+
     const formatMessageTime = (value?: string) =>
         new Date(value || Date.now()).toLocaleTimeString("en-GB", {
             hour: "2-digit",
             minute: "2-digit",
+            timeZone: "Asia/Colombo",
         });
 
     const formatLastSeen = (value?: number | null) => {
@@ -142,34 +183,88 @@ export default function ChatsPage() {
         return `Last seen ${new Date(value).toLocaleTimeString("en-GB", {
             hour: "2-digit",
             minute: "2-digit",
+            timeZone: "Asia/Colombo",
         })}`;
     };
 
-    const getStatusTicks = (status?: string) => {
-        if (status === "sending") {
-            return { label: "sending", icon: "", className: "text-white/35" };
-        }
-        if (status === "read") {
-            return { label: "read", icon: "✓✓", className: "text-sky-400" };
-        }
-        if (status === "delivered") {
-            return { label: "delivered", icon: "✓✓", className: "text-white/45" };
-        }
-        return { label: "sent", icon: "✓", className: "text-white/45" };
+    const getStatusDots = (status?: string) => {
+        // big=outer, mid=middle, inner=inner
+        // sending:   big=faded-white, mid=black, inner=black
+        // sent:      big=faded-white, mid=faded-white, inner=black
+        // delivered: big=faded-white, mid=red, inner=black
+        // read:      big=red, mid=black(stable), inner=black
+        if (status === "sending") return { big: "bg-white/20", mid: "bg-black", inner: "bg-black/60", label: "Sending" };
+        if (status === "delivered") return { big: "bg-white/20", mid: "bg-red-500", inner: "bg-black/60", label: "Delivered" };
+        if (status === "read") return { big: "bg-red-500", mid: "bg-black/60", inner: "bg-black/60", label: "Read" };
+        return { big: "bg-white/20", mid: "bg-white/30", inner: "bg-black/60", label: "Sent" };
     };
 
     const resolveMessageStatus = (message: any) => {
         return message?.status || "sent";
     };
 
+    const formatCallDuration = (answeredAt?: string | null, endedAt?: string | null) => {
+        if (!answeredAt || !endedAt) return null;
+        const secs = Math.max(0, Math.round((new Date(endedAt).getTime() - new Date(answeredAt).getTime()) / 1000));
+        if (secs < 60) return `${secs} sec`;
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        return s > 0 ? `${m} min ${s} sec` : `${m} min`;
+    };
+
     const formatCallRecordText = (call: any) => {
         const base = call.call_type === "video" ? "Video Call" : "Voice Call";
+        const duration = call.call_status === "completed" ? formatCallDuration(call.answered_at, call.ended_at) : null;
 
         if (call.call_status === "missed") return `Missed ${base}`;
-        if (call.call_status === "rejected") return `${base} rejected`;
-        if (call.call_status === "completed") return base;
+        if (call.call_status === "rejected") return `${base} Rejected`;
+        if (call.call_status === "completed") return duration ? `${base} · ${duration}` : base;
         if (call.call_status === "active") return `${base} (active)`;
         return `${base} (${call.call_status || "ringing"})`;
+    };
+
+    const togglePinChat = (participantId: string) => {
+        setPinnedChats((prev) => {
+            const next = new Set(prev);
+            if (next.has(participantId)) {
+                next.delete(participantId);
+            } else {
+                next.add(participantId);
+            }
+            try { localStorage.setItem("googer-pinned-chats", JSON.stringify([...next])); } catch { }
+            return next;
+        });
+    };
+
+    const enterSelectMode = (messageId: string | number) => {
+        setSelectMode(true);
+        setSelectedMessages(new Set([messageId]));
+    };
+
+    const toggleSelectMessage = (messageId: string | number) => {
+        setSelectedMessages((prev) => {
+            const next = new Set(prev);
+            if (next.has(messageId)) next.delete(messageId);
+            else next.add(messageId);
+            return next;
+        });
+    };
+
+    const exitSelectMode = () => {
+        setSelectMode(false);
+        setSelectedMessages(new Set());
+    };
+
+    const handleTypingInput = () => {
+        if (!currentUser?.id || !activeConversation?.id) return;
+        if (!isTypingSentRef.current) {
+            isTypingSentRef.current = true;
+            chatService.sendTyping().catch(() => {});
+        }
+        if (typingTimeoutRef.current) window.clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = window.setTimeout(() => {
+            isTypingSentRef.current = false;
+        }, 3000);
     };
 
     const stopRingtone = () => {
@@ -245,22 +340,25 @@ export default function ChatsPage() {
         stream.getAudioTracks().forEach((track) => {
             track.enabled = true;
         });
+        stream.getVideoTracks().forEach((track) => {
+            track.enabled = true;
+        });
 
-        const shouldUseVideoElement = activeCall?.call_type === "video" && remoteVideoRef.current;
+        const hasRemoteVideo = stream.getVideoTracks().length > 0;
+        const shouldUseVideoElement = (activeCall?.call_type === "video" || hasRemoteVideo) && remoteVideoRef.current;
         if (shouldUseVideoElement && remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = stream;
+            remoteVideoRef.current.muted = true;
             remoteVideoRef.current.play?.().catch(() => { });
         }
 
-        if (remoteAudioRef.current && !shouldUseVideoElement) {
+        if (remoteAudioRef.current) {
             remoteAudioRef.current.srcObject = stream;
             remoteAudioRef.current.muted = false;
             remoteAudioRef.current.volume = 1;
             remoteAudioRef.current.play?.().catch(() => {
                 setCallError("Tap the call screen once to allow audio playback.");
             });
-        } else if (remoteAudioRef.current) {
-            remoteAudioRef.current.srcObject = null;
         }
     }, [activeCall?.call_type]);
 
@@ -293,7 +391,7 @@ export default function ChatsPage() {
         };
 
         pc.onconnectionstatechange = () => {
-            if (pc.connectionState === "connected") setCallPhase("active");
+            if (pc.connectionState === "connected") { setCallPhase("active"); callStartTimeRef.current = Date.now(); }
         };
 
         callPeerRef.current = pc;
@@ -375,6 +473,24 @@ export default function ChatsPage() {
         // reflect the current subscription without requiring a full page reload.
         void refreshSubscriptionFeatures();
     }, []);
+
+    useEffect(() => {
+        if (!currentUser?.id || typeof window === "undefined") return;
+        const enabledRaw = window.localStorage.getItem(`googer-chat-tts-enabled-${currentUser.id}`);
+        const genderRaw = window.localStorage.getItem(`googer-chat-tts-voice-${currentUser.id}`);
+        setTtsEnabled(enabledRaw === null ? true : enabledRaw === "1");
+        setTtsVoiceGender(genderRaw === "male" ? "male" : "female");
+    }, [currentUser?.id]);
+
+    useEffect(() => {
+        if (!currentUser?.id || typeof window === "undefined") return;
+        window.localStorage.setItem(`googer-chat-tts-enabled-${currentUser.id}`, ttsEnabled ? "1" : "0");
+    }, [currentUser?.id, ttsEnabled]);
+
+    useEffect(() => {
+        if (!currentUser?.id || typeof window === "undefined") return;
+        window.localStorage.setItem(`googer-chat-tts-voice-${currentUser.id}`, ttsVoiceGender);
+    }, [currentUser?.id, ttsVoiceGender]);
 
     useEffect(() => {
         if (!currentUser?.id) return;
@@ -496,9 +612,17 @@ export default function ChatsPage() {
 
         const loadMessages = async () => {
             try {
-                const fetchedMessages = await chatService.getMessages(Number(activeConversation.id), true);
+                const [fetchedMessages, typingData] = await Promise.allSettled([
+                    chatService.getMessages(Number(activeConversation.id), true),
+                    chatService.getTyping(Number(activeConversation.id)),
+                ]);
                 if (!mounted) return;
-                setMessages(Array.isArray(fetchedMessages) ? fetchedMessages : []);
+                if (fetchedMessages.status === "fulfilled") {
+                    setMessages(Array.isArray(fetchedMessages.value) ? fetchedMessages.value : []);
+                }
+                if (typingData.status === "fulfilled") {
+                    setParticipantTyping(!!(typingData.value as any)?.is_typing);
+                }
             } catch (messageError) {
                 if (mounted) {
                     console.error("Error loading messages:", messageError);
@@ -571,6 +695,9 @@ export default function ChatsPage() {
         setCallError(null);
         setPendingAttachments([]);
         setUploadError(null);
+        setReplyTo(null);
+        exitSelectMode();
+        setParticipantTyping(false);
     };
 
     const persistParticipant = (_participant: any) => { };
@@ -597,6 +724,14 @@ export default function ChatsPage() {
     useEffect(() => {
         return () => {
             try { speechRecognitionRef.current?.stop?.(); } catch {}
+            if (ttsLongPressTimerRef.current) {
+                window.clearTimeout(ttsLongPressTimerRef.current);
+                ttsLongPressTimerRef.current = null;
+            }
+            if (micLongPressTimerRef.current) {
+                window.clearTimeout(micLongPressTimerRef.current);
+                micLongPressTimerRef.current = null;
+            }
             if (typeof window !== "undefined" && "speechSynthesis" in window) {
                 try { window.speechSynthesis.cancel(); } catch {}
             }
@@ -622,6 +757,7 @@ export default function ChatsPage() {
         if (contentEditableRef.current) contentEditableRef.current.innerHTML = "";
         setMessageInput("");
         setActiveTypingColor(null);
+        setComposerMode("typed");
     };
 
     // applyColorTag — uses execCommand so it:
@@ -637,7 +773,18 @@ export default function ChatsPage() {
         setMessageInput(getEditableContent());
     };
 
-    const toggleSpeechToText = () => {
+    const appendSpeechText = (text: string, replaceCurrent = false) => {
+        const el = contentEditableRef.current;
+        if (!el) return;
+        if (replaceCurrent) el.innerHTML = speechBaseHtmlRef.current;
+        const clean = text.trim();
+        if (!clean) return;
+        const prefix = el.textContent?.trim() ? " " : "";
+        el.appendChild(document.createTextNode(prefix + clean));
+        setMessageInput(getEditableContent());
+    };
+
+    const startSpeechToText = () => {
         if (typeof window === "undefined") return;
         const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
         if (!SR) {
@@ -645,17 +792,16 @@ export default function ChatsPage() {
             setTimeout(() => setUploadError(null), 3000);
             return;
         }
-        if (isListening && speechRecognitionRef.current) {
-            try { speechRecognitionRef.current.stop(); } catch {}
-            setIsListening(false);
-            return;
-        }
+        if (isListening && speechRecognitionRef.current) return;
         const recognition = new SR();
         recognition.lang = "en-US";
         recognition.interimResults = true;
         recognition.continuous = true;
-        let baseHTML = contentEditableRef.current?.innerHTML || "";
-        recognition.onstart = () => { setIsListening(true); baseHTML = contentEditableRef.current?.innerHTML || ""; };
+        speechBaseHtmlRef.current = contentEditableRef.current?.innerHTML || "";
+        recognition.onstart = () => {
+            setIsListening(true);
+            speechBaseHtmlRef.current = contentEditableRef.current?.innerHTML || "";
+        };
         recognition.onresult = (event: any) => {
             let finalText = "";
             let interim = "";
@@ -664,24 +810,46 @@ export default function ChatsPage() {
                 if (res.isFinal) finalText += res[0].transcript;
                 else             interim   += res[0].transcript;
             }
-            const el = contentEditableRef.current;
-            if (!el) return;
             if (finalText) {
-                el.innerHTML = baseHTML;
-                const textNode = document.createTextNode((el.textContent?.trim() ? " " : "") + finalText.trim());
-                el.appendChild(textNode);
-                baseHTML = el.innerHTML;
-                setMessageInput(getEditableContent());
+                appendSpeechText(finalText, true);
+                speechBaseHtmlRef.current = contentEditableRef.current?.innerHTML || "";
             } else if (interim) {
-                el.innerHTML = baseHTML;
-                const textNode = document.createTextNode((el.textContent?.trim() ? " " : "") + interim);
-                el.appendChild(textNode);
+                appendSpeechText(interim, true);
             }
         };
         recognition.onerror = () => { setIsListening(false); };
         recognition.onend   = () => { setIsListening(false); };
         speechRecognitionRef.current = recognition;
         try { recognition.start(); } catch { setIsListening(false); }
+    };
+
+    const stopSpeechToText = () => {
+        try { speechRecognitionRef.current?.stop?.(); } catch {}
+        speechRecognitionRef.current = null;
+        setIsListening(false);
+        setMessageInput(getEditableContent());
+        setComposerMode("stt");
+    };
+
+    const beginMicLongPress = () => {
+        if (!features.voice_to_text || !features.text_to_voice || !ttsEnabled) return;
+        micLongPressActiveRef.current = false;
+        if (micLongPressTimerRef.current) window.clearTimeout(micLongPressTimerRef.current);
+        micLongPressTimerRef.current = window.setTimeout(() => {
+            micLongPressActiveRef.current = true;
+            startSpeechToText();
+        }, 450);
+    };
+
+    const endMicLongPress = () => {
+        if (micLongPressTimerRef.current) {
+            window.clearTimeout(micLongPressTimerRef.current);
+            micLongPressTimerRef.current = null;
+        }
+        if (micLongPressActiveRef.current || isListening) {
+            stopSpeechToText();
+        }
+        micLongPressActiveRef.current = false;
     };
 
     const STICKER_CATEGORIES = [
@@ -761,7 +929,7 @@ export default function ChatsPage() {
         }
     };
 
-    const speakMessage = (id: number | string, raw: string) => {
+    const speakMessage = (id: number | string, raw: string, voiceGender: "male" | "female" = ttsVoiceGender) => {
         if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
         if (speakingMessageId === id) {
             window.speechSynthesis.cancel();
@@ -772,10 +940,46 @@ export default function ChatsPage() {
         const plain = String(raw || "").replace(/\[c=[^\]]+\]/g, "").replace(/\[\/c\]/g, "");
         const utter = new SpeechSynthesisUtterance(plain);
         utter.lang = "en-US";
+        const voices = window.speechSynthesis.getVoices?.() || [];
+        const preferredVoice = voices.find((voice) => {
+            const name = `${voice.name} ${voice.voiceURI}`.toLowerCase();
+            return voiceGender === "male"
+                ? /male|david|mark|george|daniel|alex|fred|tom|aaron/.test(name)
+                : /female|zira|samantha|victoria|susan|karen|moira|tessa|sara/.test(name);
+        }) || voices.find((voice) => /en[-_]/i.test(voice.lang || ""));
+        if (preferredVoice) utter.voice = preferredVoice;
+        utter.pitch = voiceGender === "male" ? 0.85 : 1.12;
+        utter.rate = 1;
         utter.onend = () => setSpeakingMessageId(null);
         utter.onerror = () => setSpeakingMessageId(null);
         setSpeakingMessageId(id);
         window.speechSynthesis.speak(utter);
+    };
+
+    const beginTtsLongPress = () => {
+        if (!features.text_to_voice || !ttsEnabled) return;
+        ttsLongPressFiredRef.current = false;
+        if (ttsLongPressTimerRef.current) window.clearTimeout(ttsLongPressTimerRef.current);
+        ttsLongPressTimerRef.current = window.setTimeout(() => {
+            ttsLongPressFiredRef.current = true;
+            setTtsSettingsOpen(true);
+        }, 550);
+    };
+
+    const endTtsLongPress = () => {
+        if (ttsLongPressTimerRef.current) {
+            window.clearTimeout(ttsLongPressTimerRef.current);
+            ttsLongPressTimerRef.current = null;
+        }
+    };
+
+    const toggleTtsEnabled = () => {
+        if (!features.text_to_voice) return;
+        if (ttsLongPressFiredRef.current) {
+            ttsLongPressFiredRef.current = false;
+            return;
+        }
+        setTtsEnabled((value) => !value);
     };
 
     const handleSendMessage = async () => {
@@ -784,14 +988,15 @@ export default function ChatsPage() {
 
         const nextMessages = [...messages];
         const receiverId = Number(activeConversation.id);
+        const sendAsTts = !!(features.text_to_voice && ttsEnabled && trimmed && composerMode !== "stt");
 
         if (trimmed) {
             nextMessages.push({
                 id: Date.now(),
-                type: "text",
+                type: sendAsTts ? "voice_tts" : "text",
                 sender_id: currentUser.id,
                 sender_name: currentUser.username || "You",
-                text: trimmed,
+                text: sendAsTts ? encodeTtsMessage(trimmed, ttsVoiceGender) : trimmed,
                 status: "sending",
                 created_at: new Date().toISOString(),
             });
@@ -810,16 +1015,19 @@ export default function ChatsPage() {
             });
         }
 
+        const replyToId = replyTo?.id ?? null;
         clearEditable();
         setPendingAttachments([]);
+        setReplyTo(null);
         setMessages(nextMessages);
 
         try {
             if (trimmed) {
                 await chatService.sendMessage({
                     receiverId,
-                    type: "text",
-                    text: trimmed,
+                    type: sendAsTts ? "voice_tts" : "text",
+                    text: sendAsTts ? encodeTtsMessage(trimmed, ttsVoiceGender) : trimmed,
+                    ...(replyToId ? { reply_to_id: replyToId } : {}),
                 });
             }
 
@@ -884,7 +1092,7 @@ export default function ChatsPage() {
                 for (const signal of signals) {
                     if (!callPeerRef.current) continue;
                     if (signal.signal_type === "answer" && signal.payload) {
-                        const desc = new RTCSessionDescription(signal.payload);
+                        const desc = new RTCSessionDescription(toRtcSessionDescription(signal.payload));
                         if (!callPeerRef.current.currentRemoteDescription) {
                             await callPeerRef.current.setRemoteDescription(desc);
                         }
@@ -974,7 +1182,7 @@ export default function ChatsPage() {
         setCallError(null);
         if (!currentUser?.id || !activeConversation?.id) return;
         if (mode === "video" && !canUseVideoCall) {
-            setCallError("Video calls require Plan 03. Please upgrade.");
+            setCallError("Video calls are not enabled on your current plan. Please upgrade.");
             return;
         }
 
@@ -1021,7 +1229,7 @@ export default function ChatsPage() {
             };
 
             pc.onconnectionstatechange = () => {
-                if (pc.connectionState === "connected") setCallPhase("active");
+                if (pc.connectionState === "connected") { setCallPhase("active"); callStartTimeRef.current = Date.now(); }
             };
 
             callPeerRef.current = pc;
@@ -1075,7 +1283,7 @@ export default function ChatsPage() {
 
             const pc = createPeerConnection(Number(incomingCall.id), Number(incomingCall.caller_id));
             localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
-            await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.offer));
+            await pc.setRemoteDescription(new RTCSessionDescription(toRtcSessionDescription(incomingCall.offer)));
 
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
@@ -1085,6 +1293,7 @@ export default function ChatsPage() {
             setActiveCall(accepted);
             setIncomingCall(null);
             setCallPhase("active");
+            callStartTimeRef.current = Date.now();
 
             startPollingForCall(Number(incomingCall.id));
         } catch (err: any) {
@@ -1146,7 +1355,7 @@ export default function ChatsPage() {
     const handleStartCall = (mode: "voice" | "video") => {
         if (!currentUser?.id || !activeConversation?.id) return;
         if (mode === "video" && !canUseVideoCall) {
-            setCallError("Video calls require Plan 03. Please upgrade.");
+            setCallError("Video calls are not enabled on your current plan. Please upgrade.");
             return;
         }
         startOutgoingCall(mode);
@@ -1199,6 +1408,22 @@ export default function ChatsPage() {
         );
         persistMessages(nextMessages);
         setPendingDeleteMessageId(null);
+    };
+
+    const doForwardMessage = async (targetParticipantId: number) => {
+        if (!forwardMessage || !currentUser?.id) return;
+        setForwardMessage(null);
+        try {
+            await chatService.forwardMessage({
+                receiverId: targetParticipantId,
+                type: forwardMessage.type === "image" ? "image" : forwardMessage.type === "sticker" ? "sticker" : forwardMessage.type === "voice_tts" ? "voice_tts" : "text",
+                text: forwardMessage.text,
+                image_url: forwardMessage.image_url,
+                file_name: forwardMessage.file_name,
+            });
+        } catch (err) {
+            console.error("Forward failed:", err);
+        }
     };
 
     useEffect(() => {
@@ -1448,45 +1673,67 @@ export default function ChatsPage() {
                                 </div>
                             )
                         ) : conversationList.length > 0 ? (
-                            conversationList.map((entry) => {
+                            [...conversationList].sort((a, b) => {
+                                const aPin = pinnedChats.has(String(a.participant.id)) ? 0 : 1;
+                                const bPin = pinnedChats.has(String(b.participant.id)) ? 0 : 1;
+                                return aPin - bPin;
+                            }).map((entry) => {
                                 const isActive = String(activeConversation?.id || "") === String(entry.participant.id);
+                                const isPinned = pinnedChats.has(String(entry.participant.id));
 
                                 return (
-                                    <button
-                                        key={entry.participant.id}
-                                        type="button"
-                                        onClick={() => handleOpenConversation(entry.participant, entry.conversation)}
-                                        className={`w-full text-left rounded-[1rem] border px-2.5 py-2.5 transition-all ${isActive
-                                            ? "bg-white/10 border-white/20"
-                                            : "bg-white/[0.02] border-white/10 hover:bg-white/[0.05]"
-                                            }`}
-                                    >
-                                        <div className="flex items-center gap-3">
-                                            <div className="relative w-8 h-8 rounded-xl overflow-hidden bg-white/5 border border-white/10 shrink-0">
-                                                <Image
-                                                    src={getProfileImageSrc(entry.participant.profile_picture, entry.participant.name)}
-                                                    alt={entry.participant.name}
-                                                    fill
-                                                    className="object-cover"
-                                                />
-                                            </div>
-                                            <div className="min-w-0 flex-1">
-                                                <div className="flex items-center justify-between gap-2">
-                                                    <div className="text-[9px] font-black text-white uppercase tracking-widest truncate">
-                                                        {entry.participant.name}
-                                                    </div>
-                                                    {entry.unread_count > 0 && (
-                                                        <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-blue-500 text-white text-[8px] font-black flex items-center justify-center shrink-0">
-                                                            {entry.unread_count}
-                                                        </span>
+                                    <div key={entry.participant.id} className="relative group/conv">
+                                        <button
+                                            type="button"
+                                            onClick={() => handleOpenConversation(entry.participant, entry.conversation)}
+                                            className={`w-full text-left rounded-[1rem] border px-2.5 py-2.5 transition-all ${isActive
+                                                ? "bg-white/10 border-white/20"
+                                                : isPinned
+                                                    ? "bg-amber-500/5 border-amber-500/15 hover:bg-amber-500/10"
+                                                    : "bg-white/[0.02] border-white/10 hover:bg-white/[0.05]"
+                                                }`}
+                                        >
+                                            <div className="flex items-center gap-3">
+                                                <div className="relative w-8 h-8 rounded-xl overflow-hidden bg-white/5 border border-white/10 shrink-0">
+                                                    <Image
+                                                        src={getProfileImageSrc(entry.participant.profile_picture, entry.participant.name)}
+                                                        alt={entry.participant.name}
+                                                        fill
+                                                        className="object-cover"
+                                                    />
+                                                    {isPinned && (
+                                                        <div className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-amber-400 flex items-center justify-center">
+                                                            <IonIcon name="pin" className="text-[7px] text-black" />
+                                                        </div>
                                                     )}
                                                 </div>
-                                                <div className="text-[9px] text-white/45 font-bold truncate mt-1">
-                                                    {getMessagePreview(entry.lastMessage)}
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="text-[9px] font-black text-white uppercase tracking-widest truncate">
+                                                            {entry.participant.name}
+                                                        </div>
+                                                        {entry.unread_count > 0 && (
+                                                            <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-blue-500 text-white text-[8px] font-black flex items-center justify-center shrink-0">
+                                                                {entry.unread_count}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="text-[9px] text-white/45 font-bold truncate mt-1">
+                                                        {getMessagePreview(entry.lastMessage)}
+                                                    </div>
                                                 </div>
                                             </div>
-                                        </div>
-                                    </button>
+                                        </button>
+                                        {/* Pin/unpin button */}
+                                        <button
+                                            type="button"
+                                            title={isPinned ? "Unpin chat" : "Pin chat"}
+                                            onClick={(e) => { e.stopPropagation(); togglePinChat(String(entry.participant.id)); }}
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover/conv:opacity-100 transition-opacity w-6 h-6 rounded-lg bg-white/8 border border-white/10 flex items-center justify-center text-white/40 hover:text-amber-300 hover:bg-amber-500/10"
+                                        >
+                                            <IonIcon name={isPinned ? "pin" : "pin-outline"} className="text-[10px]" />
+                                        </button>
+                                    </div>
                                 );
                             })
                         ) : (
@@ -1506,48 +1753,63 @@ export default function ChatsPage() {
                     {activeConversation ? (
                         <>
                             {incomingCall && (
-                                <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                                    <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#0f0f12] shadow-2xl overflow-hidden">
-                                        <div className="p-5 border-b border-white/10 flex items-center gap-3">
-                                            <div className="relative w-12 h-12 rounded-2xl overflow-hidden bg-white/5 border border-white/10 shrink-0">
-                                                <Image
-                                                    src={getProfileImageSrc(incomingCall.participant?.profile_picture, incomingCall.participant?.name)}
-                                                    alt={incomingCall.participant?.name || "Caller"}
-                                                    fill
-                                                    className="object-cover"
-                                                />
-                                            </div>
-                                            <div className="min-w-0">
-                                                <div className="text-[10px] font-black text-white uppercase tracking-[0.18em] truncate">
-                                                    {incomingCall.participant?.name || "Incoming Call"}
-                                                </div>
-                                                <div className="text-[9px] font-black uppercase tracking-widest mt-1 text-white/40">
-                                                    Incoming {incomingCall.call_type === "video" ? "Video" : "Voice"} Call - End-to-end encrypted
-                                                </div>
-                                            </div>
+                                <div className="fixed inset-0 z-[60] flex flex-col items-center justify-between py-16 px-8"
+                                    style={{ background: "linear-gradient(160deg, #0a0a14 0%, #0d1a2e 50%, #070d14 100%)" }}
+                                >
+                                    {/* Pulsing rings */}
+                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                        <span className="absolute w-52 h-52 rounded-full border border-white/5 animate-ping" style={{ animationDuration: "2.5s" }} />
+                                        <span className="absolute w-72 h-72 rounded-full border border-white/[0.03] animate-ping" style={{ animationDuration: "3s" }} />
+                                    </div>
+
+                                    {/* Top info */}
+                                    <div className="text-center z-10">
+                                        <div className="text-[9px] font-black uppercase tracking-[0.3em] text-white/35 mb-4">
+                                            Incoming {incomingCall.call_type === "video" ? "Video" : "Voice"} Call
                                         </div>
 
-                                        {callError && (
-                                            <div className="px-5 pt-4 text-[10px] font-bold text-red-400">
-                                                {callError}
-                                            </div>
-                                        )}
+                                        {/* Avatar */}
+                                        <div className="relative w-28 h-28 rounded-full overflow-hidden border-2 border-white/10 mx-auto mb-4 shadow-2xl">
+                                            <Image
+                                                src={getProfileImageSrc(incomingCall.participant?.profile_picture, incomingCall.participant?.name)}
+                                                alt={incomingCall.participant?.name || "Caller"}
+                                                fill
+                                                className="object-cover"
+                                            />
+                                        </div>
+                                        <div className="text-xl font-black text-white tracking-wide">
+                                            {incomingCall.participant?.name || "Unknown"}
+                                        </div>
+                                        <div className="mt-2 text-[9px] font-bold uppercase tracking-widest text-emerald-400/70">
+                                            End-to-end encrypted
+                                        </div>
+                                    </div>
 
-                                        <div className="p-5 flex items-center justify-center gap-3">
+                                    {callError && (
+                                        <div className="z-10 text-[10px] font-bold text-red-400 text-center">{callError}</div>
+                                    )}
+
+                                    {/* Accept / Decline */}
+                                    <div className="z-10 flex items-end gap-16">
+                                        <div className="flex flex-col items-center gap-3">
                                             <button
                                                 type="button"
                                                 onClick={rejectIncomingCall}
-                                                className="flex-1 h-11 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-300 text-[9px] font-black uppercase tracking-widest hover:bg-red-500/25 transition-all"
+                                                className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center shadow-lg hover:bg-red-400 active:scale-95 transition-all"
                                             >
-                                                Reject
+                                                <IonIcon name="call-outline" className="text-2xl text-white rotate-[135deg]" />
                                             </button>
+                                            <span className="text-[9px] font-black uppercase tracking-widest text-white/40">Decline</span>
+                                        </div>
+                                        <div className="flex flex-col items-center gap-3">
                                             <button
                                                 type="button"
                                                 onClick={acceptIncomingCall}
-                                                className="flex-1 h-11 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[9px] font-black uppercase tracking-widest hover:bg-emerald-500/25 transition-all"
+                                                className="w-16 h-16 rounded-full bg-emerald-500 flex items-center justify-center shadow-lg hover:bg-emerald-400 active:scale-95 transition-all"
                                             >
-                                                Accept
+                                                <IonIcon name={incomingCall.call_type === "video" ? "videocam-outline" : "call-outline"} className="text-2xl text-white" />
                                             </button>
+                                            <span className="text-[9px] font-black uppercase tracking-widest text-white/40">Accept</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1557,7 +1819,10 @@ export default function ChatsPage() {
                                 <div className="fixed inset-0 z-[55] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
                                     <div
                                         className="w-full max-w-3xl rounded-3xl border border-white/10 bg-[#0f0f12] shadow-2xl overflow-hidden"
-                                        onClick={() => remoteAudioRef.current?.play?.().catch(() => { })}
+                                        onClick={() => {
+                                            remoteAudioRef.current?.play?.().catch(() => { });
+                                            remoteVideoRef.current?.play?.().catch(() => { });
+                                        }}
                                     >
                                         <audio ref={remoteAudioRef} autoPlay />
                                         <div className="p-4 border-b border-white/10 flex items-center justify-between gap-3">
@@ -1672,6 +1937,46 @@ export default function ChatsPage() {
                                 </div>
                             )}
 
+                            {/* Forward message modal */}
+                            {forwardMessage && (
+                                <div className="fixed inset-0 z-[59] bg-black/60 backdrop-blur-sm flex items-end md:items-center justify-center p-4">
+                                    <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#101014] shadow-2xl overflow-hidden">
+                                        <div className="px-5 pt-5 pb-3 border-b border-white/10 flex items-center justify-between">
+                                            <div className="text-[10px] font-black text-white uppercase tracking-[0.18em]">Forward To</div>
+                                            <button type="button" onClick={() => setForwardMessage(null)} className="text-white/30 hover:text-white/70">
+                                                <IonIcon name="close-outline" className="text-lg" />
+                                            </button>
+                                        </div>
+                                        <div className="p-3 max-h-72 overflow-y-auto space-y-1.5">
+                                            {conversationList.length === 0 ? (
+                                                <p className="text-[9px] font-bold text-white/30 text-center py-4 uppercase tracking-widest">No conversations</p>
+                                            ) : (
+                                                conversationList.map((entry) => (
+                                                    <button
+                                                        key={entry.participant.id}
+                                                        type="button"
+                                                        onClick={() => doForwardMessage(Number(entry.participant.id))}
+                                                        className="w-full flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.07] px-3 py-2.5 transition-all"
+                                                    >
+                                                        <div className="relative w-8 h-8 rounded-xl overflow-hidden bg-white/5 border border-white/10 shrink-0">
+                                                            <Image
+                                                                src={getProfileImageSrc(entry.participant.profile_picture, entry.participant.name)}
+                                                                alt={entry.participant.name}
+                                                                fill
+                                                                className="object-cover"
+                                                            />
+                                                        </div>
+                                                        <div className="text-[9px] font-black text-white uppercase tracking-widest truncate">
+                                                            {entry.participant.name}
+                                                        </div>
+                                                    </button>
+                                                ))
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="px-3 md:px-5 py-3 md:py-4 border-b border-white/10 bg-white/[0.02] flex items-center justify-between gap-2">
                                 <div className="flex items-center gap-2 min-w-0">
                                     <button
@@ -1694,14 +1999,29 @@ export default function ChatsPage() {
                                             {activeConversation.name}
                                         </div>
                                         <div className="flex items-center gap-1.5 mt-1">
-                                            <span
-                                                className={`w-1.5 h-1.5 rounded-full ${participantPresence.status === "online" ? "bg-emerald-400" : "bg-white/25"}`}
-                                            />
-                                            <div className={`text-[8px] font-black uppercase tracking-widest ${participantPresence.status === "online" ? "text-emerald-300" : "text-white/30"}`}>
-                                                {participantPresence.status === "online"
-                                                    ? "Online"
-                                                    : formatLastSeen(participantPresence.lastSeen)}
-                                            </div>
+                                            {participantTyping ? (
+                                                <>
+                                                    <span className="flex gap-0.5 items-end h-3">
+                                                        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                                                        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                                                        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+                                                    </span>
+                                                    <div className="text-[8px] font-black uppercase tracking-widest text-emerald-300">
+                                                        Typing...
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <span
+                                                        className={`w-1.5 h-1.5 rounded-full ${participantPresence.status === "online" ? "bg-emerald-400" : "bg-white/25"}`}
+                                                    />
+                                                    <div className={`text-[8px] font-black uppercase tracking-widest ${participantPresence.status === "online" ? "text-emerald-300" : "text-white/30"}`}>
+                                                        {participantPresence.status === "online"
+                                                            ? "Online"
+                                                            : formatLastSeen(participantPresence.lastSeen)}
+                                                    </div>
+                                                </>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
@@ -1735,7 +2055,7 @@ export default function ChatsPage() {
                                         type="button"
                                         onClick={() => canUseVideoCall ? handleStartCall("video") : undefined}
                                         disabled={!canUseVideoCall}
-                                        title={canUseVideoCall ? `Video call (${videoQuality}, end-to-end encrypted)` : "Video calls require Plan 03. Please upgrade."}
+                                        title={canUseVideoCall ? `Video call (${videoQuality}, end-to-end encrypted)` : "Video calls are not enabled on your current plan. Please upgrade."}
                                         className={`w-9 h-9 md:w-10 md:h-10 rounded-xl border transition-all flex items-center justify-center ${
                                             !canUseVideoCall
                                                 ? "bg-white/[0.02] text-white/20 border-white/5 cursor-not-allowed opacity-40"
@@ -1749,47 +2069,148 @@ export default function ChatsPage() {
                                 </div>
                             </div>
 
-                            <div className="flex-1 overflow-y-auto p-3 md:p-5 space-y-3 bg-transparent">
+                            <div className="flex-1 overflow-y-auto p-3 md:p-5 space-y-1.5 bg-transparent">
+                                {selectMode && (
+                                    <div className="flex items-center justify-between px-1 pb-2">
+                                        <span className="text-[9px] font-black uppercase tracking-widest text-white/50">
+                                            {selectedMessages.size} selected
+                                        </span>
+                                        <button
+                                            type="button"
+                                            onClick={exitSelectMode}
+                                            className="text-[9px] font-black uppercase tracking-widest text-white/40 hover:text-white/70"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                )}
                                 {combinedMessages.length > 0 ? (
                                     combinedMessages.map((message) => {
                                         const isMine = String(message.sender_id) === String(currentUser?.id);
-                                        const statusTicks = getStatusTicks(message.status);
+                                        const dots = getStatusDots(message.status);
+                                        const isSelected = selectedMessages.has(message.id);
+                                        const isHovered = hoveredMessageId === message.id;
+                                        const replySource = message.reply_to_id
+                                            ? combinedMessages.find((m: any) => String(m.id) === String(message.reply_to_id))
+                                            : null;
+
                                         return (
-                                            <div key={message.id} className={`flex ${isMine ? "justify-end" : "justify-start"}`}>
-                                                <div
-                                                    onDoubleClick={() => {
-                                                        if (isMine) setPendingDeleteMessageId(message.id);
-                                                    }}
-                                                    className={`relative max-w-[80%] md:max-w-[68%] rounded-[1.1rem] px-3 py-2.5 border ${message.type === "call"
-                                                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-300"
-                                                    : message.type === "call_record"
-                                                        ? "bg-white/5 border-white/10 text-white/70"
-                                                    : isMine
-                                                        ? "bg-blue-500/15 border-blue-500/20 text-white"
-                                                        : "bg-white/5 border-white/10 text-white/80"
-                                                    } ${isMine ? "cursor-pointer" : ""}`}
-                                                >
-                                                    <div className="text-[8px] font-black uppercase tracking-widest opacity-50 mb-1">
-                                                        {isMine ? "You" : activeConversation.name}
+                                            <div
+                                                key={message.id}
+                                                className={`flex items-end gap-2 ${isMine ? "justify-end" : "justify-start"}`}
+                                                onMouseEnter={() => setHoveredMessageId(message.id)}
+                                                onMouseLeave={() => setHoveredMessageId(null)}
+                                            >
+                                                {/* Select checkbox */}
+                                                {selectMode && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => toggleSelectMessage(message.id)}
+                                                        className={`shrink-0 w-5 h-5 rounded-full border-2 transition-all ${isSelected ? "bg-blue-500 border-blue-400" : "bg-white/5 border-white/20"}`}
+                                                    >
+                                                        {isSelected && <IonIcon name="checkmark-outline" className="text-[10px] text-white" />}
+                                                    </button>
+                                                )}
+
+                                                {/* Context action buttons (left side for mine, right side for others) */}
+                                                {!selectMode && isHovered && (
+                                                    <div className={`flex items-center gap-1 shrink-0 ${isMine ? "order-first" : "order-last"}`}>
+                                                        <button
+                                                            type="button"
+                                                            title="Reply"
+                                                            onClick={() => setReplyTo(message)}
+                                                            className="w-7 h-7 rounded-full bg-white/8 border border-white/10 flex items-center justify-center text-white/50 hover:text-white/90 hover:bg-white/15 transition-all"
+                                                        >
+                                                            <IonIcon name="return-down-back-outline" className="text-xs" />
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            title="Forward"
+                                                            onClick={() => setForwardMessage(message)}
+                                                            className="w-7 h-7 rounded-full bg-white/8 border border-white/10 flex items-center justify-center text-white/50 hover:text-white/90 hover:bg-white/15 transition-all"
+                                                        >
+                                                            <IonIcon name="arrow-redo-outline" className="text-xs" />
+                                                        </button>
+                                                        {isMine && (
+                                                            <button
+                                                                type="button"
+                                                                title="Delete"
+                                                                onClick={() => setPendingDeleteMessageId(message.id)}
+                                                                className="w-7 h-7 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400/60 hover:text-red-300 hover:bg-red-500/20 transition-all"
+                                                            >
+                                                                <IonIcon name="trash-outline" className="text-xs" />
+                                                            </button>
+                                                        )}
+                                                        <button
+                                                            type="button"
+                                                            title="Select"
+                                                            onClick={() => enterSelectMode(message.id)}
+                                                            className="w-7 h-7 rounded-full bg-white/8 border border-white/10 flex items-center justify-center text-white/50 hover:text-white/90 hover:bg-white/15 transition-all"
+                                                        >
+                                                            <IonIcon name="checkmark-circle-outline" className="text-xs" />
+                                                        </button>
                                                     </div>
-                                                    {message.type === "text" && (
-                                                        <div className="flex items-start gap-2">
-                                                            <ChatRichText
-                                                                text={message.text}
-                                                                className="text-[10px] leading-relaxed break-words flex-1"
-                                                            />
-                                                            {features.text_to_voice && (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={(e) => { e.stopPropagation(); speakMessage(message.id, message.text); }}
-                                                                    aria-label={speakingMessageId === message.id ? "Stop" : "Speak message"}
-                                                                    className="shrink-0 text-white/40 hover:text-white/80 transition active:scale-90"
-                                                                >
-                                                                    <IonIcon name={speakingMessageId === message.id ? "volume-mute-outline" : "volume-high-outline"} className="text-xs" />
-                                                                </button>
-                                                            )}
+                                                )}
+
+                                                <div
+                                                    onTouchStart={() => {
+                                                        longPressTimerRef.current = window.setTimeout(() => enterSelectMode(message.id), 500);
+                                                    }}
+                                                    onTouchEnd={() => {
+                                                        if (longPressTimerRef.current) window.clearTimeout(longPressTimerRef.current);
+                                                    }}
+                                                    className={`relative max-w-[80%] md:max-w-[68%] rounded-[1.1rem] px-3 py-2.5 border transition-all ${
+                                                        isSelected ? "ring-2 ring-blue-400/60" : ""
+                                                    } ${message.type === "call"
+                                                        ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-300"
+                                                        : message.type === "call_record"
+                                                            ? "bg-white/5 border-white/10 text-white/70"
+                                                        : isMine
+                                                            ? "bg-blue-500/15 border-blue-500/20 text-white"
+                                                            : "bg-white/5 border-white/10 text-white/80"
+                                                    }`}
+                                                >
+                                                    {/* Reply-to quote */}
+                                                    {replySource && (
+                                                        <div className="mb-2 pl-2 border-l-2 border-white/30 opacity-60">
+                                                            <div className="text-[8px] font-black uppercase tracking-widest text-white/50 mb-0.5">
+                                                                {String(replySource.sender_id) === String(currentUser?.id) ? "You" : activeConversation.name}
+                                                            </div>
+                                                            <div className="text-[9px] text-white/60 truncate">
+                                                                {replySource.type === "image" ? "📷 Image" : replySource.type === "sticker" ? "🎨 Sticker" : stripColorTags(replySource.text || "")}
+                                                            </div>
                                                         </div>
                                                     )}
+
+                                                    {message.type === "text" && (
+                                                        <ChatRichText
+                                                            text={message.text}
+                                                            className="text-[10px] leading-relaxed break-words"
+                                                        />
+                                                    )}
+                                                    {message.type === "voice_tts" && (() => {
+                                                        const decoded = decodeTtsMessage(message.text);
+                                                        return (
+                                                            <div className="flex items-center gap-2">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={(e) => { e.stopPropagation(); speakMessage(message.id, decoded.text, decoded.gender); }}
+                                                                    aria-label={speakingMessageId === message.id ? "Stop voice message" : "Play voice message"}
+                                                                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-200 transition hover:bg-emerald-500/30 active:scale-90"
+                                                                >
+                                                                    <IonIcon name={speakingMessageId === message.id ? "pause-outline" : "play-outline"} className="text-base" />
+                                                                </button>
+                                                                <div className="min-w-0">
+                                                                    <div className="text-[9px] font-black uppercase tracking-widest text-emerald-200">
+                                                                        Voice message
+                                                                    </div>
+                                                                    <div className="mt-1 text-[8px] font-bold uppercase tracking-widest text-white/35">
+                                                                        {decoded.gender} voice
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })()}
                                                     {message.type === "sticker" && (
                                                         <div className="p-1">
                                                             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1809,8 +2230,11 @@ export default function ChatsPage() {
                                                     )}
                                                     {message.type === "call_record" && (
                                                         <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest">
-                                                            <IonIcon name={message.call_type === "video" ? "videocam-outline" : "call-outline"} className="text-sm" />
-                                                            <span>{message.text}</span>
+                                                            <IonIcon
+                                                                name={message.call_status === "missed" ? "call-outline" : message.call_type === "video" ? "videocam-outline" : "call-outline"}
+                                                                className={`text-sm ${message.call_status === "missed" ? "text-red-400" : ""}`}
+                                                            />
+                                                            <span className={message.call_status === "missed" ? "text-red-300" : ""}>{message.text}</span>
                                                         </div>
                                                     )}
                                                     {message.type === "image" && (
@@ -1836,22 +2260,21 @@ export default function ChatsPage() {
                                                             </a>
                                                         </div>
                                                     )}
-                                                    <div className="text-[7px] font-black uppercase tracking-widest opacity-30 mt-2 flex items-center gap-2">
-                                                        <span>{formatMessageTime(message.created_at)}</span>
-                                                        {isMine && (
-                                                            message.status === "sending" ? (
-                                                                <span className="text-[7px] font-black uppercase tracking-widest text-white/35">
-                                                                    Sending
-                                                                </span>
-                                                            ) : (
-                                                                <span
-                                                                    className={`text-[8px] font-black tracking-tight ${statusTicks.className}`}
-                                                                    aria-label={statusTicks.label}
-                                                                    title={statusTicks.label}
-                                                                >
-                                                                    {statusTicks.icon}
-                                                                </span>
-                                                            )
+
+                                                    {/* Time + 3-dot status row */}
+                                                    <div className="mt-2 flex items-center gap-1.5 opacity-70">
+                                                        <span className="text-[7px] font-black uppercase tracking-widest opacity-50">
+                                                            {formatMessageTime(message.created_at)}
+                                                        </span>
+                                                        {isMine && message.type !== "call" && message.type !== "call_record" && (
+                                                            <div className="relative flex items-center justify-center w-4 h-4" title={dots.label}>
+                                                                {/* Big outer dot */}
+                                                                <span className={`absolute w-4 h-4 rounded-full ${dots.big} transition-colors duration-300`} />
+                                                                {/* Middle dot */}
+                                                                <span className={`absolute w-2.5 h-2.5 rounded-full ${dots.mid} transition-colors duration-300`} />
+                                                                {/* Inner dot */}
+                                                                <span className={`absolute w-1.5 h-1.5 rounded-full ${dots.inner} transition-colors duration-300`} />
+                                                            </div>
                                                         )}
                                                     </div>
                                                 </div>
@@ -1879,6 +2302,28 @@ export default function ChatsPage() {
                                     className="hidden"
                                     onChange={handleSelectImages}
                                 />
+                                {/* Reply-to banner */}
+                                {replyTo && (
+                                    <div className="mb-2 flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2">
+                                        <div className="w-0.5 self-stretch rounded-full bg-blue-400/60 shrink-0" />
+                                        <div className="flex-1 min-w-0">
+                                            <div className="text-[8px] font-black uppercase tracking-widest text-blue-300 mb-0.5">
+                                                Replying to {String(replyTo.sender_id) === String(currentUser?.id) ? "yourself" : activeConversation?.name}
+                                            </div>
+                                            <div className="text-[9px] text-white/55 truncate">
+                                                {replyTo.type === "image" ? "📷 Image" : replyTo.type === "sticker" ? "🎨 Sticker" : stripColorTags(replyTo.text || "")}
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setReplyTo(null)}
+                                            className="text-white/30 hover:text-white/70 shrink-0"
+                                        >
+                                            <IonIcon name="close-outline" className="text-sm" />
+                                        </button>
+                                    </div>
+                                )}
+
                                 {(uploadError || isUploadingAttachments) && (
                                     <div className={`mb-2 text-[8px] font-black uppercase tracking-widest ${uploadError ? "text-red-300" : "text-blue-300"}`}>
                                         {uploadError || "Uploading..."}
@@ -1931,6 +2376,40 @@ export default function ChatsPage() {
                                 {stickerLockMessage && (
                                     <div className="mb-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[10px] font-bold text-amber-200">
                                         {stickerLockMessage}
+                                    </div>
+                                )}
+                                {ttsSettingsOpen && features.text_to_voice && ttsEnabled && (
+                                    <div className="mb-2 rounded-2xl border border-white/10 bg-[#0f1115] p-2">
+                                        <div className="mb-2 flex items-center justify-between">
+                                            <span className="text-[9px] font-black uppercase tracking-widest text-white/45">Text voice</span>
+                                            <button
+                                                type="button"
+                                                onClick={() => setTtsSettingsOpen(false)}
+                                                aria-label="Close text voice settings"
+                                                className="rounded-lg bg-white/5 px-2 py-1 text-white/50 hover:bg-white/10"
+                                            >
+                                                <IonIcon name="close-outline" className="text-xs" />
+                                            </button>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {(["female", "male"] as const).map((gender) => (
+                                                <button
+                                                    key={gender}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setTtsVoiceGender(gender);
+                                                        setTtsSettingsOpen(false);
+                                                    }}
+                                                    className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-widest transition ${
+                                                        ttsVoiceGender === gender
+                                                            ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-200"
+                                                            : "border-white/10 bg-white/5 text-white/50 hover:bg-white/10"
+                                                    }`}
+                                                >
+                                                    {gender === "female" ? "Female voice" : "Male voice"}
+                                                </button>
+                                            ))}
+                                        </div>
                                     </div>
                                 )}
                                 {stickerPanelOpen && (
@@ -2021,12 +2500,43 @@ export default function ChatsPage() {
                                     {features.voice_to_text && (
                                         <button
                                             type="button"
-                                            onClick={toggleSpeechToText}
-                                            aria-label={isListening ? "Stop voice input" : "Start voice input (English)"}
-                                            title={isListening ? "Stop voice input" : "Speak to type (English)"}
-                                            className={`w-8 h-8 rounded-xl border transition-all flex items-center justify-center shrink-0 ${isListening ? "bg-red-500/20 border-red-400/40 text-red-200 animate-pulse" : "bg-white/5 hover:bg-white/10 text-white/70 border-white/10"}`}
+                                            disabled={!ttsEnabled || !features.text_to_voice}
+                                            onMouseDown={(e) => { e.preventDefault(); beginMicLongPress(); }}
+                                            onMouseUp={endMicLongPress}
+                                            onMouseLeave={endMicLongPress}
+                                            onTouchStart={(e) => { e.preventDefault(); beginMicLongPress(); }}
+                                            onTouchEnd={endMicLongPress}
+                                            aria-label={isListening ? "Release to stop voice input" : "Long press to speak voice input"}
+                                            title={!ttsEnabled || !features.text_to_voice ? "Turn the tick on to use voice-to-text" : isListening ? "Release to convert speech" : "Long press microphone to speak"}
+                                            className={`w-8 h-8 rounded-xl border transition-all flex items-center justify-center shrink-0 ${
+                                                !ttsEnabled || !features.text_to_voice
+                                                    ? "bg-white/[0.02] text-white/20 border-white/5 cursor-not-allowed"
+                                                    : isListening
+                                                        ? "bg-red-500/20 border-red-400/40 text-red-200 animate-pulse"
+                                                        : "bg-white/5 hover:bg-white/10 text-white/70 border-white/10"
+                                            }`}
                                         >
                                             <IonIcon name={isListening ? "mic" : "mic-outline"} className="text-base" />
+                                        </button>
+                                    )}
+                                    {features.text_to_voice && (
+                                        <button
+                                            type="button"
+                                            onMouseDown={beginTtsLongPress}
+                                            onMouseUp={endTtsLongPress}
+                                            onMouseLeave={endTtsLongPress}
+                                            onTouchStart={beginTtsLongPress}
+                                            onTouchEnd={endTtsLongPress}
+                                            onClick={toggleTtsEnabled}
+                                            aria-label={ttsEnabled ? "Disable text to voice" : "Enable text to voice"}
+                                            title="Tap to enable or disable text voice. Long press for male or female voice."
+                                            className={`w-8 h-8 rounded-xl border transition-all flex items-center justify-center shrink-0 ${
+                                                ttsEnabled
+                                                    ? "bg-emerald-500/20 border-emerald-400/40 text-emerald-200"
+                                                    : "bg-white/5 hover:bg-white/10 text-white/35 border-white/10"
+                                            }`}
+                                        >
+                                            <IonIcon name={ttsEnabled ? "checkmark-circle" : "ellipse-outline"} className="text-base" />
                                         </button>
                                     )}
                                     <button
@@ -2078,7 +2588,11 @@ export default function ChatsPage() {
                                             contentEditable
                                             suppressContentEditableWarning
                                             data-placeholder={`Message ${activeConversation.name || "..."}`}
-                                            onInput={(e) => setMessageInput((e.currentTarget as HTMLDivElement).textContent || "")}
+                                            onInput={(e) => {
+                                                setComposerMode("typed");
+                                                setMessageInput((e.currentTarget as HTMLDivElement).textContent || "");
+                                                handleTypingInput();
+                                            }}
                                             onKeyDown={(e) => {
                                                 if (e.key === "Enter" && !e.shiftKey) {
                                                     e.preventDefault();

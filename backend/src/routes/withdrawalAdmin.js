@@ -200,15 +200,8 @@ router.put('/requests/:id/review', authMiddleware, async (req, res) => {
                 [numAmount, userId]
             );
 
-            // Deduct from Googer wallet_balance — Googer is paying out the real cash
-            if (googerUserId) {
-                await client.query(
-                    `UPDATE users SET wallet_balance = GREATEST(0, wallet_balance - $1) WHERE id = $2`,
-                    [numAmount, googerUserId]
-                );
-            }
-
-            // Insert a withdrawal_paid debit transfer so Googer commission balance decreases
+            // Insert a withdrawal_paid debit transfer so the calculated Googer balance decreases.
+            // The protected Super Admin users.wallet_balance is only changed by manual Super Admin actions.
             await client.query(
                 `INSERT INTO wallet_transfers
                     (sender_id, receiver_id, amount, commission, note, type, status, created_at, updated_at)
@@ -241,15 +234,7 @@ router.put('/requests/:id/review', authMiddleware, async (req, res) => {
                 [numAmount, userId]
             );
 
-            // Reverse the Googer wallet_balance credit applied at submission
-            if (googerUserId) {
-                await client.query(
-                    `UPDATE users SET wallet_balance = GREATEST(0, wallet_balance - $1) WHERE id = $2`,
-                    [numAmount, googerUserId]
-                );
-            }
-
-            // Mark withdrawal_hold as refunded — removes it from Googer commission SUM (debit effect)
+            // Mark withdrawal_hold as refunded — removes it from Googer commission SUM.
             if (transferId) {
                 await client.query(
                     `UPDATE wallet_transfers SET status = 'refunded', updated_at = NOW() WHERE id = $1`,

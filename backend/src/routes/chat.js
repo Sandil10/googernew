@@ -6,6 +6,8 @@ const authMiddleware = require('../middleware/auth');
 router.use(authMiddleware);
 
 router.post('/presence', chatController.updatePresence);
+router.post('/typing', chatController.updateTyping);
+router.get('/typing/:participantId', chatController.getTyping);
 router.get('/conversations', chatController.getConversations);
 router.get('/messages/:participantId', chatController.getMessages);
 router.post('/messages', chatController.sendMessage);

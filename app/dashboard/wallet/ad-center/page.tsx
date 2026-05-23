@@ -60,7 +60,6 @@ const STATUS_FILTERS: Array<{ label: StatusFilter; slug: string; icon: string }>
     { label: "Under Review", slug: "under-review",  icon: "time-outline" },
     { label: "Active",       slug: "active",        icon: "radio-button-on-outline" },
     { label: "Paused",       slug: "paused",        icon: "pause-circle-outline" },
-    { label: "Removed",      slug: "removed",       icon: "eye-off-outline" },
     { label: "Completed",    slug: "completed",     icon: "checkmark-done-outline" },
     { label: "Cancelled",    slug: "cancelled",     icon: "close-circle-outline" },
 ];
@@ -194,14 +193,16 @@ function getFinalRawAdExpiryMs(ad: AdHistoryRow, plan: any) {
 function formatDateTimeLabel(value: string) {
     const parsedDate = new Date(value);
     if (Number.isNaN(parsedDate.getTime())) return "Unknown time";
-    const dateLabel = parsedDate.toLocaleDateString(undefined, {
+    const dateLabel = parsedDate.toLocaleDateString("en-GB", {
         day: "2-digit",
         month: "short",
         year: "numeric",
+        timeZone: "Asia/Colombo",
     });
-    const timeLabel = parsedDate.toLocaleTimeString(undefined, {
+    const timeLabel = parsedDate.toLocaleTimeString("en-GB", {
         hour: "2-digit",
         minute: "2-digit",
+        timeZone: "Asia/Colombo",
     });
     return `${dateLabel}, ${timeLabel}`;
 }
@@ -286,10 +287,12 @@ function formatDateTime(value: string) {
         day: "2-digit",
         month: "short",
         year: "numeric",
+        timeZone: "Asia/Colombo",
     });
-    const timeLabel = parsedDate.toLocaleTimeString([], {
+    const timeLabel = parsedDate.toLocaleTimeString("en-GB", {
         hour: "2-digit",
         minute: "2-digit",
+        timeZone: "Asia/Colombo",
     });
     return `${dateLabel} • ${timeLabel}`;
 }
@@ -466,7 +469,11 @@ export default function AdCenterPage() {
         return () => window.clearInterval(id);
     }, [expiryPopupDismissed]);
 
-    const filteredAds = activeFilter === "All Ads" ? ads : ads.filter((ad) => ad.status === activeFilter);
+    const filteredAds = activeFilter === "All Ads"
+        ? ads
+        : activeFilter === "Cancelled"
+            ? ads.filter((ad) => ad.status === "Cancelled" || ad.status === "Removed")
+            : ads.filter((ad) => ad.status === activeFilter);
     const totalPages = Math.max(1, Math.ceil(filteredAds.length / ADS_PER_PAGE));
     const paginatedAds = filteredAds.slice((currentPage - 1) * ADS_PER_PAGE, currentPage * ADS_PER_PAGE);
 
@@ -487,7 +494,11 @@ export default function AdCenterPage() {
     const counts = useMemo(
         () =>
             STATUS_FILTERS.reduce<Record<StatusFilter, number>>((result, filter) => {
-                result[filter.label] = filter.label === "All Ads" ? ads.length : ads.filter((ad) => ad.status === filter.label).length;
+                result[filter.label] = filter.label === "All Ads"
+                    ? ads.length
+                    : filter.label === "Cancelled"
+                        ? ads.filter((ad) => ad.status === "Cancelled" || ad.status === "Removed").length
+                        : ads.filter((ad) => ad.status === filter.label).length;
                 return result;
             }, {} as Record<StatusFilter, number>),
         [ads]
@@ -728,6 +739,66 @@ export default function AdCenterPage() {
                                                     Resume
                                                 </button>
                                             ) : null}
+                                            {ad.status === "Under Review" && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const isProductPromote = ad.campaignType.trim().toLowerCase() === "product promote";
+                                                        const draftKey = `googer-ad-draft-${ad.campaignType.toLowerCase().replace(/\s+/g, "-")}`;
+                                                        const draft = ad.editDraft && typeof ad.editDraft === "object" ? ad.editDraft : {};
+                                                        // Use server-side URLs from DB — draft.mediaGallery holds base64 blobs, not server URLs
+                                                        const serverGallery = Array.isArray(ad.mediaGallery) && ad.mediaGallery.length > 0
+                                                            ? ad.mediaGallery
+                                                            : (ad.mediaPreview ? [ad.mediaPreview] : []);
+                                                        const resolvedMediaType = ad.mediaType === "image" || ad.mediaType === "video"
+                                                            ? ad.mediaType
+                                                            : (typeof draft.mediaType === "string" && (draft.mediaType === "image" || draft.mediaType === "video") ? draft.mediaType : "");
+                                                        const resolvedImageName = resolvedMediaType === "video"
+                                                            ? "Uploaded video"
+                                                            : serverGallery.length > 0
+                                                                ? `${serverGallery.length} image${serverGallery.length > 1 ? "s" : ""} selected`
+                                                                : "";
+                                                        window.localStorage.setItem(draftKey, JSON.stringify({
+                                                            version: 1,
+                                                            editingAdId: ad.adId,
+                                                            promoteAgain: false,
+                                                            // Product Promote restores activeLink/linkInput from the product URL (via ?productId param), not from draft
+                                                            activeLink: isProductPromote ? "" : (draft.activeLink ?? ad.activeLink ?? ""),
+                                                            linkInput: isProductPromote ? "" : (draft.linkInput ?? draft.activeLink ?? ad.activeLink ?? ""),
+                                                            description: draft.description ?? ad.description ?? "",
+                                                            ctaTopic: draft.ctaTopic ?? "Visit",
+                                                            ctaValue: draft.ctaValue ?? "",
+                                                            selectedCountryCode: draft.selectedCountryCode ?? "US",
+                                                            selectedLocationCodes: draft.selectedLocationCodes ?? [],
+                                                            genderTarget: draft.genderTarget ?? ad.genderTarget ?? "All",
+                                                            ageMin: draft.ageMin ?? ad.ageMin ?? 18,
+                                                            ageMax: draft.ageMax ?? ad.ageMax ?? 65,
+                                                            selectedInterestTopics: draft.selectedInterestTopics ?? [],
+                                                            selectedPlacements: draft.selectedPlacements ?? [],
+                                                            budget: draft.budget ?? ad.budget ?? 0,
+                                                            editingOriginalBudget: ad.budget ?? 0,
+                                                            durationDays: draft.durationDays ?? ad.durationDays ?? 1,
+                                                            promoCode: draft.promoCode ?? ad.promoCode ?? null,
+                                                            hasPromoCodeAdded: false,
+                                                            mediaGallery: isProductPromote ? [] : serverGallery,
+                                                            mediaType: isProductPromote ? "" : resolvedMediaType,
+                                                            mediaPreview: isProductPromote ? "" : (ad.mediaPreview ?? serverGallery[0] ?? ""),
+                                                            imageName: isProductPromote ? "" : resolvedImageName,
+                                                        }));
+                                                        const editorPath = ad.campaignPath || getCampaignEditorPath(ad.campaignType);
+                                                        // Product Promote: pass the linked product ID via URL so the editor auto-loads it
+                                                        const linkedProductId = (draft.linkedProductId ?? (ad as any).linkedProductId ?? (ad as any).linked_product_id) as string | number | null | undefined;
+                                                        if (isProductPromote && linkedProductId) {
+                                                            router.push(`${editorPath}?productId=${linkedProductId}`);
+                                                        } else {
+                                                            router.push(editorPath);
+                                                        }
+                                                    }}
+                                                    className="inline-flex min-w-[76px] items-center justify-center rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-[8px] font-black uppercase tracking-[0.08em] text-amber-100 transition hover:bg-amber-400/16 hover:text-white"
+                                                >
+                                                    Edit
+                                                </button>
+                                            )}
                                             {(["Under Review", "Active", "Paused"] as AdStatus[]).includes(ad.status) && (
                                                 <button
                                                     type="button"
@@ -738,7 +809,7 @@ export default function AdCenterPage() {
                                                     }}
                                                     className="inline-flex min-w-[76px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-[8px] font-black uppercase tracking-[0.08em] text-white/70 transition hover:bg-white/[0.09] hover:text-white"
                                                 >
-                                                    {["Active", "Paused"].includes(ad.status) ? "Remove" : "Cancel"}
+                                                    Cancel
                                                 </button>
                                             )}
                                         </div>
@@ -1010,7 +1081,7 @@ export default function AdCenterPage() {
                     />
                     <div className="relative z-[131] w-full max-w-[360px] rounded-[1.5rem] border border-white/10 bg-[#121212] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.45)]">
                         <h3 className="text-[1rem] font-black uppercase tracking-[0.06em] text-white">
-                            {["Active", "Paused"].includes(cancelTarget.status) ? "Remove From Feeds?" : "Cancel Ad?"}
+                            Cancel Ad?
                         </h3>
                         <p className="mt-2 text-[10px] font-bold leading-5 text-white/50">
                             {["Active", "Paused"].includes(cancelTarget.status)

@@ -37,6 +37,7 @@ const ensureTable = async () => {
 
     // Migration for existing tables
     await pool.query(`ALTER TABLE user_plan_subscriptions ADD COLUMN IF NOT EXISTS auto_renew BOOLEAN NOT NULL DEFAULT TRUE;`);
+    await pool.query(`ALTER TABLE user_plan_subscriptions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP;`);
 
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_plan_subscriptions_user ON user_plan_subscriptions(user_id, status);`);
 
@@ -261,11 +262,24 @@ exports.getMyUsage = async (req, res) => {
         const { getUserPlanLimits } = require('../utils/planLimits');
         const limits = await getUserPlanLimits(userId);
 
-        const [googRes, productRes, savedRes] = await Promise.all([
+        const [googRes, productRes, savedRes, savedAdRes] = await Promise.all([
             pool.query('SELECT COUNT(*)::int AS c FROM goog_posts WHERE user_id = $1', [userId]),
             pool.query("SELECT COUNT(*)::int AS c FROM market WHERE user_id = $1 AND status != 'deleted'", [userId]),
             pool.query('SELECT COUNT(*)::int AS c FROM saved_googs WHERE user_id = $1', [userId]).catch(() => ({ rows: [{ c: 0 }] })),
+            pool.query(
+                `SELECT ad_media_type, COUNT(*)::int AS c
+                 FROM ad_saves
+                 WHERE user_id = $1 AND ad_source_type = 'upload'
+                 GROUP BY ad_media_type`,
+                [userId]
+            ).catch(() => ({ rows: [] })),
         ]);
+        const savedAdCounts = { photo: 0, video: 0 };
+        for (const row of savedAdRes.rows || []) {
+            if (row.ad_media_type === 'photo' || row.ad_media_type === 'video') {
+                savedAdCounts[row.ad_media_type] = row.c;
+            }
+        }
 
         return res.json({
             success: true,
@@ -273,10 +287,14 @@ exports.getMyUsage = async (req, res) => {
                 googCount:       googRes.rows[0].c,
                 productCount:    productRes.rows[0].c,
                 savedGoogCount:  savedRes.rows[0].c,
+                savedPhotoAdCount: savedAdCounts.photo,
+                savedVideoAdCount: savedAdCounts.video,
                 writeGoogLimit:      limits.writeGoogLimit,
                 googLetterLimit:     limits.googLetterLimit,
                 productUploadLimit:  limits.productUploadLimit,
                 saveGoogLimit:       limits.saveGoogLimit,
+                photoAdsSaveLimit:   limits.photoAdsSaveLimit,
+                videoAdsSaveLimit:   limits.videoAdsSaveLimit,
                 googAtLimit:     googRes.rows[0].c >= limits.writeGoogLimit,
                 productAtLimit:  productRes.rows[0].c >= limits.productUploadLimit,
             },
@@ -317,7 +335,7 @@ exports.getMyFeatures = async (req, res) => {
     }
 };
 
-// POST /cancel — cancel current active subscription
+// POST /cancel — stop renewal; paid features remain active until expires_at
 exports.cancelSubscription = async (req, res) => {
     try {
         await ensureTable();
@@ -326,8 +344,11 @@ exports.cancelSubscription = async (req, res) => {
 
         const { rows } = await pool.query(
             `UPDATE user_plan_subscriptions
-             SET status = 'cancelled', cancelled_at = NOW()
-             WHERE user_id = $1 AND status = 'active'
+             SET auto_renew = FALSE,
+                 cancelled_at = COALESCE(cancelled_at, NOW())
+             WHERE user_id = $1
+               AND status = 'active'
+               AND (expires_at IS NULL OR expires_at > NOW())
              RETURNING *`,
             [userId]
         );

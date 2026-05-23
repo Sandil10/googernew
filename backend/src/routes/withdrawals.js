@@ -173,13 +173,8 @@ router.post('/request', async (req, res) => {
             [numAmount, userId]
         );
 
-        // 2. Credit Googer wallet_balance immediately (same as profile promote / order pay)
-        await client.query(
-            `UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2`,
-            [numAmount, googerUserId]
-        );
-
-        // 3. Record in wallet_transfers — immediately accepted so Googer balance shows credit right away
+        // 2. Record in wallet_transfers — immediately accepted so the calculated Googer balance shows credit.
+        // The protected Super Admin users.wallet_balance is only changed by manual Super Admin actions.
         const transferResult = await client.query(
             `INSERT INTO wallet_transfers
                 (sender_id, receiver_id, amount, commission, note, type, status, created_at, updated_at)

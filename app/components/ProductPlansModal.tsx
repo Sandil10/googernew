@@ -78,9 +78,15 @@ function derivePlanFeatures(plan: SubscriptionPlan): string[] {
         items.push("Text to voice");
 
     // Chat auto-delete
-    const autoDelete = e.chat_auto_delete_days != null ? Number(e.chat_auto_delete_days) : null;
-    if (autoDelete != null && autoDelete > 0 && autoDelete < 999999)
-        items.push(`Chat history kept ${autoDelete} days`);
+    const autoDeleteUnit = String(e.chat_auto_delete_unit || "").toLowerCase();
+    const autoDeleteValue = e.chat_auto_delete_value ?? e.chat_auto_delete_days;
+    if (autoDeleteUnit === "lifetime" || e.chat_auto_delete_lifetime) {
+        items.push("Chat history kept lifetime");
+    } else if (autoDeleteValue != null && Number(autoDeleteValue) > 0) {
+        items.push(`Chat history kept ${autoDeleteValue} ${autoDeleteUnit || "days"}`);
+    } else if (e.chat_auto_delete_24h) {
+        items.push("Chat history kept 1 day");
+    }
 
     // Profile promo
     if (e.free_profile_ad_promo || e.free_promo)

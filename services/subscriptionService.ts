@@ -52,6 +52,8 @@ export type SubscriptionFeatures = {
     text_to_voice: boolean;
     video_call_quality: string;
     chat_auto_delete_days: number | null;
+    chat_auto_delete_value?: number | null;
+    chat_auto_delete_unit?: 'minutes' | 'hours' | 'days' | 'lifetime' | string | null;
     extra: Record<string, any>;
 };
 
@@ -143,7 +145,9 @@ export const subscriptionService = {
     },
     getMyUsage: async (): Promise<{
         googCount: number; productCount: number; savedGoogCount: number;
+        savedPhotoAdCount?: number; savedVideoAdCount?: number;
         writeGoogLimit: number; googLetterLimit: number; productUploadLimit: number; saveGoogLimit: number;
+        photoAdsSaveLimit?: number | null; videoAdsSaveLimit?: number | null;
         googAtLimit: boolean; productAtLimit: boolean;
     } | null> => {
         try {
@@ -167,7 +171,7 @@ export const subscriptionService = {
         }
     },
 
-    getMyPlan: async (): Promise<{ extra?: Record<string, any>; plan_slug?: string; slug?: string; price?: number | string; is_basic?: boolean } | null> => {
+    getMyPlan: async (): Promise<{ extra?: Record<string, any>; plan_slug?: string; slug?: string; price?: number | string; googs_limit?: number | string | null; is_basic?: boolean } | null> => {
         try {
             const res = await fetch(`${API_URL}/subscription-plans/my`, { headers: authHeaders() });
             if (!res.ok) return null;

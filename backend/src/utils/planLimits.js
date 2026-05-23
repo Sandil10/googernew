@@ -69,8 +69,8 @@ const getUserPlanLimits = async (userId) => {
                 textMessaging:        extra.text_messaging !== false && extra.text_messaging != null,
                 chatTextColors:       tmStr.includes('colors'),
                 chatStickers:         tmStr.includes('stickers'),
-                voiceCalls:           true,
-                videoCalls:           isPlan03Slug(slug) && extra.video_calls !== false,
+                voiceCalls:           extra.voice_calls !== false,
+                videoCalls:           extra.video_calls === true || extra.video_calls === 'true' || extra.video_calls === 1,
                 voiceToText:          !!(extra.voice_notes_to_text || extra.voice_to_text || extra.speech_to_text),
                 textToVoice:          !!(extra.text_to_voice_note || extra.text_to_voice || extra.tts),
                 chatAutoDeleteDays:   extra.chat_auto_delete_days != null ? parseInt(extra.chat_auto_delete_days) : UNLIMITED,
@@ -100,12 +100,12 @@ const getUserPlanLimits = async (userId) => {
                 textMessaging:       extra.text_messaging !== false && extra.text_messaging != null,
                 chatTextColors:      false,
                 chatStickers:        false,
-                voiceCalls:          true,
-                videoCalls:          false,
-                voiceToText:         false,
-                textToVoice:         false,
+                voiceCalls:          extra.voice_calls !== false,
+                videoCalls:          extra.video_calls === true || extra.video_calls === 'true' || extra.video_calls === 1,
+                voiceToText:         !!(extra.voice_notes_to_text || extra.voice_to_text || extra.speech_to_text),
+                textToVoice:         !!(extra.text_to_voice_note || extra.text_to_voice || extra.tts),
                 chatAutoDeleteDays:  parseInt(extra.chat_auto_delete_days ?? FALLBACK.chatAutoDeleteDays),
-                adsExpiryDays:       parseInt(extra.ads_expiry_days ?? FALLBACK.adsExpiryDays),
+                adsExpiryDays:       toExpiryDays(extra) ?? FALLBACK.adsExpiryDays,
                 verifiedTick:        !!verified_tick,
                 rawExtra:            extra
             };
@@ -227,15 +227,17 @@ const getUserSubscriptionFeatures = async (userId) => {
         chat_text_colors:         isBasic ? false : (extra.chat_text_colors != null ? asBool(extra.chat_text_colors) : tmHasColors),
         chat_stickers:            isBasic ? false : (extra.chat_stickers    != null ? asBool(extra.chat_stickers)    : tmHasStickers),
         text_messaging:           extra.text_messaging !== false && extra.text_messaging != null && extra.text_messaging !== 0,
-        voice_calls:              true,
-        video_calls:              isPlan03Slug(plan?.slug) && extra.video_calls !== false,
+        voice_calls:              asBool(extra.voice_calls, !isBasic),
+        video_calls:              asBool(extra.video_calls, false),
         // Admin stores these as voice_notes_to_text / text_to_voice_note
-        voice_to_text:            isBasic ? false : !!(extra.voice_notes_to_text || extra.voice_to_text || extra.speech_to_text || extra.microphone),
-        text_to_voice:            isBasic ? false : !!(extra.text_to_voice_note || extra.text_to_voice || extra.tts || extra.speech),
+        voice_to_text:            !!(extra.voice_notes_to_text || extra.voice_to_text || extra.speech_to_text || extra.microphone),
+        text_to_voice:            !!(extra.text_to_voice_note || extra.text_to_voice || extra.tts || extra.speech),
 
         // Strings / numbers
         video_call_quality:       String(extra.video_call_quality || 'sd').toLowerCase(),
         chat_auto_delete_days:    asNum(extra.chat_auto_delete_days),
+        chat_auto_delete_value:   asNum(extra.chat_auto_delete_value),
+        chat_auto_delete_unit:    extra.chat_auto_delete_lifetime ? 'lifetime' : (extra.chat_auto_delete_unit || null),
 
         // Raw passthrough
         extra,

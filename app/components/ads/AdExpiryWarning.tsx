@@ -8,7 +8,7 @@ import { subscriptionService } from "@/services/subscriptionService";
 
 const SESSION_KEY = "googer_expiry_warn_session";
 const SHOWN_PREFIX = "googer_expiry_warn_shown";
-const WARNING_LEAD_MS = 3 * 24 * 60 * 60 * 1000;
+const WARNING_LEAD_MS = 2 * 60 * 1000; // 2 minutes before expiry
 
 // One random ID per browser session (cleared on tab close / new login tab)
 function getSessionId(): string {
@@ -20,14 +20,12 @@ function getSessionId(): string {
     return sid;
 }
 
-function wasShownToday(sessionId: string, adId: string): boolean {
-    const today = new Date().toISOString().slice(0, 10);
-    return !!localStorage.getItem(`${SHOWN_PREFIX}_${sessionId}_${today}_${adId}`);
+function wasShownThisSession(sessionId: string, adId: string): boolean {
+    return !!sessionStorage.getItem(`${SHOWN_PREFIX}_${sessionId}_${adId}`);
 }
 
-function markShownToday(sessionId: string, adId: string): void {
-    const today = new Date().toISOString().slice(0, 10);
-    localStorage.setItem(`${SHOWN_PREFIX}_${sessionId}_${today}_${adId}`, "1");
+function markShownThisSession(sessionId: string, adId: string): void {
+    sessionStorage.setItem(`${SHOWN_PREFIX}_${sessionId}_${adId}`, "1");
 }
 
 function formatRemaining(ms: number) {
@@ -54,17 +52,15 @@ function getPlanExpiryMs(plan: any) {
 }
 
 function getFinalRawAdExpiryMs(ad: any, plan: any) {
-    const candidates = [
-        getPlanExpiryMs(plan),
-        Number(ad.durationDays || ad.duration_days || 0) * 24 * 60 * 60 * 1000,
-    ].filter((value) => Number.isFinite(value) && value > 0);
-    return candidates.length ? Math.min(...candidates) : 0;
+    const durationMs = Number(ad.durationDays || ad.duration_days || 0) * 24 * 60 * 60 * 1000;
+    if (Number.isFinite(durationMs) && durationMs > 0) return durationMs;
+    return getPlanExpiryMs(plan);
 }
 
 function isRawPhotoVideoAd(ad: any) {
     const campaignType = String(ad.campaignType || ad.campaign_type || "").trim().toLowerCase();
     const isPhotoVideo = campaignType === "photo and video" || campaignType === "photo & video";
-    if (!isPhotoVideo || ad.status !== "Active") return false;
+    if (!isPhotoVideo || String(ad.status || "").trim() !== "Active") return false;
 
     const draft = ad.editDraft || ad.edit_draft || {};
     const activeLink = String(ad.active_link || ad.activeLink || draft.activeLink || draft.active_link || "").trim();
@@ -79,7 +75,7 @@ function isRawPhotoVideoAd(ad: any) {
 export function AdExpiryWarning({ userId }: { userId?: string | number | null }) {
     const router = useRouter();
     const [show, setShow] = useState(false);
-    const [mediaType, setMediaType] = useState<"photo" | "video">("photo");
+    const [adLabel, setAdLabel] = useState("ad");
     const [remainingLabel, setRemainingLabel] = useState("soon");
 
     useEffect(() => {
@@ -100,7 +96,7 @@ export function AdExpiryWarning({ userId }: { userId?: string | number | null })
                 const warningAd = (myAds as any[]).find((ad) => {
                     if (!isRawPhotoVideoAd(ad)) return false;
                     const adId = String(ad.adId || ad.ad_id || "").replace(/^ad-/, "");
-                    if (!adId || wasShownToday(sessionId, adId)) return false;
+                    if (!adId || wasShownThisSession(sessionId, adId)) return false;
                     const refTime = ad.activeStartTime || ad.active_start_time || ad.startedAt || ad.started_at;
                     const refMs = new Date(refTime || "").getTime();
                     if (!Number.isFinite(refMs)) return false;
@@ -119,9 +115,10 @@ export function AdExpiryWarning({ userId }: { userId?: string | number | null })
                     const expiryMs = getFinalRawAdExpiryMs(warningAd, plan);
                     const remainingMs = Math.max(0, expiryMs - elapsedMs);
                     const rawMediaType = String(warningAd.mediaType || warningAd.media_type || "").toLowerCase();
-                    setMediaType(rawMediaType.includes("video") ? "video" : "photo");
+                    const campaignType = String(warningAd.campaignType || warningAd.campaign_type || "").toLowerCase();
+                    setAdLabel(rawMediaType.includes("video") ? "video ad" : campaignType.includes("product") ? "product ad" : "ad");
                     setRemainingLabel(formatRemaining(remainingMs));
-                    markShownToday(sessionId, adId);
+                    markShownThisSession(sessionId, adId);
                     setShow(true);
                 }
             } catch {
@@ -146,10 +143,10 @@ export function AdExpiryWarning({ userId }: { userId?: string | number | null })
                     <IonIcon name="images-outline" className="text-xl text-amber-300" />
                 </div>
                 <h2 className="text-base font-black tracking-tight text-white">
-                    Your {mediaType} will be removed in {remainingLabel}
+                    Your {adLabel} will be removed in {remainingLabel}
                 </h2>
                 <p className="mt-2 text-[12px] leading-relaxed text-white/55">
-                    Your {mediaType} ad is still active. Subscribe to a plan to keep it running longer.
+                    Your {adLabel} is still active. Subscribe to a plan to keep it running longer.
                 </p>
                 <div className="mt-5 flex flex-col gap-2">
                     <button

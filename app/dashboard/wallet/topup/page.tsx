@@ -1208,7 +1208,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                 <div className="min-w-0">
                                     <p className="text-[11px] text-white font-bold truncate">{tx.ad_name || 'Payment Ad'}</p>
                                     <p className="text-[9px] text-gray-600 mt-0.5">
-                                        {tx.created_at ? new Date(tx.created_at).toLocaleString() : 'Transaction'} · R {Number(tx.amount || 0).toLocaleString()}
+                                        {tx.created_at ? new Date(tx.created_at).toLocaleString("en-GB", { timeZone: "Asia/Colombo", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : 'Transaction'} · R {Number(tx.amount || 0).toLocaleString()}
                                     </p>
                                 </div>
                                 <span className={`px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-widest shrink-0 ${statusClass}`}>
@@ -1343,7 +1343,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                                                 <div className="text-[10px] text-gray-500 flex items-center gap-1">
                                                                     <IonIcon name="time-outline" className="text-gray-600 text-[10px]" />
                                                                     <span className="text-gray-600">{transactionFilter === 'completed' ? 'Confirmed' : (releaseCountdown ? 'Time Left' : 'Started')}</span>
-                                                                    <span className="text-gray-300 font-semibold">{releaseCountdown || new Date(ts).toLocaleString()}</span>
+                                                                    <span className="text-gray-300 font-semibold">{releaseCountdown || new Date(ts).toLocaleString("en-GB", { timeZone: "Asia/Colombo", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                                                                 </div>
                                                             )}
                                                         </>

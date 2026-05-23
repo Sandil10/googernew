@@ -1107,6 +1107,7 @@ exports.updateAd = async (req, res) => {
             existingAd.status === 'Under Review'
             && payload.status === 'Cancelled'
             && Number(existingAd.walletTransferId) > 0
+            && supportsRemainingBudgetRefund(existingAd.campaignType)
         ) {
             const transferResult = await client.query(
                 `SELECT id, sender_id, receiver_id, amount, status, type, note
@@ -1119,7 +1120,10 @@ exports.updateAd = async (req, res) => {
 
             if (transferResult.rows.length > 0) {
                 const transfer = transferResult.rows[0];
-                const refundAmount = Number(transfer.amount || 0);
+                // Refund only the unspent portion: total budget minus whatever was already spent.
+                // For fresh Under Review ads spend=0, so this equals the full budget.
+                // If the ad ran previously before going back to Under Review, spend is subtracted.
+                const refundAmount = Math.max(0, Number(existingAd.budget || 0) - Number(existingAd.spend || 0));
                 const advertiserUserId = Number(transfer.sender_id || existingAd.userId);
                 const canonicalGoogerUserId = await resolveGoogerMainWalletUserId(client);
                 const googerUserId = Number(canonicalGoogerUserId || 0);
@@ -1149,29 +1153,43 @@ exports.updateAd = async (req, res) => {
                     }
 
                     await client.query(
-                        `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, created_at, updated_at)
-                         VALUES ($1, $2, $3, $4, 'transfer', 'accepted', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                        `INSERT INTO wallet_transfers (
+                            sender_id,
+                            receiver_id,
+                            amount,
+                            note,
+                            type,
+                            status,
+                            commission,
+                            commission_percentage,
+                            created_at,
+                            updated_at
+                         )
+                         VALUES ($1, $2, $3, $4, 'ad_refund', 'accepted', $5, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
                         [
                             googerUserId,
                             advertiserUserId,
                             refundAmount,
                             `Ad Refund - ${existingAd.adId} (${existingAd.campaignType}) - Cancelled During Review`,
+                            -refundAmount,
                         ]
                     );
 
-                    await client.query(
-                        `UPDATE wallet_transfers
-                         SET status = 'cancelled',
-                             updated_at = CURRENT_TIMESTAMP
-                         WHERE id = $1`,
-                        [transfer.id]
-                    );
+                    if (isLegacyAdHold) {
+                        await client.query(
+                            `UPDATE wallet_transfers
+                             SET status = 'cancelled',
+                                 updated_at = CURRENT_TIMESTAMP
+                             WHERE id = $1`,
+                            [transfer.id]
+                        );
+                    }
                 }
             }
         }
         if (
             ['Active', 'Paused'].includes(String(existingAd.status || ''))
-            && payload.status === 'Cancelled'
+            && ['Cancelled', 'Removed'].includes(String(payload.status || ''))
             && Number(existingAd.walletTransferId) > 0
             && supportsRemainingBudgetRefund(existingAd.campaignType)
         ) {
@@ -1187,12 +1205,15 @@ exports.updateAd = async (req, res) => {
             if (transferResult.rows.length > 0) {
                 const transfer = transferResult.rows[0];
                 const advertiserUserId = Number(transfer.sender_id || existingAd.userId);
-                const refundAmount = Math.max(0, Number(existingAd.remainingBudget || 0));
+                const refundAmount = Math.max(0, Number(existingAd.budget || 0) - Number(existingAd.spend || 0));
                 const transferStatus = String(transfer.status || '').toLowerCase();
+                const canonicalGoogerUserIdActive = await resolveGoogerMainWalletUserId(client);
+                const googerUserIdActive = Number(canonicalGoogerUserIdActive || 0);
 
                 if (
                     refundAmount > 0
                     && advertiserUserId > 0
+                    && googerUserIdActive > 0
                     && transferStatus === 'accepted'
                 ) {
                     await client.query(
@@ -1295,6 +1316,9 @@ exports.updateAd = async (req, res) => {
         }
 
         await client.query('COMMIT');
+        if (['Removed', 'Cancelled'].includes(String(payload.status || ''))) {
+            await syncExpiredAds(pool, adId);
+        }
         return res.status(200).json({ success: true, ad: mapRow(result.rows[0]) });
     } catch (error) {
         try { await client.query('ROLLBACK'); } catch {}

@@ -33,6 +33,7 @@ type PromotedAdCardProps = {
   compact?: boolean;
   onToggleSave?: (ad: any) => void | Promise<void>;
   isSaved?: boolean;
+  saveAtLimit?: boolean;
   showExpiryWarning?: boolean;
 };
 
@@ -62,6 +63,7 @@ export function PromotedAdCard({
   compact,
   onToggleSave,
   isSaved,
+  saveAtLimit,
   showExpiryWarning,
 }: PromotedAdCardProps) {
   const normalized = normalizeAdData(ad);
@@ -234,6 +236,7 @@ export function PromotedAdCard({
       showSaveButton={source === "profile" && !!onToggleSave}
       onToggleSave={onToggleSave}
       isSaved={isSaved}
+      saveAtLimit={saveAtLimit}
       showExpiryWarning={showExpiryWarning}
     />
   );

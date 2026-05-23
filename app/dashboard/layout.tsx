@@ -247,6 +247,10 @@ export default function DashboardLayout({
         setIsCreateActionMenuOpen(false);
 
         if (action === "ad") {
+            // Clear all ad campaign drafts so the new ad form starts empty
+            ["photo-and-video", "product-promote", "profile-promote"].forEach((type) => {
+                window.localStorage.removeItem(`googer-ad-draft-${type}`);
+            });
             router.push("/dashboard/ad-campaign/photo-video");
             return;
         }

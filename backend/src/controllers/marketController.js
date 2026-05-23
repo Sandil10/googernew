@@ -2993,7 +2993,7 @@ exports.collectAdLikeCoin = async (req, res) => {
 
         const adRemainingBudget = Number(adRow.remaining_budget || 0);
         // Free promo ads have no budget — skip the budget sufficiency check for them
-        if (!isPromoFreeAd && adRemainingBudget < rewardSettings.advertiser_charge_amount) {
+        if (!isPromoFreeAd && adRemainingBudget < advertiserCharge) {
             await client.query('ROLLBACK');
             return res.status(400).json({ success: false, message: 'Reward unavailable' });
         }
@@ -3049,7 +3049,7 @@ exports.collectAdLikeCoin = async (req, res) => {
                 userId,
                 rewardAmount,
                 `Ad coin reward for ${adId} (${resolvedAdType})`,
-                commissionAmount,
+                -rewardAmount,
             ]
         );
 

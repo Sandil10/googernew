@@ -172,7 +172,7 @@ export default function SubscriptionPage() {
     const formatDate = (iso?: string | null) => {
         if (!iso) return "—";
         const d = new Date(iso);
-        return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+        return d.toLocaleDateString("en-GB", { year: 'numeric', month: 'short', day: 'numeric', timeZone: "Asia/Colombo" });
     };
 
     const selectedPrice = selectedPlan ? Number(selectedPlan.price) || 0 : 0;

@@ -28,6 +28,8 @@ export const FEATURES_DEFAULT: SubscriptionFeatures = {
     text_to_voice: false,
     video_call_quality: "sd",
     chat_auto_delete_days: null,
+    chat_auto_delete_value: null,
+    chat_auto_delete_unit: null,
     extra: {},
 };
 

@@ -49,10 +49,11 @@ export const chatService = {
 
     sendMessage: async (payload: {
         receiverId: number;
-        type: 'text' | 'image' | 'sticker';
+        type: 'text' | 'image' | 'sticker' | 'voice_tts';
         text?: string;
         image_url?: string;
         file_name?: string;
+        reply_to_id?: number | string;
     }) =>
         request('/chat/messages', {
             method: 'POST',
@@ -102,4 +103,22 @@ export const chatService = {
 
     getCallSummaries: async () =>
         request('/chat/calls/summaries'),
+
+    sendTyping: async () =>
+        request('/chat/typing', { method: 'POST' }),
+
+    getTyping: async (participantId: number) =>
+        request(`/chat/typing/${participantId}`),
+
+    forwardMessage: async (payload: {
+        receiverId: number;
+        type: 'text' | 'image' | 'sticker' | 'voice_tts';
+        text?: string;
+        image_url?: string;
+        file_name?: string;
+    }) =>
+        request('/chat/messages', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        }),
 };

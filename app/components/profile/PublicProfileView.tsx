@@ -165,7 +165,7 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
                 subscriptionService.getBadgeForUser(profileUserId),
             ]);
             setPosts((userProducts || []).filter((p: any) => !p.is_sponsored && !p.campaign_type));
-            const normalizedAds = (ownerAds || []).map(normalizeAdData).filter(ad => ad.type !== 'product');
+            const normalizedAds = (ownerAds || []).map(normalizeAdData).filter((ad: any) => ad.type !== 'product');
             setProfileAds(normalizedAds);
             syncAds(normalizedAds);
             setGoogs(userGoogs || []);
