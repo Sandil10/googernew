@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="si">
+<head>
+    <meta charset="UTF-8">
+    <title>Googer Referral System Sinhala Explanation</title>
+    <style>
+        body {
+            font-family: "Nirmala UI", "Iskoola Pota", Arial, sans-serif;
+            line-height: 1.65;
+            color: #111827;
+            margin: 48px;
+        }
+        h1 {
+            font-size: 26px;
+            margin-bottom: 18px;
+        }
+        h2 {
+            font-size: 18px;
+            margin-top: 26px;
+            margin-bottom: 8px;
+        }
+        p {
+            margin: 8px 0;
+        }
+        .box {
+            background: #f3f4f6;
+            border: 1px solid #d1d5db;
+            padding: 12px 16px;
+            margin: 12px 0;
+            white-space: pre-line;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 12px 0;
+        }
+        th, td {
+            border: 1px solid #d1d5db;
+            padding: 8px 10px;
+            text-align: left;
+        }
+        th {
+            background: #e5e7eb;
+        }
+    </style>
+</head>
+<body>
+    <h1>Googer Referral System එක වැඩ කරන ආකාරය</h1>
+
+    <h2>1. Direct Referral කියන්නේ මොකක්ද?</h2>
+    <p>User A ගේ referral link එක use කරලා User B register වුණොත්:</p>
+    <div class="box">User A → User B</div>
+    <p>මෙතන User A කියන්නේ User B ගේ Direct Sponsor. User B කියන්නේ User A ගේ Level 1 referral.</p>
+
+    <h2>2. Referral Chain එක දිගට යන හැටි</h2>
+    <p>User B ගේ referral link එක use කරලා User C register වුණොත්:</p>
+    <div class="box">User A → User B → User C</div>
+    <p>User C ට බලද්දී:</p>
+    <div class="box">Level 1 = User B
+Level 2 = User A</div>
+    <p>User A ට බලද්දී:</p>
+    <div class="box">Level 1 = User B
+Level 2 = User C</div>
+
+    <h2>3. තවත් User කෙනෙක් Register වුණොත්</h2>
+    <p>User C ගේ referral link එක use කරලා User D register වුණොත්:</p>
+    <div class="box">User A → User B → User C → User D</div>
+    <p>User D product එකක් හෝ ad එකක් buy කළොත් commission යන්නේ උඩට:</p>
+    <div class="box">User C = Level 1
+User B = Level 2
+User A = Level 3</div>
+    <p>Buyer වෙන User D ට commission ලැබෙන්නේ නැහැ.</p>
+
+    <h2>4. Product Buy එකකදී Commission යන හැටි</h2>
+    <p>උදාහරණයක් ලෙස:</p>
+    <div class="box">User D product එකක් buy කරනවා
+Product Price = R100
+Admin Product Pool = 20%</div>
+    <p>එතකොට distributable commission pool එක:</p>
+    <div class="box">R100 × 20% = R20</div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Upline User</th>
+                <th>Level</th>
+                <th>Admin Percentage</th>
+                <th>Payout</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>User C</td>
+                <td>Level 1</td>
+                <td>40%</td>
+                <td>R8.00</td>
+            </tr>
+            <tr>
+                <td>User B</td>
+                <td>Level 2</td>
+                <td>30%</td>
+                <td>R6.00</td>
+            </tr>
+            <tr>
+                <td>User A</td>
+                <td>Level 3</td>
+                <td>12.5%</td>
+                <td>R2.50</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h2>5. Ad එකකදී Commission යන හැටි</h2>
+    <p>User D paid ad එකක් create කරනවා.</p>
+    <div class="box">Ad Amount = R100
+Admin Ad Pool = 20%
+Commission Pool = R20</div>
+    <p>Admin ad එක approve කරලා Active කළාම commission pay වෙනවා:</p>
+    <div class="box">User C = Level 1 = R8.00
+User B = Level 2 = R6.00
+User A = Level 3 = R2.50</div>
+    <p>Ad එක reject වුණොත් commission pay වෙන්නේ නැහැ.</p>
+
+    <h2>6. Admin Panel එකෙන් Change කළොත්</h2>
+    <p>Admin Level 1 percentage එක 40% සිට 50% දක්වා change කළොත්, ඒ අලුත් value එක use වෙන්නේ ඉදිරියේදී වෙන product/ad commissions වලට පමණයි.</p>
+    <div class="box">Old purchases/ad payouts වෙනස් වෙන්නේ නැහැ
+New purchases/ad payouts විතරයි change වෙන්නේ</div>
+
+    <h2>7. Wallet Referral List එකේ පේන දේ</h2>
+    <p>Wallet page එකේ Referrals tab එකේ network එක levels විදියට පේනවා:</p>
+    <div class="box">Level 1 [Direct]
+- User B
+
+Level 2 [Team]
+- User C
+
+Level 3 [Network]
+- User D</div>
+    <p>Admin Level 6 add කළොත්, user side එකේත් Level 6 show වෙනවා.</p>
+
+    <h2>8. Color Mapping එක</h2>
+    <p>Level 1 direct user එකකට color එකක් assign වෙනවා. ඒ user යටතේ register වෙන හැම user කෙනාම ඒ same branch color එකෙන් පේනවා.</p>
+    <div class="box">Level 1
+🟢 User B
+
+Level 2
+🟢 User C
+
+Level 3
+🟢 User D</div>
+    <p>මේකෙන් user කෙනෙක් කාගේ referral branch එකේද කියලා ලේසියෙන් හඳුනාගන්න පුළුවන්.</p>
+
+    <h2>කෙටියෙන් System Flow එක</h2>
+    <div class="box">Referral link use කරලා register වෙනවා
+↓
+referral_relationships table එකේ relationship save වෙනවා
+↓
+Wallet referral list එකේ levels විදියට පේනවා
+↓
+Buyer product/ad buy කරනවා
+↓
+Buyer ට commission නැහැ
+↓
+Buyer ගේ uplines ට commission යනවා
+↓
+Admin panel percentages අනුව payout calculate වෙනවා</div>
+</body>
+</html>

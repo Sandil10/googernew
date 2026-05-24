@@ -69,6 +69,25 @@ const isGoogerPaymentOrderHold = (tx: any) => {
 const AD_COIN_TYPES = new Set(['ad_coin', 'ad_coin_ad_credit', 'ad_coin_commission']);
 const isAdCoinRewardTx = (tx: any) => AD_COIN_TYPES.has(String(tx?.type || '').toLowerCase());
 
+const DEFAULT_REFERRAL_LEVELS = [
+    { level: 1, name: 'Direct', sort_order: 1 },
+    { level: 2, name: 'Network', sort_order: 2 },
+    { level: 3, name: 'Extended', sort_order: 3 },
+    { level: 4, name: 'Deep', sort_order: 4 },
+    { level: 5, name: 'Global', sort_order: 5 },
+];
+
+const REFERRAL_BRANCH_COLORS = [
+    "#22c55e",
+    "#3b82f6",
+    "#a855f7",
+    "#f59e0b",
+    "#ec4899",
+    "#14b8a6",
+    "#ef4444",
+    "#84cc16",
+];
+
 const buildDisplayTransactions = (transactions: any[], currentUser: any) => {
     const currentUserKey = getCurrentUserIdentityKey();
     const adRefundAdjustments = readAdWalletAdjustments().filter((entry) => !currentUserKey || entry.ownerKey === currentUserKey);
@@ -144,6 +163,7 @@ export default function MyWallet() {
     const [user, setUser] = useState<any>(null);
     const [referralLink, setReferralLink] = useState("");
     const [referrals, setReferrals] = useState<any[]>([]);
+    const [referralStats, setReferralStats] = useState<any>({ totalReferrals: 0, totalEarned: "0.00", levelCounts: {}, levelSettings: DEFAULT_REFERRAL_LEVELS });
     const [amount, setAmount] = useState("");
     const [commission, setCommission] = useState("");
     const [targetQuery, setTargetQuery] = useState("");
@@ -207,10 +227,7 @@ export default function MyWallet() {
             setUser(profile);
 
             // Fetch Wallet/Referrals Data
-            const walletData = await authService.getWallet();
-            if (walletData.success) {
-                setReferrals(walletData.referrals || []);
-            }
+            await refreshReferralData();
 
             // Fetch Transactions
             const txData = await walletService.getTransactionHistory();
@@ -221,7 +238,8 @@ export default function MyWallet() {
             setPendingRequests(requests);
 
             const origin = typeof window !== 'undefined' ? window.location.origin : '';
-            const link = `${origin}/register?ref=${profile.referral_code || profile.username}`;
+            const referralRef = profile.user_id || profile.googer_id || profile.referral_code || profile.username;
+            const link = `${origin}/register?ref=${encodeURIComponent(String(referralRef || ''))}`;
             setReferralLink(link);
 
         } catch (error) {
@@ -231,9 +249,32 @@ export default function MyWallet() {
         }
     };
 
+    const refreshReferralData = async () => {
+        const walletData = await authService.getWallet();
+        if (walletData.success) {
+            setReferrals(walletData.referrals || []);
+            setReferralStats({
+                totalReferrals: walletData.totalReferrals || 0,
+                totalEarned: walletData.totalEarned || "0.00",
+                levelCounts: walletData.levelCounts || {},
+                levelSettings: Array.isArray(walletData.levelSettings) && walletData.levelSettings.length > 0
+                    ? walletData.levelSettings
+                    : DEFAULT_REFERRAL_LEVELS,
+            });
+        }
+    };
+
     useEffect(() => {
         fetchAllData();
     }, [router]);
+
+    useEffect(() => {
+        if (activeTab !== 'referrals') return;
+        const interval = window.setInterval(() => {
+            refreshReferralData().catch((error) => console.error("Error refreshing referral data:", error));
+        }, 10000);
+        return () => window.clearInterval(interval);
+    }, [activeTab]);
 
     useEffect(() => {
         const loadLockedManualPayment = async () => {
@@ -585,6 +626,28 @@ export default function MyWallet() {
         navigator.clipboard.writeText(referralLink);
     };
 
+    const shareReferralLink = async () => {
+        if (!referralLink || typeof navigator === 'undefined') return;
+        if (navigator.share) {
+            await navigator.share({ title: 'Join Googer', url: referralLink });
+            return;
+        }
+        navigator.clipboard.writeText(referralLink);
+    };
+
+    const formatJoinedAgo = (dateValue: string) => {
+        if (!dateValue) return 'Joined recently';
+        const joinedAt = new Date(dateValue).getTime();
+        if (Number.isNaN(joinedAt)) return 'Joined recently';
+        const diffDays = Math.max(0, Math.floor((Date.now() - joinedAt) / 86400000));
+        if (diffDays === 0) return 'Joined today';
+        if (diffDays === 1) return 'Joined 1 day ago';
+        if (diffDays < 30) return `Joined ${diffDays} days ago`;
+        const diffMonths = Math.floor(diffDays / 30);
+        if (diffMonths === 1) return 'Joined 1 month ago';
+        return `Joined ${diffMonths} months ago`;
+    };
+
     if (loading) {
         return (
             <div className="pb-10 relative min-h-screen animate-pulse">
@@ -771,10 +834,10 @@ export default function MyWallet() {
 
                     {activeTab === 'transactions' && (
                         <div className="space-y-3">
-                            <p className="font-bold text-white mb-5 text-xs uppercase tracking-widest flex items-center gap-2">
+                            <div className="font-bold text-white mb-5 text-xs uppercase tracking-widest flex items-center gap-2">
                                 <IonIcon name="time-outline" className="text-base text-white/65" />
                                 Recent Activity
-                            </p>
+                            </div>
 
                             {transactions.filter((tx) => !isAdCoinRewardTx(tx)).length > 0 ? (
                                 transactions.filter((tx) => !isAdCoinRewardTx(tx)).map((tx) => {
@@ -945,42 +1008,108 @@ export default function MyWallet() {
                     )}
 
                     {activeTab === 'referrals' && (
-                        <div>
-                            <div className="flex items-center justify-between mb-6">
-                                <h4 className="text-[10px] font-bold text-white uppercase tracking-widest">Network Statistics</h4>
-                                <span className="bg-white/5 text-white/65 px-4 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border border-white/10">
-                                    {referrals.length} Total Referred
-                                </span>
+                        <div className="rounded-2xl border border-gray-800 bg-[#030303] px-4 py-5 shadow-[0_18px_50px_rgba(0,0,0,0.35)] sm:px-6">
+                            <h3 className="mb-6 text-2xl font-black tracking-tight text-white sm:text-3xl">My Referral Network</h3>
+
+                            <div className="mb-7 rounded-xl border border-gray-800 bg-black/60 px-4 py-3 text-sm leading-tight text-white/85 sm:text-base">
+                                <p>
+                                    <span className="font-black">Total Earnings: </span>
+                                    <span className="font-black underline underline-offset-4">R {Number(referralStats.totalEarned || 0).toFixed(2)}</span>
+                                </p>
+                                <p>Total Referrals: {referralStats.totalReferrals || referrals.length}</p>
                             </div>
 
                             {referrals.length > 0 ? (
                                 <div className="space-y-3">
-                                    {referrals.map((ref, idx) => (
-                                        <div key={idx} className="bg-gray-800/20 border border-gray-800 rounded-xl p-4 hover:bg-gray-800/40 transition-all group">
-                                            <div className="flex items-center justify-between">
-                                                <div className="flex items-center gap-3">
-                                                    <div className="relative w-10 h-10 rounded-lg overflow-hidden border border-white/5 bg-gray-800 shrink-0">
-                                                        <div className="w-full h-full flex items-center justify-center text-white/65 font-bold text-sm bg-white/5 uppercase">
-                                                            {ref.referred_full_name?.charAt(0) || 'U'}
-                                                        </div>
+                                    {(() => {
+                                        const configuredLevels = Array.isArray(referralStats.levelSettings) && referralStats.levelSettings.length > 0
+                                            ? referralStats.levelSettings
+                                            : DEFAULT_REFERRAL_LEVELS;
+                                        const referralOnlyLevels = referrals
+                                            .map((ref) => Number(ref.level || ref.stored_level || 1))
+                                            .filter((level) => Number.isFinite(level) && level > 0)
+                                            .map((level) => ({ level, name: `Level ${level}`, sort_order: level }));
+                                        const levelMap = new Map<number, any>();
+                                        [...configuredLevels, ...referralOnlyLevels].forEach((entry) => {
+                                            const level = Number(entry.level || 0);
+                                            if (!Number.isFinite(level) || level <= 0) return;
+                                            if (!levelMap.has(level)) levelMap.set(level, entry);
+                                        });
+                                        const referralsByUserId = new Map<string, any>();
+                                        referrals.forEach((ref) => {
+                                            if (ref.referred_user_id) referralsByUserId.set(String(ref.referred_user_id), ref);
+                                        });
+                                        const directRootIds = referrals
+                                            .filter((ref) => Number(ref.level || 1) === 1)
+                                            .map((ref) => String(ref.referred_user_id || ""))
+                                            .filter(Boolean);
+                                        const rootCache = new Map<string, string>();
+                                        const getRootId = (ref: any): string => {
+                                            const ownId = String(ref.referred_user_id || "");
+                                            if (!ownId) return "";
+                                            if (rootCache.has(ownId)) return rootCache.get(ownId) || ownId;
+                                            const visited = new Set<string>();
+                                            let cursor = ref;
+                                            while (cursor?.referred_by && !visited.has(String(cursor.referred_user_id || ""))) {
+                                                const cursorId = String(cursor.referred_user_id || "");
+                                                visited.add(cursorId);
+                                                const parent = referralsByUserId.get(String(cursor.referred_by));
+                                                if (!parent) break;
+                                                cursor = parent;
+                                            }
+                                            const rootId = String(cursor?.referred_user_id || ownId);
+                                            rootCache.set(ownId, rootId);
+                                            return rootId;
+                                        };
+                                        const getBranchColor = (ref: any) => {
+                                            const rootId = getRootId(ref);
+                                            const rootIndex = Math.max(0, directRootIds.indexOf(rootId));
+                                            return REFERRAL_BRANCH_COLORS[rootIndex % REFERRAL_BRANCH_COLORS.length];
+                                        };
+                                        return Array.from(levelMap.values())
+                                            .sort((a, b) => Number(a.sort_order ?? a.level) - Number(b.sort_order ?? b.level))
+                                            .map((levelConfig) => {
+                                        const level = Number(levelConfig.level || 1);
+                                        const levelRefs = referrals.filter((ref) => Number(ref.level || 1) === level);
+                                        const levelName = levelConfig.name || `Level ${level}`;
+                                        const countLabel = level === 1 ? `${levelRefs.length} referrals` : `${levelRefs.length} ref`;
+
+                                        return (
+                                            <details key={level} open={level === 1} className="group rounded-xl border border-transparent px-2 py-2 transition-colors open:border-gray-800 open:bg-black/35">
+                                                <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-bold text-white/90 transition-colors hover:text-white sm:text-base">
+                                                    <span className="inline-block h-0 w-0 border-y-[5px] border-y-transparent border-l-[9px] border-l-white/90 transition-transform group-open:rotate-90" />
+                                                    <span className="truncate">Level {level} [{levelName}] - ({countLabel})</span>
+                                                </summary>
+
+                                                {levelRefs.length > 0 && (
+                                                    <div className="mt-3 space-y-2 pl-6">
+                                                        {levelRefs.map((ref, idx) => (
+                                                            <div key={`${level}-${ref.referred_user_id || idx}`} className="flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-sm text-white/80 transition-colors hover:bg-white/[0.03]">
+                                                                <div className="flex min-w-0 items-center gap-3">
+                                                                    <span
+                                                                        className="h-3 w-3 shrink-0 rounded-full shadow-[0_0_14px_currentColor]"
+                                                                        style={{ backgroundColor: getBranchColor(ref), color: getBranchColor(ref) }}
+                                                                    />
+                                                                    <p className="truncate">
+                                                                        {ref.referred_full_name || ref.referred_username || 'User'}
+                                                                        {level === 1 && ref.created_at && (
+                                                                            <span className="text-white/55"> ({formatJoinedAgo(ref.created_at).replace('Joined ', '')})</span>
+                                                                        )}
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+                                                        ))}
                                                     </div>
-                                                    <div>
-                                                        <div className="text-xs font-bold text-white uppercase tracking-wider">{ref.referred_full_name}</div>
-                                                        <div className="text-[9px] text-gray-500 font-semibold uppercase tracking-widest">@{ref.referred_username}</div>
-                                                    </div>
-                                                </div>
-                                                <div className="text-right">
-                                                    <p className="text-[10px] text-white/55 font-bold uppercase tracking-widest">Joined {new Date(ref.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}</p>
-                                                    <p className="text-[9px] text-gray-500 font-medium">+ R {ref.amount}</p>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    ))}
+                                                )}
+                                            </details>
+                                        );
+                                            });
+                                    })()}
                                 </div>
                             ) : (
-                                <div className="py-20 text-center">
-                                    <IonIcon name="people-outline" className="text-3xl text-gray-700 mb-4" />
-                                    <p className="text-gray-500 font-bold uppercase tracking-widest text-[10px]">No active referrals found</p>
+                                <div className="rounded-xl border border-gray-800 bg-black/35 py-8 text-center">
+                                    <IonIcon name="people-outline" className="mb-3 text-2xl text-gray-600" />
+                                    <p className="text-xs font-bold text-gray-500">No registered referrals yet</p>
                                 </div>
                             )}
                         </div>
@@ -988,10 +1117,10 @@ export default function MyWallet() {
 
                     {activeTab === 'rewards' && (
                         <div className="space-y-4">
-                            <p className="font-bold text-white mb-5 text-xs uppercase tracking-widest flex items-center gap-2">
+                            <div className="font-bold text-white mb-5 text-xs uppercase tracking-widest flex items-center gap-2">
                                 <IonIcon name="ribbon-outline" className="text-base text-amber-400" />
                                 Ad Coin Rewards
-                            </p>
+                            </div>
                             {(() => {
                                 const rewardTxs = transactions.filter((tx) => String(tx?.type || '').toLowerCase() === 'ad_coin' && tx.receiver_id === user?.id);
                                 if (rewardTxs.length === 0) return (

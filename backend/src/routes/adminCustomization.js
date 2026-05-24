@@ -5,6 +5,7 @@ const reachTiersController = require('../controllers/reachTiersController');
 const promoCodesController = require('../controllers/promoCodesController');
 const marketController = require('../controllers/marketController');
 const subscriptionPlansController = require('../controllers/subscriptionPlansController');
+const referralCommissionController = require('../controllers/referralCommissionController');
 const authMiddleware = require('../middleware/auth');
 
 // ── Reach Settings (legacy flat multipliers) ──────────────────────────────
@@ -27,6 +28,16 @@ router.delete('/promo-codes/:id', authMiddleware, promoCodesController.deletePro
 // Ad coin + watch-time settings
 router.get('/ad-coin-settings/public', marketController.getAdCoinRewardSettingsPublic);
 router.post('/ad-coin-settings', authMiddleware, marketController.upsertAdCoinRewardSettings);
+
+router.get('/referral-commission-settings', authMiddleware, referralCommissionController.getSettings);
+router.put('/referral-commission-settings', authMiddleware, referralCommissionController.updateSettings);
+router.post('/referral-commission-settings', authMiddleware, referralCommissionController.updateSettings);
+router.get('/referral-level-settings', authMiddleware, referralCommissionController.getLevels);
+router.post('/referral-level-settings', authMiddleware, referralCommissionController.upsertLevel);
+router.put('/referral-level-settings/bulk', authMiddleware, referralCommissionController.bulkUpsertLevels);
+router.post('/referral-level-settings/bulk', authMiddleware, referralCommissionController.bulkUpsertLevels);
+router.put('/referral-level-settings/:level', authMiddleware, referralCommissionController.upsertLevel);
+router.delete('/referral-level-settings/:level', authMiddleware, referralCommissionController.deleteLevel);
 
 // ── Subscription Plans ───────────────────────────────────────────────────
 router.get('/subscription-plans/public', subscriptionPlansController.getPublicPlans);

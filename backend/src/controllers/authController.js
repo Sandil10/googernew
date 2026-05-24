@@ -6,6 +6,7 @@ const { getUserPlanLimits } = require('../utils/planLimits');
 
 let usersTableHasShippingAddressColumn = null;
 let subscriptionsTableEnsured = false;
+let referralRelationshipsEnsured = false;
 let profileViewsTableEnsured = false;
 let profilePictureColumnEnsured = false;
 let extendedUserProfileSchemaEnsured = false;
@@ -62,6 +63,58 @@ const ensureSubscriptionsTable = async () => {
     `);
 
     subscriptionsTableEnsured = true;
+};
+
+const ensureReferralRelationshipsTable = async (client = pool) => {
+    if (referralRelationshipsEnsured && client === pool) return;
+
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS referral_relationships (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            referred_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            referral_code_used VARCHAR(80),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id)
+        );
+    `);
+
+    await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_referral_relationships_referred_by
+        ON referral_relationships(referred_by);
+    `);
+
+    await client.query(`
+        ALTER TABLE referral_relationships
+        ADD COLUMN IF NOT EXISTS level INTEGER,
+        ADD COLUMN IF NOT EXISTS commission_percentage NUMERIC(8,2);
+    `);
+
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS referral_level_settings (
+            id SERIAL PRIMARY KEY,
+            level INTEGER UNIQUE NOT NULL,
+            name VARCHAR(80) NOT NULL,
+            commission_percentage NUMERIC(8,2) NOT NULL DEFAULT 0,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
+
+    await client.query(`
+        INSERT INTO referral_relationships (user_id, referred_by, referral_code_used, created_at)
+        SELECT w.referred_user_id, w.referrer_id, w.referral_link_used, MIN(w.created_at)
+        FROM wallet w
+        WHERE w.referred_user_id IS NOT NULL
+          AND w.referrer_id IS NOT NULL
+          AND w.referred_user_id <> w.referrer_id
+        GROUP BY w.referred_user_id, w.referrer_id, w.referral_link_used
+        ON CONFLICT (user_id) DO NOTHING;
+    `).catch(() => {});
+
+    if (client === pool) referralRelationshipsEnsured = true;
 };
 
 const ensureProfileViewsTable = async () => {
@@ -373,6 +426,7 @@ exports.register = async (req, res) => {
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
+            await ensureReferralRelationshipsTable(client);
 
             // Insert new user
             const newUser = await client.query(
@@ -388,30 +442,29 @@ exports.register = async (req, res) => {
             if (referralCode) {
                 console.log(`🔍 Processing referral: ${referralCode} for new user ${username}`);
 
-                // Check if referrer exists (support both referral_code and username)
+                // Check if referrer exists (support referral_code, username, or visible Googer ID)
                 const referrer = await client.query(
-                    'SELECT id, username FROM users WHERE referral_code = $1 OR username = $2',
-                    [referralCode, referralCode]
+                    `SELECT id, username
+                     FROM users
+                     WHERE referral_code = $1
+                        OR username = $1
+                        OR user_id::text = $1
+                     LIMIT 1`,
+                    [String(referralCode).trim()]
                 );
 
                 if (referrer.rows.length > 0) {
                     const referrerId = referrer.rows[0].id;
                     const referrerUsername = referrer.rows[0].username;
 
-                    // Add entry to Wallet
                     await client.query(
-                        `INSERT INTO wallet (referrer_id, referred_user_id, referred_username, referral_link_used, amount)
-                         VALUES ($1, $2, $3, $4, $5)`,
-                        [referrerId, newUserId, username, referralCode, 10.00]
+                        `INSERT INTO referral_relationships (user_id, referred_by, referral_code_used)
+                         VALUES ($1, $2, $3)
+                         ON CONFLICT (user_id) DO NOTHING`,
+                        [newUserId, referrerId, referralCode]
                     );
 
-                    // ALSO: Update referrer's wallet_balance
-                    await client.query(
-                        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-                        [10.00, referrerId]
-                    );
-
-                    console.log(`✅ Wallet record saved and referrer balance updated! Referrer: ${referrerUsername}, Referred: ${username}`);
+                    console.log(`Referral relationship saved. Referrer: ${referrerUsername}, Referred: ${username}`);
                 } else {
                     console.log(`⚠️ Referral code ${referralCode} not found in database.`);
                 }
@@ -880,28 +933,86 @@ exports.updateShippingAddress = async (req, res) => {
 exports.getWallet = async (req, res) => {
     try {
         const userId = req.user.id;
+        await ensureReferralRelationshipsTable();
 
-        // Get Wallet Summary (Joins with users table to get real names and pics)
+        const levelSettings = await pool.query(
+            `SELECT level, name, commission_percentage, is_active, sort_order
+             FROM referral_level_settings
+             ORDER BY sort_order ASC, level ASC`
+        );
+        const maxConfiguredLevel = levelSettings.rows.reduce((max, row) => {
+            const level = Number(row.level || 0);
+            return Number.isFinite(level) && level > max ? level : max;
+        }, 0);
+        const maxReferralLevel = Math.max(5, maxConfiguredLevel);
+
         const walletData = await pool.query(
-            `SELECT 
-                u.full_name as referred_full_name,
-                u.username as referred_username,
-                u.profile_picture as referred_profile_picture,
-                w.amount, 
-                w.created_at 
-             FROM wallet w
-             JOIN users u ON w.referred_user_id = u.id
-             WHERE w.referrer_id = $1 
-             ORDER BY w.created_at DESC`,
-            [userId]
+            `WITH RECURSIVE referral_tree AS (
+                SELECT
+                    rr.id,
+                    rr.user_id,
+                    rr.referred_by,
+                    rr.referral_code_used,
+                    rr.level AS stored_level,
+                    rr.commission_percentage AS stored_commission_percentage,
+                    rr.created_at,
+                    1 AS level
+                FROM referral_relationships rr
+                WHERE rr.referred_by = $1
+
+                UNION ALL
+
+                SELECT
+                    child.id,
+                    child.user_id,
+                    child.referred_by,
+                    child.referral_code_used,
+                    child.level AS stored_level,
+                    child.commission_percentage AS stored_commission_percentage,
+                    child.created_at,
+                    parent.level + 1 AS level
+                FROM referral_relationships child
+                JOIN referral_tree parent ON child.referred_by = parent.user_id
+                WHERE parent.level < $2
+            )
+            SELECT
+                rt.level,
+                rt.stored_level,
+                rt.referral_code_used,
+                rt.created_at,
+                rt.referred_by,
+                parent.full_name AS referred_by_full_name,
+                parent.username AS referred_by_username,
+                u.id AS referred_user_id,
+                u.user_id AS referred_readable_id,
+                u.full_name AS referred_full_name,
+                u.username AS referred_username,
+                u.profile_picture AS referred_profile_picture,
+                COALESCE(rt.stored_commission_percentage, rls.commission_percentage, 0)::numeric AS commission_percentage,
+                0::numeric AS amount
+             FROM referral_tree rt
+             JOIN users u ON rt.user_id = u.id
+             LEFT JOIN users parent ON rt.referred_by = parent.id
+             LEFT JOIN referral_level_settings rls
+                ON rls.level = COALESCE(rt.stored_level, rt.level)
+               AND rls.is_active = TRUE
+             ORDER BY rt.level ASC, rt.created_at DESC`,
+            [userId, maxReferralLevel]
         );
 
-        const totalEarned = walletData.rows.reduce((sum, row) => sum + parseFloat(row.amount), 0);
+        const totalEarned = 0;
+        const levelCounts = walletData.rows.reduce((acc, row) => {
+            const key = `level${row.level}`;
+            acc[key] = (acc[key] || 0) + 1;
+            return acc;
+        }, {});
 
         res.status(200).json({
             success: true,
             totalReferrals: walletData.rows.length,
             totalEarned: totalEarned.toFixed(2),
+            levelCounts,
+            levelSettings: levelSettings.rows,
             referrals: walletData.rows
         });
 

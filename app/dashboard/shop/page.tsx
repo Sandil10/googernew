@@ -125,6 +125,34 @@ const getNormalizedUrl = (value: string) => {
   }
 };
 
+const parseDbTimestampAsUtc = (value: any) => {
+  if (!value) return new Date();
+  if (value instanceof Date) return value;
+  if (typeof value === "number") return new Date(value);
+
+  const raw = String(value).trim();
+  if (!raw) return new Date();
+
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  return new Date(hasTimezone ? normalized : `${normalized}Z`);
+};
+
+const formatOrderGroupDateTime = (value: any) => {
+  const date = parseDbTimestampAsUtc(value);
+  return `${date.toLocaleDateString("en-GB", {
+    timeZone: "Asia/Colombo",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  })} ${date.toLocaleTimeString("en-US", {
+    timeZone: "Asia/Colombo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  })}`;
+};
+
 const getGoogleImageSourceUrl = (value: string) => {
   const url = getNormalizedUrl(value);
   if (!url) return "";
@@ -3888,8 +3916,8 @@ export default function ShopPage() {
             });
 
             orderGroups.sort((a, b) => {
-              const aLatest = Math.max(...a.items.map((item) => new Date(item.created_at || 0).getTime()));
-              const bLatest = Math.max(...b.items.map((item) => new Date(item.created_at || 0).getTime()));
+              const aLatest = Math.max(...a.items.map((item) => parseDbTimestampAsUtc(item.created_at || 0).getTime()));
+              const bLatest = Math.max(...b.items.map((item) => parseDbTimestampAsUtc(item.created_at || 0).getTime()));
               const aIsBottomGroup = a.items.every((item) => item.status === 'cancelled' || item.status === 'rejected');
               const bIsBottomGroup = b.items.every((item) => item.status === 'cancelled' || item.status === 'rejected');
 
@@ -3956,7 +3984,7 @@ export default function ShopPage() {
                           <div>
                             <h3 className="text-[11px] font-black text-white uppercase tracking-[0.2em]">{orderNumber}</h3>
                             <p className="text-[9px] text-white/30 font-bold uppercase mt-0.5">
-                              {items.length} Product{items.length > 1 ? 's' : ''} • {new Date(firstItem.created_at || Date.now()).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })} {new Date(firstItem.created_at || Date.now()).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                              {items.length} Product{items.length > 1 ? 's' : ''} • {formatOrderGroupDateTime(firstItem.created_at || Date.now())}
                             </p>
                           </div>
                         </div>

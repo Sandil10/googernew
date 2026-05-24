@@ -19,6 +19,7 @@ const {
     syncExpiredAds,
 } = require('../utils/adDelivery');
 const { getUserPlanLimits, getUserSubscriptionFeatures } = require('../utils/planLimits');
+const { distributeReferralCommission } = require('../utils/referralCommission');
 
 let adSavesTableReady = false;
 const ensureAdSavesSchema = async () => {
@@ -1245,6 +1246,35 @@ exports.updateAd = async (req, res) => {
                     );
 
                     payload.remainingBudget = 0;
+                }
+            }
+        }
+
+        if (
+            String(payload.status || '') === 'Active'
+            && String(existingAd.status || '') !== 'Active'
+            && Number(existingAd.walletTransferId) > 0
+        ) {
+            const transferResult = await client.query(
+                `SELECT id, sender_id, amount, status, note
+                 FROM wallet_transfers
+                 WHERE id = $1
+                 LIMIT 1
+                 FOR UPDATE`,
+                [existingAd.walletTransferId]
+            );
+
+            if (transferResult.rows.length > 0) {
+                const transfer = transferResult.rows[0];
+                const transferStatus = String(transfer.status || '').toLowerCase();
+                if (transferStatus === 'accepted' || transferStatus === 'completed') {
+                    await distributeReferralCommission(client, {
+                        buyerId: transfer.sender_id || existingAd.userId,
+                        grossAmount: transfer.amount,
+                        sourceType: 'ad',
+                        sourceId: `ad-${existingAd.adId || existingAd.id || existingAd.walletTransferId}`,
+                        description: transfer.note || `Ad ${existingAd.adId || existingAd.campaignType || ''}`.trim(),
+                    });
                 }
             }
         }

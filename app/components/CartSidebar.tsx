@@ -219,6 +219,7 @@ export default function CartSidebar() {
   const isManualPaymentFlowLocked = paymentMethod === 'wallet_manual' && isManualPaymentCartLocked;
   const isGoogerPaymentFlowLocked = paymentMethod === 'wallet' && isGoogerPaymentCartLocked;
   const isAnyPaymentFlowLocked = isManualPaymentFlowLocked || isGoogerPaymentFlowLocked;
+  const payableTotal = selectedTotal + deliveryTotal;
 
   const persistGoogerPaymentIntent = (transferId: string) => {
     if (typeof window === 'undefined') return;
@@ -301,7 +302,7 @@ export default function CartSidebar() {
       sellerName: sellerName || null,
       transactionId,
       verifiedTransferId,
-      amount: Number((selectedTotal + deliveryTotal).toFixed(2)),
+      amount: Number(payableTotal.toFixed(2)),
       discountPercent: Number(manualDiscountPercent.toFixed(0)),
       createdAt: new Date().toISOString(),
     }));
@@ -354,7 +355,7 @@ export default function CartSidebar() {
   };
 
   const handleWalletPayNow = async () => {
-    const amountToPay = selectedTotal + deliveryTotal;
+    const amountToPay = payableTotal;
 
     if (!validateShippingCountry()) {
       setShowCountryMismatchModal(true);
@@ -381,7 +382,7 @@ export default function CartSidebar() {
     setIsPlacingOrder(true);
     const selectedItems = cartItems.filter(i => i.selected !== false);
     const snapshotCount = selectedCount;
-    const snapshotTotal = selectedTotal + deliveryTotal;
+    const snapshotTotal = payableTotal;
     const successfullyOrdered: string[] = [];
 
     try {
@@ -426,7 +427,7 @@ export default function CartSidebar() {
           } : {})
         }),
         payment_method: paymentMethod || 'wallet',
-        total_order_price: selectedTotal + deliveryTotal,
+        total_order_price: payableTotal,
         wallet_transfer_id: transferId
       };
 
@@ -555,7 +556,7 @@ export default function CartSidebar() {
   // Handle wallet selection and auto-mode popup logic
   useEffect(() => {
     if (paymentMethod === 'wallet' && activeView === 'address') {
-      const totalToPay = selectedTotal + deliveryTotal;
+      const totalToPay = payableTotal;
       if (userBalance < totalToPay) {
         setShowInsufficientModal(true);
       } else {
@@ -1303,7 +1304,7 @@ export default function CartSidebar() {
 
                             {!isPaymentSuccessful ? (
                               (() => {
-                                const amountToPay = selectedTotal + deliveryTotal;
+                                const amountToPay = payableTotal;
                                 const hasEnough = userBalance >= amountToPay && amountToPay > 0;
                                 const isReady = paymentMethod === 'wallet';
 

@@ -1,6 +1,7 @@
 const pool = require('../config/database');
 const fs = require('fs');
 const path = require('path');
+const { distributeReferralCommission } = require('../utils/referralCommission');
 
 function logDebug(message) {
     const timestamp = new Date().toISOString();
@@ -40,6 +41,32 @@ function formatManualPaymentDisplayTransactionId(value) {
     return digitsOnly.slice(0, 10).padEnd(10, '0');
 }
 
+async function resolveGoogerMainWalletUserId(client) {
+    const configuredId = Number.parseInt(String(process.env.GOOGER_MAIN_USER_ID || '').trim(), 10);
+    if (Number.isFinite(configuredId) && configuredId > 0) {
+        const configuredResult = await client.query('SELECT id FROM users WHERE id = $1 LIMIT 1', [configuredId]);
+        if (configuredResult.rows.length > 0) return configuredResult.rows[0].id;
+    }
+
+    const adminResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+    if (adminResult.rows.length > 0) return adminResult.rows[0].id;
+
+    const googerResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(username) = 'googer'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+    if (googerResult.rows.length > 0) return googerResult.rows[0].id;
+
+    return 1;
+}
+
 function parseVariants(rawVariants) {
     if (!rawVariants) return [];
     if (Array.isArray(rawVariants)) return rawVariants;
@@ -51,6 +78,52 @@ function parseVariants(rawVariants) {
         }
     }
     return [];
+}
+
+function parseCommissionInfo(rawInfo) {
+    if (!rawInfo) return {};
+    if (typeof rawInfo === 'object') return rawInfo;
+    try {
+        return JSON.parse(rawInfo);
+    } catch {
+        return {};
+    }
+}
+
+function normalizeMoney(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 0;
+    return Number(number.toFixed(2));
+}
+
+function getProductDiscountPercentage(commissionInfo) {
+    const percentage = parseFloat(commissionInfo?.discount || 0);
+    return Number.isFinite(percentage) && percentage > 0 ? percentage : 0;
+}
+
+function getGoogerCommissionPercentage(commissionInfo) {
+    const percentage = parseFloat(
+        commissionInfo?.googer_commission
+        ?? commissionInfo?.percentage
+        ?? 0
+    );
+    return Number.isFinite(percentage) && percentage > 0 ? percentage : 0;
+}
+
+function calculateDiscountedProductAmount(item, quantity = 1) {
+    const listedPrice = parseFloat(item?.promo_price || item?.price || 0);
+    const safeQuantity = Number.isFinite(Number(quantity)) && Number(quantity) > 0 ? Number(quantity) : 1;
+    const commissionInfo = parseCommissionInfo(item?.commission_info);
+    const discountPct = getProductDiscountPercentage(commissionInfo);
+    const productAmount = listedPrice * safeQuantity;
+    const discountAmount = (productAmount * discountPct) / 100;
+
+    return {
+        listedProductAmount: normalizeMoney(productAmount),
+        discountedProductAmount: normalizeMoney(Math.max(0, productAmount - discountAmount)),
+        discountAmount: normalizeMoney(discountAmount),
+        discountPct,
+    };
 }
 
 async function adjustOrderItemStock(client, marketItem, orderLike, direction = 'decrease') {
@@ -267,7 +340,7 @@ async function refundCancelledOrder(client, order) {
         if (commRes.rows.length > 0) {
             const commAmount = parseFloat(commRes.rows[0].amount || 0);
             const commStatus = String(commRes.rows[0].status || '').toLowerCase();
-            if (commStatus !== 'cancelled' && commStatus !== 'completed') {
+            if (!['cancelled', 'completed', 'refunded'].includes(commStatus)) {
                 await client.query(
                     'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
                     [commAmount, order.seller_id]
@@ -282,7 +355,7 @@ async function refundCancelledOrder(client, order) {
         if (discRes.rows.length > 0) {
             const discAmount = parseFloat(discRes.rows[0].amount || 0);
             const discountStatus = String(discRes.rows[0].status || '').toLowerCase();
-            if (discountStatus === 'cancelled') return;
+            if (['cancelled', 'refunded'].includes(discountStatus)) return;
             if (order.payment_method === 'wallet_manual') {
                 await client.query(
                     'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
@@ -360,6 +433,43 @@ async function validateManualPaymentHoldTransfer(client, { buyerId, sellerId, tr
     return transfer;
 }
 
+async function validateWalletPaymentHoldTransfer(client, { buyerId, transferId, expectedAmount }) {
+    if (!transferId) {
+        throw new Error('Googer payment transaction is required');
+    }
+
+    const normalizedTransferId = String(transferId).trim();
+    if (!/^\d+$/.test(normalizedTransferId)) {
+        throw new Error('Invalid Googer payment transaction');
+    }
+
+    const transferRes = await client.query(
+        `SELECT *
+         FROM wallet_transfers
+         WHERE id = $1
+           AND sender_id = $2
+           AND receiver_id = $2
+           AND type = 'order_hold'
+           AND status = 'pending'
+         FOR UPDATE`,
+        [normalizedTransferId, buyerId]
+    );
+
+    if (transferRes.rows.length === 0) {
+        throw new Error('Googer payment hold transaction not found');
+    }
+
+    const transfer = transferRes.rows[0];
+    const heldAmount = parseFloat(transfer.amount || 0);
+    const requiredAmount = parseFloat(expectedAmount || 0);
+
+    if (heldAmount.toFixed(2) !== requiredAmount.toFixed(2)) {
+        throw new Error(`Googer payment hold amount mismatch. Required: R ${requiredAmount.toFixed(2)}, Found: R ${heldAmount.toFixed(2)}`);
+    }
+
+    return transfer;
+}
+
 async function stakeSellerDiscount(client, { sellerId, buyerId, itemId, quantity, notePrefix, isManualPayment }) {
     const itemRes = await client.query('SELECT price, promo_price, commission_info FROM market WHERE id = $1', [itemId]);
     if (itemRes.rows.length === 0) {
@@ -367,17 +477,8 @@ async function stakeSellerDiscount(client, { sellerId, buyerId, itemId, quantity
     }
 
     const item = itemRes.rows[0];
-    const listedPrice = parseFloat(item.promo_price || item.price || 0);
-
-    let discountPct = 0;
-    try {
-        const cInfo = typeof item.commission_info === 'string' ? JSON.parse(item.commission_info) : item.commission_info;
-        discountPct = parseFloat(cInfo?.discount || '0');
-    } catch (error) {
-        discountPct = 0;
-    }
-
-    const totalDiscountAmount = (listedPrice * discountPct / 100) * quantity;
+    const { discountAmount } = calculateDiscountedProductAmount(item, quantity);
+    const totalDiscountAmount = discountAmount;
     if (totalDiscountAmount <= 0) {
         return null;
     }
@@ -386,7 +487,8 @@ async function stakeSellerDiscount(client, { sellerId, buyerId, itemId, quantity
     const sellerBalance = parseFloat(sellerRes.rows[0]?.wallet_balance || 0);
 
     if (sellerBalance < totalDiscountAmount) {
-        throw new Error(`Seller has insufficient balance to stake the discount for item ${itemId}.`);
+        console.warn(`[orders] Seller ${sellerId} has insufficient balance to stake discount for item ${itemId}. Required=${totalDiscountAmount.toFixed(2)}, balance=${sellerBalance.toFixed(2)}. Continuing order without seller discount stake.`);
+        return null;
     }
 
     if (isManualPayment) {
@@ -411,19 +513,73 @@ async function stakeSellerDiscount(client, { sellerId, buyerId, itemId, quantity
     return discountTx.rows[0].id;
 }
 
+async function getOrderGoogerCommission(client, order) {
+    const itemRes = await client.query('SELECT price, promo_price, commission_info FROM market WHERE id = $1', [order.item_id]);
+    const item = itemRes.rows[0] || {};
+    const info = parseCommissionInfo(item.commission_info);
+    const commissionPercentage = getGoogerCommissionPercentage(info);
+
+    if (!Number.isFinite(commissionPercentage) || commissionPercentage <= 0) {
+        return { percentage: 0, amount: 0 };
+    }
+
+    const productAmount = parseFloat(order.total_price || 0);
+    const commissionBase = Math.max(0, productAmount);
+    const amount = normalizeMoney((commissionBase * commissionPercentage) / 100);
+    return {
+        percentage: commissionPercentage,
+        amount: Number.isFinite(amount) && amount > 0 ? amount : 0,
+        baseAmount: normalizeMoney(commissionBase),
+    };
+}
+
+async function getOrderProductDiscount(client, order) {
+    const itemRes = await client.query('SELECT price, promo_price, commission_info FROM market WHERE id = $1', [order.item_id]);
+    const item = itemRes.rows[0] || {};
+    const quantity = parseFloat(order.quantity || 1);
+    const { discountAmount, discountPct } = calculateDiscountedProductAmount(item, quantity);
+
+    return {
+        percentage: discountPct,
+        amount: discountAmount,
+    };
+}
+
+async function completeWalletTransferIfGroupSettled(client, transferId, currentOrderId) {
+    if (!transferId) return;
+
+    const activeSiblings = await client.query(
+        `SELECT 1
+         FROM orders
+         WHERE wallet_transfer_id = $1
+           AND id <> $2
+           AND status NOT IN ('received', 'cancelled', 'returned', 'rejected')
+         LIMIT 1`,
+        [transferId, currentOrderId]
+    );
+
+    if (activeSiblings.rows.length === 0) {
+        await client.query("UPDATE wallet_transfers SET status = 'completed' WHERE id = $1", [transferId]);
+    }
+}
+
 async function finalizeReceivedOrder(client, order) {
+    let orderAlreadyFinalized = false;
+    const googerUserId = await resolveGoogerMainWalletUserId(client);
+    const orderGrossAmount = Number((
+        parseFloat(order.total_price || 0) + parseFloat(order.shipping_fee || 0)
+    ).toFixed(2));
+    const productCommission = await getOrderGoogerCommission(client, order);
+    const productDiscount = await getOrderProductDiscount(client, order);
+    let discountAlreadyTakenFromSeller = false;
+    let discountAmountForBuyer = productDiscount.amount;
+
     if (order.wallet_transfer_id) {
         const holdTxRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.wallet_transfer_id]);
         const holdStatus = String(holdTxRes.rows[0]?.status || '').toLowerCase();
         if (holdStatus === 'completed' || holdStatus === 'cancelled') {
-            return;
+            orderAlreadyFinalized = true;
         }
-        const totalReleased = holdTxRes.rows.length > 0
-            ? parseFloat(holdTxRes.rows[0].amount || 0)
-            : (parseFloat(order.total_price || 0) + parseFloat(order.shipping_fee || 0));
-        await client.query('UPDATE users SET hold_balance = hold_balance - $1 WHERE id = $2', [totalReleased, order.buyer_id]);
-        await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [totalReleased, order.seller_id]);
-        await client.query("UPDATE wallet_transfers SET status = 'completed' WHERE id = $1", [order.wallet_transfer_id]);
     }
 
     if (order.seller_commission_transfer_id) {
@@ -431,29 +587,90 @@ async function finalizeReceivedOrder(client, order) {
         if (commRes.rows.length > 0) {
             const commAmount = parseFloat(commRes.rows[0].amount || 0);
             const commStatus = String(commRes.rows[0].status || '').toLowerCase();
-            if (commStatus !== 'completed' && commStatus !== 'cancelled') {
-                await client.query('UPDATE users SET hold_balance = hold_balance - $1 WHERE id = $2', [commAmount, order.seller_id]);
-                await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = 1', [commAmount]);
-                await client.query("UPDATE wallet_transfers SET status = 'completed', receiver_id = 1 WHERE id = $1", [order.seller_commission_transfer_id]);
+            if (!['completed', 'cancelled', 'refunded'].includes(commStatus)) {
+                await client.query(
+                    'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1), wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
+                    [commAmount, order.seller_id]
+                );
+                await client.query("UPDATE wallet_transfers SET status = 'refunded', receiver_id = sender_id WHERE id = $1", [order.seller_commission_transfer_id]);
             }
         }
     }
 
-    if (order.seller_discount_transfer_id) {
-        const discRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_discount_transfer_id]);
-        if (discRes.rows.length > 0) {
-            const discAmount = parseFloat(discRes.rows[0].amount || 0);
-            const discountStatus = String(discRes.rows[0].status || '').toLowerCase();
-
-            if (order.payment_method === 'wallet_manual') {
-                await client.query('UPDATE users SET hold_balance = hold_balance - $1 WHERE id = $2', [discAmount, order.seller_id]);
-                if (discountStatus !== 'completed') {
-                    await client.query("UPDATE wallet_transfers SET status = 'completed' WHERE id = $1", [order.seller_discount_transfer_id]);
+    if (!orderAlreadyFinalized && order.wallet_transfer_id) {
+        if (order.seller_discount_transfer_id) {
+            const discRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_discount_transfer_id]);
+            if (discRes.rows.length > 0) {
+                const discAmount = parseFloat(discRes.rows[0].amount || 0);
+                const discountStatus = String(discRes.rows[0].status || '').toLowerCase();
+                if (!['cancelled', 'refunded'].includes(discountStatus) && discAmount > 0) {
+                    discountAlreadyTakenFromSeller = true;
+                    discountAmountForBuyer = discAmount;
+                    if (order.payment_method === 'wallet_manual' || discountStatus === 'pending') {
+                        await client.query(
+                            'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2',
+                            [discAmount, order.seller_id]
+                        );
+                    }
+                    await client.query("UPDATE wallet_transfers SET status = 'completed', receiver_id = $2 WHERE id = $1", [order.seller_discount_transfer_id, order.buyer_id]);
                 }
-            } else if (discountStatus === 'pending') {
-                await client.query("UPDATE wallet_transfers SET status = 'completed' WHERE id = $1", [order.seller_discount_transfer_id]);
             }
         }
+
+        const sellerDiscountCharge = discountAlreadyTakenFromSeller ? 0 : discountAmountForBuyer;
+        const sellerNetAmount = Math.max(0, orderGrossAmount - productCommission.amount - sellerDiscountCharge);
+
+        await client.query('UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2', [orderGrossAmount, order.buyer_id]);
+
+        if (sellerNetAmount > 0) {
+            await client.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [sellerNetAmount, order.seller_id]);
+        }
+
+        if (discountAmountForBuyer > 0) {
+            await client.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [discountAmountForBuyer, order.buyer_id]);
+
+            if (!discountAlreadyTakenFromSeller) {
+                await client.query(
+                    `INSERT INTO wallet_transfers
+                        (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, 'discount_refund', 'completed', 0, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                    [
+                        order.seller_id,
+                        order.buyer_id,
+                        discountAmountForBuyer,
+                        `Product discount refund for Order Item #${order.item_id}`,
+                        productDiscount.percentage,
+                    ]
+                );
+            }
+        }
+
+        if (productCommission.amount > 0) {
+            await client.query(
+                `INSERT INTO wallet_transfers
+                    (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, 'commission_hold', 'accepted', $3, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                [
+                    order.seller_id,
+                    googerUserId,
+                    productCommission.amount,
+                    `Googer commission for Order Item #${order.item_id}`,
+                    productCommission.percentage,
+                ]
+            );
+        }
+        await completeWalletTransferIfGroupSettled(client, order.wallet_transfer_id, order.id);
+    }
+
+    if (!orderAlreadyFinalized) {
+        const productAmount = parseFloat(order.total_price || 0);
+        await distributeReferralCommission(client, {
+            buyerId: order.buyer_id,
+            grossAmount: productAmount,
+            sourceType: 'product',
+            sourceId: order.id,
+            description: `Product order #${order.order_number || order.id}`,
+        });
     }
 }
 
@@ -518,10 +735,8 @@ exports.createOrder = async (req, res) => {
             const buyerRes = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [buyer_id]);
             const buyerBalance = parseFloat(buyerRes.rows[0].wallet_balance || 0);
             
-            // Base price the buyer pays is the LISTED price (promo_price || price)
-            const listedPrice = parseFloat(item.promo_price || item.price || 0);
             const shipping = parseFloat(req.body.shipping_fee || 0);
-            const totalRequired = (listedPrice * quantity) + shipping;
+            const totalRequired = (parseFloat(item.promo_price || item.price || 0) * quantity) + shipping;
 
             if (buyerBalance < totalRequired) {
                 await client.query('ROLLBACK');
@@ -546,9 +761,8 @@ exports.createOrder = async (req, res) => {
         }
 
         if (isManualWalletPayment) {
-            const listedPrice = parseFloat(item.promo_price || item.price || 0);
             const shipping = parseFloat(req.body.shipping_fee || 0);
-            const totalRequired = (listedPrice * quantity) + shipping;
+            const totalRequired = (parseFloat(item.promo_price || item.price || 0) * quantity) + shipping;
             const validatedHold = await validateManualPaymentHoldTransfer(client, {
                 buyerId: buyer_id,
                 sellerId: seller_id,
@@ -559,7 +773,7 @@ exports.createOrder = async (req, res) => {
         }
 
         // 4. Handle Seller Commission Hold (ALWAYS)
-        const commInfo = typeof item.commission_info === 'string' ? JSON.parse(item.commission_info) : item.commission_info;
+        const commInfo = parseCommissionInfo(item.commission_info);
         const commissionPercentage = parseFloat(commInfo?.percentage || 0);
         const commissionAmount = (parseFloat(total_price) * commissionPercentage) / 100;
         let seller_commission_transfer_id = null;
@@ -883,6 +1097,7 @@ exports.updateOrderStatus = async (req, res) => {
         res.status(200).json({ success: true, data: updated.rows[0] });
     } catch (error) {
         await client.query('ROLLBACK');
+        console.error('updateOrderStatus Error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
     } finally {
         client.release();
@@ -903,13 +1118,21 @@ exports.createBulkOrder = async (req, res) => {
             let totalRequired = 0;
             // Pre-calculate to ensure we don't trust the front-end total_price
             for (const itemData of items) {
-                const itemRes = await client.query('SELECT price, promo_price FROM market WHERE id = $1', [itemData.item_id]);
+                const itemRes = await client.query('SELECT price, promo_price, commission_info FROM market WHERE id = $1', [itemData.item_id]);
                 if (itemRes.rows.length > 0) {
                     const dbListedPrice = parseFloat(itemRes.rows[0].promo_price || itemRes.rows[0].price || 0);
                     totalRequired += (dbListedPrice * (itemData.quantity || 1)) + (parseFloat(itemData.shipping_fee || 0));
                 }
             }
 
+            if (wallet_transfer_id) {
+                const validatedHold = await validateWalletPaymentHoldTransfer(client, {
+                    buyerId: buyer_id,
+                    transferId: wallet_transfer_id,
+                    expectedAmount: totalRequired,
+                });
+                req.wallet_transfer_id_master = validatedHold.id;
+            } else {
             // 2. Lock buyer and check balance
             const buyerRes = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [buyer_id]);
             const buyerBalance = parseFloat(buyerRes.rows[0].wallet_balance || 0);
@@ -938,6 +1161,7 @@ exports.createBulkOrder = async (req, res) => {
             
             // Set the master transfer ID to be used by all items in this group
             req.wallet_transfer_id_master = holdTx.rows[0].id;
+            }
         }
 
         if (payment_method === 'wallet_manual') {
@@ -945,7 +1169,7 @@ exports.createBulkOrder = async (req, res) => {
             let expectedSellerId = null;
 
             for (const itemData of items) {
-                const itemRes = await client.query('SELECT user_id, price, promo_price FROM market WHERE id = $1', [itemData.item_id]);
+                const itemRes = await client.query('SELECT user_id, price, promo_price, commission_info FROM market WHERE id = $1', [itemData.item_id]);
                 if (itemRes.rows.length === 0) {
                     await client.query('ROLLBACK');
                     return res.status(404).json({ success: false, message: `Item ${itemData.item_id} not found` });
@@ -1007,7 +1231,7 @@ exports.createBulkOrder = async (req, res) => {
             const seller_id = item.user_id;
 
             // Handle Seller Commission Hold
-            const commInfo = typeof item.commission_info === 'string' ? JSON.parse(item.commission_info) : item.commission_info;
+            const commInfo = parseCommissionInfo(item.commission_info);
             const commissionPercentage = parseFloat(commInfo?.percentage || 0);
             const commissionAmount = (parseFloat(total_price) * commissionPercentage) / 100;
             let seller_commission_transfer_id = null;
@@ -1030,7 +1254,6 @@ exports.createBulkOrder = async (req, res) => {
                 }
             }
 
-            // 3.5 Calculate and Stake Seller Discount (NEW RULE)
             let seller_discount_transfer_id = null;
             try {
                 seller_discount_transfer_id = await stakeSellerDiscount(client, {
