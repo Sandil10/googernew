@@ -35,6 +35,17 @@ const MANUAL_PAYMENT_INTENT_STORAGE_KEY = 'googer-manual-payment-intent';
 const GOOGER_PAYMENT_INTENT_STORAGE_KEY = 'googer-payment-intent';
 const MANUAL_PAYMENT_RESET_EVENT = 'googer-manual-payment-reset';
 
+const getSellerPublicGoogerId = (product: any) => {
+  const value = product?.owner_public_user_id
+    || product?.owner_user_id
+    || product?.user?.user_id
+    || product?.seller_user_id
+    || product?.seller_googer_id;
+  if (!value) return '';
+  const digits = String(value).replace(/\D/g, '');
+  return digits ? digits.padStart(6, '0').slice(-6) : String(value);
+};
+
 export default function CartSidebar() {
   const { isCartOpen, setIsCartOpen, isManualPaymentCartLocked, setIsManualPaymentCartLocked, isGoogerPaymentCartLocked, setIsGoogerPaymentCartLocked, cartItems, updateQuantity, removeFromCart, clearCart, cartTotal, cartCount, toggleSelection, toggleAllSelection, selectedTotal, originalSelectedTotal, totalDiscount, selectedCount, isAllSelected, deliveryTotal, setUserCountry, isItemAvailable, userCountry, savedAddress, setSavedAddress } = useCart();
   const router = useRouter();
@@ -251,7 +262,7 @@ export default function CartSidebar() {
 
       const readableIds = productsData
         .filter((product): product is any => product !== null)
-        .map(product => product.owner_user_id || product.user_id)
+        .map(product => getSellerPublicGoogerId(product))
         .filter(Boolean)
         .map(value => String(value));
 
@@ -266,7 +277,7 @@ export default function CartSidebar() {
         const refreshedReadableIds: Record<number, string> = {};
         productsData.forEach((product) => {
           if (!product) return;
-          const readableSellerId = product.owner_user_id || product.user_id;
+          const readableSellerId = getSellerPublicGoogerId(product);
           if (readableSellerId) {
             refreshedReadableIds[product.id] = String(readableSellerId);
           }
@@ -654,7 +665,7 @@ export default function CartSidebar() {
           try { methods = JSON.parse(methods); } catch { methods = ['wallet']; }
         }
         newAllowedMethods[p.id] = Array.isArray(methods) ? methods : ['wallet'];
-        const readableSellerId = p.owner_user_id || p.user_id;
+        const readableSellerId = getSellerPublicGoogerId(p);
         if (readableSellerId) {
           nextSellerReadableIds[p.id] = String(readableSellerId);
         }
@@ -1335,12 +1346,23 @@ export default function CartSidebar() {
                                                 return;
                                               }
                                               const parsedTransferId = manualTransactionId.trim();
-                                              if (!/^\d{10}$/.test(parsedTransferId)) {
+                                              if (!/^[a-zA-Z0-9]{6,20}$/.test(parsedTransferId)) {
                                                 alert('Please enter a valid manual transaction ID.');
                                                 return;
                                               }
-                                              setPendingManualVerifyId(parsedTransferId);
-                                              setShowManualVerifyConfirm(true);
+                                              try {
+                                                const verification = await walletService.verifyManualPaymentHold({
+                                                  transactionId: parsedTransferId,
+                                                  sellerId: manualPaymentSellerId || '',
+                                                  amount: payableTotal,
+                                                });
+                                                const realTransferId = String(verification.transferId || parsedTransferId);
+                                                setPendingManualVerifyId(realTransferId);
+                                                updateManualPaymentIntentTransactionId(parsedTransferId, realTransferId);
+                                                setShowManualVerifyConfirm(true);
+                                              } catch (error: any) {
+                                                alert(error?.message || 'Manual payment hold transaction not found');
+                                              }
                                             }}
                                             className="w-auto px-6 py-2 bg-red-600 text-white rounded-xl text-[9px] font-black uppercase tracking-[0.16em] hover:bg-red-500 transition-all active:scale-95 shadow-xl shadow-red-500/20"
                                           >
@@ -1665,7 +1687,7 @@ export default function CartSidebar() {
                   if (!pendingManualVerifyId) return;
                   setManualPaymentVerifiedTransferId(pendingManualVerifyId);
                   if (isManualPaymentFlowLocked) {
-                    updateManualPaymentIntentTransactionId(pendingManualVerifyId, pendingManualVerifyId);
+                    updateManualPaymentIntentTransactionId(manualTransactionId.trim(), pendingManualVerifyId);
                   }
                   setShowManualVerifyConfirm(false);
                   setPendingManualVerifyId(null);

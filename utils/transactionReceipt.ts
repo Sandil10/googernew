@@ -47,6 +47,9 @@ const formatManualPaymentDisplayTransactionId = (value: string | number | undefi
 
 export const formatDisplayTransactionId = (value: string | number | undefined, transaction?: any) => {
     if (isManualPaymentTransaction(transaction)) {
+        if (transaction?.transaction_id) {
+            return String(transaction.transaction_id);
+        }
         return formatManualPaymentDisplayTransactionId(value);
     }
 

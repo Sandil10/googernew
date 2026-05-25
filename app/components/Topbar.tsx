@@ -90,6 +90,11 @@ export default function Topbar() {
         return `googer-chat-seen-notifications-${userId}`;
     };
 
+    const getTopbarNotificationsKey = (userId?: number | string | null) => {
+        if (!userId) return null;
+        return `googer-topbar-notifications-${userId}`;
+    };
+
     const markChatNotificationSeen = (messageId?: number | string | null) => {
         if (!user?.id || !messageId || typeof window === "undefined") return;
         const nextIds = Array.from(new Set([...seenChatNotificationIds.map(String), String(messageId)]));
@@ -101,12 +106,31 @@ export default function Topbar() {
     };
 
     useEffect(() => {
+        if (!user?.id || typeof window === "undefined") return;
+        const storageKey = getTopbarNotificationsKey(user.id);
+        if (!storageKey) return;
+        try {
+            const stored = JSON.parse(window.localStorage.getItem(storageKey) || "[]");
+            setNotifications(Array.isArray(stored) ? stored : []);
+        } catch {
+            setNotifications([]);
+        }
+    }, [user?.id]);
+
+    useEffect(() => {
         const handleAddNotification = (e: any) => {
-            setNotifications(prev => [e.detail, ...prev]);
+            setNotifications(prev => {
+                const next = [e.detail, ...prev.filter((item) => item?.id !== e.detail?.id)].slice(0, 30);
+                if (user?.id && typeof window !== "undefined") {
+                    const storageKey = getTopbarNotificationsKey(user.id);
+                    if (storageKey) window.localStorage.setItem(storageKey, JSON.stringify(next));
+                }
+                return next;
+            });
         };
         window.addEventListener('add-notification', handleAddNotification);
         return () => window.removeEventListener('add-notification', handleAddNotification);
-    }, []);
+    }, [user?.id]);
 
     useEffect(() => {
         if (!user?.id || typeof window === "undefined") return;
@@ -399,7 +423,13 @@ export default function Topbar() {
                                     <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Notifications</h3>
                                     {notifications.length > 0 && (
                                         <button
-                                            onClick={() => setNotifications([])}
+                                            onClick={() => {
+                                                setNotifications([]);
+                                                if (user?.id && typeof window !== "undefined") {
+                                                    const storageKey = getTopbarNotificationsKey(user.id);
+                                                    if (storageKey) window.localStorage.setItem(storageKey, "[]");
+                                                }
+                                            }}
                                             className="text-[9px] font-bold text-blue-400 hover:text-blue-300 transition-colors uppercase"
                                         >
                                             Clear All

@@ -33,6 +33,28 @@ function formatManualPaymentDisplayTransactionId(value) {
     return digitsOnly.slice(0, 10).padEnd(10, '0');
 }
 
+function formatGenericDisplayTransactionId(value) {
+    const normalized = String(value ?? '').replace(/[^a-zA-Z0-9]/g, '').trim();
+    if (!normalized) return 'G35hfSj5g7';
+
+    const body = normalized.replace(/^[gG]/, '');
+    if (body && /[A-Za-z]/.test(body) && /\d/.test(body)) {
+        return `G${body}`;
+    }
+
+    const seed = body || '0';
+    const hashedPrefix = encodeBase62(hashString(`googer:${seed}`));
+    const hashedSuffix = encodeBase62(hashString(`wallet:${seed}`));
+    let mixedBody = `${hashedPrefix}${seed}${hashedSuffix}`.replace(/[^a-zA-Z0-9]/g, '');
+
+    if (!/[A-Za-z]/.test(mixedBody)) mixedBody += 'hfSj';
+    if (!/\d/.test(mixedBody)) mixedBody += '357';
+
+    mixedBody = mixedBody.slice(0, 9).padEnd(9, '7');
+
+    return `G${mixedBody}`;
+}
+
 async function getTransferDisplayData(client, transferId) {
     const result = await client.query(
         `SELECT t.*,
@@ -333,6 +355,81 @@ exports.initiateTransferRequest = async (req, res) => {
         await client.query('ROLLBACK');
         console.error('Initiate transfer error:', error);
         res.status(500).json({ success: false, message: 'Server error initiating transfer' });
+    } finally {
+        client.release();
+    }
+};
+
+exports.verifyManualPaymentHold = async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const { transactionId, sellerId, amount } = req.body || {};
+        const buyerId = req.user.id;
+        const normalizedTransactionId = String(transactionId || '').trim();
+        const normalizedSellerId = String(sellerId || '').trim();
+        const expectedAmount = parseFloat(amount || 0);
+
+        if (!normalizedTransactionId || !normalizedSellerId || !Number.isFinite(expectedAmount) || expectedAmount <= 0) {
+            return res.status(400).json({ success: false, message: 'Invalid manual payment verification details' });
+        }
+
+        const sellerResult = await client.query(
+            `SELECT id, user_id, username
+             FROM users
+             WHERE user_id = $1 OR id::text = $1
+             ORDER BY CASE WHEN user_id = $1 THEN 0 ELSE 1 END
+             LIMIT 1`,
+            [normalizedSellerId]
+        );
+
+        if (sellerResult.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Seller not found for manual payment' });
+        }
+
+        const seller = sellerResult.rows[0];
+        const transferResult = await client.query(
+            `SELECT wt.*
+             FROM wallet_transfers wt
+             WHERE wt.sender_id = $1
+               AND wt.receiver_id = $2
+               AND wt.type = 'order_hold'
+               AND wt.status = 'pending'
+             ORDER BY wt.id DESC
+             LIMIT 50`,
+            [buyerId, seller.id]
+        );
+
+        const transfer = transferResult.rows.find((candidate) => {
+            const manualDisplayId = formatManualPaymentDisplayTransactionId(candidate.id);
+            return String(candidate.id) === normalizedTransactionId
+                || manualDisplayId === normalizedTransactionId
+                || formatManualPaymentDisplayTransactionId(manualDisplayId) === normalizedTransactionId
+                || formatGenericDisplayTransactionId(candidate.id).toLowerCase() === normalizedTransactionId.toLowerCase();
+        });
+
+        if (!transfer) {
+            return res.status(404).json({ success: false, message: 'Manual payment hold transaction not found' });
+        }
+
+        const heldAmount = parseFloat(transfer.amount || 0);
+        if (heldAmount.toFixed(2) !== expectedAmount.toFixed(2)) {
+            return res.status(400).json({
+                success: false,
+                message: `Manual payment hold amount mismatch. Required: R ${expectedAmount.toFixed(2)}, Found: R ${heldAmount.toFixed(2)}`,
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            transferId: transfer.id,
+            displayTransactionId: formatManualPaymentDisplayTransactionId(transfer.id),
+            sellerId: seller.user_id,
+            sellerDbId: seller.id,
+            amount: heldAmount,
+        });
+    } catch (error) {
+        console.error('Verify manual payment hold error:', error);
+        return res.status(500).json({ success: false, message: 'Server error verifying manual payment' });
     } finally {
         client.release();
     }

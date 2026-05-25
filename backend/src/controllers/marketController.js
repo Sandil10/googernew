@@ -255,11 +255,12 @@ const attachCurrentUser = (row) => {
         started_at: row.started_at || row.active_start_time ? new Date(row.started_at || row.active_start_time).toISOString() : null,
         username,
         owner_username: username,
+        owner_public_user_id: row.owner_public_user_id || row.owner_user_id || null,
         profile_picture: profilePicture,
         share_code: row.product_code || String(row.id || ''),
         user: {
             id: row.user_id,
-            user_id: row.owner_user_id,
+            user_id: row.owner_public_user_id || row.owner_user_id,
             username,
             profile_picture: profilePicture,
         },
@@ -2704,7 +2705,7 @@ exports.getMarketItemById = async (req, res) => {
         if (!isNaN(numericId)) {
             // Primary lookup by numeric id
             result = await pool.query(
-                `SELECT m.*, u.username as owner_username, u.profile_picture 
+                `SELECT m.*, u.username as owner_username, u.profile_picture, u.user_id AS owner_public_user_id
                  FROM market m 
                  LEFT JOIN users u ON m.user_id = u.id 
                  WHERE m.id = $1`,
@@ -2715,7 +2716,7 @@ exports.getMarketItemById = async (req, res) => {
         // Fallback: lookup by product_code (alphanumeric share codes)
         if (marketHasProductCode && (!result || result.rows.length === 0)) {
             result = await pool.query(
-                `SELECT m.*, u.username as owner_username, u.profile_picture 
+                `SELECT m.*, u.username as owner_username, u.profile_picture, u.user_id AS owner_public_user_id
                  FROM market m 
                  LEFT JOIN users u ON m.user_id = u.id 
                  WHERE m.product_code = $1`,

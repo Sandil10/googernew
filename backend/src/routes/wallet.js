@@ -8,6 +8,7 @@ router.use(authMiddleware);
 
 router.get('/search-users', walletController.searchUsers);
 router.post('/request', walletController.initiateTransferRequest);
+router.post('/verify-manual-payment-hold', walletController.verifyManualPaymentHold);
 router.get('/pending-requests', walletController.getPendingRequests);
 router.post('/respond', walletController.respondToRequest);
 router.post('/cancel', walletController.cancelTransaction);

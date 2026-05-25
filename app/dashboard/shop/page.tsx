@@ -153,6 +153,114 @@ const formatOrderGroupDateTime = (value: any) => {
   })}`;
 };
 
+const getDeliveredDateTimeText = (order: any) => {
+  const deliveredAt = order?.delivered_at || order?.deliveredAt;
+  if (!deliveredAt) return "";
+  return `Delivered: ${formatOrderGroupDateTime(deliveredAt)}`;
+};
+
+const toFiniteNumber = (value: any, fallback = 0) => {
+  const parsed = parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const formatPercentValue = (value: number) => {
+  if (!Number.isFinite(value)) return "0";
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, "");
+};
+
+const getOrderCommissionInfo = (item: any) => {
+  const parsed = safeParse(item?.commission_info);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+};
+
+const getGoogerFeePercentage = (item: any) => {
+  const info = getOrderCommissionInfo(item);
+  return toFiniteNumber(info?.googer_commission ?? info?.googerCommission ?? info?.percentage, 0);
+};
+
+const getResaleCommissionPercentage = (item: any) => {
+  const info = getOrderCommissionInfo(item);
+  return toFiniteNumber(
+    info?.resell_percentage ?? info?.resell_commission ?? info?.reseller_commission ?? info?.resell_amount,
+    0
+  );
+};
+
+const getProductDiscountPercentage = (item: any) => {
+  const info = getOrderCommissionInfo(item);
+  return toFiniteNumber(info?.discount ?? info?.product_discount ?? info?.productDiscount, 0);
+};
+
+const getOrderMetadata = (item: any) => {
+  const parsed = safeParse(item?.shipping_address);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+};
+
+const isResellOrderItem = (item: any) => {
+  const metadata = getOrderMetadata(item);
+  const resellData = metadata?.resell || metadata?.resale || metadata?.reseller;
+  return Boolean(
+    item?.reseller_id ||
+    item?.reseller_user_id ||
+    item?.resell_user_id ||
+    item?.resale_user_id ||
+    item?.resold_by ||
+    item?.resell_id ||
+    item?.resell_code ||
+    item?.resell_ref ||
+    item?.reseller_googer_id ||
+    metadata?.reseller_id ||
+    metadata?.reseller_user_id ||
+    metadata?.resell_user_id ||
+    metadata?.resale_user_id ||
+    metadata?.resold_by ||
+    metadata?.resell_id ||
+    metadata?.resell_code ||
+    metadata?.resell_ref ||
+    metadata?.reseller_googer_id ||
+    (resellData && Object.keys(resellData).length > 0)
+  );
+};
+
+const summarizeSellerOrderFees = (items: any[]) => {
+  const productSubtotal = items.reduce((sum, item) => sum + toFiniteNumber(item?.total_price ?? item?.price, 0), 0);
+  const deliveryTotal = items.reduce((sum, item) => sum + toFiniteNumber(item?.shipping_fee, 0), 0);
+  const googerPercentages = items.map(getGoogerFeePercentage);
+  const discountPercentages = items.map(getProductDiscountPercentage);
+  const resellItems = items.filter(isResellOrderItem);
+  const resalePercentages = resellItems.map(getResaleCommissionPercentage);
+  const googerFee = items.reduce((sum, item) => {
+    const productAmount = toFiniteNumber(item?.total_price ?? item?.price, 0);
+    return sum + (productAmount * getGoogerFeePercentage(item)) / 100;
+  }, 0);
+  const productDiscount = items.reduce((sum, item) => {
+    const productAmount = toFiniteNumber(item?.total_price ?? item?.price, 0);
+    return sum + (productAmount * getProductDiscountPercentage(item)) / 100;
+  }, 0);
+  const resaleCommission = resellItems.reduce((sum, item) => {
+    const productAmount = toFiniteNumber(item?.total_price ?? item?.price, 0);
+    return sum + (productAmount * getResaleCommissionPercentage(item)) / 100;
+  }, 0);
+  const percentLabel = (values: number[]) => {
+    if (values.length === 0) return "0%";
+    const unique = Array.from(new Set(values.map((value) => formatPercentValue(value))));
+    return unique.length === 1 ? `${unique[0]}%` : "Mixed";
+  };
+
+  return {
+    googerPercentLabel: percentLabel(googerPercentages),
+    discountPercentLabel: percentLabel(discountPercentages),
+    resalePercentLabel: percentLabel(resalePercentages),
+    googerFee,
+    productDiscount,
+    hasProductDiscount: productDiscount > 0,
+    resaleCommission,
+    hasResaleCommission: resellItems.length > 0 && resaleCommission > 0,
+    actualBalance: productSubtotal + deliveryTotal - googerFee - productDiscount - resaleCommission,
+  };
+};
+
 const getGoogleImageSourceUrl = (value: string) => {
   const url = getNormalizedUrl(value);
   if (!url) return "";
@@ -1324,15 +1432,37 @@ const isProfilePromoteItem = (item: any) => getCampaignType(item).toLowerCase() 
 export default function ShopPage() {
   const MARKET_FEED_HISTORY_KEY = "googer-market-feed-history-v2";
   const MARKET_FEED_LAST_ORDER_KEY = "googer-market-feed-last-order-v1";
+  const SHOP_VIEW_STATE_KEY = "googer-shop-view-state-v1";
+  const readStoredShopView = () => {
+    if (typeof window === "undefined") return null;
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(SHOP_VIEW_STATE_KEY) || "null");
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+  const storedShopView = typeof window !== "undefined" ? readStoredShopView() : null;
+  const validMainTabs = new Set(["market", "my-products", "orders"]);
+  const validListingTabs = new Set(["active", "all", "reviewing", "deleted"]);
+  const validOrderTabs = new Set(["all", "processing", "shipped", "delivered", "returns"]);
   const [selectedCategory, setSelectedCategory] = useState(""); // Filter state
   const [marketSearchQuery, setMarketSearchQuery] = useState("");
   const router = useRouter();
   const searchParams = useSearchParams();
   const [showFilters, setShowFilters] = useState(false);
-  const [activeTab, setActiveTab] = useState("market"); // market, my-products, orders
-  const [myListingsTab, setMyListingsTab] = useState("active");
-  const [myListingsSubTab, setMyListingsSubTab] = useState("all");
-  const [myOrdersTab, setMyOrdersTab] = useState("all");
+  const [activeTab, setActiveTab] = useState(() =>
+    validMainTabs.has(storedShopView?.activeTab) ? storedShopView.activeTab : "market"
+  ); // market, my-products, orders
+  const [myListingsTab, setMyListingsTab] = useState(() =>
+    validListingTabs.has(storedShopView?.myListingsTab) ? storedShopView.myListingsTab : "active"
+  );
+  const [myListingsSubTab, setMyListingsSubTab] = useState(() =>
+    validOrderTabs.has(storedShopView?.myListingsSubTab) ? storedShopView.myListingsSubTab : "all"
+  );
+  const [myOrdersTab, setMyOrdersTab] = useState(() =>
+    validOrderTabs.has(storedShopView?.myOrdersTab) ? storedShopView.myOrdersTab : "all"
+  );
   const [orderBadgeCounts, setOrderBadgeCounts] = useState({
     buyer: { all: 0, processing: 0, shipped: 0, total: 0 },
     seller: { all: 0, processing: 0, shipped: 0, total: 0 },
@@ -1383,7 +1513,10 @@ export default function ShopPage() {
   const [adVideoCoinEligibility, setAdVideoCoinEligibility] = useState<Record<string, boolean>>({});
   const [requiredAdWatchSeconds, setRequiredAdWatchSeconds] = useState(5);
   const [localLoadingId, setLocalLoadingId] = useState<number | null>(null);
-  const [ordersCurrentPage, setOrdersCurrentPage] = useState(1);
+  const [ordersCurrentPage, setOrdersCurrentPage] = useState(() => {
+    const page = Number(storedShopView?.ordersCurrentPage || 1);
+    return Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+  });
   const [selectedOrderIds, setSelectedOrderIds] = useState<number[]>([]);
   const [orderToCancel, setOrderToCancel] = useState<any>(null); // 'bulk' or item object
   const [orderToDeliver, setOrderToDeliver] = useState<any>(null); // State for delivery confirmation modal
@@ -1489,6 +1622,46 @@ export default function ShopPage() {
         }
         : { id: ownerId, username: user.username, profile_picture: user.profile_picture },
     };
+  };
+
+  const notifyCodAutoReceiveWindow = (items: any[], audience: "buyer" | "seller") => {
+    if (typeof window === "undefined" || !Array.isArray(items)) return;
+
+    const deliveredCodOrders = items.filter((item) =>
+      String(item?.status || "").toLowerCase() === "delivered" &&
+      String(item?.payment_method || "").toLowerCase() === "cod"
+    );
+    if (deliveredCodOrders.length === 0) return;
+
+    let seenIds: string[] = [];
+    const seenKey = `googer-cod-auto-receive-notifications-${audience}`;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(seenKey) || "[]");
+      seenIds = Array.isArray(stored) ? stored.map(String) : [];
+    } catch {
+      seenIds = [];
+    }
+
+    const nextSeen = new Set(seenIds);
+    deliveredCodOrders.slice(0, 5).forEach((item) => {
+      const notificationId = `cod-auto-receive-${audience}-${item.id}-${item.updated_at || item.status}`;
+      if (nextSeen.has(notificationId)) return;
+      nextSeen.add(notificationId);
+
+      window.dispatchEvent(new CustomEvent("add-notification", {
+        detail: {
+          id: notificationId,
+          type: "info",
+          title: audience === "buyer" ? "Receive confirmation needed" : "COD delivery waiting",
+          message: audience === "buyer"
+            ? `Please click Receive for order ${item.order_number || item.id} within 48 hours. If not, it will be completed automatically.`
+            : `Order ${item.order_number || item.id} is delivered. Buyer has 48 hours to click Receive before it auto-completes.`,
+          time: "Within 48 hours",
+        },
+      }));
+    });
+
+    window.localStorage.setItem(seenKey, JSON.stringify(Array.from(nextSeen).slice(-100)));
   };
 
   useEffect(() => {
@@ -2044,6 +2217,17 @@ export default function ShopPage() {
       setMyListingsTab('all');
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SHOP_VIEW_STATE_KEY, JSON.stringify({
+      activeTab,
+      myListingsTab,
+      myListingsSubTab,
+      myOrdersTab,
+      ordersCurrentPage,
+    }));
+  }, [activeTab, myListingsTab, myListingsSubTab, myOrdersTab, ordersCurrentPage]);
 
   useEffect(() => {
     if (selectedProduct?.id) {
@@ -3052,6 +3236,11 @@ export default function ShopPage() {
 
       if (requestId === productLoadRequestRef.current) {
         setProducts(finalData);
+        if (activeTab === "orders") {
+          notifyCodAutoReceiveWindow(finalData, "buyer");
+        } else if (activeTab === "my-products" && myListingsTab === "all") {
+          notifyCodAutoReceiveWindow(finalData, "seller");
+        }
       }
     } catch (e) {
       console.error("Failed to load products", e);
@@ -4187,6 +4376,11 @@ export default function ShopPage() {
                                     {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
                                   </span>
                                 </div>
+                                {(item.status === 'delivered' || item.status === 'received') && getDeliveredDateTimeText(item) && (
+                                  <span className="text-[7px] font-black uppercase tracking-[0.12em] text-blue-300/80 whitespace-nowrap">
+                                    {getDeliveredDateTimeText(item)}
+                                  </span>
+                                )}
                               </div>
                               {/* Seller Actions (Specific per item) */}
                               {activeTab === "my-products" && (
@@ -6145,6 +6339,11 @@ export default function ShopPage() {
                         || parseFloat(metadata?.delivery_charge || 0));
 
                       const final = Number(subtotal) + Number(delivery);
+                      const showSellerCompletedFees =
+                        activeTab === "my-products" &&
+                        myListingsTab === "all" &&
+                        viewingOrderGroup.every((item: any) => ["delivered", "received", "completed"].includes(String(item.status || "").toLowerCase()));
+                      const sellerFees = showSellerCompletedFees ? summarizeSellerOrderFees(viewingOrderGroup) : null;
 
                       return (
                         <>
@@ -6180,6 +6379,32 @@ export default function ShopPage() {
                               R {final.toFixed(2)}
                             </span>
                           </div>
+                          {sellerFees && (
+                            <div className="border-t border-white/5 pt-3 space-y-2">
+                              <div className="flex justify-between items-center text-[10px] uppercase font-black tracking-wider">
+                                <span className="text-white/40">Googer Fees - {sellerFees.googerPercentLabel}</span>
+                                <span className="text-red-400">- R {sellerFees.googerFee.toFixed(2)}</span>
+                              </div>
+                              {sellerFees.hasProductDiscount && (
+                                <div className="flex justify-between items-center text-[10px] uppercase font-black tracking-wider">
+                                  <span className="text-white/40">Product Discount - {sellerFees.discountPercentLabel}</span>
+                                  <span className="text-emerald-400">- R {sellerFees.productDiscount.toFixed(2)}</span>
+                                </div>
+                              )}
+                              {sellerFees.hasResaleCommission && (
+                                <div className="flex justify-between items-center text-[10px] uppercase font-black tracking-wider">
+                                  <span className="text-white/40">Resale Commission - {sellerFees.resalePercentLabel}</span>
+                                  <span className="text-amber-400">- R {sellerFees.resaleCommission.toFixed(2)}</span>
+                                </div>
+                              )}
+                              <div className="flex justify-between items-center border-t border-white/5 pt-2">
+                                <span className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.2em]">Your Item Balance</span>
+                                <span className="text-base font-black text-emerald-400 tracking-tighter italic">
+                                  R {sellerFees.actualBalance.toFixed(2)}
+                                </span>
+                              </div>
+                            </div>
+                          )}
                         </>
                       );
                     } catch (e) {

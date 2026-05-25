@@ -57,6 +57,17 @@ export const walletService = {
         return result;
     },
 
+    verifyManualPaymentHold: async (data: { transactionId: string; sellerId: string | number; amount: number }) => {
+        const response = await fetch(`${API_URL}/wallet/verify-manual-payment-hold`, {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify(data),
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(result?.message || 'Manual payment hold transaction not found');
+        return result;
+    },
+
     getPendingRequests: async () => {
         const response = await fetch(`${API_URL}/wallet/pending-requests`, {
             headers: getHeaders()

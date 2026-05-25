@@ -67,6 +67,20 @@ async function resolveGoogerMainWalletUserId(client) {
     return 1;
 }
 
+async function ensureOrderDeliveryTimestampColumn(client) {
+    await client.query(`
+        ALTER TABLE orders
+        ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP;
+    `);
+
+    await client.query(`
+        UPDATE orders
+        SET delivered_at = COALESCE(updated_at, created_at)
+        WHERE delivered_at IS NULL
+          AND status IN ('delivered', 'received')
+    `);
+}
+
 function parseVariants(rawVariants) {
     if (!rawVariants) return [];
     if (Array.isArray(rawVariants)) return rawVariants;
@@ -573,6 +587,7 @@ async function finalizeReceivedOrder(client, order) {
     const productDiscount = await getOrderProductDiscount(client, order);
     let discountAlreadyTakenFromSeller = false;
     let discountAmountForBuyer = productDiscount.amount;
+    let commissionSettledFromSellerHold = false;
 
     if (order.wallet_transfer_id) {
         const holdTxRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.wallet_transfer_id]);
@@ -588,16 +603,34 @@ async function finalizeReceivedOrder(client, order) {
             const commAmount = parseFloat(commRes.rows[0].amount || 0);
             const commStatus = String(commRes.rows[0].status || '').toLowerCase();
             if (!['completed', 'cancelled', 'refunded'].includes(commStatus)) {
-                await client.query(
-                    'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1), wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
-                    [commAmount, order.seller_id]
-                );
-                await client.query("UPDATE wallet_transfers SET status = 'refunded', receiver_id = sender_id WHERE id = $1", [order.seller_commission_transfer_id]);
+                if (order.payment_method === 'cod') {
+                    await client.query(
+                        'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2',
+                        [commAmount, order.seller_id]
+                    );
+                    await client.query(
+                        `UPDATE wallet_transfers
+                         SET status = 'accepted',
+                             receiver_id = $2,
+                             commission = $3,
+                             commission_percentage = $4,
+                             updated_at = CURRENT_TIMESTAMP
+                         WHERE id = $1`,
+                        [order.seller_commission_transfer_id, googerUserId, commAmount, productCommission.percentage]
+                    );
+                    commissionSettledFromSellerHold = true;
+                } else {
+                    await client.query(
+                        'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1), wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
+                        [commAmount, order.seller_id]
+                    );
+                    await client.query("UPDATE wallet_transfers SET status = 'refunded', receiver_id = sender_id WHERE id = $1", [order.seller_commission_transfer_id]);
+                }
             }
         }
     }
 
-    if (!orderAlreadyFinalized && order.wallet_transfer_id) {
+    if (!orderAlreadyFinalized) {
         if (order.seller_discount_transfer_id) {
             const discRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_discount_transfer_id]);
             if (discRes.rows.length > 0) {
@@ -617,16 +650,7 @@ async function finalizeReceivedOrder(client, order) {
             }
         }
 
-        const sellerDiscountCharge = discountAlreadyTakenFromSeller ? 0 : discountAmountForBuyer;
-        const sellerNetAmount = Math.max(0, orderGrossAmount - productCommission.amount - sellerDiscountCharge);
-
-        await client.query('UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2', [orderGrossAmount, order.buyer_id]);
-
-        if (sellerNetAmount > 0) {
-            await client.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [sellerNetAmount, order.seller_id]);
-        }
-
-        if (discountAmountForBuyer > 0) {
+        if (discountAmountForBuyer > 0 && (discountAlreadyTakenFromSeller || order.wallet_transfer_id)) {
             await client.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [discountAmountForBuyer, order.buyer_id]);
 
             if (!discountAlreadyTakenFromSeller) {
@@ -644,8 +668,20 @@ async function finalizeReceivedOrder(client, order) {
                 );
             }
         }
+    }
 
-        if (productCommission.amount > 0) {
+    if (!orderAlreadyFinalized && order.wallet_transfer_id) {
+
+        const sellerDiscountCharge = discountAlreadyTakenFromSeller ? 0 : discountAmountForBuyer;
+        const sellerNetAmount = Math.max(0, orderGrossAmount - productCommission.amount - sellerDiscountCharge);
+
+        await client.query('UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2', [orderGrossAmount, order.buyer_id]);
+
+        if (sellerNetAmount > 0) {
+            await client.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [sellerNetAmount, order.seller_id]);
+        }
+
+        if (productCommission.amount > 0 && !commissionSettledFromSellerHold) {
             await client.query(
                 `INSERT INTO wallet_transfers
                     (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
@@ -681,7 +717,7 @@ async function autoReceiveExpiredCodOrders(client, userId) {
          WHERE buyer_id = $1
            AND status = 'delivered'
            AND payment_method = 'cod'
-           AND updated_at <= CURRENT_TIMESTAMP - INTERVAL '7 days'
+           AND updated_at <= CURRENT_TIMESTAMP - INTERVAL '48 hours'
          FOR UPDATE`,
         [userId]
     );
@@ -774,13 +810,22 @@ exports.createOrder = async (req, res) => {
 
         // 4. Handle Seller Commission Hold (ALWAYS)
         const commInfo = parseCommissionInfo(item.commission_info);
-        const commissionPercentage = parseFloat(commInfo?.percentage || 0);
-        const commissionAmount = (parseFloat(total_price) * commissionPercentage) / 100;
+        const isCodPayment = (req.body.payment_method || 'wallet') === 'cod';
+        const commissionPercentage = isCodPayment
+            ? getGoogerCommissionPercentage(commInfo)
+            : parseFloat(commInfo?.percentage || 0);
+        const commissionProductAmount = parseFloat(item.promo_price || item.price || 0) * quantity;
+        const commissionAmount = normalizeMoney((commissionProductAmount * commissionPercentage) / 100);
         let seller_commission_transfer_id = null;
 
         if (commissionAmount > 0) {
             const sellerRes = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [seller_id]);
             const sellerBalance = parseFloat(sellerRes.rows[0].wallet_balance);
+
+            if (sellerBalance < commissionAmount && isCodPayment) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ success: false, message: `Seller has insufficient balance to hold Googer commission for item ${item_id}.` });
+            }
 
             if (sellerBalance >= commissionAmount) {
                 // Move from Seller balance to hold
@@ -857,6 +902,7 @@ exports.getOrderBadgeCounts = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        await ensureOrderDeliveryTimestampColumn(client);
         await autoReceiveExpiredCodOrders(client, req.user.id);
         await client.query('COMMIT');
 
@@ -915,12 +961,13 @@ exports.getBuyerOrders = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        await ensureOrderDeliveryTimestampColumn(client);
         await autoReceiveExpiredCodOrders(client, req.user.id);
         await client.query('COMMIT');
 
         const { status } = req.query;
         let query = `
-            SELECT o.*, m.title, m.image_url, m.category, u.username as seller_username,
+            SELECT o.*, m.title, m.image_url, m.category, m.commission_info, u.username as seller_username,
                    u.profile_picture as profile_picture
             FROM orders o
             JOIN market m ON o.item_id = m.id
@@ -955,12 +1002,13 @@ exports.getSellerOrders = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        await ensureOrderDeliveryTimestampColumn(client);
         await autoReceiveExpiredCodOrders(client, req.user.id);
         await client.query('COMMIT');
 
         const { status } = req.query;
         let query = `
-            SELECT o.*, m.title, m.image_url, m.category, bu.username as buyer_username,
+            SELECT o.*, m.title, m.image_url, m.category, m.commission_info, bu.username as buyer_username,
                    bu.profile_picture as profile_picture
             FROM orders o
             JOIN market m ON o.item_id = m.id
@@ -999,6 +1047,7 @@ exports.updateOrderStatus = async (req, res) => {
         const user_id = req.user.id;
 
         await client.query('BEGIN');
+        await ensureOrderDeliveryTimestampColumn(client);
 
         const orderRes = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id]);
         if (orderRes.rows.length === 0) {
@@ -1087,6 +1136,10 @@ exports.updateOrderStatus = async (req, res) => {
             `UPDATE orders 
              SET status = $1, 
                  report_status = COALESCE($2, report_status),
+                 delivered_at = CASE
+                     WHEN $1 = 'delivered' THEN CURRENT_TIMESTAMP
+                     ELSE delivered_at
+                 END,
                  updated_at = CURRENT_TIMESTAMP 
              WHERE id = $3 
              RETURNING *`,
@@ -1232,13 +1285,22 @@ exports.createBulkOrder = async (req, res) => {
 
             // Handle Seller Commission Hold
             const commInfo = parseCommissionInfo(item.commission_info);
-            const commissionPercentage = parseFloat(commInfo?.percentage || 0);
-            const commissionAmount = (parseFloat(total_price) * commissionPercentage) / 100;
+            const isCodPayment = (payment_method || 'wallet') === 'cod';
+            const commissionPercentage = isCodPayment
+                ? getGoogerCommissionPercentage(commInfo)
+                : parseFloat(commInfo?.percentage || 0);
+            const commissionProductAmount = parseFloat(item.promo_price || item.price || 0) * quantity;
+            const commissionAmount = normalizeMoney((commissionProductAmount * commissionPercentage) / 100);
             let seller_commission_transfer_id = null;
 
             if (commissionAmount > 0) {
                 const sellerRes = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [seller_id]);
                 const sellerBalance = parseFloat(sellerRes.rows[0].wallet_balance);
+
+                if (sellerBalance < commissionAmount && isCodPayment) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ success: false, message: `Seller of item ${item_id} has insufficient balance to hold Googer commission.` });
+                }
 
                 if (sellerBalance >= commissionAmount) {
                     await client.query(
@@ -1434,7 +1496,15 @@ exports.updateOrderGroupStatus = async (req, res) => {
             }
 
             const updated = await client.query(
-                'UPDATE orders SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+                `UPDATE orders
+                 SET status = $1,
+                     delivered_at = CASE
+                         WHEN $1 = 'delivered' THEN CURRENT_TIMESTAMP
+                         ELSE delivered_at
+                     END,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $2
+                 RETURNING *`,
                 [status, order.id]
             );
             updatedOrders.push(updated.rows[0]);
