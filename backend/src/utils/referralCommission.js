@@ -217,11 +217,15 @@ async function getReferralCommissionSettings(client) {
 async function updateReferralCommissionSettings(client, settings = {}) {
     await ensureReferralCommissionTables(client);
     const productPool = normalizePercentage(
-        settings.productPurchasePoolPercentage ?? settings.product_pool_percentage,
+        settings.productPurchasePoolPercentage ??
+            settings.product_purchase_pool_percentage ??
+            settings.product_pool_percentage,
         DEFAULT_PRODUCT_POOL_PERCENTAGE
     );
     const adPool = normalizePercentage(
-        settings.adPurchasePoolPercentage ?? settings.ad_pool_percentage,
+        settings.adPurchasePoolPercentage ??
+            settings.ad_purchase_pool_percentage ??
+            settings.ad_pool_percentage,
         DEFAULT_AD_POOL_PERCENTAGE
     );
 

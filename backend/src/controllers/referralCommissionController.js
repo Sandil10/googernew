@@ -10,7 +10,12 @@ exports.getSettings = async (req, res) => {
     const client = await pool.connect();
     try {
         const settings = await getReferralCommissionSettings(client);
-        return res.status(200).json({ success: true, settings });
+        const data = {
+            product_purchase_pool_percentage: settings.productPurchasePoolPercentage,
+            ad_purchase_pool_percentage: settings.adPurchasePoolPercentage,
+            ...settings,
+        };
+        return res.status(200).json({ success: true, settings, data });
     } catch (error) {
         console.error('[referralCommission] getSettings error:', error);
         return res.status(500).json({ success: false, message: 'Failed to load referral commission settings' });
@@ -25,7 +30,12 @@ exports.updateSettings = async (req, res) => {
         await client.query('BEGIN');
         const settings = await updateReferralCommissionSettings(client, req.body || {});
         await client.query('COMMIT');
-        return res.status(200).json({ success: true, settings });
+        const data = {
+            product_purchase_pool_percentage: settings.productPurchasePoolPercentage,
+            ad_purchase_pool_percentage: settings.adPurchasePoolPercentage,
+            ...settings,
+        };
+        return res.status(200).json({ success: true, settings, data });
     } catch (error) {
         await client.query('ROLLBACK').catch(() => {});
         console.error('[referralCommission] updateSettings error:', error);
@@ -44,7 +54,7 @@ exports.getLevels = async (req, res) => {
              FROM referral_level_settings
              ORDER BY sort_order ASC, level ASC`
         );
-        return res.status(200).json({ success: true, levels: result.rows });
+        return res.status(200).json({ success: true, levels: result.rows, data: result.rows });
     } catch (error) {
         console.error('[referralCommission] getLevels error:', error);
         return res.status(500).json({ success: false, message: 'Failed to load referral levels' });
@@ -86,7 +96,7 @@ exports.upsertLevel = async (req, res) => {
 
         await syncReferralRelationshipCommissionFields(client);
         await client.query('COMMIT');
-        return res.status(200).json({ success: true, level: result.rows[0] });
+        return res.status(200).json({ success: true, level: result.rows[0], data: result.rows[0] });
     } catch (error) {
         await client.query('ROLLBACK').catch(() => {});
         console.error('[referralCommission] upsertLevel error:', error);
@@ -141,7 +151,7 @@ exports.bulkUpsertLevels = async (req, res) => {
              ORDER BY sort_order ASC, level ASC`
         );
         await client.query('COMMIT');
-        return res.status(200).json({ success: true, levels: result.rows });
+        return res.status(200).json({ success: true, levels: result.rows, data: result.rows });
     } catch (error) {
         await client.query('ROLLBACK').catch(() => {});
         console.error('[referralCommission] bulkUpsertLevels error:', error);
