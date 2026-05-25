@@ -1,7 +1,7 @@
 const pool = require('../config/database');
 const fs = require('fs');
 const path = require('path');
-const { distributeReferralCommission } = require('../utils/referralCommission');
+const { distributeProductDiscountCommission } = require('../utils/referralCommission');
 
 function logDebug(message) {
     const timestamp = new Date().toISOString();
@@ -602,7 +602,7 @@ async function finalizeReceivedOrder(client, order) {
         if (commRes.rows.length > 0) {
             const commAmount = parseFloat(commRes.rows[0].amount || 0);
             const commStatus = String(commRes.rows[0].status || '').toLowerCase();
-            if (!['completed', 'cancelled', 'refunded'].includes(commStatus)) {
+            if (!['accepted', 'completed', 'cancelled', 'refunded'].includes(commStatus)) {
                 if (order.payment_method === 'cod') {
                     await client.query(
                         'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2',
@@ -650,24 +650,6 @@ async function finalizeReceivedOrder(client, order) {
             }
         }
 
-        if (discountAmountForBuyer > 0 && (discountAlreadyTakenFromSeller || order.wallet_transfer_id)) {
-            await client.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [discountAmountForBuyer, order.buyer_id]);
-
-            if (!discountAlreadyTakenFromSeller) {
-                await client.query(
-                    `INSERT INTO wallet_transfers
-                        (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
-                     VALUES ($1, $2, $3, $4, 'discount_refund', 'completed', 0, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-                    [
-                        order.seller_id,
-                        order.buyer_id,
-                        discountAmountForBuyer,
-                        `Product discount refund for Order Item #${order.item_id}`,
-                        productDiscount.percentage,
-                    ]
-                );
-            }
-        }
     }
 
     if (!orderAlreadyFinalized && order.wallet_transfer_id) {
@@ -698,14 +680,13 @@ async function finalizeReceivedOrder(client, order) {
         await completeWalletTransferIfGroupSettled(client, order.wallet_transfer_id, order.id);
     }
 
-    if (!orderAlreadyFinalized) {
-        const productAmount = parseFloat(order.total_price || 0);
-        await distributeReferralCommission(client, {
+    if (!orderAlreadyFinalized && discountAmountForBuyer > 0 && (discountAlreadyTakenFromSeller || order.wallet_transfer_id)) {
+        await distributeProductDiscountCommission(client, {
             buyerId: order.buyer_id,
-            grossAmount: productAmount,
-            sourceType: 'product',
+            payerId: order.seller_id,
+            discountAmount: discountAmountForBuyer,
             sourceId: order.id,
-            description: `Product order #${order.order_number || order.id}`,
+            description: `Order Item #${order.item_id} (${order.order_number || order.id})`,
         });
     }
 }

@@ -1,4 +1,5 @@
 const pool = require('../config/database');
+const { distributeProductDiscountCommission } = require('../utils/referralCommission');
 
 const TRANSACTION_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const UTC_NOW_SQL = "(NOW() AT TIME ZONE 'UTC')";
@@ -481,6 +482,11 @@ exports.respondToRequest = async (req, res) => {
         const transfer = requestResult.rows[0];
         const transferAmount = parseFloat(transfer.amount);
         const transferType = transfer.type; // 'sell' or 'request' (buy)
+        const rawCommission = parseFloat(transfer.commission || 0);
+        const commission = Math.min(
+            transferAmount,
+            Math.max(0, Number.isFinite(rawCommission) ? rawCommission : 0)
+        );
 
         if (action === 'reject') {
             // If type is 'sell', return the held amount back to sender
@@ -511,11 +517,9 @@ exports.respondToRequest = async (req, res) => {
                 // For 'sell': Split the held amount
                 // Example: transferAmount = 100, commission = 10
                 // Receiver gets: 100 - 10 = 90
-                // Sender gets back: 10 (commission)
+                // Discount/commission is distributed through the referral tree
 
-                const commission = parseFloat(transfer.commission || 0);
-                const amountToReceiver = transferAmount - commission; // 90
-                const amountBackToSender = commission; // 10
+                const amountToReceiver = Math.max(0, transferAmount - commission); // 90
 
                 // Remove full amount from sender's hold_balance
                 await client.query(
@@ -529,12 +533,16 @@ exports.respondToRequest = async (req, res) => {
                     [amountToReceiver, userId]
                 );
 
-                // Return commission to sender's wallet
                 if (commission > 0) {
-                    await client.query(
-                        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-                        [amountBackToSender, transfer.sender_id]
-                    );
+                    await distributeProductDiscountCommission(client, {
+                        buyerId: userId,
+                        payerId: transfer.sender_id,
+                        discountAmount: commission,
+                        sourceId: `wallet-${transfer.id}`,
+                        description: `Wallet Sell Transfer #${transfer.id}`,
+                        sourceType: 'wallet_discount',
+                        notePrefix: 'Wallet Discount',
+                    });
                 }
             } else {
                 // For 'request' (buy): Deduct from receiver and give to sender
@@ -556,11 +564,25 @@ exports.respondToRequest = async (req, res) => {
                     [transferAmount, userId]
                 );
 
-                // Add to sender (User A who requested)
+                const amountToSender = Math.max(0, transferAmount - commission);
+
+                // Add the net amount to sender (User A who requested)
                 await client.query(
                     'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-                    [transferAmount, transfer.sender_id]
+                    [amountToSender, transfer.sender_id]
                 );
+
+                if (commission > 0) {
+                    await distributeProductDiscountCommission(client, {
+                        buyerId: userId,
+                        payerId: transfer.sender_id,
+                        discountAmount: commission,
+                        sourceId: `wallet-${transfer.id}`,
+                        description: `Wallet Buy Request #${transfer.id}`,
+                        sourceType: 'wallet_discount',
+                        notePrefix: 'Wallet Discount',
+                    });
+                }
             }
 
             // Update transfer status to accepted
