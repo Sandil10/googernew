@@ -4,10 +4,11 @@ import { useState } from "react";
 import IonIcon from "@/app/components/IonIcon";
 
 interface TransactionDetails {
-    type: string; // "Send" | "Request" | "Pay"
+    type: string; // "Send" | "Request" | "Pay" | "SendDiscount" | "SellerBuyDiscount"
     amount: string | number;
     discount?: string | number;
     recipient: string;
+    counterpartyLabel?: string;
     buyerId?: string;
     sellerId?: string;
 }
@@ -49,6 +50,27 @@ export default function SecurityVerificationModal({
         }
     };
 
+    const hasDiscount = Boolean(transaction?.discount && Number(transaction.discount) > 0);
+    const isRequest = transaction?.type === "Request";
+    const isSendDiscount = transaction?.type === "SendDiscount";
+    const isSellerBuyDiscount = transaction?.type === "SellerBuyDiscount";
+    const title = isSellerBuyDiscount
+        ? "Coin Request and Send Discount"
+        : isRequest
+        ? (hasDiscount ? "Discount Request" : "Request Coins")
+        : (isSendDiscount ? "Send Discount" : (hasDiscount ? "Send coins & Discount request" : "Send Coins"));
+    const amountLabel = isSellerBuyDiscount
+        ? "Coin Request"
+        : (isRequest && hasDiscount) || isSendDiscount
+        ? "Coins"
+        : (isRequest ? "Request Coins" : "Send Coins");
+    const discountLabel = isSellerBuyDiscount
+        ? "Send Discount"
+        : (isSendDiscount ? "Send Discounts" : (isRequest ? "Discount Request" : "Discount"));
+    const counterpartyLabel = transaction?.counterpartyLabel || (isSellerBuyDiscount
+        ? "Request to"
+        : (transaction?.type === "Request" ? "Request from" : "Send to"));
+
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-[#162033] border border-gray-800 w-full max-w-sm rounded-3xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
@@ -59,13 +81,7 @@ export default function SecurityVerificationModal({
                                 <IonIcon name="shield-checkmark-outline" className="text-xl" />
                             </div>
                             <h3 className="text-sm font-bold text-white tracking-tight uppercase">
-                                {transaction?.type === "Request"
-                                    ? (transaction?.discount && Number(transaction.discount) > 0 
-                                        ? "Request coins & Discount" 
-                                        : "Request Coins")
-                                    : (transaction?.discount && Number(transaction.discount) > 0
-                                        ? "Send coins & Discount request"
-                                        : "Send Coins")}
+                                {title}
                             </h3>
                         </div>
                         <button
@@ -80,16 +96,18 @@ export default function SecurityVerificationModal({
                     <div className="space-y-3 mb-8 bg-[#0d1421] p-5 rounded-2xl border border-gray-800/50">
                         <div className="flex items-center justify-between mb-4 border-b border-gray-800/50 pb-4">
                             <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">
-                                {transaction?.type === "Request" ? "Request Coins" : "Send Coins"}
+                                {amountLabel}
                             </span>
                             <div className="flex items-center gap-2">
                                 <span className="text-sm font-bold text-gray-400 uppercase">-</span>
                                 <span className="text-lg font-black text-white">{transaction?.amount} Coins</span>
                             </div>
                         </div>
-                        {transaction?.discount && Number(transaction.discount) > 0 && (
+                        {hasDiscount && (
                             <div className="flex items-center justify-between mb-4 border-b border-gray-800/50 pb-4">
-                                <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Discount</span>
+                                <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">
+                                    {discountLabel}
+                                </span>
                                 <div className="flex items-center gap-2">
                                     <span className="text-sm font-bold text-gray-400 uppercase">-</span>
                                     <span className="text-lg font-black text-blue-400">{transaction?.discount}%</span>
@@ -98,7 +116,7 @@ export default function SecurityVerificationModal({
                         )}
                         <div className="flex items-center justify-between">
                             <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">
-                                {transaction?.type === "Request" ? "Request from" : "Send to"}
+                                {counterpartyLabel}
                             </span>
                             <div className="flex items-center gap-2">
                                 <span className="text-sm font-bold text-gray-400 uppercase">-</span>

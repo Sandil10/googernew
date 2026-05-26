@@ -2410,7 +2410,7 @@ export default function Topup() {
                         <div className="max-w-md mx-auto">
                             <h4 className="text-lg font-bold text-white mb-6 text-center">Topup Coins</h4>
                             <div className="bg-[#070707] border border-gray-700 rounded-xl p-5 mb-6 flex flex-col items-center justify-center">
-                                <p className="text-gray-400 text-[10px] uppercase tracking-widest font-bold mb-3 text-center">My total Ruppier coins</p>
+                                <p className="text-gray-400 text-[10px] uppercase tracking-widest font-bold mb-3 text-center">Total Wallet Balance</p>
                                 <h2 className="text-3xl font-bold text-white">{balance.toFixed(2)}</h2>
                             </div>
                             <div className="space-y-6">

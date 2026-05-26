@@ -1,5 +1,6 @@
 const DEFAULT_PRODUCT_POOL_PERCENTAGE = 20;
 const DEFAULT_AD_POOL_PERCENTAGE = 20;
+const DEFAULT_DISCOUNT_GOOGER_SHARE_PERCENTAGE = 20;
 const REFERRAL_TRANSFER_TYPE = 'referral_commission';
 
 const SETTING_KEYS = {
@@ -43,11 +44,17 @@ async function ensureReferralCommissionTables(client) {
             level INTEGER UNIQUE NOT NULL,
             name VARCHAR(80) NOT NULL,
             commission_percentage NUMERIC(8,2) NOT NULL DEFAULT 0,
+            ad_commission_percentage NUMERIC(8,2) NOT NULL DEFAULT 0,
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             sort_order INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+    `);
+
+    await client.query(`
+        ALTER TABLE referral_level_settings
+        ADD COLUMN IF NOT EXISTS ad_commission_percentage NUMERIC(8,2) NOT NULL DEFAULT 0;
     `);
 
     await client.query(`
@@ -136,6 +143,22 @@ async function ensureReferralCommissionTables(client) {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(source_type, source_id, earner_id, level)
         );
+    `);
+
+    // Fix: if source_id was created as INTEGER in older DB, convert it to VARCHAR so string IDs work
+    await client.query(`
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'referral_commission_payouts'
+                  AND column_name = 'source_id'
+                  AND data_type NOT IN ('character varying', 'text', 'varchar')
+            ) THEN
+                ALTER TABLE referral_commission_payouts
+                    ALTER COLUMN source_id TYPE VARCHAR(120) USING source_id::text;
+            END IF;
+        END $$;
     `);
 
     await client.query(`
@@ -520,11 +543,20 @@ async function distributeProductDiscountCommission(client, {
     description,
     sourceType = 'product_discount',
     notePrefix = 'Product Discount',
+    commissionField = 'commission_percentage', // 'commission_percentage' for products, 'ad_commission_percentage' for wallet
+    googerSharePercentage = DEFAULT_DISCOUNT_GOOGER_SHARE_PERCENTAGE,
+    remainderRecipientId,
 }) {
     await ensureReferralCommissionTables(client);
 
+    // Only 'commission_percentage' or 'ad_commission_percentage' are valid — prevent SQL injection
+    const safeField = commissionField === 'ad_commission_percentage'
+        ? 'ad_commission_percentage'
+        : 'commission_percentage';
+
     const buyer = Number(buyerId);
     const payer = Number(payerId) || buyer;
+    const remainderRecipient = Number(remainderRecipientId) || buyer;
     const poolAmount = Number(Number(discountAmount || 0).toFixed(2));
     if (!Number.isFinite(buyer) || buyer <= 0 || !Number.isFinite(poolAmount) || poolAmount <= 0 || !sourceId) {
         return [];
@@ -574,6 +606,8 @@ async function distributeProductDiscountCommission(client, {
         amount,
         note,
         transferType = REFERRAL_TRANSFER_TYPE,
+        transferStatus = 'completed',
+        creditWallet = true,
     }) => {
         const safeAmount = Number(Number(amount || 0).toFixed(2));
         if (!Number.isFinite(safeAmount) || safeAmount <= 0) return null;
@@ -585,15 +619,17 @@ async function distributeProductDiscountCommission(client, {
             amount: safeAmount,
         });
 
-        await client.query(
-            'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
-            [safeAmount, earnerId]
-        );
+        if (creditWallet) {
+            await client.query(
+                'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
+                [safeAmount, earnerId]
+            );
+        }
 
         const transfer = await client.query(
             `INSERT INTO wallet_transfers
                 (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, 'completed', $3, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+             VALUES ($1, $2, $3, $4, $5, $6, $3, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
              RETURNING id`,
             [
                 payer,
@@ -601,6 +637,7 @@ async function distributeProductDiscountCommission(client, {
                 safeAmount,
                 note,
                 transferType,
+                transferStatus,
                 commissionPercentage,
             ]
         );
@@ -623,30 +660,44 @@ async function distributeProductDiscountCommission(client, {
 
     const payouts = [];
     let distributedAmount = 0;
+    let distributedLevelAmount = 0;
+    let levelPoolAmount = 0;
+
+    // Resolve Googer once so we can use it for remainder logic too
+    const googerUserId = await resolveGoogerMainWalletUserId(client);
 
     const googerLevel = await client.query(
-        `SELECT level, name AS level_name, commission_percentage
+        `SELECT level, name AS level_name,
+                commission_percentage,
+                ad_commission_percentage
          FROM referral_level_settings
          WHERE level = 0 AND is_active = TRUE
          LIMIT 1`
     );
 
     if (googerLevel.rows.length > 0) {
-        const googerUserId = await resolveGoogerMainWalletUserId(client);
-        const googerPercentage = normalizePercentage(googerLevel.rows[0].commission_percentage);
+        const rawGoogerPct = safeField === 'ad_commission_percentage'
+            ? googerLevel.rows[0].ad_commission_percentage
+            : googerLevel.rows[0].commission_percentage;
+        const configuredGoogerSharePct = normalizePercentage(rawGoogerPct, 0);
+        const googerSharePct = configuredGoogerSharePct > 0
+            ? configuredGoogerSharePct
+            : normalizePercentage(googerSharePercentage, DEFAULT_DISCOUNT_GOOGER_SHARE_PERCENTAGE);
         const googerAmount = Math.min(
             poolAmount - distributedAmount,
-            Number(((poolAmount * googerPercentage) / 100).toFixed(2))
+            Number(((poolAmount * googerSharePct) / 100).toFixed(2))
         );
 
-        if (googerUserId && googerUserId !== buyer && googerAmount > 0) {
+        if (googerUserId && googerAmount > 0) {
             const payout = await creditPayout({
                 earnerId: googerUserId,
                 level: 0,
                 levelName: googerLevel.rows[0].level_name || 'Googer',
-                commissionPercentage: googerPercentage,
+                commissionPercentage: googerSharePct,
                 amount: googerAmount,
                 note: `${notePrefix} Distribution - Googer - ${description}`,
+                transferStatus: 'accepted',
+                creditWallet: false,
             });
             if (payout) {
                 distributedAmount = Number((distributedAmount + payout.amount).toFixed(2));
@@ -654,6 +705,8 @@ async function distributeProductDiscountCommission(client, {
             }
         }
     }
+
+    levelPoolAmount = Number(Math.max(0, poolAmount - distributedAmount).toFixed(2));
 
     const uplines = await client.query(
         `WITH RECURSIVE uplines AS (
@@ -680,7 +733,7 @@ async function distributeProductDiscountCommission(client, {
             uplines.earner_id,
             uplines.level,
             rls.name AS level_name,
-            COALESCE(rls.commission_percentage, 0)::numeric AS commission_percentage
+            COALESCE(rls.${safeField}, 0)::numeric AS commission_percentage
         FROM uplines
         JOIN referral_level_settings rls
           ON rls.level = uplines.level
@@ -692,41 +745,46 @@ async function distributeProductDiscountCommission(client, {
     );
 
     for (const row of uplines.rows) {
-        const remaining = Number((poolAmount - distributedAmount).toFixed(2));
+        const remaining = Number((levelPoolAmount - distributedLevelAmount).toFixed(2));
         if (remaining <= 0) break;
 
-        const commissionPercentage = normalizePercentage(row.commission_percentage);
+        const levelWeightPercentage = normalizePercentage(row.commission_percentage);
         const levelAmount = Math.min(
             remaining,
-            Number(((poolAmount * commissionPercentage) / 100).toFixed(2))
+            Number(((poolAmount * levelWeightPercentage) / 100).toFixed(2))
         );
         if (levelAmount <= 0) continue;
 
+        const effectiveDiscountPercentage = Number(((levelAmount / poolAmount) * 100).toFixed(2));
         const payout = await creditPayout({
             earnerId: row.earner_id,
             level: Number(row.level),
             levelName: row.level_name,
-            commissionPercentage,
+            commissionPercentage: effectiveDiscountPercentage,
             amount: levelAmount,
             note: `${notePrefix} Distribution - Level ${row.level}${row.level_name ? ` ${row.level_name}` : ''} - ${description}`,
         });
 
         if (payout) {
             distributedAmount = Number((distributedAmount + payout.amount).toFixed(2));
+            distributedLevelAmount = Number((distributedLevelAmount + payout.amount).toFixed(2));
             payouts.push(payout);
         }
     }
 
-    const buyerRemainder = Number(Math.max(0, poolAmount - distributedAmount).toFixed(2));
+    const buyerRemainder = Number(Math.max(0, levelPoolAmount - distributedLevelAmount).toFixed(2));
     if (buyerRemainder > 0) {
+        // If the buyer (receiver) is Googer, Googer already took their commission cut above.
+        // Send the remainder to the payer instead so Googer doesn't double-collect.
+        const finalRemainderRecipient = (googerUserId && remainderRecipient === googerUserId) ? payer : remainderRecipient;
         const buyerPercentage = Number(((buyerRemainder / poolAmount) * 100).toFixed(2));
         const payout = await creditPayout({
-            earnerId: buyer,
-            level: 99,
-            levelName: 'Buyer',
+            earnerId: finalRemainderRecipient,
+            level: 98,
+            levelName: 'Discount Balance',
             commissionPercentage: buyerPercentage,
             amount: buyerRemainder,
-            note: `${notePrefix} Balance - Buyer - ${description}`,
+            note: `${notePrefix} Balance - Unused Levels - ${description}`,
             transferType: 'discount_refund',
         });
         if (payout) payouts.push(payout);

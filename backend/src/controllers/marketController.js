@@ -6,6 +6,7 @@ const {
     filterDeliverableAds,
     loadViewerAdProfile,
 } = require('../utils/adDelivery');
+const { distributeProductDiscountCommission } = require('../utils/referralCommission');
 
 let marketFeedSchemaReady = false;
 const tableColumnCache = new Map();
@@ -49,6 +50,32 @@ const hasTable = async (tableName) => {
     tableExistsCache.set(tableName, exists);
     return exists;
 };
+
+async function resolveGoogerMainWalletUserId(client) {
+    const configuredId = Number.parseInt(String(process.env.GOOGER_MAIN_USER_ID || '').trim(), 10);
+    if (Number.isFinite(configuredId) && configuredId > 0) {
+        const configuredResult = await client.query('SELECT id FROM users WHERE id = $1 LIMIT 1', [configuredId]);
+        if (configuredResult.rows.length > 0) return configuredResult.rows[0].id;
+    }
+
+    const adminResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+    if (adminResult.rows.length > 0) return adminResult.rows[0].id;
+
+    const googerResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(username) = 'googer'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+    if (googerResult.rows.length > 0) return googerResult.rows[0].id;
+
+    return null;
+}
 
 const ensureMarketFeedSchema = async () => {
     if (marketFeedSchemaReady) return;
@@ -3029,30 +3056,39 @@ exports.collectAdLikeCoin = async (req, res) => {
             'UPDATE ads SET remaining_budget = GREATEST(0, remaining_budget - $1), spend = COALESCE(spend, 0) + $1 WHERE ad_id = $2',
             [advertiserCharge, adId]
         );
-        await client.query(
-            'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
-            [rewardAmount, userId]
-        );
-
-        await client.query(
-            `INSERT INTO wallet_transfers (
-                sender_id,
-                receiver_id,
-                amount,
-                status,
-                type,
-                note,
-                commission,
-                commission_percentage
-            ) VALUES ($1, $2, $3, 'accepted', 'ad_coin', $4, $5, 0)`,
-            [
-                ownerId,
-                userId,
-                rewardAmount,
-                `Ad coin reward for ${adId} (${resolvedAdType})`,
-                -rewardAmount,
-            ]
-        );
+        if (rewardAmount > 0) {
+            await distributeProductDiscountCommission(client, {
+                buyerId: userId,
+                payerId: ownerId,
+                discountAmount: rewardAmount,
+                sourceId: `ad-coin-${collectionInsertResult.rows[0].id}`,
+                description: `Ad coin reward for ${adId} (${resolvedAdType})`,
+                sourceType: 'ad_coin',
+                notePrefix: 'Ad Coin Reward',
+                commissionField: 'ad_commission_percentage',
+                remainderRecipientId: userId,
+            });
+        } else {
+            await client.query(
+                `INSERT INTO wallet_transfers (
+                    sender_id,
+                    receiver_id,
+                    amount,
+                    status,
+                    type,
+                    note,
+                    commission,
+                    commission_percentage
+                ) VALUES ($1, $2, $3, 'accepted', 'ad_coin', $4, $5, 0)`,
+                [
+                    ownerId,
+                    userId,
+                    rewardAmount,
+                    `Ad coin reward for ${adId} (${resolvedAdType})`,
+                    -rewardAmount,
+                ]
+            );
+        }
 
         await client.query(
             `INSERT INTO wallet_transfers (
@@ -3071,6 +3107,32 @@ exports.collectAdLikeCoin = async (req, res) => {
                 `Advertiser ad coin credit for ${adId} (${resolvedAdType})`,
             ]
         );
+
+        if (commissionAmount > 0) {
+            const googerUserId = await resolveGoogerMainWalletUserId(client);
+            if (googerUserId) {
+                await client.query(
+                    `INSERT INTO wallet_transfers (
+                        sender_id,
+                        receiver_id,
+                        amount,
+                        status,
+                        type,
+                        note,
+                        commission,
+                        commission_percentage,
+                        created_at,
+                        updated_at
+                    ) VALUES ($1, $2, $3, 'accepted', 'referral_commission', $4, $3, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                    [
+                        ownerId,
+                        googerUserId,
+                        commissionAmount,
+                        `Ad Coin Googer Commission - ${adId} (${resolvedAdType})`,
+                    ]
+                );
+            }
+        }
 
 
         await client.query(

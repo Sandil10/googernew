@@ -50,7 +50,7 @@ exports.getLevels = async (req, res) => {
     try {
         await ensureReferralCommissionTables(client);
         const result = await client.query(
-            `SELECT id, level, name, commission_percentage, is_active, sort_order, created_at, updated_at
+            `SELECT id, level, name, commission_percentage, ad_commission_percentage, is_active, sort_order, created_at, updated_at
              FROM referral_level_settings
              ORDER BY sort_order ASC, level ASC`
         );
@@ -77,21 +77,23 @@ exports.upsertLevel = async (req, res) => {
 
         const name = String(req.body?.name || (level === 0 ? 'Googer' : `Level ${level}`)).trim().slice(0, 80);
         const commissionPercentage = Math.min(100, Math.max(0, Number(req.body?.commission_percentage ?? req.body?.commissionPercentage ?? 0)));
+        const adCommissionPercentage = Math.min(100, Math.max(0, Number(req.body?.ad_commission_percentage ?? req.body?.adCommissionPercentage ?? 0)));
         const isActive = req.body?.is_active ?? req.body?.isActive ?? true;
         const sortOrder = Number(req.body?.sort_order ?? req.body?.sortOrder ?? level);
 
         const result = await client.query(
             `INSERT INTO referral_level_settings
-                (level, name, commission_percentage, is_active, sort_order, updated_at)
-             VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+                (level, name, commission_percentage, ad_commission_percentage, is_active, sort_order, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
              ON CONFLICT (level) DO UPDATE
              SET name = EXCLUDED.name,
                  commission_percentage = EXCLUDED.commission_percentage,
+                 ad_commission_percentage = EXCLUDED.ad_commission_percentage,
                  is_active = EXCLUDED.is_active,
                  sort_order = EXCLUDED.sort_order,
                  updated_at = CURRENT_TIMESTAMP
              RETURNING *`,
-            [level, name, commissionPercentage, Boolean(isActive), Number.isFinite(sortOrder) ? sortOrder : level]
+            [level, name, commissionPercentage, adCommissionPercentage, Boolean(isActive), Number.isFinite(sortOrder) ? sortOrder : level]
         );
 
         await syncReferralRelationshipCommissionFields(client);
@@ -122,15 +124,17 @@ exports.bulkUpsertLevels = async (req, res) => {
             if (!Number.isFinite(level) || level < 0) continue;
             const name = String(item.name || (level === 0 ? 'Googer' : `Level ${level}`)).trim().slice(0, 80);
             const commissionPercentage = Math.min(100, Math.max(0, Number(item.commission_percentage ?? item.commissionPercentage ?? 0)));
+            const adCommissionPercentage = Math.min(100, Math.max(0, Number(item.ad_commission_percentage ?? item.adCommissionPercentage ?? 0)));
             const sortOrder = Number(item.sort_order ?? item.sortOrder ?? level);
 
             await client.query(
                 `INSERT INTO referral_level_settings
-                    (level, name, commission_percentage, is_active, sort_order, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+                    (level, name, commission_percentage, ad_commission_percentage, is_active, sort_order, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
                  ON CONFLICT (level) DO UPDATE
                  SET name = EXCLUDED.name,
                      commission_percentage = EXCLUDED.commission_percentage,
+                     ad_commission_percentage = EXCLUDED.ad_commission_percentage,
                      is_active = EXCLUDED.is_active,
                      sort_order = EXCLUDED.sort_order,
                      updated_at = CURRENT_TIMESTAMP`,
@@ -138,6 +142,7 @@ exports.bulkUpsertLevels = async (req, res) => {
                     level,
                     name,
                     commissionPercentage,
+                    adCommissionPercentage,
                     Boolean(item.is_active ?? item.isActive ?? true),
                     Number.isFinite(sortOrder) ? sortOrder : level,
                 ]
@@ -146,7 +151,7 @@ exports.bulkUpsertLevels = async (req, res) => {
 
         await syncReferralRelationshipCommissionFields(client);
         const result = await client.query(
-            `SELECT id, level, name, commission_percentage, is_active, sort_order, created_at, updated_at
+            `SELECT id, level, name, commission_percentage, ad_commission_percentage, is_active, sort_order, created_at, updated_at
              FROM referral_level_settings
              ORDER BY sort_order ASC, level ASC`
         );

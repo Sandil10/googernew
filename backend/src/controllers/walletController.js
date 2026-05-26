@@ -1,5 +1,6 @@
 const pool = require('../config/database');
 const { distributeProductDiscountCommission } = require('../utils/referralCommission');
+const { ensureAdminWalletGuard } = require('../utils/adminWalletGuard');
 
 const TRANSACTION_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const UTC_NOW_SQL = "(NOW() AT TIME ZONE 'UTC')";
@@ -61,8 +62,10 @@ async function getTransferDisplayData(client, transferId) {
         `SELECT t.*,
                 s.username AS sender_username,
                 s.user_id AS sender_readable_id,
+                s.user_type AS sender_user_type,
                 r.username AS receiver_username,
-                r.user_id AS receiver_readable_id
+                r.user_id AS receiver_readable_id,
+                r.user_type AS receiver_user_type
          FROM wallet_transfers t
          JOIN users s ON t.sender_id = s.id
          LEFT JOIN users r ON t.receiver_id = r.id
@@ -243,6 +246,67 @@ exports.initiateTransferRequest = async (req, res) => {
         // Calculate commission if any
         if (commPercent > 0) {
             calculatedCommission = (baseAmount * commPercent) / 100;
+        }
+
+        if (type === 'sell' && commPercent > 0 && !manualPaymentOrder) {
+            const senderResult = await client.query(
+                `SELECT wallet_balance, user_type
+                 FROM users
+                 WHERE id = $1
+                 FOR UPDATE`,
+                [senderId]
+            );
+            const senderBalance = parseFloat(senderResult.rows[0]?.wallet_balance || 0);
+            const senderType = String(senderResult.rows[0]?.user_type || '').toLowerCase();
+            const isSellerSender = senderType === 'seller';
+
+            if (isSellerSender) {
+                if (senderBalance < calculatedCommission) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ success: false, message: 'Insufficient balance' });
+                }
+
+                await client.query(
+                    'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
+                    [calculatedCommission, senderId]
+                );
+
+                const txNote = note || `Send Discount (${commPercent}%)`;
+                const result = await client.query(
+                    `INSERT INTO wallet_transfers
+                        (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, 'seller_discount', 'accepted', $5, 0, ${UTC_NOW_SQL}, ${UTC_NOW_SQL})
+                     RETURNING *`,
+                    [senderId, receiverId, baseAmount, txNote, commPercent]
+                );
+
+                try {
+                    await distributeProductDiscountCommission(client, {
+                        buyerId: receiverId,
+                        payerId: senderId,
+                        discountAmount: calculatedCommission,
+                        sourceId: `seller-discount-${result.rows[0].id}`,
+                        description: `Seller Discount Transfer #${result.rows[0].id}`,
+                        sourceType: 'wallet_discount',
+                        notePrefix: 'Seller Discount',
+                        remainderRecipientId: receiverId,
+                    });
+                } catch (commErr) {
+                    console.error('Seller discount distribution failed:', commErr);
+                    throw commErr;
+                }
+
+                const displayTransaction = await getTransferDisplayData(client, result.rows[0].id);
+
+                await client.query('COMMIT');
+
+                return res.status(201).json({
+                    success: true,
+                    message: `Discount sent successfully. ${calculatedCommission.toFixed(2)} discount coins distributed.`,
+                    transfer: displayTransaction || result.rows[0],
+                    transaction: displayTransaction || result.rows[0],
+                });
+            }
         }
 
         // ============================================
@@ -441,7 +505,7 @@ exports.getPendingRequests = async (req, res) => {
     try {
         const userId = req.user.id;
         const result = await pool.query(
-            `SELECT t.*, u.username as sender_username, u.full_name as sender_full_name, u.profile_picture as sender_profile_picture
+            `SELECT t.*, u.username as sender_username, u.full_name as sender_full_name, u.profile_picture as sender_profile_picture, u.user_type as sender_user_type
              FROM wallet_transfers t
              JOIN users u ON t.sender_id = u.id
              WHERE t.receiver_id = $1 AND t.status = 'pending' AND t.type IN ('request', 'sell')
@@ -487,6 +551,12 @@ exports.respondToRequest = async (req, res) => {
             transferAmount,
             Math.max(0, Number.isFinite(rawCommission) ? rawCommission : 0)
         );
+        const senderTypeResult = await client.query(
+            'SELECT user_type FROM users WHERE id = $1',
+            [transfer.sender_id]
+        );
+        const senderUserType = String(senderTypeResult.rows[0]?.user_type || '').toLowerCase();
+        const isSellerSender = senderUserType === 'seller';
 
         if (action === 'reject') {
             // If type is 'sell', return the held amount back to sender
@@ -534,61 +604,102 @@ exports.respondToRequest = async (req, res) => {
                 );
 
                 if (commission > 0) {
-                    await distributeProductDiscountCommission(client, {
-                        buyerId: userId,
-                        payerId: transfer.sender_id,
-                        discountAmount: commission,
-                        sourceId: `wallet-${transfer.id}`,
-                        description: `Wallet Sell Transfer #${transfer.id}`,
-                        sourceType: 'wallet_discount',
-                        notePrefix: 'Wallet Discount',
-                    });
+                    try {
+                        await client.query('SAVEPOINT before_commission');
+                        await distributeProductDiscountCommission(client, {
+                            buyerId: transfer.sender_id,
+                            payerId: transfer.sender_id,
+                            discountAmount: commission,
+                            sourceId: `wallet-${transfer.id}`,
+                            description: `Wallet Sell Transfer #${transfer.id}`,
+                            sourceType: 'wallet_discount',
+                            notePrefix: 'Wallet Discount',
+                            remainderRecipientId: transfer.sender_id,
+                        });
+                        await client.query('RELEASE SAVEPOINT before_commission');
+                    } catch (commErr) {
+                        await client.query('ROLLBACK TO SAVEPOINT before_commission');
+                        console.error('Wallet sell commission distribution failed (transfer will still complete):', commErr);
+                    }
                 }
             } else {
-                // For 'request' (buy): Deduct from receiver and give to sender
-                // Check receiver's balance first
-                const receiverResult = await client.query(
-                    'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
-                    [userId]
-                );
-                const receiverBalance = parseFloat(receiverResult.rows[0].wallet_balance);
-
-                if (receiverBalance < transferAmount) {
-                    await client.query('ROLLBACK');
-                    return res.status(400).json({ success: false, message: 'Insufficient balance' });
-                }
-
-                // Deduct from receiver (User B)
-                await client.query(
-                    'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-                    [transferAmount, userId]
-                );
-
-                const amountToSender = Math.max(0, transferAmount - commission);
-
-                // Add the net amount to sender (User A who requested)
-                await client.query(
-                    'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-                    [amountToSender, transfer.sender_id]
-                );
-
                 if (commission > 0) {
-                    await distributeProductDiscountCommission(client, {
-                        buyerId: userId,
-                        payerId: transfer.sender_id,
-                        discountAmount: commission,
-                        sourceId: `wallet-${transfer.id}`,
-                        description: `Wallet Buy Request #${transfer.id}`,
-                        sourceType: 'wallet_discount',
-                        notePrefix: 'Wallet Discount',
-                    });
+                    try {
+                        await client.query('SAVEPOINT before_buy_discount');
+
+                        const receiverResult = await client.query(
+                            'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+                            [userId]
+                        );
+                        const receiverBalance = parseFloat(receiverResult.rows[0]?.wallet_balance || 0);
+                        const sellerBuyDiscountNet = Math.max(0, transferAmount - commission);
+                        const amountToDeduct = isSellerSender ? transferAmount : commission;
+
+                        if (receiverBalance < amountToDeduct) {
+                            await client.query('ROLLBACK TO SAVEPOINT before_buy_discount');
+                            await client.query('ROLLBACK');
+                            return res.status(400).json({ success: false, message: 'Insufficient balance' });
+                        }
+
+                        await client.query(
+                            'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
+                            [amountToDeduct, userId]
+                        );
+
+                        if (isSellerSender && sellerBuyDiscountNet > 0) {
+                            await client.query(
+                                'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
+                                [sellerBuyDiscountNet, transfer.sender_id]
+                            );
+                        }
+
+                        await distributeProductDiscountCommission(client, {
+                            buyerId: isSellerSender ? userId : transfer.sender_id,
+                            payerId: userId,
+                            discountAmount: commission,
+                            sourceId: `wallet-${transfer.id}`,
+                            description: `Wallet Buy Request #${transfer.id}`,
+                            sourceType: 'wallet_discount',
+                            notePrefix: isSellerSender ? 'Seller Buy Discount' : 'Wallet Discount',
+                            remainderRecipientId: isSellerSender ? userId : transfer.sender_id,
+                        });
+                        await client.query('RELEASE SAVEPOINT before_buy_discount');
+                    } catch (commErr) {
+                        await client.query('ROLLBACK TO SAVEPOINT before_buy_discount');
+                        throw commErr;
+                    }
+                } else {
+                    // Legacy no-discount buy request: receiver pays the full requested amount.
+                    const receiverResult = await client.query(
+                        'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
+                        [userId]
+                    );
+                    const receiverBalance = parseFloat(receiverResult.rows[0].wallet_balance);
+
+                    if (receiverBalance < transferAmount) {
+                        await client.query('ROLLBACK');
+                        return res.status(400).json({ success: false, message: 'Insufficient balance' });
+                    }
+
+                    await client.query(
+                        'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
+                        [transferAmount, userId]
+                    );
+
+                    await client.query(
+                        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
+                        [transferAmount, transfer.sender_id]
+                    );
                 }
             }
 
-            // Update transfer status to accepted
+            // Update transfer status to accepted. The original request row's commission
+            // is only the discount basis; Main Googer Balance is credited by the
+            // separate referral_commission payout row, so avoid double-counting here.
             await client.query(
                 `UPDATE wallet_transfers 
                  SET status = 'accepted', 
+                     commission = 0,
                      updated_at = ${UTC_NOW_SQL} 
                  WHERE id = $1`,
                 [requestId]
@@ -991,20 +1102,107 @@ exports.recordPromoAd = async (req, res) => {
     }
 };
 
+// Admin-only: explicitly add capital to the personal admin wallet balance.
+// Normal commission/system flows are blocked from changing admin users.wallet_balance by a DB trigger.
+exports.addAdminCapital = async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const adminId = req.user.id;
+        const amount = Number(req.body?.amount || 0);
+
+        if (!Number.isFinite(amount) || amount <= 0) {
+            return res.status(400).json({ success: false, message: 'Valid amount is required' });
+        }
+
+        await client.query('BEGIN');
+        await ensureAdminWalletGuard(client);
+
+        const admin = await client.query(
+            `SELECT id, username, wallet_balance
+             FROM users
+             WHERE id = $1
+               AND LOWER(COALESCE(user_type, '')) = 'admin'
+             FOR UPDATE`,
+            [adminId]
+        );
+
+        if (admin.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ success: false, message: 'Admin access required' });
+        }
+
+        await client.query(`SET LOCAL googer.allow_admin_wallet_capital = 'true'`);
+
+        const updated = await client.query(
+            `UPDATE users
+             SET wallet_balance = COALESCE(wallet_balance, 0) + $1
+             WHERE id = $2
+             RETURNING wallet_balance`,
+            [amount, adminId]
+        );
+
+        const transfer = await client.query(
+            `INSERT INTO wallet_transfers
+                (sender_id, receiver_id, amount, commission, note, type, status, created_at, updated_at)
+             VALUES ($1, $1, $2, 0, $3, 'capital_add', 'accepted', ${UTC_NOW_SQL}, ${UTC_NOW_SQL})
+             RETURNING id`,
+            [adminId, amount, req.body?.note || 'Add Capital to Wallet']
+        );
+
+        await client.query('COMMIT');
+
+        return res.status(200).json({
+            success: true,
+            message: 'Capital added to admin wallet.',
+            walletBalance: Number(updated.rows[0].wallet_balance || 0),
+            transferId: transfer.rows[0].id,
+        });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Add admin capital error:', error);
+        return res.status(500).json({ success: false, message: 'Failed to add admin capital' });
+    } finally {
+        client.release();
+    }
+};
+
 // Get transaction history for current user
 exports.getTransactionHistory = async (req, res) => {
     try {
         const userId = req.user.id;
         const result = await pool.query(
             `SELECT t.*, 
-                    s.username as sender_username, s.full_name as sender_full_name, s.user_id as sender_readable_id,
-                    r.username as receiver_username, r.full_name as receiver_full_name, r.user_id as receiver_readable_id,
+                    s.username as sender_username, s.full_name as sender_full_name, s.user_id as sender_readable_id, s.user_type as sender_user_type,
+                    r.username as receiver_username, r.full_name as receiver_full_name, r.user_id as receiver_readable_id, r.user_type as receiver_user_type,
+                    parent_discount.commission_percentage as original_discount_percentage,
+                    product_discount.discount_percentage as product_discount_percentage,
                     order_summary.order_number as linked_order_number,
                     COALESCE(order_summary.can_cancel, false) as linked_order_can_cancel,
                     order_summary.primary_status as linked_order_status
              FROM wallet_transfers t
              JOIN users s ON t.sender_id = s.id
              LEFT JOIN users r ON t.receiver_id = r.id
+             LEFT JOIN LATERAL (
+                 SELECT parent.commission_percentage
+                 FROM wallet_transfers parent
+                 WHERE parent.id = NULLIF(substring(t.note FROM 'Seller Discount Transfer #([0-9]+)'), '')::integer
+                 LIMIT 1
+             ) parent_discount ON TRUE
+             LEFT JOIN LATERAL (
+                 SELECT
+                     CASE
+                         WHEN COALESCE(m.commission_info->>'discount', '') ~ '^[0-9]+(\\.[0-9]+)?$'
+                         THEN ROUND((m.commission_info->>'discount')::numeric, 2)
+                         WHEN COALESCE(m.price, 0) > 0
+                              AND COALESCE(m.promo_price, 0) > 0
+                              AND COALESCE(m.promo_price, 0) < COALESCE(m.price, 0)
+                         THEN ROUND(((m.price - m.promo_price) / m.price) * 100, 2)
+                         ELSE NULL
+                     END AS discount_percentage
+                 FROM market m
+                 WHERE m.id = NULLIF(substring(t.note FROM '#([0-9]+)'), '')::integer
+                 LIMIT 1
+             ) product_discount ON TRUE
              LEFT JOIN LATERAL (
                  SELECT
                      MIN(o.order_number) AS order_number,
@@ -1021,7 +1219,28 @@ exports.getTransactionHistory = async (req, res) => {
                  FROM orders o
                  WHERE o.wallet_transfer_id = t.id
              ) order_summary ON TRUE
-             WHERE t.sender_id = $1 OR t.receiver_id = $1
+             WHERE (
+                   t.sender_id = $1
+                   OR t.receiver_id = $1
+                   OR (
+                       COALESCE(t.type, '') = 'order_hold'
+                       AND EXISTS (
+                           SELECT 1
+                           FROM orders seller_order
+                           WHERE seller_order.wallet_transfer_id = t.id
+                             AND seller_order.seller_id = $1
+                       )
+                   )
+               )
+               AND COALESCE(t.type, '') <> 'referral_commission'
+               AND (
+                   COALESCE(t.type, '') <> 'seller_discount'
+                   OR t.sender_id = $1
+               )
+               AND (
+                   COALESCE(t.type, '') <> 'discount_refund'
+                   OR (t.receiver_id = $1 AND t.sender_id <> $1)
+               )
              ORDER BY t.created_at DESC
              LIMIT 50`,
             [userId]

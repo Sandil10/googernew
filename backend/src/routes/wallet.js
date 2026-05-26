@@ -16,6 +16,7 @@ router.post('/transfer', walletController.directTransfer);
 router.post('/pay-order', walletController.payOrder);
 router.post('/pay-profile-promote', walletController.payProfilePromote);
 router.post('/record-promo-ad', walletController.recordPromoAd);
+router.post('/admin/add-capital', walletController.addAdminCapital);
 router.get('/history', walletController.getTransactionHistory);
 
 module.exports = router;

@@ -45,12 +45,15 @@ const resolveGoogerUserId = async (client) => {
 };
 
 // ── Public: live exchange rates via fastforex.io ─────────────────────────────
-const FASTFOREX_KEY = 'a09500a93c-a1741234f1-tf46v2';
 router.get('/exchange-rates', async (req, res) => {
     try {
+        const fastforexKey = process.env.FASTFOREX_API_KEY;
+        if (!fastforexKey) {
+            return res.status(500).json({ success: false, message: 'Exchange rate service not configured.' });
+        }
         const upstream = await fetch(
             'https://api.fastforex.io/fetch-multi?from=USD&to=LKR,EUR,GBP',
-            { headers: { 'X-API-Key': FASTFOREX_KEY } }
+            { headers: { 'X-API-Key': fastforexKey } }
         );
         if (!upstream.ok) throw new Error(`Upstream ${upstream.status}`);
         const data = await upstream.json();

@@ -203,7 +203,7 @@ export default function WalletPage() {
                 <div className="absolute bottom-0 left-0 w-32 h-32 bg-black/10 rounded-full blur-2xl"></div>
 
                 <div className="relative z-10 flex flex-col items-center w-full">
-                    <h2 className="text-lg md:text-xl font-bold text-white mb-4 tracking-wide">My total Ruppier Coins balance</h2>
+                    <h2 className="text-lg md:text-xl font-bold text-white mb-4 tracking-wide">Total Wallet Balance</h2>
 
                     <div className="flex flex-row items-center gap-3 justify-center mb-2">
                         <div className="relative w-12 h-6 md:w-16 md:h-10 shrink-0">

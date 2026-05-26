@@ -6,6 +6,8 @@ const dns = require('dns');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
+const pool = require('./config/database');
+const { ensureAdminWalletGuard } = require('./utils/adminWalletGuard');
 
 // Fix for Supabase IPv6 timeout issues
 if (dns.setDefaultResultOrder) {
@@ -14,6 +16,10 @@ if (dns.setDefaultResultOrder) {
 
 const app = express();
 app.set('trust proxy', 1);
+
+ensureAdminWalletGuard(pool).catch((error) => {
+    console.error('Failed to install admin wallet guard:', error);
+});
 
 // Security Middleware
 app.use(helmet({
@@ -168,7 +174,7 @@ app.get('/api/test', (req, res) => {
 // Health check route
 app.get('/api/health', async (req, res) => {
     try {
-        const dbStatus = await require('./config/database').query('SELECT NOW()');
+        const dbStatus = await pool.query('SELECT NOW()');
         res.status(200).json({
             success: true,
             message: 'Googer API is optimized and running',

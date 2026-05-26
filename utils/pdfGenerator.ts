@@ -42,36 +42,85 @@ const getReceiptData = (transaction: any) => {
     const commission = Number(transaction.commission_percentage || 0);
     const type = String(transaction.type || '').toLowerCase();
     const statusLabel = formatTransactionStatus(transaction);
+    const isSellerBuyDiscount = type === 'request'
+        && commission > 0
+        && String(transaction.sender_user_type || '').toLowerCase() === 'seller';
+    const isSellerDiscountRefund = type === 'discount_refund'
+        && /seller discount/i.test(String(transaction.note || ''));
+    const isProductDiscountRefund = type === 'discount_refund'
+        && /product discount/i.test(String(transaction.note || ''));
+    const originalDiscountPercentage = Number(transaction.original_discount_percentage || 0);
+    const sellerDiscountAmount = Number(((Number(transaction.amount || 0) * commission) / 100).toFixed(2));
+    const isGoogerCommission = type === 'commission_hold'
+        && /googer commission/i.test(String(transaction.note || ''));
+    const isGoogerPaymentOrderHold = type === 'order_hold'
+        && !/manual payment/i.test(String(transaction.note || ''));
+    const isProductDiscount = type === 'discount_staking';
+    const productDiscountPercentage = Number(transaction.product_discount_percentage || transaction.commission_percentage || 0);
 
     let title = 'Wallet Transaction';
     let amountLabel = 'Amount';
     let typeLabel = type || 'Wallet';
 
     if (type === 'sell') {
-        title = commission > 0 ? 'Send Coins & Discount Request' : 'Send Coins';
+        title = commission > 0 ? 'Send Coins & Discount Request' : 'Direct Coin Transfer';
         amountLabel = 'Send Coins';
-        typeLabel = 'Sell';
+        typeLabel = commission > 0 ? 'Sell' : 'Direct Coin Transfer';
     } else if (type === 'request') {
-        title = commission > 0 ? 'Buy Coins & Discount Request' : 'Buy Coins';
-        amountLabel = 'Buy Coins';
-        typeLabel = 'Buy';
+        title = isSellerBuyDiscount ? 'Coin Request and Send Discount' : (commission > 0 ? 'Discount Request' : 'Coin Request');
+        amountLabel = isSellerBuyDiscount ? 'Coin Request' : (commission > 0 ? 'Coins' : 'Buy Coins');
+        typeLabel = isSellerBuyDiscount ? 'Coin Request and Send Discount' : (commission > 0 ? 'Discount Request' : 'Coin Request');
+    } else if (type === 'seller_discount') {
+        title = 'Send Discount';
+        amountLabel = 'Amount';
+        typeLabel = 'Send Discount';
     } else if (type === 'transfer') {
         title = commission > 0 ? 'Send Coins & Discount Request' : 'Send Coins';
         amountLabel = 'Send Coins';
         typeLabel = 'Send';
     } else if (type === 'order_hold') {
-        title = 'Order Payment Hold';
+        title = isGoogerPaymentOrderHold ? 'Googer Payments' : 'Order Payment Hold';
         amountLabel = 'Amount';
-        typeLabel = 'Order Hold';
+        typeLabel = isGoogerPaymentOrderHold ? 'Googer Payments' : 'Order Hold';
+    } else if (type === 'discount_refund') {
+        title = isProductDiscountRefund ? 'Product Discount' : 'Discount Refund';
+        amountLabel = 'Amount';
+        typeLabel = isProductDiscountRefund ? 'Product Discount' : 'Discount Refund';
+    } else if (type === 'commission_hold') {
+        title = 'Googer Commission Fee';
+        amountLabel = 'Amount';
+        typeLabel = 'Googer Commission';
+    } else if (type === 'discount_staking') {
+        title = 'Product Discount';
+        amountLabel = 'Amount';
+        typeLabel = 'Product Discount';
     }
 
     const details = [
         { label: 'Transaction ID', value: transactionId },
-        { label: amountLabel, value: Number(transaction.amount || 0).toFixed(2) },
+        { label: amountLabel, value: (type === 'seller_discount' ? sellerDiscountAmount : Number(transaction.amount || 0)).toFixed(2) },
     ];
 
-    if (commission > 0) {
-        details.push({ label: 'Discount Requested', value: `${commission}%` });
+    if (isProductDiscountRefund) {
+        details.push(
+            { label: 'Product Discount', value: productDiscountPercentage > 0 ? `${productDiscountPercentage}%` : 'Product Discount' },
+            { label: 'Referral Deductions', value: 'Referral level amounts are deducted first. This is the remaining discount balance.' }
+        );
+    } else if (isGoogerCommission) {
+        details.push({ label: 'Googer Commission', value: 'Fee' });
+    } else if (isProductDiscount) {
+        details.push({ label: 'Product Discount', value: productDiscountPercentage > 0 ? `${productDiscountPercentage}%` : 'Product Discount' });
+    } else if (type === 'seller_discount' && commission > 0) {
+        details.push(
+            { label: 'Send Discount', value: `${commission}%` }
+        );
+    } else if (isSellerDiscountRefund && originalDiscountPercentage > 0) {
+        details.push(
+            { label: 'Send Discount', value: `${originalDiscountPercentage}%` },
+            { label: 'Referral Deductions', value: 'Referral level amounts are deducted first. This is the remaining discount balance.' }
+        );
+    } else if (commission > 0) {
+        details.push({ label: isSellerBuyDiscount ? 'Send Discount' : (type === 'seller_discount' ? 'Send Discounts' : (type === 'request' ? 'Discount Request' : 'Discount Requested')), value: `${commission}%` });
     }
 
     if (type === 'order_hold' && /manual payment/i.test(String(transaction.note || ''))) {
@@ -92,8 +141,8 @@ const getReceiptData = (transaction: any) => {
                 value: formatAccount(transaction.sender_readable_id || transaction.sender_id, transaction.sender_username),
             },
             {
-                label: type === 'request' ? 'Requested From' : 'Send To',
-                value: formatAccount(transaction.receiver_readable_id || transaction.receiver_id, transaction.receiver_username),
+                label: isSellerBuyDiscount ? 'Request To' : (type === 'request' ? 'Requested From' : 'Send To'),
+                value: isGoogerCommission ? 'Googer Commission' : formatAccount(transaction.receiver_readable_id || transaction.receiver_id, transaction.receiver_username),
             }
         );
     }
@@ -105,6 +154,7 @@ const getReceiptData = (transaction: any) => {
     );
 
     return {
+        headerTitle: type === 'discount_staking' || isProductDiscountRefund ? 'PRODUCT DISCOUNT RECEIPT' : 'GOOGER WALLET TRANSACTION RECEIPT',
         title,
         status: statusLabel,
         amount: Number(transaction.amount || 0).toFixed(2),
@@ -173,7 +223,7 @@ export const generateTransactionReceipt = async (transaction: any, currentUser: 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(7.5);
     doc.setTextColor(255, 255, 255);
-    doc.text('GOOGER WALLET TRANSACTION RECEIPT', pageWidth / 2, y, { align: 'center' });
+    doc.text(receipt.headerTitle, pageWidth / 2, y, { align: 'center' });
     y += 4;
 
     doc.setFont('helvetica', 'normal');

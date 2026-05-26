@@ -19,6 +19,10 @@ import {
 
 const formatHistoryCounterparty = (tx: any, currentUserId?: number | string) => {
     const isSent = tx.sender_id === currentUserId;
+    const type = String(tx?.type || '').toLowerCase();
+    if (type === 'commission_hold') {
+        return 'Googer Commission';
+    }
     const fullName = isSent ? tx.receiver_full_name : tx.sender_full_name;
     const username = isSent ? tx.receiver_username : tx.sender_username;
     const readableId = isSent ? tx.receiver_readable_id : tx.sender_readable_id;
@@ -33,6 +37,147 @@ const isManualOrderHold = (tx: any) => {
 const isGoogerPaymentOrderHold = (tx: any) => {
     return String(tx?.type || '').toLowerCase() === 'order_hold'
         && !/manual payment/i.test(String(tx?.note || ''));
+};
+
+const getDisplayNote = (tx: any, fallback: string) => {
+    if (isGoogerPaymentOrderHold(tx)) return 'Googer Payments';
+    return tx?.note || fallback;
+};
+
+const getWalletDisplayAmount = (tx: any, isSent: boolean) => {
+    const amount = Number(tx?.amount || 0);
+    const discountPct = Number(tx?.commission_percentage || 0);
+    const type = String(tx?.type || '').toLowerCase();
+    const status = String(tx?.status || '').toLowerCase();
+    const isAcceptedDiscountTransfer = ['accepted', 'completed'].includes(status)
+        && discountPct > 0
+        && ['sell', 'request'].includes(type);
+
+    if (!isAcceptedDiscountTransfer) return amount;
+
+    const discountAmount = Number(((amount * discountPct) / 100).toFixed(2));
+    const netAmount = Math.max(0, amount - discountAmount);
+
+    if (type === 'sell' && !isSent) return netAmount;
+    if (type === 'request' && isSent) return netAmount;
+    return amount;
+};
+
+const getSellerDiscountAmount = (tx: any) => {
+    const amount = Number(tx?.amount || 0);
+    const discountPct = Number(tx?.commission_percentage || 0);
+    return Number(((amount * discountPct) / 100).toFixed(2));
+};
+
+const isSellerBuyDiscountRequest = (tx: any) => {
+    return String(tx?.type || '').toLowerCase() === 'request'
+        && Number(tx?.commission_percentage || 0) > 0
+        && String(tx?.sender_user_type || '').toLowerCase() === 'seller';
+};
+
+const formatCoinRequestAmount = (value: any) => {
+    const amount = Number(value || 0);
+    if (!Number.isFinite(amount)) return '0';
+    return Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
+};
+
+const getCoinRequestLines = (tx: any) => {
+    return {
+        coinRequest: `Coin Request ${formatCoinRequestAmount(tx?.amount)}`,
+        sendDiscount: `Send Discount ${Number(tx?.commission_percentage || 0)}%`,
+    };
+};
+
+const isSellerDiscountRefund = (tx: any) => {
+    return String(tx?.type || '').toLowerCase() === 'discount_refund'
+        && /seller discount/i.test(String(tx?.note || ''));
+};
+
+const isProductDiscountRefund = (tx: any) => {
+    return String(tx?.type || '').toLowerCase() === 'discount_refund'
+        && /product discount/i.test(String(tx?.note || ''));
+};
+
+const isSellerDirectDiscount = (tx: any) => {
+    return String(tx?.type || '').toLowerCase() === 'seller_discount'
+        && Number(tx?.commission_percentage || 0) > 0;
+};
+
+const getSellerDirectDiscountLines = (tx: any) => {
+    return {
+        sendDiscount: `Send Discount ${Number(tx?.commission_percentage || 0)}%`,
+    };
+};
+
+const isSellDiscountRequest = (tx: any) => {
+    return String(tx?.type || '').toLowerCase() === 'sell'
+        && Number(tx?.commission_percentage || 0) > 0;
+};
+
+const getSellDiscountRequestLines = (tx: any) => {
+    return {
+        sendCoin: `Send Coin ${formatCoinRequestAmount(tx?.amount)}`,
+        discountRequest: `Discount Request ${Number(tx?.commission_percentage || 0)}%`,
+    };
+};
+
+const isNormalDiscountRequest = (tx: any) => {
+    return String(tx?.type || '').toLowerCase() === 'request'
+        && Number(tx?.commission_percentage || 0) > 0
+        && !isSellerBuyDiscountRequest(tx);
+};
+
+const getNormalDiscountRequestLine = (tx: any) => {
+    return `Discount Request ${Number(tx?.commission_percentage || 0)}%`;
+};
+
+const isNoDiscountBuyRequest = (tx: any) => {
+    return String(tx?.type || '').toLowerCase() === 'request'
+        && Number(tx?.commission_percentage || 0) <= 0;
+};
+
+const isNoDiscountSellTransfer = (tx: any) => {
+    return String(tx?.type || '').toLowerCase() === 'sell'
+        && Number(tx?.commission_percentage || 0) <= 0;
+};
+
+const getSellerDiscountRefundLines = (tx: any) => {
+    const discountPercent = Number(tx?.original_discount_percentage || 0);
+    return {
+        sendDiscount: `Send Discount ${Number.isFinite(discountPercent) && discountPercent > 0 ? discountPercent : ''}%`.replace(' %', ''),
+        deductionNote: 'Referral level amounts are deducted first. This is the remaining discount balance added to your wallet.',
+    };
+};
+
+const getProductDiscountRefundLines = (tx: any) => {
+    const discountPercent = Number(tx?.product_discount_percentage || 0);
+    return {
+        productDiscount: discountPercent > 0 ? `Product Discount ${discountPercent}%` : 'Product Discount',
+        deductionNote: 'Referral level amounts are deducted first. This is the remaining discount balance added to your wallet.',
+    };
+};
+
+const formatWalletTypeLabel = (tx: any) => {
+    const type = String(tx?.type || '').toLowerCase();
+    if (type === 'commission_hold') return 'Googer Commission';
+    if (type === 'discount_staking') return 'Product Discount';
+    if (type === 'seller_discount') return 'Send Discount';
+    if (type === 'discount_refund') return 'Discount Refund';
+    return type ? type.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()) : 'Wallet';
+};
+
+const isGoogerCommissionTx = (tx: any) => {
+    return String(tx?.type || '').toLowerCase() === 'commission_hold'
+        && /googer commission/i.test(String(tx?.note || ''));
+};
+
+const isProductDiscountTx = (tx: any) => {
+    return String(tx?.type || '').toLowerCase() === 'discount_staking';
+};
+
+const getProductDiscountLine = (tx: any) => {
+    const percent = Number(tx?.product_discount_percentage || tx?.commission_percentage || 0);
+    return percent > 0 ? `Product Discount ${percent}%` : 'Product Discount';
 };
 
 const buildDisplayTransactions = (transactions: any[], currentUser: any) => {
@@ -198,6 +343,23 @@ export default function TransactionsPage() {
                                 const adSummary = adCampaignPayment ? getAdTransactionSummary(tx) : null;
                                 const isPromoFree = adCampaignPayment && (isPromoAdRecord(tx) || adPaymentMeta?.isPromo);
                                 const displayStatus = isPromoFree ? 'free' : adCampaignPayment ? 'hold' : tx.status;
+                                const sellerBuyDiscount = isSellerBuyDiscountRequest(tx);
+                                const requestLines = sellerBuyDiscount ? getCoinRequestLines(tx) : null;
+                                const sellerDiscountRefund = isSellerDiscountRefund(tx);
+                                const refundLines = sellerDiscountRefund ? getSellerDiscountRefundLines(tx) : null;
+                                const productDiscountRefund = isProductDiscountRefund(tx);
+                                const productRefundLines = productDiscountRefund ? getProductDiscountRefundLines(tx) : null;
+                                const googerCommissionTx = isGoogerCommissionTx(tx);
+                                const productDiscountTx = isProductDiscountTx(tx);
+                                const sellerDirectDiscount = isSellerDirectDiscount(tx);
+                                const directDiscountLines = sellerDirectDiscount ? getSellerDirectDiscountLines(tx) : null;
+                                const sellDiscountRequest = isSellDiscountRequest(tx);
+                                const sellDiscountLines = sellDiscountRequest ? getSellDiscountRequestLines(tx) : null;
+                                const normalDiscountRequest = isNormalDiscountRequest(tx);
+                                const noDiscountBuyRequest = isNoDiscountBuyRequest(tx);
+                                const noDiscountSellTransfer = isNoDiscountSellTransfer(tx);
+                                const walletTypeLabel = formatWalletTypeLabel(tx);
+                                const displayAmount = sellerDirectDiscount ? getSellerDiscountAmount(tx) : getWalletDisplayAmount(tx, isSent);
                                 const isCancellable = isSent
                                     && tx.status === 'pending'
                                     && !googerPaymentOrderHold
@@ -219,13 +381,13 @@ export default function TransactionsPage() {
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex justify-between items-center mb-1">
                                                     <h5 className="font-bold text-white text-sm">
-                                                        {adCampaignPayment ? adTitle : tx.type === 'request' ? (isSent ? 'Requested From: ' : 'Requested By: ') : (isSent ? 'Sent To: ' : 'Received From: ')}
+                                                        {adCampaignPayment ? adTitle : googerCommissionTx ? 'Sent To: ' : tx.type === 'request' ? (isSent ? 'Requested From: ' : 'Requested By: ') : (isSent ? 'Sent To: ' : 'Received From: ')}
                                                         {!adCampaignPayment && <span className="text-white/65">{otherUser}</span>}
                                                     </h5>
                                                     <div className="text-right">
                                                         {adCampaignPayment && <p className="text-[8px] font-black uppercase tracking-widest text-white/35">{isPromoFree ? 'Promo Status' : 'Hold Amount'}</p>}
                                                         <span className={`text-sm font-bold tracking-tight ${isPromoFree ? 'text-emerald-400' : isSent ? 'text-red-400' : 'text-green-400'}`}>
-                                                            {isPromoFree ? 'Free' : `${isSent ? (tx.type === 'request' ? '' : '-') : '+'} R ${parseFloat(tx.amount || 0).toFixed(2)}`}
+                                                            {isPromoFree ? 'Free' : `${isSent ? (tx.type === 'request' ? '' : '-') : '+'} R ${displayAmount.toFixed(2)}`}
                                                         </span>
                                                     </div>
                                                 </div>
@@ -234,7 +396,7 @@ export default function TransactionsPage() {
                                                         {formatWalletTransactionDate(tx.created_at)} | {formatWalletTransactionTime(tx.created_at)}
                                                     </p>
                                                     <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded bg-gray-900/50 ${isPromoFree ? 'text-emerald-400' : adCampaignPayment ? 'text-rose-300' : tx.type === 'transfer' ? 'text-white/65' : tx.type === 'request' ? 'text-white/65' : 'text-amber-400'}`}>
-                                                        {isPromoFree ? 'Promo' : adCampaignPayment ? 'Promotion' : tx.type === 'transfer' ? 'Transferred' : tx.type === 'request' ? 'Requested' : tx.type}
+                                                        {isPromoFree ? 'Promo' : adCampaignPayment ? 'Promotion' : tx.type === 'transfer' ? 'Transferred' : tx.type === 'request' ? 'Requested' : walletTypeLabel}
                                                     </span>
                                                 </div>
                                                 <div className="flex justify-between items-center">
@@ -246,11 +408,57 @@ export default function TransactionsPage() {
                                                                 <p>Hold Amount: {adSummary.holdAmountLabel}</p>
                                                                 <p>Deducted Amount: {adSummary.deductedAmountLabel}</p>
                                                             </div>
-                                                        ) : (
-                                                            <p className="text-[10px] text-gray-500 italic truncate">
-                                                                {tx.note || (isSent ? (tx.type === 'request' ? 'Coin Request Sent' : 'Direct coin transfer') : 'Coins received')}
-                                                                {tx.commission_percentage > 0 && ` (${tx.commission_percentage}% discount)`}
+                                                        ) : productDiscountRefund && productRefundLines ? (
+                                                            <div className="space-y-1 text-[10px] text-gray-500">
+                                                                <p>{productRefundLines.productDiscount}</p>
+                                                                <p>{productRefundLines.deductionNote}</p>
+                                                            </div>
+                                                        ) : googerCommissionTx ? (
+                                                            <p className="text-[10px] text-gray-500">
+                                                                Googer Commission Fee
                                                             </p>
+                                                        ) : productDiscountTx ? (
+                                                            <p className="text-[10px] text-gray-500">
+                                                                {getProductDiscountLine(tx)}
+                                                            </p>
+                                                        ) : sellDiscountRequest && sellDiscountLines ? (
+                                                            <div className="space-y-0.5 text-[10px] text-gray-500">
+                                                                <p>{sellDiscountLines.sendCoin}</p>
+                                                                <p>{sellDiscountLines.discountRequest}</p>
+                                                            </div>
+                                                        ) : normalDiscountRequest ? (
+                                                            <p className="text-[10px] text-gray-500">
+                                                                {getNormalDiscountRequestLine(tx)}
+                                                            </p>
+                                                        ) : noDiscountBuyRequest ? (
+                                                            <p className="text-[10px] text-gray-500">
+                                                                Coin Request
+                                                            </p>
+                                                        ) : noDiscountSellTransfer ? (
+                                                            <p className="text-[10px] text-gray-500">
+                                                                Direct Coin Transfer
+                                                            </p>
+                                                        ) : sellerDirectDiscount && directDiscountLines ? (
+                                                            <div className="space-y-1 text-[10px] text-gray-500">
+                                                                <p>{directDiscountLines.sendDiscount}</p>
+                                                            </div>
+                                                        ) : sellerDiscountRefund && refundLines ? (
+                                                            <div className="space-y-1 text-[10px] text-gray-500">
+                                                                <p>{refundLines.sendDiscount}</p>
+                                                                <p>{refundLines.deductionNote}</p>
+                                                            </div>
+                                                        ) : (
+                                                            sellerBuyDiscount && requestLines ? (
+                                                                <div className="space-y-0.5 text-[10px] text-gray-500">
+                                                                    <p>{requestLines.coinRequest}</p>
+                                                                    <p>{requestLines.sendDiscount}</p>
+                                                                </div>
+                                                                ) : (
+                                                                    <p className="text-[10px] text-gray-500 italic truncate">
+                                                                    {getDisplayNote(tx, isSent ? (tx.type === 'request' ? 'Coin Request Sent' : 'Direct coin transfer') : 'Coins received')}
+                                                                    {tx.commission_percentage > 0 && ` (${tx.commission_percentage}% discount)`}
+                                                                </p>
+                                                                )
                                                         )}
                                                     </div>
                                                     <div className="flex items-center gap-3">

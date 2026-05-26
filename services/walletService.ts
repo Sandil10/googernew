@@ -177,5 +177,18 @@ export const walletService = {
             throw new Error(result?.message || `Payment failed (HTTP ${response.status})`);
         }
         return result;
+    },
+
+    addAdminCapital: async (amount: number, note?: string) => {
+        const response = await fetch(`${API_URL}/wallet/admin/add-capital`, {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify({ amount, note }),
+        });
+        const result = await safeJson(response);
+        if (!response.ok) {
+            throw new Error(result?.message || `Add capital failed (HTTP ${response.status})`);
+        }
+        return result as { success: boolean; walletBalance: number; transferId: number };
     }
 };

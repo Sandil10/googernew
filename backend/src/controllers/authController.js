@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
 const { saveUploadedFile } = require('../utils/localUpload');
 const { getUserPlanLimits } = require('../utils/planLimits');
+const { ensureReferralCommissionTables } = require('../utils/referralCommission');
 
 let usersTableHasShippingAddressColumn = null;
 let subscriptionsTableEnsured = false;
@@ -433,7 +434,7 @@ exports.register = async (req, res) => {
                 `INSERT INTO users (user_id, username, full_name, email, password, user_type, referral_code, wallet_balance)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                  RETURNING id, user_id, username, full_name, email, user_type, profile_picture, referral_code, wallet_balance, created_at`,
-                [userId, username, fullName, email, hashedPassword, userType, newReferralCode, 1000.00]
+                [userId, username, fullName, email, hashedPassword, userType, newReferralCode, 0.00]
             );
 
             const newUserId = newUser.rows[0].id;
@@ -474,9 +475,9 @@ exports.register = async (req, res) => {
 
             // Create JWT token
             const token = jwt.sign(
-                { id: newUser.rows[0].id, userId: newUser.rows[0].user_id },
+                { id: newUser.rows[0].id, userId: newUser.rows[0].user_id, tokenVersion: 0 },
                 process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET,
-                { expiresIn: process.env.JWT_EXPIRE || '30d' }
+                { expiresIn: process.env.JWT_EXPIRE || '7d' }
             );
 
             res.status(201).json({
@@ -537,9 +538,9 @@ exports.login = async (req, res) => {
         await ensureGoogerIdNormalization();
 
         const token = jwt.sign(
-            { id: user.rows[0].id, userId: user.rows[0].user_id },
+            { id: user.rows[0].id, userId: user.rows[0].user_id, tokenVersion: user.rows[0].token_version ?? 0 },
             secret,
-            { expiresIn: process.env.JWT_EXPIRE || '30d' }
+            { expiresIn: process.env.JWT_EXPIRE || '7d' }
         );
 
         const { password: _, ...userWithoutPassword } = user.rows[0];
@@ -934,6 +935,7 @@ exports.getWallet = async (req, res) => {
     try {
         const userId = req.user.id;
         await ensureReferralRelationshipsTable();
+        await ensureReferralCommissionTables(pool);
 
         const levelSettings = await pool.query(
             `SELECT level, name, commission_percentage, is_active, sort_order
@@ -974,6 +976,15 @@ exports.getWallet = async (req, res) => {
                 FROM referral_relationships child
                 JOIN referral_tree parent ON child.referred_by = parent.user_id
                 WHERE parent.level < $2
+            ),
+            payout_totals AS (
+                SELECT
+                    buyer_id AS referred_user_id,
+                    SUM(amount)::numeric AS earned_amount
+                FROM referral_commission_payouts
+                WHERE earner_id = $1
+                  AND source_type IN ('wallet_discount', 'product_discount', 'ad_coin')
+                GROUP BY buyer_id
             )
             SELECT
                 rt.level,
@@ -989,18 +1000,20 @@ exports.getWallet = async (req, res) => {
                 u.username AS referred_username,
                 u.profile_picture AS referred_profile_picture,
                 COALESCE(rt.stored_commission_percentage, rls.commission_percentage, 0)::numeric AS commission_percentage,
-                0::numeric AS amount
+                COALESCE(pt.earned_amount, 0)::numeric AS amount
              FROM referral_tree rt
              JOIN users u ON rt.user_id = u.id
              LEFT JOIN users parent ON rt.referred_by = parent.id
-             LEFT JOIN referral_level_settings rls
-                ON rls.level = COALESCE(rt.stored_level, rt.level)
-               AND rls.is_active = TRUE
-             ORDER BY rt.level ASC, rt.created_at DESC`,
+              LEFT JOIN referral_level_settings rls
+                 ON rls.level = COALESCE(rt.stored_level, rt.level)
+                AND rls.is_active = TRUE
+              LEFT JOIN payout_totals pt
+                ON pt.referred_user_id = u.id
+              ORDER BY rt.level ASC, rt.created_at DESC`,
             [userId, maxReferralLevel]
         );
 
-        const totalEarned = 0;
+        const totalEarned = walletData.rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
         const levelCounts = walletData.rows.reduce((acc, row) => {
             const key = `level${row.level}`;
             acc[key] = (acc[key] || 0) + 1;
@@ -1270,7 +1283,10 @@ exports.changePassword = async (req, res) => {
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(newPassword, salt);
-        await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, req.user.id]);
+        await pool.query(
+            'UPDATE users SET password = $1, token_version = COALESCE(token_version, 0) + 1 WHERE id = $2',
+            [hashedPassword, req.user.id]
+        );
 
         res.status(200).json({ success: true, message: 'Password changed successfully' });
     } catch (error) {

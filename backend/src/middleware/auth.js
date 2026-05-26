@@ -2,7 +2,16 @@ const jwt = require('jsonwebtoken');
 const { error } = require('../utils/responseHandler');
 const pool = require('../config/database');
 
-const authMiddleware = (req, res, next) => {
+// Ensure token_version column exists for JWT revocation support
+let tokenVersionColumnEnsured = false;
+const ensureTokenVersionColumn = async () => {
+    if (tokenVersionColumnEnsured) return;
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0`);
+    tokenVersionColumnEnsured = true;
+};
+ensureTokenVersionColumn().catch(err => console.error('[AUTH] token_version setup failed:', err));
+
+const authMiddleware = async (req, res, next) => {
     try {
         const authHeader = req.header('Authorization');
         const token = authHeader?.startsWith('Bearer ')
@@ -21,6 +30,17 @@ const authMiddleware = (req, res, next) => {
         }
 
         const decoded = jwt.verify(token, secret);
+
+        // Verify token_version matches DB — invalidates tokens after password change or forced logout
+        const userResult = await pool.query(
+            'SELECT token_version FROM users WHERE id = $1 LIMIT 1',
+            [decoded.id]
+        );
+        const dbTokenVersion = userResult.rows[0]?.token_version ?? 0;
+        if (decoded.tokenVersion !== dbTokenVersion) {
+            return error(res, 'Session has been invalidated. Please log in again.', 401);
+        }
+
         console.log('[AUTH] Token Decoded:', { id: decoded.id, userId: decoded.userId });
         req.user = decoded;
 
