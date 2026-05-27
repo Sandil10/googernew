@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { getShareUrlForItem, buildPublicUrl } from "@/app/lib/shareLinks";
+import { authService } from "@/services/authService";
 
 // ─── Inline SVG Brand Icons (pixel-perfect, official brand colors) ────────────
 
@@ -104,6 +105,17 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
     const [resellCopied, setResellCopied] = useState(false);
     const [resellGenerated, setResellGenerated] = useState(false);
     const [isVisible, setIsVisible] = useState(false);
+    const [resellOwnUsername, setResellOwnUsername] = useState("");
+    const [resellOwnUserId, setResellOwnUserId] = useState("");
+    const [resellError, setResellError] = useState("");
+
+    const normalizeIdentifier = (value: string) => String(value || "").trim().replace(/^@+/, "").toLowerCase();
+
+    const isOwnIdentifier = (value: string) => {
+        const n = normalizeIdentifier(value);
+        if (!n) return false;
+        return n === normalizeIdentifier(resellOwnUsername) || n === normalizeIdentifier(resellOwnUserId);
+    };
     const providedUrl = shareUrl || url || "";
     const isProductPromote = product?.campaign_type === "Product Promote";
     const isSponsoredAd = !!product?.is_sponsored && !isProductPromote;
@@ -125,6 +137,24 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
             setResellLink("");
             setResellCopied(false);
             setResellGenerated(false);
+            setResellError("");
+            setResellOwnUsername("");
+            setResellOwnUserId("");
+
+            // Auto-fill the resell ID with the current user's actual identifier and remember
+            // both their username and user_id so we can reject anything else the user types.
+            if (canShowResellFlow && authService.isAuthenticated()) {
+                authService.getProfile()
+                    .then((u: any) => {
+                        const username = String(u?.username || "").trim();
+                        const userId = String(u?.user_id || u?.userId || "").trim();
+                        setResellOwnUsername(username);
+                        setResellOwnUserId(userId);
+                        const ownIdentifier = userId || username;
+                        if (ownIdentifier) setResellId(ownIdentifier);
+                    })
+                    .catch(() => {});
+            }
         } else {
             setIsVisible(false);
         }
@@ -157,7 +187,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
             const info = typeof product.commission_info === "string"
                 ? JSON.parse(product.commission_info)
                 : product.commission_info;
-            return info?.resell_amount || info?.resell_commission || info?.reseller_commission || info?.googer_commission || null;
+            return info?.resell_percentage || info?.resell_percent || info?.resell_amount || info?.resell_commission || info?.reseller_commission || null;
         } catch { return null; }
     };
 
@@ -449,23 +479,43 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                                         <input
                                             type="text"
                                             value={resellId}
-                                            onChange={(e) => { setResellId(e.target.value); setResellGenerated(false); }}
-                                            placeholder="e.g. U102 or john_doe"
-                                            className="w-full bg-white/[0.05] border border-white/[0.08] hover:border-white/15 focus:border-amber-500/50 focus:bg-white/[0.07] rounded-2xl pl-11 pr-4 py-3.5 text-white placeholder-white/15 text-[13px] font-medium focus:outline-none transition-all duration-200"
-                                            onKeyDown={(e) => e.key === "Enter" && handleGenerateResellLink()}
+                                            onChange={(e) => {
+                                                const next = e.target.value;
+                                                setResellId(next);
+                                                setResellGenerated(false);
+                                                if (!next.trim()) {
+                                                    setResellError("");
+                                                } else if (!isOwnIdentifier(next)) {
+                                                    setResellError(
+                                                        `You can only use your own Username (${resellOwnUsername || "—"}) or your Googer ID (${resellOwnUserId || "—"}).`
+                                                    );
+                                                } else {
+                                                    setResellError("");
+                                                }
+                                            }}
+                                            placeholder={resellOwnUsername || resellOwnUserId || "Your Username or Googer ID"}
+                                            className={`w-full bg-white/[0.05] border ${resellError ? "border-red-500/60 focus:border-red-500" : "border-white/[0.08] hover:border-white/15 focus:border-amber-500/50"} focus:bg-white/[0.07] rounded-2xl pl-11 pr-4 py-3.5 text-white placeholder-white/15 text-[13px] font-medium focus:outline-none transition-all duration-200`}
+                                            onKeyDown={(e) => e.key === "Enter" && !resellError && isOwnIdentifier(resellId) && handleGenerateResellLink()}
                                         />
                                     </div>
                                     <button
                                         onClick={handleGenerateResellLink}
-                                        disabled={!resellId.trim()}
+                                        disabled={!resellId.trim() || !isOwnIdentifier(resellId)}
                                         className="w-full xs:w-auto flex-shrink-0 px-5 py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-black font-bold text-[12px] transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-amber-500 active:scale-95"
                                     >
                                         Generate
                                     </button>
                                 </div>
-                                <p className="text-[10px] text-white/20 px-1 font-medium leading-relaxed italic">
-                                    Final Link will combine code <span className="text-amber-400 font-bold">{productCode}</span> with your ID.
-                                </p>
+                                {resellError ? (
+                                    <div className="flex items-start gap-2 px-1 py-2 rounded-xl bg-red-500/10 border border-red-500/20">
+                                        <span className="text-red-400 text-base leading-none mt-0.5">⚠</span>
+                                        <p className="text-[11px] text-red-400 font-semibold leading-relaxed">{resellError}</p>
+                                    </div>
+                                ) : (
+                                    <p className="text-[10px] text-white/20 px-1 font-medium leading-relaxed italic">
+                                        Only your own account identifier is allowed. Final Link will combine code <span className="text-amber-400 font-bold">{productCode}</span> with your ID.
+                                    </p>
+                                )}
                             </div>
 
                             {/* Generated Link Box */}

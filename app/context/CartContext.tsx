@@ -20,6 +20,8 @@ export interface CartItem {
   product_discount?: number;
   selected_shipping_country?: string | null;
   payment_methods?: string[];
+  reseller_ref?: string | null;
+  resell_commission_percentage?: number;
 }
 
 interface CartContextType {
@@ -52,6 +54,7 @@ interface CartContextType {
 }
 
 const CART_STORAGE_KEY = 'googer_cart';
+const RESELL_ATTRIBUTION_STORAGE_KEY = 'googer:resell-attribution';
 const ADDRESS_STORAGE_KEY = 'googer-cart-address-1';
 const MANUAL_PAYMENT_LOCK_STORAGE_KEY = 'googer-manual-payment-lock';
 const GOOGER_PAYMENT_LOCK_STORAGE_KEY = 'googer-payment-lock';
@@ -70,6 +73,8 @@ const normalizeCartItems = (items: any[]): CartItem[] =>
     variantIndex: item.variantIndex ?? item.variant_index ?? null,
     selected: item.selected !== false,
     selected_shipping_country: item.selected_shipping_country ?? null,
+    reseller_ref: item.reseller_ref ?? item.resell_ref ?? item.resellerRef ?? null,
+    resell_commission_percentage: Number(item.resell_commission_percentage ?? item.resell_percentage ?? 0),
     payment_methods: Array.isArray(item.payment_methods)
       ? item.payment_methods
       : (() => {
@@ -98,6 +103,18 @@ const getAuthToken = () =>
 const hasAuthenticatedSession = () => Boolean(getAuthToken());
 
 const serializeCart = (items: CartItem[]) => JSON.stringify(normalizeCartItems(items));
+
+const getStoredResellRefForProduct = (productId: string | number | null | undefined) => {
+  if (typeof window === 'undefined' || productId === null || productId === undefined) return null;
+  try {
+    const raw = localStorage.getItem(RESELL_ATTRIBUTION_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const entry = parsed?.[String(productId)];
+    return entry?.reseller_ref || entry?.resell_ref || null;
+  } catch {
+    return null;
+  }
+};
 
 export function CartProvider({ children }: { children: React.ReactNode }) {
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
@@ -290,16 +307,25 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     selectedShippingCountry?: string | null
   ): CartItem => {
     let productDiscountPct = 0;
+    let resellCommissionPct = 0;
     try {
       const commInfo = typeof product.commission_info === 'string'
         ? JSON.parse(product.commission_info)
         : product.commission_info;
       productDiscountPct = parseFloat(commInfo?.discount || '0');
+      resellCommissionPct = parseFloat(commInfo?.resell_percentage ?? commInfo?.resell_percent ?? commInfo?.resell_commission ?? '0');
     } catch {}
+    const productId = Number(product.id || product.productId || product.product_id);
+    const resellerRef = product.reseller_ref
+      || product.resell_ref
+      || product.resellerRef
+      || product?.resell?.reseller_ref
+      || getStoredResellRefForProduct(product.id || product.productId || product.product_id)
+      || null;
 
     return {
       id: Date.now(),
-      productId: Number(product.id),
+      productId,
       title: product.title,
       price: Number(product.price),
       promo_price: product.promo_price ? Number(product.promo_price) : Number(product.price),
@@ -313,6 +339,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       shipping_info: product.shipping_info || product.shipping_data,
       product_discount: productDiscountPct,
       selected_shipping_country: selectedShippingCountry || null,
+      reseller_ref: resellerRef ? String(resellerRef) : null,
+      resell_commission_percentage: Number.isFinite(resellCommissionPct) ? resellCommissionPct : 0,
       payment_methods: typeof product.payment_methods === 'string'
         ? JSON.parse(product.payment_methods)
         : (product.payment_methods || (product.payment_data ? (typeof product.payment_data === 'string' ? JSON.parse(product.payment_data) : product.payment_data) : ['wallet']))
@@ -337,7 +365,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
           item.size === newItem.size &&
           item.color === newItem.color &&
           item.variantIndex === newItem.variantIndex &&
-          (item.selected_shipping_country || null) === (newItem.selected_shipping_country || null)
+          (item.selected_shipping_country || null) === (newItem.selected_shipping_country || null) &&
+          (item.reseller_ref || null) === (newItem.reseller_ref || null)
       );
 
       if (existingItemIndex > -1) {
@@ -369,6 +398,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         shipping_info: newItem.shipping_info,
         product_discount: newItem.product_discount,
         selected_shipping_country: newItem.selected_shipping_country,
+        reseller_ref: newItem.reseller_ref,
+        resell_commission_percentage: newItem.resell_commission_percentage,
         payment_methods: newItem.payment_methods,
       });
       await syncCartFromServer();

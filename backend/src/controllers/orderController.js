@@ -81,6 +81,53 @@ async function ensureOrderDeliveryTimestampColumn(client) {
     `);
 }
 
+async function ensureOrderResellCommissionColumns(client) {
+    await client.query(`
+        ALTER TABLE orders
+        ADD COLUMN IF NOT EXISTS reseller_user_id INTEGER,
+        ADD COLUMN IF NOT EXISTS reseller_ref TEXT,
+        ADD COLUMN IF NOT EXISTS resell_commission_percentage NUMERIC(8,2) DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS resell_commission_amount NUMERIC(15,2) DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS resell_googer_commission_percentage NUMERIC(8,2) DEFAULT 10,
+        ADD COLUMN IF NOT EXISTS resell_commission_transfer_id INTEGER;
+    `);
+}
+
+async function ensureResellGoogerCommissionSetting(client) {
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS ad_coin_reward_settings (
+            id SERIAL PRIMARY KEY,
+            user_reward_amount DECIMAL(10, 2) NOT NULL DEFAULT 1.00,
+            googer_commission_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.25,
+            advertiser_charge_amount DECIMAL(10, 2) NOT NULL DEFAULT 1.25,
+            required_watch_seconds INTEGER NOT NULL DEFAULT 15,
+            resell_googer_commission_percentage DECIMAL(8, 2) NOT NULL DEFAULT 10.00,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+
+    await client.query(`
+        ALTER TABLE ad_coin_reward_settings
+        ADD COLUMN IF NOT EXISTS resell_googer_commission_percentage DECIMAL(8, 2) NOT NULL DEFAULT 10.00
+    `);
+
+    const countRes = await client.query('SELECT COUNT(*)::int AS count FROM ad_coin_reward_settings');
+    if (Number(countRes.rows[0]?.count || 0) === 0) {
+        await client.query(`
+            INSERT INTO ad_coin_reward_settings (
+                user_reward_amount,
+                googer_commission_amount,
+                advertiser_charge_amount,
+                required_watch_seconds,
+                resell_googer_commission_percentage,
+                is_active
+            ) VALUES (1.00, 0.25, 1.25, 15, 10.00, true)
+        `);
+    }
+}
+
 function parseVariants(rawVariants) {
     if (!rawVariants) return [];
     if (Array.isArray(rawVariants)) return rawVariants;
@@ -122,6 +169,133 @@ function getGoogerCommissionPercentage(commissionInfo) {
         ?? 0
     );
     return Number.isFinite(percentage) && percentage > 0 ? percentage : 0;
+}
+
+function getResellCommissionPercentage(commissionInfo) {
+    const percentage = parseFloat(
+        commissionInfo?.resell_percentage
+        ?? commissionInfo?.resell_percent
+        ?? commissionInfo?.resell_commission
+        ?? commissionInfo?.reseller_commission
+        ?? 0
+    );
+    return Number.isFinite(percentage) && percentage > 0 ? percentage : 0;
+}
+
+async function getResellGoogerCommissionPercentage(client) {
+    await ensureResellGoogerCommissionSetting(client);
+    const result = await client.query(`
+        SELECT resell_googer_commission_percentage
+        FROM ad_coin_reward_settings
+        WHERE is_active = true
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+    `);
+    const percentage = parseFloat(result.rows[0]?.resell_googer_commission_percentage ?? 10);
+    return Number.isFinite(percentage) && percentage >= 0 ? percentage : 10;
+}
+
+async function resolveResellerUser(client, resellerRef) {
+    const ref = String(resellerRef || '').trim().replace(/^@+/, '');
+    if (!ref) return null;
+
+    const result = await client.query(
+        `SELECT id, username, user_id
+         FROM users
+         WHERE id::text = $1
+            OR user_id::text = $1
+            OR LOWER(username) = LOWER($1)
+         ORDER BY id ASC
+         LIMIT 1`,
+        [ref]
+    );
+
+    return result.rows[0] || null;
+}
+
+async function createResellCommissionHold(client, { sellerId, buyerId, item, quantity, resellerRef, paymentMethod }) {
+    if (!resellerRef || !String(resellerRef).trim()) {
+        console.warn(`[resell] SKIP item=${item?.id}: no reseller_ref provided in order item`);
+        return null;
+    }
+
+    const reseller = await resolveResellerUser(client, resellerRef);
+    if (!reseller) {
+        console.warn(`[resell] SKIP item=${item?.id}: resellerRef="${resellerRef}" does not match any user (checked id, user_id, username)`);
+        return null;
+    }
+
+    const resellerId = Number(reseller.id || 0);
+    if (!resellerId) {
+        console.warn(`[resell] SKIP item=${item?.id}: resolved reseller has invalid id`);
+        return null;
+    }
+    if (resellerId === Number(buyerId)) {
+        console.warn(`[resell] SKIP item=${item?.id}: buyer (${buyerId}) is the same as the reseller (${resellerId}). Cannot earn commission on self-purchase.`);
+        return null;
+    }
+    if (resellerId === Number(sellerId)) {
+        console.warn(`[resell] SKIP item=${item?.id}: seller (${sellerId}) is the same as the reseller (${resellerId}). Owner cannot resell their own product.`);
+        return null;
+    }
+
+    const commInfo = parseCommissionInfo(item.commission_info);
+    const resellPct = getResellCommissionPercentage(commInfo);
+    if (resellPct <= 0) {
+        console.warn(`[resell] SKIP item=${item?.id}: product has no resell_percentage configured in commission_info (value=${JSON.stringify(commInfo?.resell_percentage ?? commInfo?.resell_percent ?? null)}). Seller must set a resell commission percentage on the product.`);
+        return null;
+    }
+
+    const productAmount = parseFloat(item.promo_price || item.price || 0) * (Number(quantity) || 1);
+    const resellAmount = normalizeMoney((productAmount * resellPct) / 100);
+    if (resellAmount <= 0) {
+        console.warn(`[resell] SKIP item=${item?.id}: computed resell amount is 0 (price=${item?.promo_price || item?.price}, qty=${quantity}, pct=${resellPct})`);
+        return null;
+    }
+
+    console.log(`[resell] PROCESSING item=${item?.id}: reseller=${resellerId} (${reseller.username}), pct=${resellPct}%, amount=${resellAmount}, payment=${paymentMethod}`);
+
+    const googerPct = await getResellGoogerCommissionPercentage(client);
+    const googerShare = normalizeMoney((resellAmount * googerPct) / 100);
+    const resellerShare = normalizeMoney(Math.max(0, resellAmount - googerShare));
+
+    // HOLD MODEL: the resell commission is ALWAYS held from the seller (User A) at order
+    // placement, for every payment method (cod, wallet, wallet_manual). This makes the
+    // R10 visibly deducted from the seller the moment the buyer clicks place order.
+    // At receive, the held amount is released and split: 90% → reseller, 10% → Googer.
+    const sellerRes = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [sellerId]);
+    const sellerBalance = parseFloat(sellerRes.rows[0]?.wallet_balance || 0);
+    if (sellerBalance < resellAmount) {
+        const error = new Error(`Seller has insufficient balance to hold resell commission for item ${item.id}. Needs ${resellAmount}, has ${sellerBalance.toFixed(2)}.`);
+        error.statusCode = 400;
+        throw error;
+    }
+
+    await client.query(
+        'UPDATE users SET wallet_balance = wallet_balance - $1, hold_balance = COALESCE(hold_balance, 0) + $1 WHERE id = $2',
+        [resellAmount, sellerId]
+    );
+
+    // Create the resell_commission transfer in PENDING (HOLD) state.
+    // amount = full resellAmount (e.g. 100) so refundCancelledOrder can refund correctly.
+    // commission = googerShare (e.g. 10) recorded for transparency / release reference.
+    const transferResult = await client.query(
+        `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage)
+         VALUES ($1, $2, $3, $4, 'resell_commission', 'pending', $5, $6)
+         RETURNING id`,
+        [sellerId, resellerId, resellAmount, `Resell commission HOLD for ${item.title || `Order Item #${item.id}`}`, googerShare, resellPct]
+    );
+
+    console.log(`[resell] HELD item=${item?.id}: pending transferId=${transferResult.rows[0].id}, reseller=${resellerId}, pool=${resellAmount}, willPay reseller=${resellerShare} + Googer=${googerShare} on receive`);
+
+    return {
+        resellerUserId: resellerId,
+        resellerRef: String(reseller.user_id || reseller.username || resellerId),
+        percentage: resellPct,
+        amount: resellAmount,
+        googerPercentage: googerPct,
+        transferId: transferResult.rows[0].id,
+    };
 }
 
 function calculateDiscountedProductAmount(item, quantity = 1) {
@@ -265,8 +439,16 @@ async function createOrderRecord(client, orderData) {
         seller_commission_transfer_id = null,
         payment_method = 'wallet',
         shipping_fee = 0,
-        seller_discount_transfer_id = null
+        seller_discount_transfer_id = null,
+        reseller_user_id = null,
+        reseller_ref = null,
+        resell_commission_percentage = 0,
+        resell_commission_amount = 0,
+        resell_googer_commission_percentage = 10,
+        resell_commission_transfer_id = null
     } = orderData;
+
+    await ensureOrderResellCommissionColumns(client);
 
     return client.query(
         `INSERT INTO orders (
@@ -274,12 +456,16 @@ async function createOrderRecord(client, orderData) {
             quantity, size, color, variant_index,
             total_price, shipping_address, order_number,
             wallet_transfer_id, seller_commission_transfer_id,
-            payment_method, shipping_fee, seller_discount_transfer_id
+            payment_method, shipping_fee, seller_discount_transfer_id,
+            reseller_user_id, reseller_ref, resell_commission_percentage,
+            resell_commission_amount, resell_googer_commission_percentage,
+            resell_commission_transfer_id
         ) VALUES (
             $1, $2, $3, $4,
             $5, $6, $7, $8,
             $9, $10, $11,
-            $12, $13, $14, $15, $16
+            $12, $13, $14, $15, $16,
+            $17, $18, $19, $20, $21, $22
         ) RETURNING *`,
         [
             item_id,
@@ -297,7 +483,13 @@ async function createOrderRecord(client, orderData) {
             seller_commission_transfer_id,
             payment_method,
             shipping_fee,
-            seller_discount_transfer_id
+            seller_discount_transfer_id,
+            reseller_user_id,
+            reseller_ref,
+            resell_commission_percentage,
+            resell_commission_amount,
+            resell_googer_commission_percentage,
+            resell_commission_transfer_id
         ]
     );
 }
@@ -310,7 +502,8 @@ async function cancelTransferIfUnused(client, transferColumn, transferId, curren
     const allowedColumns = new Set([
         'wallet_transfer_id',
         'seller_commission_transfer_id',
-        'seller_discount_transfer_id'
+        'seller_discount_transfer_id',
+        'resell_commission_transfer_id'
     ]);
 
     if (!allowedColumns.has(transferColumn)) {
@@ -384,6 +577,24 @@ async function refundCancelledOrder(client, order) {
                 await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [discAmount, order.seller_id]);
             }
             await cancelTransferIfUnused(client, 'seller_discount_transfer_id', order.seller_discount_transfer_id, order.id);
+        }
+    }
+
+    if (order.resell_commission_transfer_id) {
+        const resellRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.resell_commission_transfer_id]);
+        if (resellRes.rows.length > 0) {
+            const resellAmount = parseFloat(resellRes.rows[0].amount || 0);
+            const resellStatus = String(resellRes.rows[0].status || '').toLowerCase();
+            if (!['cancelled', 'completed', 'accepted', 'refunded'].includes(resellStatus)) {
+                // Refund the held resell amount back to the seller wallet for every payment
+                // method (seller's wallet was debited at place-order time, so cancellation
+                // must put it back regardless of cod/wallet/wallet_manual).
+                await client.query(
+                    'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1), wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
+                    [resellAmount, order.seller_id]
+                );
+                await cancelTransferIfUnused(client, 'resell_commission_transfer_id', order.resell_commission_transfer_id, order.id);
+            }
         }
     }
 }
@@ -578,6 +789,7 @@ async function completeWalletTransferIfGroupSettled(client, transferId, currentO
 }
 
 async function finalizeReceivedOrder(client, order) {
+    await ensureOrderResellCommissionColumns(client);
     let orderAlreadyFinalized = false;
     const googerUserId = await resolveGoogerMainWalletUserId(client);
     const orderGrossAmount = Number((
@@ -655,6 +867,10 @@ async function finalizeReceivedOrder(client, order) {
     if (!orderAlreadyFinalized && order.wallet_transfer_id) {
 
         const sellerDiscountCharge = discountAlreadyTakenFromSeller ? 0 : discountAmountForBuyer;
+        const resellCommissionAmount = normalizeMoney(parseFloat(order.resell_commission_amount || 0));
+        // NOTE: resellCommissionAmount is NOT subtracted here because the resell commission
+        // was already deducted from the seller wallet at place-order time inside
+        // createResellCommissionHold. Subtracting it again would charge the seller twice.
         const sellerNetAmount = Math.max(0, orderGrossAmount - productCommission.amount - sellerDiscountCharge);
 
         await client.query('UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2', [orderGrossAmount, order.buyer_id]);
@@ -689,6 +905,56 @@ async function finalizeReceivedOrder(client, order) {
             description: `Order Item #${order.item_id} (${order.order_number || order.id})`,
         });
     }
+
+    const resellCommissionAmount = normalizeMoney(parseFloat(order.resell_commission_amount || 0));
+    const resellerUserId = Number(order.reseller_user_id || 0);
+    if (!orderAlreadyFinalized && resellCommissionAmount > 0 && resellerUserId > 0 && order.resell_commission_transfer_id) {
+        const resellTxRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.resell_commission_transfer_id]);
+        const resellStatus = String(resellTxRes.rows[0]?.status || '').toLowerCase();
+
+        if (!['completed', 'accepted', 'cancelled', 'refunded'].includes(resellStatus)) {
+            const googerPct = parseFloat(order.resell_googer_commission_percentage ?? 10);
+            const googerShare = normalizeMoney((resellCommissionAmount * (Number.isFinite(googerPct) ? googerPct : 10)) / 100);
+            const resellerShare = normalizeMoney(Math.max(0, resellCommissionAmount - googerShare));
+
+            // Release the held resell amount from seller's hold for every payment method
+            // (the seller's wallet was debited at place-order time inside createResellCommissionHold).
+            await client.query(
+                'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2',
+                [resellCommissionAmount, order.seller_id]
+            );
+
+            if (resellerShare > 0) {
+                await client.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [resellerShare, resellerUserId]);
+            }
+
+            await client.query(
+                `UPDATE wallet_transfers
+                 SET amount = $2,
+                     receiver_id = $3,
+                     status = 'completed',
+                     commission = $2,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $1`,
+                [order.resell_commission_transfer_id, resellerShare, resellerUserId]
+            );
+
+            if (googerShare > 0) {
+                await client.query(
+                    `INSERT INTO wallet_transfers
+                        (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, 'resell_googer_fee', 'accepted', $3, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                    [
+                        order.seller_id,
+                        googerUserId,
+                        googerShare,
+                        `Resell Googer commission for Order Item #${order.item_id}`,
+                        Number.isFinite(googerPct) ? googerPct : 10,
+                    ]
+                );
+            }
+        }
+    }
 }
 
 async function autoReceiveExpiredCodOrders(client, userId) {
@@ -720,10 +986,12 @@ exports.createOrder = async (req, res) => {
     console.log('--- CREATE ORDER REQUEST ---');
     const client = await pool.connect();
     try {
-        const { item_id, quantity, size, color, variant_index, total_price, shipping_address, wallet_transfer_id } = req.body;
+        const { item_id, quantity, size, color, variant_index, total_price, shipping_address, wallet_transfer_id, reseller_ref } = req.body;
         const buyer_id = req.user.id;
 
         await client.query('BEGIN');
+        await ensureOrderResellCommissionColumns(client);
+        await ensureOrderResellCommissionColumns(client);
 
         // 1. Verify item exists and check stock
         const itemResult = await client.query('SELECT * FROM market WHERE id = $1 FOR UPDATE', [item_id]);
@@ -839,6 +1107,21 @@ exports.createOrder = async (req, res) => {
             return res.status(400).json({ success: false, message: discountError.message || 'Seller has insufficient balance to stake the product discount.' });
         }
 
+        let resellCommission = null;
+        try {
+            resellCommission = await createResellCommissionHold(client, {
+                sellerId: seller_id,
+                buyerId: buyer_id,
+                item,
+                quantity,
+                resellerRef: reseller_ref,
+                paymentMethod: req.body.payment_method || 'wallet'
+            });
+        } catch (resellError) {
+            await client.query('ROLLBACK');
+            return res.status(resellError.statusCode || 400).json({ success: false, message: resellError.message || 'Unable to hold resell commission.' });
+        }
+
         // 5. Create Randomized 8-digit Order Number
         let orderNumber;
         let isUnique = false;
@@ -864,7 +1147,13 @@ exports.createOrder = async (req, res) => {
             seller_commission_transfer_id,
             payment_method: req.body.payment_method || 'wallet',
             shipping_fee: req.body.shipping_fee || 0,
-            seller_discount_transfer_id
+            seller_discount_transfer_id,
+            reseller_user_id: resellCommission?.resellerUserId || null,
+            reseller_ref: resellCommission?.resellerRef || null,
+            resell_commission_percentage: resellCommission?.percentage || 0,
+            resell_commission_amount: resellCommission?.amount || 0,
+            resell_googer_commission_percentage: resellCommission?.googerPercentage || 10,
+            resell_commission_transfer_id: resellCommission?.transferId || null
         });
 
         await client.query('COMMIT');
@@ -1253,7 +1542,7 @@ exports.createBulkOrder = async (req, res) => {
 
         // 6. Process each item
         for (const itemData of items) {
-            const { item_id, quantity, size, color, variant_index, total_price, shipping_fee } = itemData;
+            const { item_id, quantity, size, color, variant_index, total_price, shipping_fee, reseller_ref } = itemData;
 
             // Stock reduction logic
             const itemResult = await client.query('SELECT * FROM market WHERE id = $1 FOR UPDATE', [item_id]);
@@ -1312,6 +1601,21 @@ exports.createBulkOrder = async (req, res) => {
                 return res.status(400).json({ success: false, message: discountError.message || `Seller of item ${item_id} has insufficient balance to stake the discount.` });
             }
 
+            let resellCommission = null;
+            try {
+                resellCommission = await createResellCommissionHold(client, {
+                    sellerId: seller_id,
+                    buyerId: buyer_id,
+                    item,
+                    quantity,
+                    resellerRef: reseller_ref,
+                    paymentMethod: payment_method || 'wallet'
+                });
+            } catch (resellError) {
+                await client.query('ROLLBACK');
+                return res.status(resellError.statusCode || 400).json({ success: false, message: resellError.message || `Unable to hold resell commission for item ${item_id}.` });
+            }
+
             try {
                 await adjustOrderItemStock(client, item, { quantity, size, color, variant_index }, 'decrease');
             } catch (stockError) {
@@ -1335,7 +1639,13 @@ exports.createBulkOrder = async (req, res) => {
                 seller_commission_transfer_id,
                 payment_method: payment_method || 'wallet',
                 shipping_fee: shipping_fee || 0,
-                seller_discount_transfer_id
+                seller_discount_transfer_id,
+                reseller_user_id: resellCommission?.resellerUserId || null,
+                reseller_ref: resellCommission?.resellerRef || null,
+                resell_commission_percentage: resellCommission?.percentage || 0,
+                resell_commission_amount: resellCommission?.amount || 0,
+                resell_googer_commission_percentage: resellCommission?.googerPercentage || 10,
+                resell_commission_transfer_id: resellCommission?.transferId || null
             });
             createdOrders.push(newOrder.rows[0]);
         }

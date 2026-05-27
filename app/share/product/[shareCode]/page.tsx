@@ -16,11 +16,43 @@ import { useAdStore } from "@/app/lib/ads/adStore";
 import ShareModal from "@/app/components/ShareModal";
 import { getShareUrlForItem } from "@/app/lib/shareLinks";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
+import { useCart } from "@/app/context/CartContext";
+
+const PENDING_RESELL_CART_KEY = "googer:pending-resell-cart-add";
+const RESELL_ATTRIBUTION_STORAGE_KEY = "googer:resell-attribution";
+
+const userMatchesRef = (user: any, ref: string) => {
+    const normalizedRef = String(ref || "").trim().replace(/^@+/, "").toLowerCase();
+    if (!normalizedRef || !user) return false;
+    return [
+        user.id,
+        user.user_id,
+        user.userId,
+        user.username,
+    ].some((value) => String(value || "").trim().replace(/^@+/, "").toLowerCase() === normalizedRef);
+};
+
+const rememberResellAttribution = (product: any, ref: string) => {
+    if (typeof window === "undefined" || !product || !ref) return;
+    const productId = product.id || product.productId || product.product_id || product.linked_product_id;
+    if (!productId) return;
+    try {
+        const raw = localStorage.getItem(RESELL_ATTRIBUTION_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        parsed[String(productId)] = {
+            reseller_ref: ref,
+            share_code: product.share_code || product.shareCode || product.product_code || null,
+            saved_at: Date.now(),
+        };
+        localStorage.setItem(RESELL_ATTRIBUTION_STORAGE_KEY, JSON.stringify(parsed));
+    } catch {}
+};
 
 export default function ShareProductPage() {
     const params = useParams();
     const router = useRouter();
     const shareCode = params?.shareCode as string;
+    const resellerRef = typeof params?.resellerRef === "string" ? decodeURIComponent(params.resellerRef) : "";
     const [product, setProduct] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [notFound, setNotFound] = useState(false);
@@ -36,6 +68,7 @@ export default function ShareProductPage() {
     const syncAds = useAdStore((state) => state.syncAds);
     const updateAdState = useAdStore((state) => state.updateAdState);
     const setViewerContext = useAdStore((state) => state.setViewerContext);
+    const { addToCart } = useCart();
 
     const adActions = useAdActions(product, {
         currentUser,
@@ -57,6 +90,38 @@ export default function ShareProductPage() {
         const t = setTimeout(() => setNotification(null), 3000);
         return () => clearTimeout(t);
     }, [notification]);
+
+    useEffect(() => {
+        if (!currentUser || !product || typeof window === "undefined") return;
+        const rawPending = sessionStorage.getItem(PENDING_RESELL_CART_KEY);
+        if (!rawPending) return;
+
+        try {
+            const pending = JSON.parse(rawPending);
+            if (pending?.shareCode && String(pending.shareCode) !== String(shareCode)) return;
+            if (pending?.resellerRef && String(pending.resellerRef) !== String(resellerRef)) return;
+            sessionStorage.removeItem(PENDING_RESELL_CART_KEY);
+            const pendingProduct = {
+                ...(pending.product || product),
+                reseller_ref: pending.resellerRef || resellerRef,
+                resell_ref: pending.resellerRef || resellerRef,
+            };
+            addToCart(
+                pendingProduct,
+                Number(pending.quantity || 1),
+                pending.size || null,
+                pending.color || null,
+                pending.variantIndex ?? null,
+                pending.country || null
+            ).then(() => {
+                setNotification({ type: "success", title: "Added to Bag", message: `${pendingProduct.title || "Item"} has been added to your shopping bag.` });
+            }).catch(() => {
+                setNotification({ type: "error", title: "Could not add", message: "Please try again." });
+            });
+        } catch {
+            sessionStorage.removeItem(PENDING_RESELL_CART_KEY);
+        }
+    }, [addToCart, currentUser, product, resellerRef, shareCode]);
 
     useEffect(() => {
         let cancelled = false;
@@ -99,8 +164,14 @@ export default function ShareProductPage() {
                 }
                 const data = await marketService.getProductByCodePublic(shareCode);
                 if (data) {
-                    setProduct(data);
-                    syncAds([data]);
+                    const productWithReseller = resellerRef
+                        ? { ...data, reseller_ref: resellerRef, resell_ref: resellerRef }
+                        : data;
+                    if (resellerRef) {
+                        rememberResellAttribution(productWithReseller, resellerRef);
+                    }
+                    setProduct(productWithReseller);
+                    syncAds([productWithReseller]);
                     const canonicalPathFromServer = String(data?.canonical_share_path || "").trim();
                     const canonicalUrl = getShareUrlForItem(data, "product");
                     if (typeof window !== "undefined") {
@@ -114,7 +185,7 @@ export default function ShareProductPage() {
                             }
                         }
                         const currentPath = window.location.pathname;
-                        if (canonicalPath && canonicalPath !== currentPath) {
+                        if (!resellerRef && canonicalPath && canonicalPath !== currentPath) {
                             window.history.replaceState(null, "", canonicalPath);
                         }
                     }
@@ -130,7 +201,7 @@ export default function ShareProductPage() {
         };
 
         loadProduct();
-    }, [shareCode, syncAds]);
+    }, [shareCode, resellerRef, syncAds]);
 
     const openProductSheet = async (type: any, targetProduct: any) => {
         setSheetType(type);
@@ -178,7 +249,50 @@ export default function ShareProductPage() {
         );
     }
 
-    const normalizedProduct = normalizeProductAd(product);
+    const normalizedProduct = {
+        ...normalizeProductAd(product),
+        reseller_ref: product?.reseller_ref || null,
+        resell_ref: product?.resell_ref || null,
+    };
+
+    const handleAddToBag = async (targetProduct: any, quantity: number, variant: any, size: string | null, country: string | null, variantIndex: number | null) => {
+        try {
+            let activeUser = currentUser;
+            if (resellerRef && authService.isAuthenticated() && !activeUser) {
+                activeUser = await authService.getProfile().catch(() => null);
+                if (activeUser) setCurrentUser(activeUser);
+            }
+            if (resellerRef && userMatchesRef(activeUser, resellerRef)) {
+                setNotification({ type: "error", title: "Use another buyer account", message: "You cannot buy from your own resell link." });
+                return;
+            }
+            if (resellerRef && !authService.isAuthenticated()) {
+                if (typeof window !== "undefined") {
+                    sessionStorage.setItem(PENDING_RESELL_CART_KEY, JSON.stringify({
+                        shareCode,
+                        resellerRef,
+                        product: { ...targetProduct, reseller_ref: resellerRef, resell_ref: resellerRef },
+                        quantity,
+                        size: size || variant?.size || null,
+                        color: variant?.color || null,
+                        country,
+                        variantIndex,
+                    }));
+                    router.push(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
+                }
+                return;
+            }
+
+            const productWithReseller = resellerRef
+                ? { ...targetProduct, reseller_ref: targetProduct.reseller_ref || resellerRef, resell_ref: targetProduct.resell_ref || resellerRef }
+                : targetProduct;
+            await addToCart(productWithReseller, quantity, size || variant?.size || null, variant?.color || null, variantIndex, country);
+            setNotification({ type: "success", title: "Added to Bag", message: `${targetProduct.title || "Item"} has been added to your shopping bag.` });
+        } catch (error) {
+            console.error("Add resell product to bag failed:", error);
+            setNotification({ type: "error", title: "Could not add", message: "Please try again." });
+        }
+    };
     const isSharedAdProduct = !!product.is_sponsored || !!product.campaign_type || !!product.adId || !!product.ad_id;
 
     return (
@@ -232,6 +346,7 @@ export default function ShareProductPage() {
                     onToggleLike={() => adActions.like()}
                     onOpenSheet={(type, item) => openProductSheet(type, item)}
                     onShare={() => adActions.share()}
+                    onAddToBag={handleAddToBag}
                     onCollectCoin={(e) => adActions.handleAdCoinClick(e)}
                     canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                 />

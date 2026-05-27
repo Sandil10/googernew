@@ -20,6 +20,7 @@ function RegisterContent() {
     // Get Referral Code
     const sp = useSearchParams();
     const referralCode = sp ? sp.get('ref') : null;
+    const redirectTo = sp?.get("redirect") || "/dashboard";
 
     // Seller specific fields
     const [shopName, setShopName] = useState("");
@@ -71,8 +72,7 @@ function RegisterContent() {
             const response = await authService.register(userData);
             console.log("Registration successful:", response);
 
-            // Redirect to dashboard
-            router.push("/dashboard");
+            router.push(redirectTo.startsWith("/") ? redirectTo : "/dashboard");
         } catch (err: any) {
             setError(err.message || "Registration failed. Please try again.");
         } finally {

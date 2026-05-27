@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
 
@@ -18,6 +18,12 @@ export default function LoginPage() {
   const [otp, setOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const router = useRouter();
+  const [redirectTo, setRedirectTo] = useState("/dashboard");
+
+  useEffect(() => {
+    const redirect = new URLSearchParams(window.location.search).get("redirect");
+    if (redirect?.startsWith("/")) setRedirectTo(redirect);
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,8 +33,7 @@ export default function LoginPage() {
     try {
       const response = await authService.login({ email, password });
       console.log("Login successful:", response);
-      // Navigate to dashboard
-      router.push("/dashboard");
+      router.push(redirectTo.startsWith("/") ? redirectTo : "/dashboard");
     } catch (err: any) {
       console.error("Login error:", err);
       setError(err.message || "Login failed. Please check your credentials.");
@@ -121,7 +126,7 @@ export default function LoginPage() {
             {/* Register Link */}
             <div className="text-center mt-4">
               <span className="text-gray-500 text-xs font-normal underline decoration-gray-800 underline-offset-4">Don't have an account? — </span>
-              <Link href="/register" className="text-purple-400 hover:text-purple-300 text-xs font-bold transition-all ml-1">
+              <Link href={`/register${redirectTo !== "/dashboard" ? `?redirect=${encodeURIComponent(redirectTo)}` : ""}`} className="text-purple-400 hover:text-purple-300 text-xs font-bold transition-all ml-1">
                 Register
               </Link>
             </div>

@@ -25,10 +25,15 @@ const ensureCartTable = async () => {
                     product_discount DECIMAL(10, 2) DEFAULT 0,
                     selected_shipping_country TEXT,
                     payment_methods JSONB,
+                    reseller_ref TEXT,
+                    resell_commission_percentage DECIMAL(10, 2) DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             `);
+
+            await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS reseller_ref TEXT`);
+            await pool.query(`ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS resell_commission_percentage DECIMAL(10, 2) DEFAULT 0`);
 
             await pool.query(`
                 CREATE INDEX IF NOT EXISTS idx_cart_items_user_id
@@ -61,6 +66,8 @@ const normalizeCartItem = (row) => ({
     product_discount: row.product_discount !== null ? Number(row.product_discount || 0) : 0,
     selected_shipping_country: row.selected_shipping_country || null,
     payment_methods: Array.isArray(row.payment_methods) ? row.payment_methods : (row.payment_methods || []),
+    reseller_ref: row.reseller_ref || null,
+    resell_commission_percentage: row.resell_commission_percentage !== null ? Number(row.resell_commission_percentage || 0) : 0,
 });
 
 const findMatchingCartItem = async (userId, item) => {
@@ -73,6 +80,7 @@ const findMatchingCartItem = async (userId, item) => {
            AND color IS NOT DISTINCT FROM $4
            AND variant_index IS NOT DISTINCT FROM $5
            AND selected_shipping_country IS NOT DISTINCT FROM $6
+           AND reseller_ref IS NOT DISTINCT FROM $7
          LIMIT 1`,
         [
             userId,
@@ -81,6 +89,7 @@ const findMatchingCartItem = async (userId, item) => {
             item.color ?? null,
             item.variantIndex ?? null,
             item.selected_shipping_country ?? null,
+            item.reseller_ref ?? null,
         ]
     );
 
@@ -126,6 +135,8 @@ exports.addCartItem = async (req, res) => {
             product_discount = 0,
             selected_shipping_country = null,
             payment_methods = [],
+            reseller_ref = null,
+            resell_commission_percentage = 0,
         } = req.body || {};
 
         if (!productId || !title) {
@@ -139,6 +150,7 @@ exports.addCartItem = async (req, res) => {
             color,
             variantIndex,
             selected_shipping_country,
+            reseller_ref,
         };
 
         const existing = await findMatchingCartItem(req.user.id, itemPayload);
@@ -156,8 +168,10 @@ exports.addCartItem = async (req, res) => {
                      shipping_info = $8,
                      product_discount = $9,
                      payment_methods = $10,
+                     reseller_ref = $11,
+                     resell_commission_percentage = $12,
                      updated_at = CURRENT_TIMESTAMP
-                 WHERE id = $11
+                 WHERE id = $13
                  RETURNING *`,
                 [
                     safeQuantity,
@@ -170,6 +184,8 @@ exports.addCartItem = async (req, res) => {
                     shipping_info,
                     Number(product_discount || 0),
                     JSON.stringify(payment_methods || []),
+                    reseller_ref ? String(reseller_ref) : null,
+                    Number(resell_commission_percentage || 0),
                     existing.id,
                 ]
             );
@@ -194,9 +210,11 @@ exports.addCartItem = async (req, res) => {
                 shipping_info,
                 product_discount,
                 selected_shipping_country,
-                payment_methods
+                payment_methods,
+                reseller_ref,
+                resell_commission_percentage
              ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
              )
              RETURNING *`,
             [
@@ -216,6 +234,8 @@ exports.addCartItem = async (req, res) => {
                 Number(product_discount || 0),
                 selected_shipping_country,
                 JSON.stringify(payment_methods || []),
+                reseller_ref ? String(reseller_ref) : null,
+                Number(resell_commission_percentage || 0),
             ]
         );
 

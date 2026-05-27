@@ -34,6 +34,19 @@ const SVG_MAP = {
 const MANUAL_PAYMENT_INTENT_STORAGE_KEY = 'googer-manual-payment-intent';
 const GOOGER_PAYMENT_INTENT_STORAGE_KEY = 'googer-payment-intent';
 const MANUAL_PAYMENT_RESET_EVENT = 'googer-manual-payment-reset';
+const RESELL_ATTRIBUTION_STORAGE_KEY = 'googer:resell-attribution';
+
+const getStoredResellRefForProduct = (productId: string | number | null | undefined) => {
+  if (typeof window === 'undefined' || productId === null || productId === undefined) return null;
+  try {
+    const raw = localStorage.getItem(RESELL_ATTRIBUTION_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const entry = parsed?.[String(productId)];
+    return entry?.reseller_ref || entry?.resell_ref || null;
+  } catch {
+    return null;
+  }
+};
 
 const getSellerPublicGoogerId = (product: any) => {
   const value = product?.owner_public_user_id
@@ -422,7 +435,9 @@ export default function CartSidebar() {
             color: item.color && item.color !== 'None' ? item.color : null,
             variant_index: item.variantIndex,
             total_price: Number(item.price) * item.quantity,
-            shipping_fee: itemFee
+            shipping_fee: itemFee,
+            reseller_ref: item.reseller_ref || getStoredResellRefForProduct(item.productId) || null,
+            resell_commission_percentage: item.resell_commission_percentage || 0
           };
         }),
         shipping_address: JSON.stringify({ 

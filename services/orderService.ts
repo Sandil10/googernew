@@ -37,7 +37,9 @@ export const orderService = {
         total_price: number,
         shipping_address?: string,
         wallet_transfer_id?: string,
-        payment_method?: string
+        payment_method?: string,
+        reseller_ref?: string | null,
+        resell_commission_percentage?: number
     }) => {
         try {
             const response = await fetch(`${API_URL}/orders/create`, {
@@ -116,6 +118,8 @@ export const orderService = {
             color?: string | null;
             variant_index?: number | null;
             total_price: number;
+            reseller_ref?: string | null;
+            resell_commission_percentage?: number;
         }>,
         shipping_address: string,
         payment_method: string,

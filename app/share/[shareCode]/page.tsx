@@ -37,10 +37,41 @@ const getAdSecondViewKind = (ad: any): AdSecondViewKind => {
     return "image";
 };
 
+const PENDING_RESELL_CART_KEY = "googer:pending-resell-cart-add";
+const RESELL_ATTRIBUTION_STORAGE_KEY = "googer:resell-attribution";
+
+const userMatchesRef = (user: any, ref: string) => {
+    const normalizedRef = String(ref || "").trim().replace(/^@+/, "").toLowerCase();
+    if (!normalizedRef || !user) return false;
+    return [
+        user.id,
+        user.user_id,
+        user.userId,
+        user.username,
+    ].some((value) => String(value || "").trim().replace(/^@+/, "").toLowerCase() === normalizedRef);
+};
+
+const rememberResellAttribution = (product: any, ref: string) => {
+    if (typeof window === "undefined" || !product || !ref) return;
+    const productId = product.id || product.productId || product.product_id || product.linked_product_id;
+    if (!productId) return;
+    try {
+        const raw = localStorage.getItem(RESELL_ATTRIBUTION_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        parsed[String(productId)] = {
+            reseller_ref: ref,
+            share_code: product.share_code || product.shareCode || product.product_code || null,
+            saved_at: Date.now(),
+        };
+        localStorage.setItem(RESELL_ATTRIBUTION_STORAGE_KEY, JSON.stringify(parsed));
+    } catch {}
+};
+
 export default function UnifiedSharePage() {
     const params = useParams();
     const router = useRouter();
     const shareCode = params?.shareCode as string;
+    const resellerRef = typeof params?.resellerRef === "string" ? decodeURIComponent(params.resellerRef) : "";
 
     const [loading, setLoading] = useState(true);
     const [item, setItem] = useState<any>(null);
@@ -98,6 +129,38 @@ export default function UnifiedSharePage() {
     }, [notification]);
 
     useEffect(() => {
+        if (!currentUser || !item || type !== "product" || typeof window === "undefined") return;
+        const rawPending = sessionStorage.getItem(PENDING_RESELL_CART_KEY);
+        if (!rawPending) return;
+
+        try {
+            const pending = JSON.parse(rawPending);
+            if (pending?.shareCode && String(pending.shareCode) !== String(shareCode)) return;
+            if (pending?.resellerRef && String(pending.resellerRef) !== String(resellerRef)) return;
+            sessionStorage.removeItem(PENDING_RESELL_CART_KEY);
+            const pendingProduct = {
+                ...(pending.product || item),
+                reseller_ref: pending.resellerRef || resellerRef,
+                resell_ref: pending.resellerRef || resellerRef,
+            };
+            addToCart(
+                pendingProduct,
+                Number(pending.quantity || 1),
+                pending.size || null,
+                pending.color || null,
+                pending.variantIndex ?? null,
+                pending.country || null
+            ).then(() => {
+                setNotification({ type: "success", title: "Added to Bag", message: `${pendingProduct.title || "Item"} has been added to your shopping bag.` });
+            }).catch(() => {
+                setNotification({ type: "error", title: "Could not add", message: "Please try again." });
+            });
+        } catch {
+            sessionStorage.removeItem(PENDING_RESELL_CART_KEY);
+        }
+    }, [addToCart, currentUser, item, resellerRef, shareCode, type]);
+
+    useEffect(() => {
         const loadItem = async () => {
             if (!shareCode) {
                 setNotFound(true);
@@ -126,7 +189,13 @@ export default function UnifiedSharePage() {
                             return;
                         }
                     }
-                    setItem(data.data);
+                    const loadedItem = data.type === "product" && resellerRef
+                        ? { ...data.data, reseller_ref: resellerRef, resell_ref: resellerRef }
+                        : data.data;
+                    if (data.type === "product" && resellerRef) {
+                        rememberResellAttribution(loadedItem, resellerRef);
+                    }
+                    setItem(loadedItem);
                     setType(data.type);
                     if (typeof window !== "undefined" && (data.type === "product" || data.type === "ad" || data.type === "goog")) {
                         const canonicalCodeCandidates = [
@@ -154,7 +223,7 @@ export default function UnifiedSharePage() {
                                     !!canonicalCode &&
                                     canonicalCode !== requestedCode &&
                                     canonicalPath === `/share/${canonicalCode}`;
-                                if ((canonicalPath && canonicalPath !== currentPath) || shouldForceCanonicalReplace) {
+                                if (!resellerRef && ((canonicalPath && canonicalPath !== currentPath) || shouldForceCanonicalReplace)) {
                                     window.location.replace(canonicalPath);
                                     return;
                                 }
@@ -162,7 +231,7 @@ export default function UnifiedSharePage() {
                         }
                     }
                     if (data.type === "ad" || data.type === "product") {
-                        syncAds([data.data]);
+                        syncAds([loadedItem]);
                     }
                     // Log a view automatically (matches feed behavior on render)
                     try {
@@ -353,7 +422,35 @@ export default function UnifiedSharePage() {
 
     const handleAddToBag = async (product: any, quantity: number, variant: any, size: string | null, country: string | null, variantIndex: number | null) => {
         try {
-            await addToCart(product, quantity, size || variant?.size || null, variant?.color || null, variantIndex, country);
+            let activeUser = currentUser;
+            if (resellerRef && authService.isAuthenticated() && !activeUser) {
+                activeUser = await authService.getProfile().catch(() => null);
+                if (activeUser) setCurrentUser(activeUser);
+            }
+            if (resellerRef && userMatchesRef(activeUser, resellerRef)) {
+                setNotification({ type: "error", title: "Use another buyer account", message: "You cannot buy from your own resell link." });
+                return;
+            }
+            if (resellerRef && !authService.isAuthenticated()) {
+                if (typeof window !== "undefined") {
+                    sessionStorage.setItem(PENDING_RESELL_CART_KEY, JSON.stringify({
+                        shareCode,
+                        resellerRef,
+                        product: { ...product, reseller_ref: resellerRef, resell_ref: resellerRef },
+                        quantity,
+                        size: size || variant?.size || null,
+                        color: variant?.color || null,
+                        country,
+                        variantIndex,
+                    }));
+                    router.push(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
+                }
+                return;
+            }
+            const productWithReseller = resellerRef
+                ? { ...product, reseller_ref: product.reseller_ref || resellerRef, resell_ref: product.resell_ref || resellerRef }
+                : product;
+            await addToCart(productWithReseller, quantity, size || variant?.size || null, variant?.color || null, variantIndex, country);
             setProductSizeError(false);
             setNotification({ type: "success", title: "Added to Bag", message: `${product.title || "Item"} has been added to your shopping bag.` });
         } catch (err) {
@@ -461,7 +558,7 @@ export default function UnifiedSharePage() {
                         <PromotedAdCard
                             ad={normalizeAdData({ ...item, type: "product" })}
                             source="home"
-                            onProductClick={(targetItem: any) => setPreviewModal({ ad: targetItem, type: "product" })}
+                            onProductClick={(targetItem: any) => setPreviewModal({ ad: resellerRef ? { ...targetItem, reseller_ref: resellerRef, resell_ref: resellerRef } : targetItem, type: "product" })}
                             onAddToBagClick={openProductAddToBag}
                             onToggleLike={(id) => handleToggleLike(id)}
                             onOpenSheet={openSheet}

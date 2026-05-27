@@ -31,27 +31,34 @@ if not defined CLOUDFLARED_CMD (
   exit /b 1
 )
 
-echo Stopping old Googer frontend, backend, and dev processes...
+echo Stopping old Googer processes...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$targets = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like '*googernew-main*' }; " ^
   "foreach ($proc in $targets) { try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop } catch {} }"
+REM Also kill anything holding ports 3000 (frontend) or 5000 (backend),
+REM because nodemon / orphaned processes may not match the path filter above.
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":3000 .*LISTENING"') do taskkill /F /PID %%P >nul 2>nul
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5000 .*LISTENING"') do taskkill /F /PID %%P >nul 2>nul
+taskkill /IM cloudflared.exe /F >nul 2>nul
+taskkill /IM nodemon.exe /F >nul 2>nul
 
-echo Cleaning stale Next build state...
+echo Cleaning stale lock files...
 if exist "%ROOT%.next\dev\lock" del /f /q "%ROOT%.next\dev\lock" >nul 2>nul
 
 echo Starting Googer frontend, backend, and Cloudflare tunnel...
 
-start "Googer Frontend" cmd /k "cd /d "%ROOT%" && npm run build && npm run start -- --hostname 0.0.0.0 --port 3000"
-start "Googer Backend" cmd /k "cd /d "%ROOT%backend" && set WEB_URL=%PUBLIC_URL% && set DATABASE_URL= && set POSTGRES_URL= && set FORCE_LOCAL_DB=true && npm run start"
+start "Googer Frontend"         cmd /k "cd /d "%ROOT%" && npm run build && npm run start -- --hostname 0.0.0.0 --port 3000"
+start "Googer Backend"          cmd /k "cd /d "%ROOT%backend" && set WEB_URL=%PUBLIC_URL% && set DATABASE_URL= && set POSTGRES_URL= && set FORCE_LOCAL_DB=true && npm run start"
 start "Googer Cloudflare Tunnel" cmd /k "cd /d "%ROOT%" && "%CLOUDFLARED_CMD%" tunnel --config "%CONFIG_FILE%" run %TUNNEL_ID%"
 
-echo Frontend: http://localhost:3000
-echo Backend:  http://localhost:5000
-echo Public:   %PUBLIC_URL%
 echo.
-echo Opening public app link in your browser...
+echo   Frontend : http://localhost:3000
+echo   Backend  : http://localhost:5000
+echo   Public   : %PUBLIC_URL%
+echo   Admin    : https://appadmin.infranex.it.com
+echo.
+echo Opening public app...
 start "" "%PUBLIC_URL%"
-echo.
-echo You can close this window. The app will keep running in the opened terminals.
+echo You can close this window.
 
 endlocal

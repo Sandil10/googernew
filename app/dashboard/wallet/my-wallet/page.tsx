@@ -27,7 +27,7 @@ const MANUAL_PAYMENT_INTENT_STORAGE_KEY = 'googer-manual-payment-intent';
 const MANUAL_PAYMENT_LOCK_STORAGE_KEY = 'googer-manual-payment-lock';
 const MANUAL_PAYMENT_RESET_EVENT = 'googer-manual-payment-reset';
 const WALLET_ACTIVE_TAB_STORAGE_KEY = 'googer-wallet-active-tab';
-const WALLET_TABS = ['wallet', 'transactions', 'request', 'referrals', 'rewards'] as const;
+const WALLET_TABS = ['wallet', 'transactions', 'request', 'referrals', 'rewards', 'affiliate'] as const;
 type WalletTab = typeof WALLET_TABS[number];
 
 const isWalletTab = (value: any): value is WalletTab => {
@@ -90,7 +90,22 @@ const getDisplayNote = (tx: any, fallback: string) => {
 };
 
 const AD_COIN_TYPES = new Set(['ad_coin', 'ad_coin_ad_credit', 'ad_coin_commission']);
-const isAdCoinRewardTx = (tx: any) => AD_COIN_TYPES.has(String(tx?.type || '').toLowerCase());
+const isAdCoinRewardTx = (tx: any) => {
+    const type = String(tx?.type || '').toLowerCase();
+    if (AD_COIN_TYPES.has(type)) return true;
+    const note = String(tx?.note || '');
+    const hasAdCoinNote = /ad\s*coin\s*reward/i.test(note);
+    // When the receiver has referrals, the ad coin reward flows through
+    // distributeProductDiscountCommission which creates referral_commission rows
+    // whose note carries the "Ad coin reward" / "Ad Coin Reward" description.
+    if (type === 'referral_commission' && hasAdCoinNote) return true;
+    // Unused referral levels refund the remainder as discount_refund with the
+    // same "Ad Coin Reward Balance - Unused Levels - Ad coin reward for ..." note.
+    if (type === 'discount_refund' && hasAdCoinNote) return true;
+    return false;
+};
+const isResellRewardTx = (tx: any) => String(tx?.type || '').toLowerCase() === 'resell_commission';
+const isAnyRewardTx = (tx: any) => isAdCoinRewardTx(tx) || isResellRewardTx(tx);
 
 const getWalletDisplayAmount = (tx: any, isSent: boolean) => {
     const amount = Number(tx?.amount || 0);
@@ -309,7 +324,16 @@ const buildDisplayTransactions = (transactions: any[], currentUser: any) => {
 export default function MyWallet() {
     const router = useRouter();
     const [loading, setLoading] = useState(true);
-    const [activeTab, setActiveTab] = useState<WalletTab>(getInitialWalletTab);
+    const [activeTab, setActiveTab] = useState<WalletTab>('wallet');
+    // Restore saved tab from localStorage on client mount (avoids SSR hydration mismatch
+    // which previously caused the tab to snap back to "Manage" after a refresh).
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const savedTab = localStorage.getItem(WALLET_ACTIVE_TAB_STORAGE_KEY);
+        if (savedTab && isWalletTab(savedTab)) {
+            setActiveTab(savedTab);
+        }
+    }, []);
     const [user, setUser] = useState<any>(null);
     const [referralLink, setReferralLink] = useState("");
     const [referrals, setReferrals] = useState<any[]>([]);
@@ -906,7 +930,7 @@ export default function MyWallet() {
                                     : 'text-gray-500 border-transparent hover:text-gray-300'
                                     }`}
                             >
-                                {tab === 'wallet' ? 'Manage' : tab === 'transactions' ? 'History' : tab === 'request' ? 'Requests' : tab === 'referrals' ? 'Referrals' : 'Rewards'}
+                                {tab === 'wallet' ? 'Manage' : tab === 'transactions' ? 'History' : tab === 'request' ? 'Requests' : tab === 'referrals' ? 'Referrals' : tab === 'rewards' ? 'Rewards' : 'Affiliate'}
                             </button>
                         ))}
                     </div>
@@ -1023,8 +1047,8 @@ export default function MyWallet() {
                                 Recent Activity
                             </div>
 
-                            {transactions.filter((tx) => !isAdCoinRewardTx(tx)).length > 0 ? (
-                                transactions.filter((tx) => !isAdCoinRewardTx(tx)).map((tx) => {
+                            {transactions.filter((tx) => !isAnyRewardTx(tx)).length > 0 ? (
+                                transactions.filter((tx) => !isAnyRewardTx(tx)).map((tx) => {
                                     const isSent = tx.sender_id === user?.id;
                                     const adCampaignPayment = isAdCampaignPayment(tx);
                                     const adMeta = adCampaignPayment ? getAdPaymentMeta(tx) : null;
@@ -1402,15 +1426,24 @@ export default function MyWallet() {
                         </div>
                     )}
 
-                    {activeTab === 'rewards' && (
-                        <div className="space-y-4">
-                            <div className="font-bold text-white mb-5 text-xs uppercase tracking-widest flex items-center gap-2">
-                                <IonIcon name="ribbon-outline" className="text-base text-amber-400" />
-                                Ad Coin Rewards
-                            </div>
-                            {(() => {
-                                const rewardTxs = transactions.filter((tx) => String(tx?.type || '').toLowerCase() === 'ad_coin' && tx.receiver_id === user?.id);
-                                if (rewardTxs.length === 0) return (
+                    {activeTab === 'rewards' && (() => {
+                        const adCoinTxs = transactions.filter((tx) => isAdCoinRewardTx(tx) && tx.receiver_id === user?.id);
+                        const adCoinTotal = adCoinTxs.reduce((sum, tx) => sum + parseFloat(tx.amount || 0), 0);
+                        return (
+                            <div className="space-y-4">
+                                <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] px-4 py-3 flex items-center justify-between gap-4">
+                                    <div className="min-w-0">
+                                        <p className="text-[9px] text-white/40 font-bold uppercase tracking-widest mb-0.5">Total Rewards</p>
+                                        <p className="text-lg font-bold text-amber-400 tracking-tight leading-tight">R {adCoinTotal.toFixed(2)}</p>
+                                    </div>
+                                    <IonIcon name="ribbon-outline" className="text-2xl text-amber-400/60 shrink-0" />
+                                </div>
+
+                                <div className="font-bold text-white mb-5 text-xs uppercase tracking-widest flex items-center gap-2">
+                                    <IonIcon name="ribbon-outline" className="text-base text-amber-400" />
+                                    Ad Coin Rewards
+                                </div>
+                                {adCoinTxs.length === 0 ? (
                                     <div className="py-16 text-center">
                                         <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
                                             <IonIcon name="gift-outline" className="text-3xl text-white/40" />
@@ -1418,55 +1451,118 @@ export default function MyWallet() {
                                         <p className="text-gray-500 font-bold uppercase tracking-widest text-[10px]">No ad coin rewards yet</p>
                                         <p className="text-gray-600 text-[10px] mt-2">Like a sponsored ad and collect the Ruppier coin reward</p>
                                     </div>
-                                );
-                                return rewardTxs.map((tx) => (
-                                    <div key={tx.id} className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
-                                        <div className="flex items-center gap-4">
-                                            <div className="w-12 h-12 bg-amber-500/10 text-amber-400 rounded-xl flex items-center justify-center text-xl shrink-0 font-black">
-                                                R
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex justify-between items-center mb-0.5">
-                                                    <h5 className="font-bold text-white text-sm">Ad Coin Reward</h5>
-                                                    <span className="text-sm font-bold tracking-tight text-amber-400">
-                                                        + R {parseFloat(tx.amount || 0).toFixed(2)}
-                                                    </span>
+                                ) : (
+                                    adCoinTxs.map((tx) => {
+                                        const displayNote = String(tx?.note || '')
+                                            .replace(/Ad Coin Reward Balance - Unused Levels/i, 'Referral level amounts are deducted first. This is the remaining discount balance added to your wallet.');
+                                        return (
+                                            <div key={tx.id} className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 mb-3">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="w-12 h-12 bg-amber-500/10 text-amber-400 rounded-xl flex items-center justify-center text-xl shrink-0 font-black">
+                                                        R
+                                                    </div>
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="flex justify-between items-center mb-0.5">
+                                                            <h5 className="font-bold text-white text-sm">Ad Coin Reward</h5>
+                                                            <span className="text-sm font-bold tracking-tight text-amber-400">
+                                                                + R {parseFloat(tx.amount || 0).toFixed(2)}
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center">
+                                                            <p className="text-[10px] text-gray-400 font-semibold">
+                                                                {formatWalletTransactionDate(tx.created_at)} | {formatWalletTransactionTime(tx.created_at)}
+                                                            </p>
+                                                            <span className="text-[9px] uppercase font-black px-2 py-1 rounded-md bg-amber-500/10 text-amber-400">
+                                                                Collected
+                                                            </span>
+                                                        </div>
+                                                        {displayNote && (
+                                                            <p className="text-[10px] text-gray-500 font-medium italic mt-1">{displayNote}</p>
+                                                        )}
+                                                    </div>
                                                 </div>
-                                                <div className="flex justify-between items-center">
-                                                    <p className="text-[10px] text-gray-400 font-semibold">
-                                                        {formatWalletTransactionDate(tx.created_at)} | {formatWalletTransactionTime(tx.created_at)}
-                                                    </p>
-                                                    <span className="text-[9px] uppercase font-black px-2 py-1 rounded-md bg-amber-500/10 text-amber-400">
-                                                        Collected
-                                                    </span>
-                                                </div>
-                                                {tx.note && (
-                                                    <p className="text-[10px] text-gray-500 font-medium italic mt-1 truncate">{tx.note}</p>
-                                                )}
                                             </div>
-                                        </div>
-                                    </div>
-                                ));
-                            })()}
-
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-6">
-                                <button
-                                    onClick={() => router.push('/dashboard/rewards')}
-                                    className="px-4 py-4 bg-zinc-800 hover:bg-zinc-700 text-white font-bold rounded-xl transition-all active:scale-95 shadow-md border border-white/5 text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"
-                                >
-                                    <IonIcon name="ribbon-outline" className="text-lg text-amber-500" />
-                                    Rewards Page
-                                </button>
-                                <button
-                                    onClick={() => router.push('/dashboard/wallet/affiliate')}
-                                    className="px-4 py-4 bg-white text-black hover:bg-zinc-200 font-bold rounded-xl transition-all active:scale-95 shadow-md text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"
-                                >
-                                    <IonIcon name="people-outline" className="text-lg" />
-                                    Affiliate
-                                </button>
+                                        );
+                                    })
+                                )}
                             </div>
-                        </div>
-                    )}
+                        );
+                    })()}
+
+                    {activeTab === 'affiliate' && (() => {
+                        const resellTxs = transactions.filter((tx) => isResellRewardTx(tx) && tx.receiver_id === user?.id);
+                        const resellReceivedTotal = resellTxs
+                            .filter((tx) => ['completed', 'accepted'].includes(String(tx?.status || '').toLowerCase()))
+                            .reduce((sum, tx) => sum + parseFloat(tx.amount || 0), 0);
+                        const resellPendingTotal = resellTxs
+                            .filter((tx) => String(tx?.status || '').toLowerCase() === 'pending')
+                            .reduce((sum, tx) => sum + parseFloat(tx.amount || 0), 0);
+                        return (
+                            <div className="space-y-4">
+                                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] px-4 py-3 flex items-center justify-between gap-4">
+                                    <div className="min-w-0">
+                                        <p className="text-[9px] text-white/40 font-bold uppercase tracking-widest mb-0.5">Total Resell Commission</p>
+                                        <p className="text-lg font-bold text-emerald-400 tracking-tight leading-tight">R {resellReceivedTotal.toFixed(2)}</p>
+                                        {resellPendingTotal > 0 && (
+                                            <p className="text-[10px] text-amber-400/80 font-semibold mt-0.5">On Hold: R {resellPendingTotal.toFixed(2)}</p>
+                                        )}
+                                    </div>
+                                    <IonIcon name="cash-outline" className="text-2xl text-emerald-400/60 shrink-0" />
+                                </div>
+
+                                <div className="font-bold text-white mb-5 text-xs uppercase tracking-widest flex items-center gap-2">
+                                    <IonIcon name="cash-outline" className="text-base text-emerald-400" />
+                                    Resell Commission Earnings
+                                </div>
+                                {resellTxs.length === 0 ? (
+                                    <div className="py-16 text-center">
+                                        <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
+                                            <IonIcon name="cash-outline" className="text-3xl text-white/40" />
+                                        </div>
+                                        <p className="text-gray-500 font-bold uppercase tracking-widest text-[10px]">No resell earnings yet</p>
+                                        <p className="text-gray-600 text-[10px] mt-2">Share a product resell link and earn when someone buys</p>
+                                    </div>
+                                ) : (
+                                    resellTxs.map((tx) => {
+                                        const status = String(tx?.status || '').toLowerCase();
+                                        const isPending = status === 'pending';
+                                        const isReleased = status === 'completed' || status === 'accepted';
+                                        return (
+                                            <div key={tx.id} className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 mb-3">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="w-12 h-12 bg-emerald-500/10 text-emerald-400 rounded-xl flex items-center justify-center text-xl shrink-0 font-black">
+                                                        R
+                                                    </div>
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="flex justify-between items-center mb-0.5">
+                                                            <h5 className="font-bold text-white text-sm">Resell Commission</h5>
+                                                            <span className={`text-sm font-bold tracking-tight ${isPending ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                                                {isPending ? '' : '+ '}R {parseFloat(tx.amount || 0).toFixed(2)}
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center">
+                                                            <p className="text-[10px] text-gray-400 font-semibold">
+                                                                {formatWalletTransactionDate(tx.created_at)} | {formatWalletTransactionTime(tx.created_at)}
+                                                            </p>
+                                                            <span className={`text-[9px] uppercase font-black px-2 py-1 rounded-md ${isPending ? 'bg-amber-500/10 text-amber-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
+                                                                {isPending ? 'On Hold' : isReleased ? 'Received' : status}
+                                                            </span>
+                                                        </div>
+                                                        {tx.note && (
+                                                            <p className="text-[10px] text-gray-500 font-medium italic mt-1 truncate">{tx.note}</p>
+                                                        )}
+                                                        <p className="text-[10px] text-gray-500 font-medium italic mt-1">
+                                                            Referral level amounts are deducted first. This is the remaining discount balance added to your wallet.
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })
+                                )}
+                            </div>
+                        );
+                    })()}
                 </div>
 
                 {/* Permanent Recent Transactions Section (Visible on all tabs EXCEPT History) */}
@@ -1486,8 +1582,8 @@ export default function MyWallet() {
                         </div>
 
                         <div className="space-y-2">
-                            {transactions.filter((tx) => !isAdCoinRewardTx(tx)).slice(0, 3).length > 0 ? (
-                                transactions.filter((tx) => !isAdCoinRewardTx(tx)).slice(0, 3).map((tx) => {
+                            {transactions.filter((tx) => !isAnyRewardTx(tx)).slice(0, 3).length > 0 ? (
+                                transactions.filter((tx) => !isAnyRewardTx(tx)).slice(0, 3).map((tx) => {
                                     const isSent = tx.sender_id === user?.id;
                                     const adCampaignPayment = isAdCampaignPayment(tx);
                                     const adMeta = adCampaignPayment ? getAdPaymentMeta(tx) : null;
