@@ -38,7 +38,12 @@ services:
       PORT: 5000
       WEB_URL: ${WEB_URL:-http://localhost:3000}
       MOBILE_URL: ${MOBILE_URL:-http://localhost:3000}
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-googer}
+      DB_USER: ${DB_USER:-googer}
+      DB_PASSWORD: ${DB_PASSWORD:-googer_password_change_me}
       DB_SSL: ${DB_SSL:-false}
       DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-false}
       DB_POOL_MAX: ${DB_POOL_MAX:-20}
@@ -69,7 +74,12 @@ services:
     command: ["npm", "run", "worker"]
     environment:
       NODE_ENV: production
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-googer}
+      DB_USER: ${DB_USER:-googer}
+      DB_PASSWORD: ${DB_PASSWORD:-googer_password_change_me}
       DB_SSL: ${DB_SSL:-false}
       DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-false}
       DB_POOL_MAX: ${WORKER_DB_POOL_MAX:-5}
@@ -116,7 +126,12 @@ services:
       CORS_ORIGIN: ${ADMIN_URL:-http://localhost:3002}
       BACKEND_URL: http://admin-app:3002
       GOOGER_MAIN_API_URL: http://main-backend:5000
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-googer}
+      DB_USER: ${DB_USER:-googer}
+      DB_PASSWORD: ${DB_PASSWORD:-googer_password_change_me}
       DB_SSL: ${DB_SSL:-false}
       DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-false}
       DB_POOL_MAX: ${ADMIN_DB_POOL_MAX:-10}
