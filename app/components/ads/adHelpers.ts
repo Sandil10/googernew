@@ -196,6 +196,21 @@ export const getSponsoredCallHref = (ad: any) => {
     return "";
 };
 
+export const getSponsoredCtaClassName = (ctaTopic?: string, enabled = true) => {
+    if (!enabled) return "cursor-not-allowed bg-white/10 text-white/35";
+
+    switch (String(ctaTopic || "").trim()) {
+        case "WhatsApp":
+            return "cursor-pointer bg-green-300 text-black hover:bg-green-200 active:scale-95";
+        case "Call Now":
+        case "Message":
+        case "Visit":
+            return "cursor-pointer bg-red-400 text-white hover:bg-red-300 active:scale-95";
+        default:
+            return "cursor-pointer bg-red-300 text-white hover:bg-red-200 active:scale-95";
+    }
+};
+
 const normalizeUploadPath = (src: string) => {
     if (!src) return "";
     if (src.startsWith("/uploads/") || /^https?:\/\//i.test(src) || src.startsWith("data:")) return src;
@@ -210,22 +225,43 @@ const extractMediaValue = (item: any) => {
     return item.url || item.image_url || item.image || item.src || "";
 };
 
+const getAdMediaGallery = (ad: any) => {
+    const gallerySources = [
+        ad?.mediaGallery,
+        ad?.media_gallery,
+        safeParse(ad?.mediaGallery),
+        safeParse(ad?.media_gallery),
+        ad?.raw?.mediaGallery,
+        ad?.raw?.media_gallery,
+        safeParse(ad?.raw?.mediaGallery),
+        safeParse(ad?.raw?.media_gallery),
+    ];
+
+    for (const source of gallerySources) {
+        if (Array.isArray(source)) return source;
+    }
+
+    return [];
+};
+
 export const getAdPreviewImage = (ad: any, previewType: string | null) => {
     const activeLink = normalizeExternalUrl(ad?.active_link || "");
     const linkPreviewImage = getSponsoredLinkPreviewImage(activeLink);
     if (previewType === "image" && linkPreviewImage) return linkPreviewImage;
 
-    const gallery = Array.isArray(ad?.media_gallery)
-        ? ad.media_gallery
-        : Array.isArray(safeParse(ad?.media_gallery))
-            ? safeParse(ad?.media_gallery)
-            : [];
+    const gallery = getAdMediaGallery(ad);
 
     const value = [
+        ad?.mediaPreview,
+        ad?.raw?.mediaPreview,
         ad?.image_url,
         ad?.main_image,
         ad?.thumbnail_url,
         ad?.media_preview,
+        ad?.raw?.image_url,
+        ad?.raw?.main_image,
+        ad?.raw?.thumbnail_url,
+        ad?.raw?.media_preview,
         ad?.media_url,
         ad?.video_url,
         linkPreviewImage,
@@ -236,11 +272,7 @@ export const getAdPreviewImage = (ad: any, previewType: string | null) => {
 };
 
 export const getSponsoredAdImages = (ad: any, fallbackImage?: string): string[] => {
-    const gallery = Array.isArray(ad?.media_gallery)
-        ? ad.media_gallery
-        : Array.isArray(safeParse(ad?.media_gallery))
-            ? safeParse(ad?.media_gallery)
-            : [];
+    const gallery = getAdMediaGallery(ad);
 
     const activeLink = normalizeExternalUrl(ad?.active_link || "");
     const linkImage = getSponsoredLinkPreviewImage(activeLink);
@@ -249,11 +281,18 @@ export const getSponsoredAdImages = (ad: any, fallbackImage?: string): string[] 
         new Set(
             [
                 fallbackImage,
+                ad?.mediaPreview,
+                ad?.raw?.mediaPreview,
                 ad?.image_url,
                 ad?.main_image,
                 ad?.thumbnail_url,
                 ad?.media_preview,
                 ad?.media_url,
+                ad?.raw?.image_url,
+                ad?.raw?.main_image,
+                ad?.raw?.thumbnail_url,
+                ad?.raw?.media_preview,
+                ad?.raw?.media_url,
                 linkImage,
                 ...gallery.map(extractMediaValue),
             ]

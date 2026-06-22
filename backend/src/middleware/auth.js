@@ -1,6 +1,8 @@
 const jwt = require('jsonwebtoken');
 const { error } = require('../utils/responseHandler');
 const pool = require('../config/database');
+const { processDueSubscriptionsForUser } = require('../utils/subscriptionRenewal');
+const { extractAuthToken, getJwtSecret } = require('../../../../shared/api/authToken');
 
 // Ensure token_version column exists for JWT revocation support
 let tokenVersionColumnEnsured = false;
@@ -13,16 +15,13 @@ ensureTokenVersionColumn().catch(err => console.error('[AUTH] token_version setu
 
 const authMiddleware = async (req, res, next) => {
     try {
-        const authHeader = req.header('Authorization');
-        const token = authHeader?.startsWith('Bearer ')
-            ? authHeader.replace('Bearer ', '')
-            : authHeader;
+        const token = extractAuthToken(req.header('Authorization'));
 
         if (!token) {
             return error(res, 'Authentication required. No token provided.', 401);
         }
 
-        const secret = process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET;
+        const secret = getJwtSecret();
 
         if (!secret) {
             console.error('❌ JWT_SECRET is not defined in environment variables');
@@ -37,19 +36,17 @@ const authMiddleware = async (req, res, next) => {
             [decoded.id]
         );
         const dbTokenVersion = userResult.rows[0]?.token_version ?? 0;
-        if (decoded.tokenVersion !== dbTokenVersion) {
+        const tokenVersion = decoded.tokenVersion ?? 0;
+        if (tokenVersion !== dbTokenVersion) {
             return error(res, 'Session has been invalidated. Please log in again.', 401);
         }
 
         console.log('[AUTH] Token Decoded:', { id: decoded.id, userId: decoded.userId });
         req.user = decoded;
 
-        // Fire-and-forget plan expiry cleanup
-        pool.query(`
-            UPDATE user_plan_subscriptions
-            SET status = 'expired'
-            WHERE status = 'active' AND expires_at < NOW()
-        `).catch(err => console.error('[AUTH] Plan expiry check failed:', err));
+        await processDueSubscriptionsForUser(decoded.id).catch(err => {
+            console.error('[AUTH] Plan renewal check failed:', err);
+        });
 
         next();
 

@@ -4,6 +4,76 @@ const AD_TYPES = ['photo_video_ad', 'product_promote_ad', 'profile_promote_ad'];
 
 let tableReady = false;
 
+const PHOTO_VIDEO_CAMPAIGN_SQL = `LOWER(TRIM(COALESCE(campaign_type, ''))) IN ('photo and video', 'photo & video', 'photo promote', 'video promote', 'photo_video_ad', 'photo video')`;
+const PRODUCT_PROMOTE_CAMPAIGN_SQL = `LOWER(TRIM(COALESCE(campaign_type, ''))) IN ('product promote', 'product_promote')`;
+const PROFILE_PROMOTE_CAMPAIGN_SQL = `LOWER(TRIM(COALESCE(campaign_type, ''))) IN ('profile promote', 'profile_promote')`;
+
+const campaignTypeSqlForReachTier = (adType) => {
+    if (adType === 'product_promote_ad') return PRODUCT_PROMOTE_CAMPAIGN_SQL;
+    if (adType === 'profile_promote_ad') return PROFILE_PROMOTE_CAMPAIGN_SQL;
+    return PHOTO_VIDEO_CAMPAIGN_SQL;
+};
+
+const syncAdCapsForTier = async (tier) => {
+    const adTypeCondition = campaignTypeSqlForReachTier(tier.ad_type);
+    const budgetFrom = Number(tier.budget_from);
+    const budgetTo = Number(tier.budget_to);
+
+    await pool.query(`
+        ALTER TABLE ads
+            ADD COLUMN IF NOT EXISTS max_reach_cap INTEGER,
+            ADD COLUMN IF NOT EXISTS current_reach INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP
+    `);
+
+    if (tier.max_reach_multiplier === null || tier.max_reach_multiplier === undefined || tier.max_reach_multiplier === '') {
+        await pool.query(
+            `UPDATE ads
+             SET max_reach_cap = NULL,
+                 current_reach = GREATEST(COALESCE(current_reach, 0), COALESCE(impressions, 0)),
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE ${adTypeCondition}
+               AND COALESCE(budget, 0) >= $1
+               AND COALESCE(budget, 0) <= $2`,
+            [budgetFrom, budgetTo]
+        );
+        return;
+    }
+
+    await pool.query(
+        `UPDATE ads
+         SET max_reach_cap = GREATEST(1, ROUND(COALESCE(budget, 0)::numeric * $3::numeric))::integer,
+             current_reach = GREATEST(COALESCE(current_reach, 0), COALESCE(impressions, 0)),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE ${adTypeCondition}
+           AND COALESCE(budget, 0) >= $1
+           AND COALESCE(budget, 0) <= $2`,
+        [budgetFrom, budgetTo, Number(tier.max_reach_multiplier)]
+    );
+
+    await pool.query(
+        `UPDATE ads
+         SET status = 'Completed',
+             completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+             last_resumed_at = NULL,
+             paused_at = NULL,
+             remaining_budget = CASE
+                 WHEN LOWER(COALESCE(campaign_type, '')) IN ('product promote','photo promote','video promote','photo and video','photo & video','profile promote')
+                 THEN 0
+                 ELSE remaining_budget
+             END,
+             current_reach = GREATEST(COALESCE(current_reach, 0), COALESCE(impressions, 0)),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE ${adTypeCondition}
+           AND COALESCE(budget, 0) >= $1
+           AND COALESCE(budget, 0) <= $2
+           AND LOWER(TRIM(REPLACE(REPLACE(COALESCE(status, ''), '_', ' '), '-', ' '))) IN ('active', 'approved')
+           AND COALESCE(max_reach_cap, 0) > 0
+           AND COALESCE(impressions, 0) >= COALESCE(max_reach_cap, 0)`,
+        [budgetFrom, budgetTo]
+    );
+};
+
 const ensureReachTiersTable = async () => {
     if (tableReady) return;
 
@@ -114,6 +184,8 @@ exports.createReachTier = async (req, res) => {
              min_multiplier ?? 0, max_multiplier ?? 0, max_reach_multiplier ?? null]
         );
 
+        await syncAdCapsForTier(rows[0]);
+
         return res.status(201).json({ success: true, tier: rows[0] });
     } catch (err) {
         console.error('[reachTiers] createReachTier error:', err);
@@ -155,6 +227,8 @@ exports.updateReachTier = async (req, res) => {
         if (rows.length === 0) {
             return res.status(404).json({ success: false, message: 'Tier not found' });
         }
+
+        await syncAdCapsForTier(rows[0]);
 
         return res.status(200).json({ success: true, tier: rows[0] });
     } catch (err) {

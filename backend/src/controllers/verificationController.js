@@ -48,11 +48,11 @@ const ensureVerificationTable = async () => {
         );
     `);
 
-    // Ensure users table has is_verified flag
-    await pool.query(`
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_status VARCHAR(20) DEFAULT 'None';
-    `);
+    // Ensure users table has is_verified flag and badge color columns
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_status VARCHAR(20) DEFAULT 'None'`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_badge_color VARCHAR(40) DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_badge_tick_color VARCHAR(40) DEFAULT NULL`).catch(() => {});
 };
 
 // Submit or re-submit a verification application
@@ -223,9 +223,15 @@ exports.adminReview = async (req, res) => {
         if (!result.rows.length) return res.status(404).json({ success: false, message: 'Verification not found' });
 
         const targetUserId = result.rows[0].user_id;
+        // Ensure badge color columns exist
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_badge_color VARCHAR(40) DEFAULT NULL`).catch(() => {});
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_badge_tick_color VARCHAR(40) DEFAULT NULL`).catch(() => {});
+        const isApproved = newStatus === 'Verified';
         await pool.query(
-            `UPDATE users SET is_verified=$1, verification_status=$2 WHERE id=$3`,
-            [newStatus === 'Verified', newStatus, targetUserId]
+            `UPDATE users SET is_verified=$1, verification_status=$2,
+             verification_badge_color = CASE WHEN $1 AND verification_badge_color IS NULL THEN 'blue' ELSE verification_badge_color END
+             WHERE id=$3`,
+            [isApproved, newStatus, targetUserId]
         );
 
         return res.status(200).json({ success: true, status: newStatus });

@@ -1,10 +1,12 @@
 "use client";
 
 import Image from "next/image";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import { RelativeTime } from "@/app/components/RelativeTime";
 import SubscribeButton from "@/app/components/SubscribeButton";
+import { UserVerifiedBadge, BadgeSvg } from "@/app/components/VerifiedBadge";
+import { getUserDisplayName } from "@/app/lib/userDisplay";
 
 export type WritePost = {
     id: number;
@@ -16,6 +18,8 @@ export type WritePost = {
         username?: string;
         name: string;
         img: string;
+        badge_color?: string | null;
+        badge_tick_color?: string | null;
     };
     likes: number;
     likes_count?: number;
@@ -26,6 +30,10 @@ export type WritePost = {
     shares: number;
     liked: boolean;
     user_liked?: boolean;
+    homeExpansionStage?: string;
+    home_expansion_stage?: string;
+    homeCanExpand?: boolean;
+    home_can_expand?: boolean;
 };
 
 type GoogLinkPreview = {
@@ -219,7 +227,7 @@ const InteractionButton = ({
     const currentColorClass = isLikeButton
         ? (isActive ? "text-red-500" : "text-white")
         : (isActive ? activeColor || color || "text-white" : color || "text-white");
-    const iconColorStyle = isLikeButton ? { color: isActive ? "#ef4444" : "#ffffff" } : undefined;
+    const iconColorStyle = isLikeButton ? { color: isActive ? "#ef4444" : "var(--theme-icon)" } : undefined;
     const iconRenderKey = isLikeButton ? `likes-${isActive ? "liked" : "unliked"}` : currentIcon;
 
     return (
@@ -268,19 +276,51 @@ export function GoogCard({
     showSubscribe = true,
 }: GoogCardProps) {
     const preview = getGoogLinkPreview(post.text);
+    const articleRef = useRef<HTMLElement>(null);
+    const viewedRef = useRef(false);
+    const showSuggestedLabel = Number(post.views || post.views_count || 0) >= 200;
+    const authorDisplayName = getUserDisplayName(post.user, post.user.name || "User");
+
+    useEffect(() => {
+        viewedRef.current = false;
+    }, [post.id]);
+
+    useEffect(() => {
+        const el = articleRef.current;
+        if (!el || !onViewPost) return;
+        if (typeof IntersectionObserver === "undefined") {
+            if (!viewedRef.current) {
+                viewedRef.current = true;
+                onViewPost(post.id);
+            }
+            return;
+        }
+
+        const observer = new IntersectionObserver(
+            ([entry]) => {
+                if (!entry.isIntersecting || viewedRef.current) return;
+                viewedRef.current = true;
+                onViewPost(post.id);
+                observer.disconnect();
+            },
+            { threshold: 0.5 },
+        );
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [onViewPost, post.id]);
 
 
     return (
-        <article className="border-b border-white/10 last:border-b-0 px-5 py-5 transition-colors hover:bg-white/[0.025] sm:px-7">
+        <article ref={articleRef} className="border-b border-white/10 last:border-b-0 px-5 py-5 transition-colors hover:bg-white/[0.025] sm:px-7">
             <header className="flex items-start justify-between gap-4">
                 <div className="flex min-w-0 gap-3">
                     <button
                         type="button"
                         onClick={(event) => onNavigateToProfile?.(event, post)}
-                        className="relative h-10 w-10 shrink-0 overflow-hidden rounded-full bg-white/10 transition hover:ring-2 hover:ring-white/20"
+                        className="relative h-5 w-5 shrink-0 overflow-hidden rounded-full bg-white/10 transition hover:ring-2 hover:ring-white/20 md:h-8 md:w-8"
                         aria-label="Open profile"
                     >
-                        <Image src={post.user.img} alt={post.user.name} fill className="object-cover" unoptimized />
+                        <Image src={post.user.img} alt={authorDisplayName} fill className="object-cover" unoptimized />
                     </button>
                     <div className="min-w-0">
                         <div className="flex min-w-0 items-center gap-2">
@@ -289,15 +329,22 @@ export function GoogCard({
                                 onClick={(event) => onNavigateToProfile?.(event, post)}
                                 className="truncate text-left text-[13px] font-black text-white transition hover:text-blue-400"
                             >
-                                {post.user.name}
+                                {authorDisplayName}
                             </button>
+                            {showSuggestedLabel && (
+                                <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.08em] text-white/45">
+                                    Suggested
+                                </span>
+                            )}
+                            {post.user.badge_color && <BadgeSvg color={post.user.badge_color} tickColor={post.user.badge_tick_color} size={12} />}
+                            {!post.user.badge_color && post.user.id && <UserVerifiedBadge userId={post.user.id} size={12} />}
                             <span className="text-xs text-white/35">
                                 <RelativeTime timestamp={post.createdAt || (post as any).created_at} />
                             </span>
                         </div>
                         <div
                             className="mt-1.5 whitespace-pre-wrap break-words text-[14px] leading-6"
-                            style={{ color: post.textColor || "#FFFFFF" }}
+                            style={{ color: post.textColor || "var(--theme-text)" }}
                         >
                             {renderGoogText(post.text)}
                         </div>
@@ -316,6 +363,17 @@ export function GoogCard({
                                 iconSize="text-[21px]"
                             />
                             <InteractionButton
+                                type="views"
+                                icon="eye-outline"
+                                activeIcon="eye"
+                                count={Number(post.views ?? post.views_count ?? 0)}
+                                color="text-white"
+                                activeColor="text-white"
+                                onSingleClick={() => onOpenSheet?.("views", post)}
+                                onLongPress={() => onOpenSheet?.("views", post)}
+                                iconSize="text-[21px]"
+                            />
+                            <InteractionButton
                                 type="comments"
                                 icon="chatbubble-outline"
                                 activeIcon="chatbubble"
@@ -324,17 +382,6 @@ export function GoogCard({
                                 activeColor="text-white"
                                 onSingleClick={() => onOpenSheet?.("comments", post)}
                                 onLongPress={() => onOpenSheet?.("comments", post)}
-                                iconSize="text-[21px]"
-                            />
-                            <InteractionButton
-                                type="views"
-                                icon="eye-outline"
-                                activeIcon="eye"
-                                count={post.views || 0}
-                                color="text-white"
-                                activeColor="text-white"
-                                onSingleClick={() => onViewPost?.(post.id)}
-                                onLongPress={() => onOpenSheet?.("views", post)}
                                 iconSize="text-[21px]"
                             />
                             <InteractionButton
@@ -364,17 +411,17 @@ export function GoogCard({
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                     {showSubscribe && (
-                        <SubscribeButton googId={post.id} authorId={post.user.id as any} authorName={post.user.name} />
+                        <SubscribeButton googId={post.id} authorId={post.user.id as any} authorName={authorDisplayName} />
                     )}
                     <button
                         type="button"
                         onClick={(event) => onToggleMenu?.(event, post)}
-                        className="flex h-8 w-8 items-center justify-center rounded-full bg-white/5 text-white transition-all hover:bg-white/10 active:scale-75"
+                        className="light-theme-option-button light-theme-option-dots flex h-8 w-8 items-center justify-center rounded-full bg-white/5 text-white transition-all hover:bg-white/10 active:scale-75"
                         aria-label="Open post options"
                     >
                         <div className="flex flex-col gap-0.5">
-                            <div className="h-1 w-1 rounded-full bg-white" />
-                            <div className="h-1 w-1 rounded-full bg-white" />
+                            <div data-dot className="h-1 w-1 rounded-full" style={{ backgroundColor: "var(--theme-dot)" }} />
+                            <div data-dot className="h-1 w-1 rounded-full" style={{ backgroundColor: "var(--theme-dot)" }} />
                         </div>
                     </button>
                 </div>

@@ -26,8 +26,11 @@ function statusCfg(s: string) {
 
 function fmt(ts?: string | null) {
     if (!ts) return "—";
-    return new Date(ts).toLocaleString("en-GB", { timeZone: "Asia/Colombo", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    return new Date(ts).toLocaleString("en-GB", { timeZone: "UTC", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
+
+const metric = (value: any) => Number.isFinite(Number(value)) ? Number(value) : 0;
+const money = (value: any) => `R ${metric(value).toFixed(0)}`;
 
 export default function AdminAdsPage() {
     const router = useRouter();
@@ -43,19 +46,28 @@ export default function AdminAdsPage() {
         setTimeout(() => setToast(null), 3000);
     };
 
-    const load = useCallback(async () => {
-        setLoading(true);
+    const load = useCallback(async (silent = false) => {
+        if (!silent) setLoading(true);
         try {
             const data = await adsService.getAllAds();
             setAds(data);
+            setSelected((current: any) => {
+                if (!current) return current;
+                const currentId = String(current.adId || current.ad_id || "");
+                return data.find((ad: any) => String(ad.adId || ad.ad_id || "") === currentId) || current;
+            });
         } catch {
-            showToast("Failed to load ads", false);
+            if (!silent) showToast("Failed to load ads", false);
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
     }, []);
 
     useEffect(() => { void load(); }, [load]);
+    useEffect(() => {
+        const timer = window.setInterval(() => void load(true), 5000);
+        return () => window.clearInterval(timer);
+    }, [load]);
 
     const filtered = filter === "All" ? ads : ads.filter((a) => a.status === filter);
 

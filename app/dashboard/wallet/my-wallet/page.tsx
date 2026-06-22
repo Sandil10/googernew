@@ -45,6 +45,22 @@ const formatLockedAmount = (value?: number | string | null) => {
     return Number.isFinite(numeric) ? numeric.toFixed(2) : "0.00";
 };
 
+const findMatchingWalletUser = (users: any[], targetId: string) => {
+    const normalizedTarget = String(targetId).trim().toLowerCase();
+
+    return users.find((candidate: any) => {
+        const candidateValues = [
+            candidate?.user_id,
+            candidate?.googer_id,
+            candidate?.id,
+            candidate?.username,
+            candidate?.full_name,
+        ];
+
+        return candidateValues.some((value) => String(value || "").trim().toLowerCase() === normalizedTarget);
+    }) || users[0] || null;
+};
+
 const formatWalletCounterparty = (tx: any, currentUserId?: number | string) => {
     const isSent = tx.sender_id === currentUserId;
     const type = String(tx?.type || '').toLowerCase();
@@ -494,6 +510,38 @@ export default function MyWallet() {
         };
 
         loadLockedManualPayment();
+    }, []);
+
+    useEffect(() => {
+        const loadQrTargetUser = async () => {
+            if (typeof window === 'undefined') return;
+            if (localStorage.getItem(MANUAL_PAYMENT_LOCK_STORAGE_KEY) === 'true') return;
+
+            const qrTargetId = new URLSearchParams(window.location.search).get('to')?.trim() || '';
+            if (!qrTargetId) return;
+
+            switchWalletTab('wallet');
+            setTargetQuery(qrTargetId);
+            setSelectedUser(null);
+            setSuggestions([]);
+            setShowSuggestions(false);
+
+            try {
+                const results = await walletService.searchUsers(qrTargetId);
+                const matchedUser = findMatchingWalletUser(results || [], qrTargetId);
+
+                if (matchedUser) {
+                    setSelectedUser(matchedUser);
+                    setTargetQuery(String(matchedUser.user_id || matchedUser.googer_id || qrTargetId));
+                    setSuggestions([]);
+                    setShowSuggestions(false);
+                }
+            } catch (error) {
+                console.error("Failed to load wallet QR target user", error);
+            }
+        };
+
+        loadQrTargetUser();
     }, []);
 
     useEffect(() => {

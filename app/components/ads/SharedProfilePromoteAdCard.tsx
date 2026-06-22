@@ -7,6 +7,7 @@ import IonIcon from "@/app/components/IonIcon";
 import SubscribeButton from "@/app/components/SubscribeButton";
 import { marketService } from "@/services/marketService";
 import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
+import { UserVerifiedBadge } from "@/app/components/VerifiedBadge";
 import {
   AVATAR_IMAGE_SIZES,
   FEED_IMAGE_BLUR_DATA_URL,
@@ -16,7 +17,7 @@ import {
 } from "@/app/lib/mediaOptimization";
 
 import { NormalizedAd } from "@/app/lib/ads/adTypes";
-import { useAdStore } from "@/app/lib/ads/adStore";
+import { logSponsoredAdClick } from "@/app/lib/ads/adClickTracking";
 
 type SharedProfilePromoteAdCardProps = {
   ad: NormalizedAd;
@@ -71,17 +72,7 @@ export function SharedProfilePromoteAdCard({
   const showAdCoinButton = !!canShowCollectCoin?.(ad);
 
   const trackAdClick = () => {
-    const clickId = ad.id || ad.adId || (ad as any).ad_id || raw.id || raw.adId || raw.ad_id;
-    if (!clickId) return;
-    void marketService.logAdClick(clickId, "visit").then((result: any) => {
-      if (!result?.success) return;
-      useAdStore.getState().updateAdState(ad.raw || ad, {
-        clicks: Number(result.clicks || result.link_actions || 0),
-        link_actions: Number(result.link_actions || result.clicks || 0),
-        current_reach: Number(result.current_reach ?? result.reach ?? 0),
-        reach: Number(result.current_reach ?? result.reach ?? 0),
-      });
-    });
+    logSponsoredAdClick(ad.raw || ad, "visit");
   };
   const displayProducts = loadingProducts
     ? Array.from({ length: 3 }).map((_, i) => ({ id: `ph-${i}`, _placeholder: true }))
@@ -93,7 +84,6 @@ export function SharedProfilePromoteAdCard({
     <div
       className="relative flex-shrink-0 w-[240px] sm:w-[260px] overflow-hidden rounded-2xl border border-white/10 bg-[#1a1a1a] shadow-[0_8px_28px_rgba(0,0,0,0.28)] transition hover:border-white/20"
       style={{ scrollSnapAlign: "start" }}
-      onClick={trackAdClick}
     >
       {showAdCoinButton && onCollectCoin && (
         <button
@@ -120,7 +110,11 @@ export function SharedProfilePromoteAdCard({
       <div className="flex items-center gap-2 border-b border-white/8 px-3 py-2.5">
         <button
           type="button"
-          onClick={() => onProfileClick(ad.raw || ad)}
+          onClick={(event) => {
+            event.stopPropagation();
+            trackAdClick();
+            onProfileClick(ad.raw || ad);
+          }}
           className="relative h-8 w-8 shrink-0 overflow-hidden rounded-full border border-white/10 bg-white/10"
         >
           {profilePic ? (
@@ -144,16 +138,21 @@ export function SharedProfilePromoteAdCard({
         <div className="min-w-0 flex-1">
           <button
             type="button"
-            onClick={() => onProfileClick(ad.raw || ad)}
-            className="block truncate text-left text-[10px] font-black normal-case tracking-tight text-white hover:text-blue-400 transition-colors"
+            onClick={(event) => {
+              event.stopPropagation();
+              trackAdClick();
+              onProfileClick(ad.raw || ad);
+            }}
+            className="flex items-center gap-1 truncate text-left text-[10px] font-black normal-case tracking-tight text-white hover:text-blue-400 transition-colors"
           >
-            {username}
+            <span className="truncate">{username}</span>
+            {ad.userId && <UserVerifiedBadge userId={ad.userId} size={10} />}
           </button>
           <div className="flex items-center gap-1.5">
             <span className="block text-[8px] font-bold tracking-[0.14em] text-slate-500">Ad</span>
           </div>
         </div>
-        <SubscribeButton userId={ad.userId} initialIsSubscribed={false} size="small" />
+        <SubscribeButton userId={ad.userId} initialIsSubscribed={false} size="small" onBeforeSubscribeClick={trackAdClick} />
       </div>
 
       <div className="grid grid-cols-3 gap-1 p-1.5">
@@ -173,8 +172,12 @@ export function SharedProfilePromoteAdCard({
               key={String(product.id)}
               type="button"
               disabled={isPlaceholder}
-              onClick={() => {
-                if (!isPlaceholder) onProductClick(product);
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!isPlaceholder) {
+                  trackAdClick();
+                  onProductClick(product);
+                }
               }}
               className="overflow-hidden rounded-lg border border-white/8 bg-[#0e1014] text-left transition hover:border-white/20 disabled:cursor-default disabled:opacity-50"
             >
@@ -216,7 +219,11 @@ export function SharedProfilePromoteAdCard({
       <div className="border-t border-white/5 px-3 py-2">
         <button
           type="button"
-          onClick={() => onProfileClick(ad.raw || ad)}
+          onClick={(event) => {
+            event.stopPropagation();
+            trackAdClick();
+            onProfileClick(ad.raw || ad);
+          }}
           className="w-full rounded-xl bg-white/[0.05] py-1.5 text-[8px] font-black uppercase tracking-[0.14em] text-white/60 transition hover:bg-white/[0.09] hover:text-white active:scale-95"
         >
           View Profile

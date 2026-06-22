@@ -2,7 +2,6 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
@@ -17,7 +16,6 @@ export default function LoginPage() {
   const [resetEmail, setResetEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const router = useRouter();
   const [redirectTo, setRedirectTo] = useState("/dashboard");
 
   useEffect(() => {
@@ -33,7 +31,8 @@ export default function LoginPage() {
     try {
       const response = await authService.login({ email, password });
       console.log("Login successful:", response);
-      router.push(redirectTo.startsWith("/") ? redirectTo : "/dashboard");
+      const target = redirectTo.startsWith("/") ? redirectTo : "/dashboard";
+      window.location.assign(target);
     } catch (err: any) {
       console.error("Login error:", err);
       setError(err.message || "Login failed. Please check your credentials.");

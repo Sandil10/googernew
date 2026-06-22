@@ -1,10 +1,10 @@
 const isClient = typeof window !== 'undefined';
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+import { API_URL } from './apiConfig';
 
 const storage = {
     get: (key: string) => {
         if (!isClient) return null;
-        try { return localStorage.getItem(key); } catch { return null; }
+        try { return sessionStorage.getItem(key) || localStorage.getItem(key); } catch { return null; }
     }
 };
 
@@ -23,6 +23,60 @@ const getHeaders = () => {
         'Content-Type': 'application/json',
     };
 };
+
+const normalizeUploadControlSettings = (result: any) => {
+    if (!result) return null;
+    return {
+        min_upload_price: Number(result.min_upload_price ?? 100),
+        max_upload_price: Number(result.max_upload_price ?? 10000),
+        flash_content_price: Number(result.flash_content_price ?? 100),
+        flash_preview_seconds: Number(result.flash_preview_seconds ?? 5),
+        flash_auto_play: Boolean(result.flash_auto_play ?? false),
+        default_topic: String(result.default_topic || 'Technology'),
+        default_content_access_mode: result.default_content_access_mode === 'blurred' ? 'blurred' as const : 'unblurred' as const,
+        normal_user_video_limit_seconds: Number(result.normal_user_video_limit_seconds ?? 60),
+        subscribed_user_video_limit_seconds: Number(result.subscribed_user_video_limit_seconds ?? 180),
+        commission_tiers: Array.isArray(result.commission_tiers) ? result.commission_tiers : [],
+        subscription_commission_tiers: Array.isArray(result.subscription_commission_tiers) ? result.subscription_commission_tiers : [],
+    };
+};
+
+const getAdminPanelPublicApiUrl = () => {
+    if (typeof window === 'undefined') return '';
+    const explicitApiUrl = process.env.NEXT_PUBLIC_ADMIN_API_URL;
+    if (explicitApiUrl) return explicitApiUrl.replace(/\/$/, '');
+
+    const explicitPanelUrl = process.env.NEXT_PUBLIC_ADMIN_PANEL_URL;
+    if (explicitPanelUrl) return `${explicitPanelUrl.replace(/\/$/, '')}/api`;
+
+    const { protocol, hostname } = window.location;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+        return 'http://localhost:3002/api';
+    }
+    if (hostname.startsWith('app.')) {
+        return `${protocol}//${hostname.replace(/^app\./, 'appadmin.')}/api`;
+    }
+    return '';
+};
+
+const fetchUploadControlSettingsFromUrl = async (url: string) => {
+    if (!url) return null;
+    try {
+        const response = await fetch(url, {
+            method: 'GET',
+            cache: 'no-store',
+        });
+        const result = await safeJson(response);
+        if (!response.ok || !result) return null;
+        return normalizeUploadControlSettings(result);
+    } catch {
+        return null;
+    }
+};
+
+const fetchUploadControlSettings = (baseUrl: string) => (
+    fetchUploadControlSettingsFromUrl(`${baseUrl}/admin/customization/upload-control/public`)
+);
 
 export const adsService = {
     getActiveAdsByUser: async (userId: string | number) => {
@@ -60,6 +114,25 @@ export const adsService = {
         return data?.savedAdIds || [];
     },
 
+    getSavedAds: async () => {
+        const response = await fetch(`${API_URL}/ads/saves`, {
+            method: 'GET',
+            headers: getHeaders(),
+        });
+        const data = await safeJson(response);
+        if (!response.ok) return [];
+        return data?.ads || [];
+    },
+
+    getPublicSavedAdsByUser: async (userId: string | number) => {
+        const response = await fetch(`${API_URL}/ads/saved-public/${encodeURIComponent(String(userId))}`, {
+            method: 'GET',
+        });
+        const data = await safeJson(response);
+        if (!response.ok) return [];
+        return data?.ads || [];
+    },
+
     getSavedAdCounts: async (): Promise<{ counts: { photo: number; video: number }; limits: { photo: number | null; video: number | null } } | null> => {
         const response = await fetch(`${API_URL}/ads/saves/counts`, {
             method: 'GET',
@@ -75,6 +148,7 @@ export const adsService = {
         const response = await fetch(`${API_URL}/ads/my`, {
             method: 'GET',
             headers: getHeaders(),
+            cache: 'no-store',
         });
         const result = await safeJson(response);
         if (!response.ok) throw new Error(result?.message || 'Failed to fetch ads');
@@ -126,9 +200,10 @@ export const adsService = {
     },
 
     getAllAds: async () => {
-        const response = await fetch(`${API_URL}/ads/all`, {
+        const response = await fetch(`${API_URL}/ads/all?include_all=true`, {
             method: 'GET',
             headers: getHeaders(),
+            cache: 'no-store',
         });
         const result = await safeJson(response);
         if (!response.ok) throw new Error(result?.message || 'Failed to fetch all ads');
@@ -168,6 +243,29 @@ export const adsService = {
         const result = await safeJson(response);
         if (!response.ok || !Array.isArray(result)) return [];
         return result;
+    },
+
+    getUploadControlSettingsPublic: async (): Promise<{
+        min_upload_price: number;
+        max_upload_price: number;
+        flash_content_price: number;
+        flash_preview_seconds: number;
+        flash_auto_play: boolean;
+        default_topic: string;
+        default_content_access_mode: 'blurred' | 'unblurred';
+        normal_user_video_limit_seconds: number;
+        subscribed_user_video_limit_seconds: number;
+        commission_tiers?: Array<{ min: number; max: number; commission: number }>;
+        subscription_commission_tiers?: Array<{ min: number; max: number; commission: number }>;
+    } | null> => {
+        const bridgeSettings = await fetchUploadControlSettingsFromUrl('/api/upload-control-settings');
+        if (bridgeSettings) return bridgeSettings;
+
+        const adminPanelUrl = getAdminPanelPublicApiUrl();
+        const adminSettings = adminPanelUrl ? await fetchUploadControlSettings(adminPanelUrl) : null;
+        if (adminSettings) return adminSettings;
+
+        return fetchUploadControlSettings(API_URL);
     },
 
     redeemPromoCode: async (code: string, ad_type: string, ad_id: string) => {

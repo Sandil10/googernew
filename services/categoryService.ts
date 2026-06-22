@@ -1,6 +1,6 @@
 import { authService } from "@/services/authService";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "/api";
+import { API_URL } from './apiConfig';
 const CATEGORY_SYNC_KEY = "googer-categories-sync";
 
 const safeJson = async (response: Response) => {

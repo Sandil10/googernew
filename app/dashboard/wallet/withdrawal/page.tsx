@@ -7,8 +7,17 @@ import Image from 'next/image';
 import IonIcon from '@/app/components/IonIcon';
 import { authService } from '@/services/authService';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
-const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+const getApiUrl = () => {
+    const isClient = typeof window !== 'undefined';
+    if (!isClient) return '/api';
+    const hostname = window.location.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+        return 'http://localhost:5000';
+    }
+    return '/api';
+};
+const API_URL = getApiUrl();
+const getToken = () => (typeof window !== 'undefined' ? (sessionStorage.getItem('token') || localStorage.getItem('token')) : null);
 const authFetch = (url: string, opts: RequestInit = {}) =>
     fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${getToken()}` } });
 
@@ -42,7 +51,6 @@ type WithdrawalRequest = {
 };
 
 type WithdrawalSettings = { min_amount: number; max_amount: number; coin_rate: number };
-type ExchangeRate = { currency: string; rate: number | null; date: string | null };
 
 const LOGO_BASE = 'https://raw.githubusercontent.com/payrexx/payment-logos/main/assets/card-icons';
 
@@ -68,7 +76,7 @@ const labelCls = "block text-gray-400 text-xs font-semibold mb-2 tracking-wider 
 
 export default function WithdrawalPage() {
     const router = useRouter();
-    const [activeTab, setActiveTab] = useState<'withdrawal' | 'recent' | 'methods' | 'analytics'>('withdrawal');
+    const [activeTab, setActiveTab] = useState<'withdrawal' | 'recent' | 'methods'>('withdrawal');
 
     // Data
     const [balance, setBalance]       = useState(0);
@@ -90,41 +98,14 @@ export default function WithdrawalPage() {
     const [addDetailsMethodId, setAddDetailsMethodId] = useState<number | null>(null);
     const [addDetailsValues, setAddDetailsValues]     = useState<Record<string, string>>({});
 
-    // Exchange rates
-    const [rates, setRates]         = useState<ExchangeRate[]>([]);
-    const [ratesLoading, setRatesLoading] = useState(false);
-    const [ratesError, setRatesError]     = useState(false);
-    const [ratesUpdated, setRatesUpdated] = useState<string | null>(null);
 
     // UI state
     const [mounted, setMounted]       = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError]           = useState<string | null>(null);
     const [success, setSuccess]       = useState<string | null>(null);
+    const [cancellingId, setCancellingId] = useState<number | null>(null);
 
-    // Fetch live exchange rates via backend proxy (avoids CORS)
-    const fetchRates = async () => {
-        setRatesLoading(true);
-        setRatesError(false);
-        try {
-            const res = await fetch(`${API_URL}/withdrawal-admin/exchange-rates`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const json = await res.json();
-            if (!json.success) throw new Error(json.message);
-            setRates(json.rates as ExchangeRate[]);
-            setRatesUpdated(json.date ?? new Date().toLocaleDateString());
-        } catch {
-            setRatesError(true);
-        } finally {
-            setRatesLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        fetchRates();
-        const interval = setInterval(fetchRates, 5 * 60 * 1000); // refresh every 5 min
-        return () => clearInterval(interval);
-    }, []);
 
     useEffect(() => { setMounted(true); }, []);
 
@@ -188,7 +169,6 @@ export default function WithdrawalPage() {
     }, []);
 
     const isVerified    = verStatus === 'Verified';
-    const coinRate      = settings?.coin_rate ?? 0.0056;
     const numAmount     = parseFloat(amount) || 0;
     const withdrawLimit = settings?.max_amount ?? 10000;
     const balancePct    = Math.min(100, Math.floor((balance / withdrawLimit) * 100));
@@ -272,6 +252,23 @@ export default function WithdrawalPage() {
         }
     };
 
+    const handleCancelWithdrawal = async (id: number, amount: string) => {
+        setCancellingId(id);
+        try {
+            const res = await authFetch(`${API_URL}/withdrawals/cancel/${id}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data?.message || 'Failed to cancel.');
+            setBalance(b => b + parseFloat(amount));
+            const r = await authFetch(`${API_URL}/withdrawals/my-requests`).then(r => r.json());
+            if (r.success) setRecentRequests(r.requests || []);
+            setSuccess('Withdrawal cancelled. Amount refunded to your wallet.');
+        } catch (err: any) {
+            setError(err?.message || 'Failed to cancel withdrawal.');
+        } finally {
+            setCancellingId(null);
+        }
+    };
+
     if (!mounted || loading) {
         return (
             <div className="flex flex-col gap-3 justify-center items-center min-h-[60vh]">
@@ -302,7 +299,6 @@ export default function WithdrawalPage() {
                             { key: 'withdrawal', label: 'My Withdrawal' },
                             { key: 'recent',     label: 'Recent Withdrawals' },
                             { key: 'methods',    label: 'Payment Methods' },
-                            { key: 'analytics',  label: 'Analytics' },
                         ].map(tab => (
                             <button
                                 key={tab.key}
@@ -506,16 +502,6 @@ export default function WithdrawalPage() {
                                         />
                                     </div>
 
-                                    {/* Conversion */}
-                                    <p className="text-center text-xs font-mono mb-5 mt-1">
-                                        {numAmount > 0 ? (
-                                            <span className="text-gray-400">
-                                                {numAmount.toLocaleString()} Coins = <span className="text-white font-bold">${(numAmount * coinRate).toFixed(2)}</span>
-                                            </span>
-                                        ) : (
-                                            <span className="text-gray-600">1000 Coins = ${(1000 * coinRate).toFixed(2)}</span>
-                                        )}
-                                    </p>
 
                                     {/* Error / success */}
                                     {error && (
@@ -693,100 +679,6 @@ export default function WithdrawalPage() {
                     </div>
                 )}
 
-                {/* ── Analytics tab ── */}
-                {activeTab === 'analytics' && (
-                    <div className="p-6 md:p-8">
-
-                        {/* Live Exchange Rates */}
-                        <div className="mb-8">
-                            <div className="flex items-center justify-between mb-4">
-                                <div className="flex items-center gap-2">
-                                    <IonIcon name="trending-up-outline" className="text-lg text-white opacity-50" />
-                                    <span className="font-bold text-white text-sm">Live Exchange Rates</span>
-                                    <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-widest bg-gray-800 px-1.5 py-0.5 rounded">R</span>
-                                </div>
-                                <button
-                                    type="button"
-                                    onClick={fetchRates}
-                                    disabled={ratesLoading}
-                                    className="flex items-center gap-1.5 text-[10px] text-gray-500 hover:text-white transition-colors disabled:opacity-40"
-                                >
-                                    <IonIcon name="reload-outline" className={`text-xs ${ratesLoading ? 'animate-spin' : ''}`} />
-                                    {ratesUpdated ? `Updated ${ratesUpdated}` : 'Refresh'}
-                                </button>
-                            </div>
-
-                            {ratesLoading && rates.length === 0 ? (
-                                <div className="flex items-center justify-center py-8 opacity-40">
-                                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white/30 mr-3" />
-                                    <span className="text-xs text-gray-500">Fetching rates…</span>
-                                </div>
-                            ) : ratesError && rates.length === 0 ? (
-                                <div className="bg-[#030303] border border-red-500/15 rounded-xl px-4 py-4 flex items-center gap-3">
-                                    <IonIcon name="alert-circle-outline" className="text-red-400 text-base shrink-0" />
-                                    <div>
-                                        <p className="text-xs text-red-300 font-semibold">Unable to load exchange rates</p>
-                                        <button onClick={fetchRates} className="text-[10px] text-gray-500 underline mt-0.5">Retry</button>
-                                    </div>
-                                </div>
-                            ) : rates.length > 0 ? (
-                                <div className="bg-[#030303] border border-gray-700/50 rounded-xl overflow-hidden shadow-inner">
-                                    {rates.map((rate, i) => (
-                                        <div
-                                            key={rate.currency}
-                                            className={`flex items-center justify-between px-5 py-4 ${i < rates.length - 1 ? 'border-b border-gray-800/60' : ''}`}
-                                        >
-                                            <div className="flex items-center gap-3">
-                                                <span className="text-xs font-black text-white bg-gray-800 px-2 py-0.5 rounded tracking-widest">{rate.currency}</span>
-                                                <span className="text-xs text-gray-500">1 {rate.currency} =</span>
-                                            </div>
-                                            <p className="text-sm font-bold text-green-400">
-                                                {rate.rate != null ? `R ${Math.round(rate.rate)}` : '—'}
-                                            </p>
-                                        </div>
-                                    ))}
-                                    {ratesUpdated && (
-                                        <div className="px-5 py-2.5 border-t border-gray-800/60 flex items-center gap-1.5">
-                                            <IonIcon name="information-circle-outline" className="text-xs text-gray-600" />
-                                            <p className="text-[9px] text-gray-600">Mid-market rate · {ratesUpdated}</p>
-                                        </div>
-                                    )}
-                                </div>
-                            ) : null}
-                        </div>
-
-                        {/* Withdrawal stats summary */}
-                        <div>
-                            <div className="flex items-center gap-2 mb-4">
-                                <IonIcon name="bar-chart-outline" className="text-lg text-white opacity-50" />
-                                <span className="font-bold text-white text-sm">My Withdrawal Summary</span>
-                            </div>
-                            {recentRequests.length === 0 ? (
-                                <div className="flex flex-col items-center justify-center py-10 opacity-30">
-                                    <IonIcon name="analytics-outline" className="text-4xl mb-2" />
-                                    <p className="text-xs font-bold uppercase tracking-widest">No withdrawal data yet</p>
-                                </div>
-                            ) : (
-                                <div className="grid grid-cols-2 gap-3">
-                                    {[
-                                        { label: 'Total Requests',  value: recentRequests.length,                                                        color: 'text-white' },
-                                        { label: 'Approved',        value: recentRequests.filter(r => r.status === 'Approved').length,                   color: 'text-green-400' },
-                                        { label: 'Pending',         value: recentRequests.filter(r => r.status === 'Pending').length,                    color: 'text-amber-400' },
-                                        { label: 'Rejected',        value: recentRequests.filter(r => r.status === 'Rejected').length,                   color: 'text-red-400' },
-                                        { label: 'Total Withdrawn', value: recentRequests.reduce((s, r) => s + parseFloat(r.amount), 0).toLocaleString() + ' coins', color: 'text-white' },
-                                        { label: 'Approved Amount', value: recentRequests.filter(r => r.status === 'Approved').reduce((s, r) => s + parseFloat(r.amount), 0).toLocaleString() + ' coins', color: 'text-green-400' },
-                                    ].map(stat => (
-                                        <div key={stat.label} className="bg-[#030303] border border-gray-700/50 rounded-xl px-4 py-3 shadow-inner">
-                                            <p className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold mb-1">{stat.label}</p>
-                                            <p className={`text-sm font-bold ${stat.color}`}>{stat.value}</p>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                )}
-
                 {/* ── Recent Withdrawals tab ── */}
                 {activeTab === 'recent' && (
                     <div className="p-6 md:p-8">
@@ -813,13 +705,28 @@ export default function WithdrawalPage() {
                                                         {' · '}#{req.id}
                                                     </p>
                                                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md bg-gray-900/50 ${
-                                                        req.status === 'Approved'  ? 'text-green-400' :
-                                                        req.status === 'Pending'   ? 'text-amber-400' :
-                                                        req.status === 'Rejected'  ? 'text-red-400'   : 'text-gray-400'
+                                                        req.status === 'Approved'   ? 'text-green-400' :
+                                                        req.status === 'Pending'    ? 'text-amber-400' :
+                                                        req.status === 'Rejected'   ? 'text-red-400'   :
+                                                        req.status === 'Cancelled'  ? 'text-gray-400'  : 'text-gray-400'
                                                     }`}>{req.status}</span>
                                                 </div>
                                                 {req.status === 'Rejected' && req.rejection_reason && (
                                                     <p className="text-[10px] text-red-400/70 mt-1 truncate">{req.rejection_reason}</p>
+                                                )}
+                                                {req.status === 'Pending' && (
+                                                    <div className="mt-2 flex justify-end">
+                                                        <button
+                                                            onClick={() => handleCancelWithdrawal(req.id, req.amount)}
+                                                            disabled={cancellingId === req.id}
+                                                            className="flex items-center gap-1 text-[10px] font-bold px-3 py-1 rounded-lg border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all disabled:opacity-50"
+                                                        >
+                                                            {cancellingId === req.id
+                                                                ? <><div className="w-3 h-3 border border-red-400/50 border-t-red-400 rounded-full animate-spin" />Cancelling…</>
+                                                                : <><IonIcon name="close-outline" className="text-xs" />Cancel</>
+                                                            }
+                                                        </button>
+                                                    </div>
                                                 )}
                                             </div>
                                         </div>

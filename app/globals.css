@@ -3,6 +3,18 @@
 :root {
   --background: #000000;
   --foreground: #ffffff;
+  --text-color: var(--foreground);
+  --icon-color: var(--foreground);
+  --surface: #0c0c0f;
+  --surface-soft: rgba(255, 255, 255, 0.04);
+  --line-soft: rgba(255, 255, 255, 0.1);
+  /* Theme-adaptive tokens — overridden by data-theme rules below.
+     Defaults match dark mode so SSR / pre-hydration frames look correct. */
+  --theme-dot: #f9fafb;
+  --theme-icon: #f9fafb;
+  --theme-text: #f9fafb;
+  --theme-border: rgba(255, 255, 255, 0.12);
+  --theme-muted-surface: rgba(255, 255, 255, 0.06);
 }
 
 @theme inline {
@@ -19,6 +31,53 @@
   }
 }
 
+@media (prefers-color-scheme: light) {
+  :root {
+    --background: #f6f7fb;
+    --foreground: #111827;
+  }
+}
+
+html[data-theme="dark"] {
+  --background: #000000;
+  --foreground: #ffffff;
+  --text-color: var(--foreground);
+  --icon-color: var(--foreground);
+  --surface: #0c0c0f;
+  --surface-soft: rgba(255, 255, 255, 0.04);
+  --line-soft: rgba(255, 255, 255, 0.1);
+  --theme-page: #000000;
+  --theme-surface: #0c0c0f;
+  --theme-surface-strong: #151515;
+  --theme-muted-surface: rgba(255, 255, 255, 0.06);
+  --theme-border: rgba(255, 255, 255, 0.12);
+  --theme-text: #f9fafb;
+  --theme-muted-text: rgba(249, 250, 251, 0.68);
+  --theme-icon: #f9fafb;
+  --theme-dot: #f9fafb;
+  --theme-inverse: #111827;
+}
+
+html[data-theme="light"] {
+  --background: #f6f7fb;
+  --foreground: #111827;
+  --text-color: var(--foreground);
+  --icon-color: var(--foreground);
+  --surface: #ffffff;
+  --surface-soft: rgba(15, 23, 42, 0.045);
+  --line-soft: rgba(15, 23, 42, 0.12);
+  --theme-page: #f6f7fb;
+  --theme-surface: #ffffff;
+  --theme-surface-strong: #f8fafc;
+  --theme-muted-surface: rgba(15, 23, 42, 0.055);
+  --theme-border: rgba(15, 23, 42, 0.14);
+  --theme-text: #111827;
+  --theme-muted-text: rgba(17, 24, 39, 0.66);
+  --theme-icon: #111827;
+  --theme-dot: #111827;
+  --theme-inverse: #ffffff;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
@@ -26,6 +85,63 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+html[data-theme="light"] body {
+  background: #f6f7fb;
+  color: #111827;
+}
+
+html[data-theme="light"] input,
+html[data-theme="light"] textarea,
+html[data-theme="light"] [contenteditable="true"],
+html[data-theme="light"] [contenteditable] {
+  caret-color: #111827;
+}
+
+html[data-theme="light"] .text-white,
+html[data-theme="light"] [class*="text-white/"],
+html[data-theme="light"] [class*="text-zinc-"],
+html[data-theme="light"] [class*="text-gray-"] {
+  color: #111827 !important;
+}
+
+html[data-theme="light"] [class*="text-white/25"],
+html[data-theme="light"] [class*="text-white/30"],
+html[data-theme="light"] [class*="text-white/35"],
+html[data-theme="light"] [class*="text-white/40"],
+html[data-theme="light"] [class*="text-white/45"],
+html[data-theme="light"] [class*="text-white/50"],
+html[data-theme="light"] [class*="text-white/60"],
+html[data-theme="light"] [class*="text-white/70"] {
+  color: rgba(17, 24, 39, 0.68) !important;
+}
+
+html[data-theme="light"] [class*="bg-white/"],
+html[data-theme="light"] [class*="bg-white\\["] {
+  background-color: rgba(15, 23, 42, 0.045) !important;
+}
+
+html[data-theme="light"] [class*="border-white/"],
+html[data-theme="light"] [class*="border-white\\["],
+html[data-theme="light"] .border-white {
+  border-color: rgba(15, 23, 42, 0.12) !important;
+}
+
+html[data-theme="light"] [class*="bg-[#0"],
+html[data-theme="light"] [class*="bg-[#1"],
+html[data-theme="light"] [class*="bg-black"],
+html[data-theme="light"] [class*="bg-zinc-"] {
+  background-color: #ffffff !important;
+}
+
+html[data-theme="light"] [class*="shadow-[0_30px_80px"],
+html[data-theme="light"] .shadow-2xl {
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.12) !important;
+}
+
+html[data-theme="light"] ::placeholder {
+  color: rgba(17, 24, 39, 0.38) !important;
 }
 
 /* Premium App Feel: Prevent text cursor (caret) from appearing on non-editable text */
@@ -136,4 +252,589 @@ input, textarea, [contenteditable="true"], [contenteditable] {
 }
 .scrollbar-dark::-webkit-scrollbar-thumb:hover {
   background-color: #444444;
+}
+
+/* Light mode is opt-in/manual or device-driven. Keep dark as the original default,
+   but when light is active, override hardcoded dark utility colors across the app. */
+html[data-theme="light"],
+body[data-theme="light"] {
+  color-scheme: light;
+  background: #f6f7fb !important;
+  color: #111827 !important;
+}
+
+html[data-theme="light"] body,
+html[data-theme="light"] main,
+html[data-theme="light"] section,
+html[data-theme="light"] aside,
+html[data-theme="light"] header,
+html[data-theme="light"] nav,
+html[data-theme="light"] footer {
+  background-color: #f6f7fb !important;
+  color: #111827 !important;
+}
+
+/* Dark inner surfaces (#0xx / #1xx) → white in light mode */
+html[data-theme="light"] [class*="bg-[#0"],
+html[data-theme="light"] [class*="bg-[#1"],
+html[data-theme="light"] [class*="bg-black"],
+html[data-theme="light"] [class*="bg-zinc-9"],
+html[data-theme="light"] [class*="bg-zinc-8"],
+html[data-theme="light"] [class*="bg-neutral-9"],
+html[data-theme="light"] [class*="bg-neutral-8"],
+html[data-theme="light"] [class*="bg-stone-9"],
+html[data-theme="light"] [class*="bg-stone-8"],
+html[data-theme="light"] [class*="bg-slate-9"],
+html[data-theme="light"] [class*="bg-slate-8"],
+html[data-theme="light"] [class*="bg-gray-9"],
+html[data-theme="light"] [class*="bg-gray-8"] {
+  background-color: #ffffff !important;
+  background-image: none !important;
+}
+
+/* Dark outer containers (#2xx+) → page background so they don't
+   create a visible white card box over the page surface            */
+html[data-theme="light"] [class*="bg-[#2"],
+html[data-theme="light"] [class*="bg-[#3"],
+html[data-theme="light"] [class*="bg-[#4"] {
+  background-color: #f6f7fb !important;
+  background-image: none !important;
+}
+
+html[data-theme="light"] [class*="bg-white/"],
+html[data-theme="light"] [class*="bg-white\\["],
+html[data-theme="light"] [class*="bg-white"] {
+  background-color: rgba(15, 23, 42, 0.045) !important;
+}
+
+html[data-theme="light"] [class*="from-black"],
+html[data-theme="light"] [class*="via-black"],
+html[data-theme="light"] [class*="to-black"],
+html[data-theme="light"] [class*="from-zinc"],
+html[data-theme="light"] [class*="via-zinc"],
+html[data-theme="light"] [class*="to-zinc"],
+html[data-theme="light"] [class*="linear-gradient"] {
+  background-image: none !important;
+}
+
+html[data-theme="light"] [class*="border-white/"],
+html[data-theme="light"] [class*="border-white\\["],
+html[data-theme="light"] [class*="border-zinc-"],
+html[data-theme="light"] [class*="border-neutral-"],
+html[data-theme="light"] [class*="border-stone-"],
+html[data-theme="light"] [class*="border-gray-"],
+html[data-theme="light"] .border-white {
+  border-color: rgba(15, 23, 42, 0.12) !important;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"])[class*="border-white/"],
+html[data-theme="light"] :where(button, a, [role="button"])[class*="border-white\\["],
+html[data-theme="light"] :where(button, a, [role="button"]).border-white {
+  border-color: rgba(17, 24, 39, 0.72) !important;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"]) :where(.bg-white, [class*="bg-white/"], [class*="bg-white\\["]):where(.rounded-full) {
+  background-color: #111827 !important;
+}
+
+html[data-theme="light"] :where(.h-0\.5, .h-1, .h-1\.5, .h-2, .h-2\.5):where(.w-0\.5, .w-1, .w-1\.5, .w-2, .w-2\.5, .w-3, .w-6):where(.rounded-full):where(.bg-white, [class*="bg-white/"], [class*="bg-white\\["]) {
+  background-color: #111827 !important;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"]) :where(.h-0\.5, .h-1, .h-1\.5, .h-2, .h-2\.5):where(.w-0\.5, .w-1, .w-1\.5, .w-2, .w-2\.5):where(.rounded-full) {
+  background-color: #111827 !important;
+  opacity: 1 !important;
+}
+
+html[data-theme="light"] :where(button[aria-label*="options" i], button[aria-label*="menu" i], .light-theme-option-button) {
+  border: 1px solid rgba(17, 24, 39, 0.72) !important;
+  background-color: rgba(255, 255, 255, 0.72) !important;
+  color: #111827 !important;
+}
+
+html[data-theme="light"] :where(button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], .light-theme-option-button, .light-theme-option-dots) {
+  border-color: rgba(17, 24, 39, 0.9) !important;
+  background-color: rgba(255, 255, 255, 0.72) !important;
+  color: #111827 !important;
+}
+
+html[data-theme="light"] :where(button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], .light-theme-option-button, .light-theme-option-dots) :where(ion-icon, svg) {
+  color: #111827 !important;
+}
+
+html[data-theme="light"] :where(button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], .light-theme-option-button, .light-theme-option-dots) :where(.rounded-full, span, div):where([class*="bg-white"]) {
+  background-color: #111827 !important;
+  opacity: 1 !important;
+}
+
+html[data-theme="light"] .light-theme-action-border {
+  border-color: rgba(17, 24, 39, 0.9) !important;
+  background-color: #111827 !important;
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"])[class*="bg-white"] {
+  border: 1px solid rgba(17, 24, 39, 0.78) !important;
+}
+
+html[data-theme="light"] .text-white,
+html[data-theme="light"] [class*="text-white"],
+html[data-theme="light"] [class*="text-zinc-"],
+html[data-theme="light"] [class*="text-neutral-"],
+html[data-theme="light"] [class*="text-stone-"],
+html[data-theme="light"] [class*="text-slate-"],
+html[data-theme="light"] [class*="text-gray-"] {
+  color: #111827 !important;
+}
+
+html[data-theme="light"] [class*="text-white/2"],
+html[data-theme="light"] [class*="text-white/3"],
+html[data-theme="light"] [class*="text-white/4"],
+html[data-theme="light"] [class*="text-white/5"],
+html[data-theme="light"] [class*="text-white/6"],
+html[data-theme="light"] [class*="text-white/7"],
+html[data-theme="light"] [class*="text-gray-4"],
+html[data-theme="light"] [class*="text-gray-5"],
+html[data-theme="light"] [class*="text-zinc-4"],
+html[data-theme="light"] [class*="text-zinc-5"],
+html[data-theme="light"] [class*="text-slate-4"],
+html[data-theme="light"] [class*="text-slate-5"] {
+  color: rgba(17, 24, 39, 0.66) !important;
+}
+
+.icon,
+.menu-icon,
+ion-icon {
+  color: var(--icon-color);
+}
+
+svg {
+  color: currentColor;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"], .icon, .menu-icon) :where(ion-icon, svg),
+html[data-theme="light"] :where(ion-icon, svg).text-white,
+html[data-theme="light"] :where(ion-icon, svg)[class*="text-white"],
+html[data-theme="light"] :where(ion-icon, svg)[class*="text-zinc-"],
+html[data-theme="light"] :where(ion-icon, svg)[class*="text-neutral-"],
+html[data-theme="light"] :where(ion-icon, svg)[class*="text-stone-"],
+html[data-theme="light"] :where(ion-icon, svg)[class*="text-slate-"],
+html[data-theme="light"] :where(ion-icon, svg)[class*="text-gray-"] {
+  color: var(--icon-color) !important;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"]) :where(ion-icon, svg),
+html[data-theme="light"] :where(button[data-interaction-type]) :where(ion-icon, svg),
+html[data-theme="light"] :where(button[data-interaction-type]) {
+  color: #111827 !important;
+}
+
+html[data-theme="light"] :where(button[data-interaction-type="likes"][aria-pressed="true"]),
+html[data-theme="light"] :where(button[data-interaction-type="likes"][aria-pressed="true"]) :where(ion-icon, svg) {
+  color: #ef4444 !important;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"], .icon, .menu-icon) svg :where([stroke="white"], [stroke="#fff"], [stroke="#ffffff"], [stroke="black"], [stroke="#000"], [stroke="#000000"]) {
+  stroke: var(--icon-color) !important;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"], .icon, .menu-icon) svg :where([fill="white"], [fill="#fff"], [fill="#ffffff"], [fill="black"], [fill="#000"], [fill="#000000"]) {
+  fill: var(--icon-color) !important;
+}
+
+html[data-theme="light"] input,
+html[data-theme="light"] textarea,
+html[data-theme="light"] select,
+html[data-theme="light"] [contenteditable="true"],
+html[data-theme="light"] [contenteditable] {
+  background-color: #ffffff !important;
+  border-color: rgba(15, 23, 42, 0.14) !important;
+  color: #111827 !important;
+  caret-color: #111827 !important;
+}
+
+html[data-theme="light"] ::placeholder {
+  color: rgba(17, 24, 39, 0.38) !important;
+}
+
+html[data-theme="light"] [class*="shadow-"],
+html[data-theme="light"] [class*="shadow\\["] {
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.1) !important;
+}
+
+html[data-theme="light"] img,
+html[data-theme="light"] video,
+html[data-theme="light"] canvas,
+html[data-theme="light"] svg {
+  background-color: transparent;
+}
+
+img,
+video {
+  max-width: 100%;
+}
+
+html[data-theme="light"] [style*="color: #FFFFFF"],
+html[data-theme="light"] [style*="color:#FFFFFF"],
+html[data-theme="light"] [style*="color: white"],
+html[data-theme="light"] [style*="color:white"],
+html[data-theme="light"] [style*="color: rgb(255, 255, 255)"] {
+  color: #111827 !important;
+}
+
+html[data-theme="light"] .chat-status-dots span:not([class*="bg-red"]) {
+  background-color: #111827 !important;
+}
+
+.chat-message-media,
+.chat-message-media > button,
+.chat-message-media > video {
+  width: 10rem;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.chat-message-media img,
+.chat-message-media video {
+  display: block;
+  width: 10rem !important;
+  height: 10rem !important;
+  max-width: 100% !important;
+  object-fit: cover;
+}
+
+.chat-pending-media img,
+.chat-pending-media video {
+  display: block;
+  width: 3rem !important;
+  height: 3rem !important;
+  max-width: 3rem !important;
+  object-fit: cover;
+}
+
+html[data-theme="light"] .chat-editable:empty:before {
+  color: rgba(17, 24, 39, 0.38) !important;
+}
+
+html[data-theme="light"] .theme-preserve-dark,
+html[data-theme="light"] .theme-preserve-dark * {
+  color-scheme: dark;
+}
+
+html[data-theme="light"] .proof-zoom-overlay {
+  background-color: rgba(0, 0, 0, 0.95) !important;
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] .theme-preserve-dark [class*="bg-black"],
+html[data-theme="light"] .theme-preserve-dark [class*="bg-[#0"],
+html[data-theme="light"] .theme-preserve-dark [class*="bg-[#1"] {
+  background-color: rgba(0, 0, 0, 0.72) !important;
+}
+
+html[data-theme="light"] .theme-preserve-dark [class*="bg-white/"],
+html[data-theme="light"] .theme-preserve-dark [class*="bg-white\\["] {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+html[data-theme="light"] .theme-preserve-dark [class*="border-white/"],
+html[data-theme="light"] .theme-preserve-dark [class*="border-white\\["] {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+}
+
+html[data-theme="light"] .theme-preserve-dark .text-white,
+html[data-theme="light"] .theme-preserve-dark [class*="text-white"] {
+  color: #ffffff !important;
+}
+
+/* Final theme normalization layer.
+   The app has many hardcoded Tailwind dark-mode colors. These rules make
+   repeated primitives follow the selected data-theme instead of staying fixed. */
+html[data-theme] :where(.theme-adaptive, .theme-adaptive *) {
+  color-scheme: inherit;
+}
+
+html[data-theme] :where(button, a, [role="button"], .icon, .menu-icon) :where(ion-icon, svg),
+html[data-theme] :where(ion-icon, svg).text-white,
+html[data-theme] :where(ion-icon, svg).text-black,
+html[data-theme] :where(ion-icon, svg)[class*="text-white"],
+html[data-theme] :where(ion-icon, svg)[class*="text-black"],
+html[data-theme] :where(ion-icon, svg)[class*="text-zinc-"],
+html[data-theme] :where(ion-icon, svg)[class*="text-neutral-"],
+html[data-theme] :where(ion-icon, svg)[class*="text-stone-"],
+html[data-theme] :where(ion-icon, svg)[class*="text-slate-"],
+html[data-theme] :where(ion-icon, svg)[class*="text-gray-"] {
+  color: var(--theme-icon) !important;
+}
+
+html[data-theme] :where(button, a, [role="button"]) :where(.h-0\.5, .h-1, .h-1\.5, .h-2, .h-2\.5, .h-3):where(.w-0\.5, .w-1, .w-1\.5, .w-2, .w-2\.5, .w-3, .w-6):where(.rounded-full):where(.bg-white, .bg-black, [class*="bg-white/"], [class*="bg-black/"], [class*="bg-white\\["], [class*="bg-black\\["]) {
+  background-color: var(--theme-dot) !important;
+  opacity: 1 !important;
+}
+
+html[data-theme] :where(button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], .light-theme-option-button, .light-theme-option-dots) {
+  border-color: var(--theme-border) !important;
+  background-color: var(--theme-muted-surface) !important;
+  color: var(--theme-icon) !important;
+}
+
+html[data-theme] :where(button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], .light-theme-option-button, .light-theme-option-dots) :where(ion-icon, svg) {
+  color: var(--theme-icon) !important;
+}
+
+html[data-theme] :where(button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], .light-theme-option-button, .light-theme-option-dots) :where(.rounded-full, span, div):where([class*="bg-white"], [class*="bg-black"]) {
+  background-color: var(--theme-dot) !important;
+  opacity: 1 !important;
+}
+
+html[data-theme] :where(input, textarea, select, [contenteditable="true"], [contenteditable]) {
+  background-color: var(--theme-surface) !important;
+  border-color: var(--theme-border) !important;
+  color: var(--theme-text) !important;
+  caret-color: var(--theme-text) !important;
+}
+
+html[data-theme] ::placeholder {
+  color: color-mix(in srgb, var(--theme-text) 38%, transparent) !important;
+}
+
+html[data-theme="dark"] :where(.theme-adaptive-surface) {
+  background-color: var(--theme-muted-surface) !important;
+  border-color: var(--theme-border) !important;
+  color: var(--theme-text) !important;
+}
+
+html[data-theme="light"] :where(.theme-adaptive-surface, .light-theme-action-border) {
+  background-color: #111827 !important;
+  border-color: rgba(17, 24, 39, 0.9) !important;
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] :where(.light-theme-action-border, .light-theme-action-border *) {
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] :where(button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], .light-theme-option-button, .light-theme-option-dots) {
+  background-color: rgba(255, 255, 255, 0.72) !important;
+  border-color: rgba(17, 24, 39, 0.9) !important;
+  color: #111827 !important;
+}
+
+html[data-theme="light"] :where(button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], .light-theme-option-button, .light-theme-option-dots) :where(ion-icon, svg) {
+  color: #111827 !important;
+}
+
+html[data-theme="light"] :where(button[aria-label*="more" i], button[aria-label*="options" i], button[aria-label*="menu" i], .light-theme-option-button, .light-theme-option-dots) :where(.rounded-full, span, div):where([class*="bg-white"], [class*="bg-black"]) {
+  background-color: #111827 !important;
+  opacity: 1 !important;
+}
+
+html[data-theme="light"] :where(.theme-force-surface, button, a, [role="button"])[class*="bg-black"],
+html[data-theme="light"] :where(.theme-force-surface, button, a, [role="button"])[class*="bg-[#0"],
+html[data-theme="light"] :where(.theme-force-surface, button, a, [role="button"])[class*="bg-[#1"] {
+  background-color: var(--theme-surface) !important;
+  border-color: var(--theme-border) !important;
+  color: var(--theme-text) !important;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"])[class*="text-white"] {
+  color: var(--theme-text) !important;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"]).bg-white,
+html[data-theme="light"] :where(button, a, [role="button"])[class*=" bg-white "],
+html[data-theme="light"] :where(button, a, [role="button"])[class^="bg-white "],
+html[data-theme="light"] :where(button, a, [role="button"])[class$=" bg-white"] {
+  background-color: #111827 !important;
+  border-color: rgba(17, 24, 39, 0.9) !important;
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] :where(button, a, [role="button"]).bg-white :where(ion-icon, svg, span),
+html[data-theme="light"] :where(button, a, [role="button"])[class*=" bg-white "] :where(ion-icon, svg, span),
+html[data-theme="light"] :where(button, a, [role="button"])[class^="bg-white "] :where(ion-icon, svg, span),
+html[data-theme="light"] :where(button, a, [role="button"])[class$=" bg-white"] :where(ion-icon, svg, span) {
+  color: #ffffff !important;
+}
+
+html[data-theme="dark"] .theme-preserve-light,
+html[data-theme="dark"] .theme-preserve-light * {
+  color-scheme: light;
+}
+
+html[data-theme="dark"] .theme-preserve-light [class*="bg-white"],
+html[data-theme="dark"] .theme-preserve-light .bg-white {
+  background-color: #ffffff !important;
+}
+
+html[data-theme="dark"] .theme-preserve-light [class*="text-black"],
+html[data-theme="dark"] .theme-preserve-light .text-black {
+  color: #111827 !important;
+}
+
+.proof-zoom-image {
+  max-width: min(100%, calc(100vw - 2rem));
+  max-height: calc(100vh - 9rem);
+}
+
+/* ─── THEME FIX: targeted overrides for elements that resist the broad rules ─── */
+
+/* Fix 1 — Option/menu button dots & background.
+   The blanket `[class*="bg-white"]` rule has specificity (0,2,1).
+   The :where()-based dots rule only reaches (0,1,1) and loses.
+   Using a chained class selector gives (0,2,2) which wins.             */
+html[data-theme="light"] button.light-theme-option-dots,
+html[data-theme="light"] button.light-theme-option-button {
+  background-color: rgba(15, 23, 42, 0.055) !important;
+  border-color: rgba(15, 23, 42, 0.14) !important;
+  color: #111827 !important;
+}
+
+html[data-theme="light"] button.light-theme-option-dots .rounded-full,
+html[data-theme="light"] button.light-theme-option-button .rounded-full {
+  background-color: #111827 !important;
+  opacity: 1 !important;
+}
+
+/* Fix 2 — Dark hex-value borders (border-[#18181b], border-[#27272a], etc.)
+   not covered by the existing border-zinc/border-gray rules.            */
+html[data-theme="light"] [class*="border-[#0"],
+html[data-theme="light"] [class*="border-[#1"],
+html[data-theme="light"] [class*="border-[#2"],
+html[data-theme="light"] [class*="border-[#3"] {
+  border-color: rgba(15, 23, 42, 0.12) !important;
+}
+
+/* Fix 3 — Lowercase #ffffff / #fff inline-style color not caught by the
+   existing uppercase matcher.                                           */
+html[data-theme="light"] [style*="color: #ffffff"],
+html[data-theme="light"] [style*="color:#ffffff"],
+html[data-theme="light"] [style*="color: #fff"],
+html[data-theme="light"] [style*="color:#fff"] {
+  color: #111827 !important;
+}
+
+/* Fix 4 — Medium-dark gray/zinc/slate/neutral 600-700 shades used as
+   button or badge backgrounds; not covered by the 800/900 rules above. */
+html[data-theme="light"] [class*="bg-gray-7"],
+html[data-theme="light"] [class*="bg-gray-6"],
+html[data-theme="light"] [class*="bg-zinc-7"],
+html[data-theme="light"] [class*="bg-zinc-6"],
+html[data-theme="light"] [class*="bg-slate-7"],
+html[data-theme="light"] [class*="bg-slate-6"],
+html[data-theme="light"] [class*="bg-neutral-7"],
+html[data-theme="light"] [class*="bg-neutral-6"],
+html[data-theme="light"] [class*="bg-stone-7"],
+html[data-theme="light"] [class*="bg-stone-6"] {
+  background-color: rgba(15, 23, 42, 0.06) !important;
+}
+
+/* Fix 5 — border-gray-600/700 shades that stay dark in light mode */
+html[data-theme="light"] [class*="border-gray-7"],
+html[data-theme="light"] [class*="border-gray-6"],
+html[data-theme="light"] [class*="border-zinc-7"],
+html[data-theme="light"] [class*="border-zinc-6"],
+html[data-theme="light"] [class*="border-slate-7"],
+html[data-theme="light"] [class*="border-slate-6"],
+html[data-theme="light"] [class*="border-neutral-7"],
+html[data-theme="light"] [class*="border-neutral-6"] {
+  border-color: rgba(15, 23, 42, 0.12) !important;
+}
+
+/* Fix 6 — Scrollbar adapts in light mode */
+html[data-theme="light"] .scrollbar-dark {
+  scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
+}
+html[data-theme="light"] .scrollbar-dark::-webkit-scrollbar-thumb {
+  background-color: rgba(15, 23, 42, 0.18);
+}
+html[data-theme="light"] .scrollbar-dark::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(15, 23, 42, 0.3);
+}
+
+/* Fix 7 — SVG fill/stroke hardcoded to white that live outside buttons */
+html[data-theme="light"] svg [fill="white"],
+html[data-theme="light"] svg [fill="#fff"],
+html[data-theme="light"] svg [fill="#ffffff"],
+html[data-theme="light"] svg [fill="#FFF"],
+html[data-theme="light"] svg [fill="#FFFFFF"] {
+  fill: #111827 !important;
+}
+html[data-theme="light"] svg [stroke="white"],
+html[data-theme="light"] svg [stroke="#fff"],
+html[data-theme="light"] svg [stroke="#ffffff"],
+html[data-theme="light"] svg [stroke="#FFF"],
+html[data-theme="light"] svg [stroke="#FFFFFF"] {
+  stroke: #111827 !important;
+}
+
+
+/* Fix 9 — no dark-mode overrides here; dark mode is left exactly as original */
+
+/* Fix 10 — caret-color in light mode for standard inputs */
+html[data-theme="light"] input,
+html[data-theme="light"] textarea,
+html[data-theme="light"] [contenteditable="true"],
+html[data-theme="light"] [contenteditable] {
+  caret-color: #111827 !important;
+}
+
+/* ─── Dark mode: bg-white buttons must keep their text-black text visible.
+   The body inherits color:#fff in dark mode; text-black overrides it but may
+   be beaten by other !important rules in some browsers.  This rule locks it. ─── */
+html[data-theme="dark"] button.text-black,
+html[data-theme="dark"] button[class*=" text-black"],
+html[data-theme="dark"] a.text-black,
+html[data-theme="dark"] a[class*=" text-black"] {
+  color: #111827 !important;
+}
+
+/* ─── data-dot: guaranteed dot theming — explicit hardcoded colours,
+   placed last so source-order wins over any same-specificity rule.
+   Both data-theme AND .light-theme/.dark-theme selectors are used so
+   the rule fires regardless of which mechanism applied the theme.     ─── */
+html[data-theme="light"] [data-dot],
+html.light-theme [data-dot] {
+  background-color: #111827 !important;
+  opacity: 1 !important;
+}
+html[data-theme="dark"] [data-dot],
+html.dark-theme [data-dot] {
+  background-color: #f9fafb !important;
+  opacity: 1 !important;
+}
+
+.wallet-qr-action,
+html[data-theme] .wallet-qr-action,
+html.light-theme .wallet-qr-action,
+html.dark-theme .wallet-qr-action {
+  background-color: #f8fafc !important;
+  border-color: #e5e7eb !important;
+  color: #111827 !important;
+}
+
+.wallet-qr-action ion-icon,
+.wallet-qr-action svg,
+.wallet-qr-action svg *,
+.wallet-qr-action-icon,
+html[data-theme] .wallet-qr-action ion-icon,
+html[data-theme] .wallet-qr-action svg,
+html[data-theme] .wallet-qr-action svg *,
+html[data-theme] .wallet-qr-action-icon,
+html.light-theme .wallet-qr-action ion-icon,
+html.light-theme .wallet-qr-action svg,
+html.light-theme .wallet-qr-action svg *,
+html.light-theme .wallet-qr-action-icon,
+html.dark-theme .wallet-qr-action ion-icon,
+html.dark-theme .wallet-qr-action svg,
+html.dark-theme .wallet-qr-action svg *,
+html.dark-theme .wallet-qr-action-icon {
+  color: #111827 !important;
+  stroke: currentColor !important;
+  opacity: 1 !important;
+}
+
+html[data-theme] button[data-interaction-type="likes"][aria-pressed="true"],
+html[data-theme] button[data-interaction-type="likes"][aria-pressed="true"] :where(ion-icon, svg, span) {
+  color: #ef4444 !important;
 }

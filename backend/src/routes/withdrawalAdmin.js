@@ -2,46 +2,16 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const authMiddleware = require('../middleware/auth');
-
-const ensureTable = async () => {
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS withdrawal_settings (
-            id          SERIAL PRIMARY KEY,
-            min_amount  NUMERIC(12,2) NOT NULL DEFAULT 50,
-            max_amount  NUMERIC(12,2) NOT NULL DEFAULT 10000,
-            coin_rate   NUMERIC(10,6) NOT NULL DEFAULT 0.0056,
-            created_at  TIMESTAMPTZ DEFAULT NOW(),
-            updated_at  TIMESTAMPTZ DEFAULT NOW()
-        )
-    `);
-    await pool.query(`
-        ALTER TABLE withdrawal_settings ADD COLUMN IF NOT EXISTS coin_rate NUMERIC(10,6) NOT NULL DEFAULT 0.0056
-    `);
-    await pool.query(`
-        INSERT INTO withdrawal_settings (min_amount, max_amount, coin_rate)
-        SELECT 50, 10000, 0.0056
-        WHERE NOT EXISTS (SELECT 1 FROM withdrawal_settings LIMIT 1)
-    `);
-};
+const { getLockedGoogerPooledState, normalizeMoney } = require('../../../../shared/utils/financeBoundary');
+const {
+    consumeHeldWalletFunds,
+    refundHeldWalletFunds,
+    creditWalletAndRecordTransfer,
+} = require('../../../../shared/utils/financeCommands');
 
 const assertAdmin = async (userId) => {
     const result = await pool.query('SELECT user_type FROM users WHERE id = $1 LIMIT 1', [userId]);
     return result.rows[0]?.user_type === 'admin';
-};
-
-const resolveGoogerUserId = async (client) => {
-    const adminResult = await client.query(
-        `SELECT id FROM users WHERE LOWER(COALESCE(user_type, '')) = 'admin' ORDER BY id ASC LIMIT 1`
-    );
-    if (adminResult.rows.length > 0) return adminResult.rows[0].id;
-
-    const googerResult = await client.query(
-        `SELECT id FROM users WHERE LOWER(username) = 'googer' ORDER BY id ASC LIMIT 1`
-    );
-    if (googerResult.rows.length > 0) return googerResult.rows[0].id;
-
-    const fallback = await client.query(`SELECT id FROM users ORDER BY id ASC LIMIT 1`);
-    return fallback.rows[0]?.id || null;
 };
 
 // ── Public: live exchange rates via fastforex.io ─────────────────────────────
@@ -81,7 +51,6 @@ router.get('/exchange-rates', async (req, res) => {
 // ── Public: frontend reads limits and rate ───────────────────────────────────
 router.get('/settings', async (req, res) => {
     try {
-        await ensureTable();
         const result = await pool.query('SELECT * FROM withdrawal_settings ORDER BY id LIMIT 1');
         res.json({ success: true, settings: result.rows[0] });
     } catch (err) {
@@ -93,7 +62,6 @@ router.get('/settings', async (req, res) => {
 // ── Admin: update limits and rate ────────────────────────────────────────────
 router.put('/settings', authMiddleware, async (req, res) => {
     try {
-        await ensureTable();
         if (!await assertAdmin(req.user.id)) {
             return res.status(403).json({ success: false, message: 'Admin access required.' });
         }
@@ -162,6 +130,8 @@ router.put('/requests/:id/review', authMiddleware, async (req, res) => {
             return res.status(400).json({ success: false, message: 'action must be "approve" or "reject".' });
         }
 
+        await client.query('BEGIN');
+
         // Lock the withdrawal request row
         const reqRow = await client.query(
             `SELECT id, user_id, amount, status, wallet_transfer_id, payment_method_name
@@ -169,22 +139,28 @@ router.put('/requests/:id/review', authMiddleware, async (req, res) => {
             [requestId]
         );
         if (!reqRow.rows.length) {
+            await client.query('ROLLBACK');
             client.release();
             return res.status(404).json({ success: false, message: 'Withdrawal request not found.' });
         }
 
         const wr = reqRow.rows[0];
         if (wr.status !== 'Pending') {
+            await client.query('ROLLBACK');
             client.release();
             return res.status(409).json({ success: false, message: `Request is already ${wr.status}.` });
         }
 
-        const numAmount   = Number(wr.amount);
+        const numAmount   = normalizeMoney(wr.amount);
         const userId      = wr.user_id;
         const transferId  = wr.wallet_transfer_id;
-        const googerUserId = await resolveGoogerUserId(client);
-
-        await client.query('BEGIN');
+        const googerState = await getLockedGoogerPooledState(client);
+        const googerUserId = googerState?.userId || null;
+        if (!googerUserId) {
+            await client.query('ROLLBACK');
+            client.release();
+            return res.status(500).json({ success: false, message: 'System wallet not configured.' });
+        }
 
         if (action === 'approve') {
             // Mark request approved
@@ -196,21 +172,22 @@ router.put('/requests/:id/review', authMiddleware, async (req, res) => {
             );
 
             // Release from user hold_balance (already deducted from wallet_balance on submit)
-            await client.query(
-                `UPDATE users
-                 SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1)
-                 WHERE id = $2`,
-                [numAmount, userId]
-            );
+            await consumeHeldWalletFunds(client, { userId, amount: numAmount });
 
-            // Insert a withdrawal_paid debit transfer so the calculated Googer balance decreases.
-            // The protected Super Admin users.wallet_balance is only changed by manual Super Admin actions.
-            await client.query(
-                `INSERT INTO wallet_transfers
-                    (sender_id, receiver_id, amount, commission, note, type, status, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, 'withdrawal_paid', 'accepted', NOW(), NOW())`,
-                [googerUserId, userId, numAmount, -numAmount, `Withdrawal Paid - ${wr.payment_method_name}`]
-            );
+            // Record the admin payout without touching Main Googer Balance.
+            // The withdrawal_hold row already credited X when the user submitted the request.
+            // Main Googer Balance is SUM(wallet_transfers.commission), so this row must stay 0.
+            await creditWalletAndRecordTransfer(client, {
+                senderId: googerUserId,
+                receiverId: userId,
+                amount: numAmount,
+                note: `Withdrawal Paid - ${wr.payment_method_name}`,
+                type: 'withdrawal_paid',
+                status: 'accepted',
+                commission: 0,
+                commissionPercentage: 0,
+                creditWallet: false,
+            });
 
         } else {
             // Reject — refund the amount back to user
@@ -229,13 +206,7 @@ router.put('/requests/:id/review', authMiddleware, async (req, res) => {
             );
 
             // Refund: return amount to user wallet_balance, clear hold_balance
-            await client.query(
-                `UPDATE users
-                 SET wallet_balance = wallet_balance + $1,
-                     hold_balance   = GREATEST(0, COALESCE(hold_balance, 0) - $1)
-                 WHERE id = $2`,
-                [numAmount, userId]
-            );
+            await refundHeldWalletFunds(client, { userId, amount: numAmount });
 
             // Mark withdrawal_hold as refunded — removes it from Googer commission SUM.
             if (transferId) {

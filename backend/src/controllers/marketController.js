@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const {
     filterDeliverableAds,
     loadViewerAdProfile,
+    recordAdImpression,
 } = require('../utils/adDelivery');
 const { distributeProductDiscountCommission } = require('../utils/referralCommission');
 
@@ -49,6 +50,18 @@ const hasTable = async (tableName) => {
     const exists = Boolean(result.rows[0]?.exists);
     tableExistsCache.set(tableName, exists);
     return exists;
+};
+
+const appendMarketCategoryFilter = (whereSql, params, categoryValue) => {
+    if (!categoryValue) return whereSql;
+    params.push(String(categoryValue).trim());
+    const index = params.length;
+    return `${whereSql} AND (
+        m.category = $${index}
+        OR m.sub_category = $${index}
+        OR m.level3_category = $${index}
+        OR m.manual_category = $${index}
+    )`;
 };
 
 async function resolveGoogerMainWalletUserId(client) {
@@ -139,6 +152,14 @@ const getOptionalAuthUser = (req) => {
     } catch {
         return null;
     }
+};
+
+const getResolvedOptionalUserId = (req) => {
+    const directId = req.user?.id || req.user?.userId || null;
+    if (directId) return Number(directId) || null;
+    const authUser = getOptionalAuthUser(req);
+    const tokenId = authUser?.id || authUser?.userId || null;
+    return tokenId ? (Number(tokenId) || null) : null;
 };
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim().toLowerCase() : '');
@@ -1216,7 +1237,8 @@ const mapActiveAdToMarketCard = (row, adCoinValue = DEFAULT_AD_COIN_REWARD_SETTI
         likes_count: Number(row.likes_count || 0),
         comments_count: Number(row.comments_count || 0),
         shares_count: Number(row.shares_count || 0),
-        views_count: Number(row.impressions || 0),
+        views_count: Number(row.views_count || 0),
+        impressions: Number(row.impressions || 0),
         clicks: Number(row.clicks || 0),
         link_actions: Number(row.clicks || 0),
         message_clicks: Number(row.message_clicks || 0),
@@ -1453,7 +1475,11 @@ const mapGoogShareResponse = (row) => {
         user: {
             id: row.user_id,
             username: row.username || '',
-            name: row.full_name || row.username || 'User',
+            name: String(row.user_type || '').toLowerCase().replace(/[\s-]+/g, '_') === 'superadmin' || String(row.user_type || '').toLowerCase().replace(/[\s-]+/g, '_') === 'super_admin'
+                ? 'Googer Support'
+                : String(row.user_type || '').toLowerCase() === 'admin'
+                    ? (row.username || row.full_name || 'User')
+                    : (row.full_name || row.username || 'User'),
             img: row.profile_picture || '/assets/images/avatars/avatar-default.jpg',
         },
         share_code: canonicalShareCode,
@@ -1525,7 +1551,7 @@ exports.createMarketItem = async (req, res) => {
 
         const createdVariants = [];
         for (const v of variants) {
-            const needsUploadedImage = v.image_url && v.image_url.startsWith('blob:');
+            const needsUploadedImage = v.image_url && (v.image_url.startsWith('blob:') || BASE64_IMAGE_DATA_URL_PATTERN.test(v.image_url));
             const needsUploadedVideo = v.media_type === 'video' && v.video_url && v.video_url.startsWith('blob:');
 
             // Match uploaded files to variants that still point at a temporary blob URL.
@@ -1544,9 +1570,10 @@ exports.createMarketItem = async (req, res) => {
                     continue;
                 }
             }
-            // If it's already a data: or http URL, keep it
+            // If it's already a stored or remote URL, keep it. Raw data URLs are previews only.
             if (v.image_url) {
-                gallery.push({ url: v.image_url, color: v.color || null });
+                const persistedImage = BASE64_IMAGE_DATA_URL_PATTERN.test(v.image_url) ? '' : v.image_url;
+                if (persistedImage) gallery.push({ url: persistedImage, color: v.color || null });
             }
             createdVariants.push(v);
         }
@@ -1657,7 +1684,7 @@ exports.updateMarketItem = async (req, res) => {
         if (variants) {
             const updatedVariants = [];
             for (const v of variants) {
-                const needsUploadedImage = v.image_url && v.image_url.startsWith('blob:');
+                const needsUploadedImage = v.image_url && (v.image_url.startsWith('blob:') || BASE64_IMAGE_DATA_URL_PATTERN.test(v.image_url));
                 const needsUploadedVideo = v.media_type === 'video' && v.video_url && v.video_url.startsWith('blob:');
 
                 // Match uploaded files to variants that still point at a temporary blob URL.
@@ -1676,9 +1703,10 @@ exports.updateMarketItem = async (req, res) => {
                         continue;
                     }
                 }
-                // If it's already a data: or http URL, keep it
+                // If it's already a stored or remote URL, keep it. Raw data URLs are previews only.
                 if (v.image_url) {
-                    gallery.push({ url: v.image_url, color: v.color || null });
+                    const persistedImage = BASE64_IMAGE_DATA_URL_PATTERN.test(v.image_url) ? '' : v.image_url;
+                    if (persistedImage) gallery.push({ url: persistedImage, color: v.color || null });
                 }
                 updatedVariants.push(v);
             }
@@ -1716,7 +1744,8 @@ exports.updateMarketItem = async (req, res) => {
         const mainImageChanged = newImgId !== currentImgId;
 
         // commission_info comes from JSON.parse(req.body.commission_data)
-        const oldGoogerComm = item.commission_info ? parseFloat(item.commission_info.googer_commission ?? item.commission_info.googerCommission ?? 0) : 0;
+        const oldCommissionInfo = safeJsonParse(item.commission_info, {});
+        const oldGoogerComm = oldCommissionInfo ? parseFloat(oldCommissionInfo.googer_commission ?? oldCommissionInfo.googerCommission ?? 0) : 0;
         const newGoogerComm = commission_info ? parseFloat(commission_info.googer_commission ?? commission_info.googerCommission ?? 0) : 0;
         const googerCommChanged = Math.abs(newGoogerComm - oldGoogerComm) > 0.01;
 
@@ -1838,11 +1867,12 @@ exports.getMarketProducts = async (req, res) => {
         const isPersonalizedWall = !user_id && (!status || String(status).includes('approved') || String(status).includes('active'));
 
         const params = [viewerId];
-        let where = `WHERE 1=1`;
+        let where = `WHERE 1=1
+            AND COALESCE(u.is_deactivated, false) = false
+            AND COALESCE(u.status, 'Active') <> 'Deactivated'`;
 
         if (category) {
-            params.push(category);
-            where += ` AND m.category = $${params.length}`;
+            where = appendMarketCategoryFilter(where, params, category);
         }
 
         if (user_id) {
@@ -1868,6 +1898,7 @@ exports.getMarketProducts = async (req, res) => {
                 OR m.description ILIKE $${params.length}
                 OR m.category ILIKE $${params.length}
                 OR m.sub_category ILIKE $${params.length}
+                OR m.level3_category ILIKE $${params.length}
                 OR m.manual_category ILIKE $${params.length}
             )`;
         }
@@ -2026,7 +2057,7 @@ exports.getMarketProducts = async (req, res) => {
                         a.linked_product_id, a.linked_product_share_code, a.original_product_id, a.original_product_code,
                         a.title, a.description, a.media_preview, a.media_gallery, a.media_type,
                         a.edit_draft, a.gender_target, a.age_min, a.age_max,
-                        a.impressions, a.clicks, a.current_reach, a.max_reach_cap,
+                        a.impressions, COALESCE(ad_view_stats.views_count, 0) AS views_count, a.clicks, a.current_reach, a.max_reach_cap,
                         a.likes_count, a.comments_count,
                         a.shares_count, a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.active_start_time, a.created_at,
                         u.profile_picture, u.username AS owner_username_joined,
@@ -2051,9 +2082,16 @@ exports.getMarketProducts = async (req, res) => {
                              ELSE EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1)
                         END AS user_liked
                  FROM ads a
-                 LEFT JOIN users u ON u.id = a.user_id
+                 JOIN users u ON u.id = a.user_id
+                 LEFT JOIN (
+                    SELECT ad_id, COUNT(*)::int AS views_count
+                    FROM ad_views
+                    GROUP BY ad_id
+                 ) ad_view_stats ON ad_view_stats.ad_id = a.ad_id
                  WHERE a.status = 'Active'
-                   AND (a.max_reach_cap IS NULL OR COALESCE(a.current_reach, 0) < a.max_reach_cap)
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'
+                   AND (a.max_reach_cap IS NULL OR COALESCE(a.impressions, 0) < a.max_reach_cap)
                  ORDER BY a.created_at DESC`,
                 [viewerId]
             );
@@ -2091,7 +2129,9 @@ exports.getMarketProducts = async (req, res) => {
                      FROM market m
                      INNER JOIN users u ON m.user_id = u.id
                      WHERE (m.id = ANY($2::int[]) OR m.product_code = ANY($3::text[]))
-                       AND m.status IN ('approved', 'active')`,
+                       AND m.status IN ('approved', 'active')
+                       AND COALESCE(u.is_deactivated, false) = false
+                       AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                     [viewerId, linkedIds.length ? linkedIds : [0], linkedCodes.length ? linkedCodes : ['']]
                 );
 
@@ -2264,16 +2304,22 @@ exports.getMarketItems = async (req, res) => {
                         GROUP BY seller_id
                      ) seller_stats ON seller_stats.seller_id = m.user_id
                      ${sellerReportJoin}
-                     WHERE 1=1`;
+                     WHERE COALESCE(u.is_deactivated, false) = false
+                       AND COALESCE(u.status, 'Active') <> 'Deactivated'`;
         const params = [viewerId];
 
         if (isFastMarketFeed) {
             const fastParams = [viewerId];
-            let fastWhere = `WHERE 1=1`;
+            let fastWhere = `WHERE EXISTS (
+                SELECT 1
+                FROM users owner
+                WHERE owner.id = m.user_id
+                  AND COALESCE(owner.is_deactivated, false) = false
+                  AND COALESCE(owner.status, 'Active') <> 'Deactivated'
+            )`;
 
             if (category) {
-                fastParams.push(category);
-                fastWhere += ` AND m.category = $${fastParams.length}`;
+                fastWhere = appendMarketCategoryFilter(fastWhere, fastParams, category);
             }
             if (status) {
                 let statusArray = status.split(',').map(s => s.trim());
@@ -2292,6 +2338,7 @@ exports.getMarketItems = async (req, res) => {
                     OR m.description ILIKE $${fastParams.length}
                     OR m.category ILIKE $${fastParams.length}
                     OR m.sub_category ILIKE $${fastParams.length}
+                    OR m.level3_category ILIKE $${fastParams.length}
                     OR m.manual_category ILIKE $${fastParams.length}
                 )`;
             }
@@ -2299,7 +2346,7 @@ exports.getMarketItems = async (req, res) => {
             fastParams.push(resultLimit * 3);
             query = `WITH limited_market AS (
                         SELECT m.id, m.user_id, m.username, m.title, m.description, m.price, m.promo_price, m.category,
-                               m.sub_category, m.manual_category, m.stock, m.image_url, m.status,
+                               m.sub_category, m.level3_category, m.manual_category, m.stock, m.image_url, m.status,
                                m.likes_count, m.comments_count, m.shares_count, m.views_count,
                                m.variants, m.shipping_info, m.commission_info, m.created_at, m.product_code
                         FROM market m
@@ -2384,8 +2431,7 @@ exports.getMarketItems = async (req, res) => {
         }
 
         if (category) {
-            params.push(category);
-            query += ` AND m.category = $${params.length}`;
+            query = appendMarketCategoryFilter(query, params, category);
         }
         if (user_id) {
             // Cast to integer for safe comparison
@@ -2418,6 +2464,7 @@ exports.getMarketItems = async (req, res) => {
                 OR m.description ILIKE $${params.length}
                 OR m.category ILIKE $${params.length}
                 OR m.sub_category ILIKE $${params.length}
+                OR m.level3_category ILIKE $${params.length}
                 OR m.manual_category ILIKE $${params.length}
             )`;
         }
@@ -2499,7 +2546,7 @@ exports.getMarketItems = async (req, res) => {
                     `SELECT a.ad_id, a.user_id, a.owner_username, a.campaign_type, a.linked_product_id, a.linked_product_share_code,
                             a.original_product_id, a.original_product_code, a.title, a.description,
                             a.media_preview, a.media_gallery, a.media_type, a.edit_draft, a.gender_target, a.age_min, a.age_max,
-                            a.impressions, a.clicks, a.current_reach, a.max_reach_cap,
+                            a.impressions, COALESCE(ad_view_stats.views_count, 0) AS views_count, a.clicks, a.current_reach, a.max_reach_cap,
                             a.likes_count, a.comments_count, a.shares_count,
                             a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.active_start_time, a.created_at,
                             u.profile_picture, u.username AS owner_username_joined,
@@ -2526,9 +2573,16 @@ exports.getMarketItems = async (req, res) => {
                                 ELSE EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1)
                             END AS user_liked
                      FROM ads a
-                     LEFT JOIN users u ON u.id = a.user_id
+                     JOIN users u ON u.id = a.user_id
+                     LEFT JOIN (
+                        SELECT ad_id, COUNT(*)::int AS views_count
+                        FROM ad_views
+                        GROUP BY ad_id
+                     ) ad_view_stats ON ad_view_stats.ad_id = a.ad_id
                      WHERE a.status = 'Active'
-                       AND (a.max_reach_cap IS NULL OR COALESCE(a.current_reach, 0) < a.max_reach_cap)
+                       AND COALESCE(u.is_deactivated, false) = false
+                       AND COALESCE(u.status, 'Active') <> 'Deactivated'
+                       AND (a.max_reach_cap IS NULL OR COALESCE(a.impressions, 0) < a.max_reach_cap)
                      ORDER BY a.created_at DESC`
                     , [viewerId]);
 
@@ -2566,7 +2620,9 @@ exports.getMarketItems = async (req, res) => {
                              FROM market m
                              INNER JOIN users u ON m.user_id = u.id
                              WHERE (m.id = ANY($2::int[]) OR m.product_code = ANY($3::text[]))
-                               AND m.status IN ('approved', 'active')`,
+                               AND m.status IN ('approved', 'active')
+                               AND COALESCE(u.is_deactivated, false) = false
+                               AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                             [viewerId, linkedIds.length ? linkedIds : [0], linkedCodes.length ? linkedCodes : ['']]
                         );
                         const productById = new Map(linkedResult.rows.map((r) => [Number(r.id), r]));
@@ -2734,8 +2790,10 @@ exports.getMarketItemById = async (req, res) => {
             result = await pool.query(
                 `SELECT m.*, u.username as owner_username, u.profile_picture, u.user_id AS owner_public_user_id
                  FROM market m 
-                 LEFT JOIN users u ON m.user_id = u.id 
-                 WHERE m.id = $1`,
+                 JOIN users u ON m.user_id = u.id 
+                 WHERE m.id = $1
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                 [numericId]
             );
         }
@@ -2745,8 +2803,10 @@ exports.getMarketItemById = async (req, res) => {
             result = await pool.query(
                 `SELECT m.*, u.username as owner_username, u.profile_picture, u.user_id AS owner_public_user_id
                  FROM market m 
-                 LEFT JOIN users u ON m.user_id = u.id 
-                 WHERE m.product_code = $1`,
+                 JOIN users u ON m.user_id = u.id 
+                 WHERE m.product_code = $1
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                 [id]
             );
         }
@@ -2757,8 +2817,11 @@ exports.getMarketItemById = async (req, res) => {
             const adResult = await pool.query(
                 `SELECT a.*, u.username as owner_username, u.profile_picture 
                  FROM ads a 
-                 LEFT JOIN users u ON a.user_id = u.id 
-                 WHERE a.ad_id = $1`,
+                 JOIN users u ON a.user_id = u.id 
+                 WHERE a.ad_id = $1
+                   AND a.status = 'Active'
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                 [adId]
             );
             if (adResult.rows.length > 0) {
@@ -2786,8 +2849,10 @@ exports.getMarketItemByCode = async (req, res) => {
             ? await pool.query(
                 `SELECT m.*, u.username as owner_username, u.profile_picture 
                  FROM market m 
-                 LEFT JOIN users u ON m.user_id = u.id 
-                 WHERE m.product_code = $1`,
+                 JOIN users u ON m.user_id = u.id 
+                 WHERE m.product_code = $1
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                 [code]
             )
             : { rows: [] };
@@ -2798,8 +2863,11 @@ exports.getMarketItemByCode = async (req, res) => {
             const adResult = await pool.query(
                 `SELECT a.*, u.username as owner_username, u.profile_picture 
                  FROM ads a 
-                 LEFT JOIN users u ON a.user_id = u.id 
-                 WHERE a.ad_id = $1`,
+                 JOIN users u ON a.user_id = u.id 
+                 WHERE a.ad_id = $1
+                   AND a.status = 'Active'
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                 [adId]
             );
             if (adResult.rows.length > 0) {
@@ -3450,7 +3518,7 @@ exports.deleteComment = async (req, res) => {
 exports.logShare = async (req, res) => {
     try {
         const { id } = req.params;
-        let userId = req.user?.id || null;
+        let userId = getResolvedOptionalUserId(req);
         const ipAddress = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
 
         // Manual token check if req.user is not set (for public-optional routes)
@@ -3559,7 +3627,7 @@ exports.logShare = async (req, res) => {
 exports.logView = async (req, res) => {
     try {
         const { id } = req.params;
-        let userId = req.user?.id || null;
+        let userId = getResolvedOptionalUserId(req);
         const ipAddress = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
         const viewerKey = getViewerKeyFromRequest(req);
 
@@ -3579,7 +3647,6 @@ exports.logView = async (req, res) => {
         if (isSponsoredFeedItemId(id)) {
             await ensureSponsoredAdsEngagementSchema();
             const adId = normalizeSponsoredAdId(id);
-            const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
             // Resolve anonymous viewer identifier once so it's available in both the
             // SELECT and the UPDATE phases below.
@@ -3588,73 +3655,149 @@ exports.logView = async (req, res) => {
             let existingViewResult;
             if (userId) {
                 existingViewResult = await pool.query(
-                    'SELECT id, last_viewed_at FROM ad_views WHERE ad_id = $1 AND user_id = $2 LIMIT 1',
+                    'SELECT id, last_viewed_at FROM ad_views WHERE ad_id = $1 AND user_id = $2 ORDER BY last_viewed_at DESC LIMIT 1',
                     [adId, userId]
                 );
             } else {
                 existingViewResult = await pool.query(
-                    `SELECT id, last_viewed_at FROM ad_views WHERE ad_id = $1 AND ${anonymousViewer.column} = $2 AND user_id IS NULL LIMIT 1`,
+                    `SELECT id, last_viewed_at FROM ad_views WHERE ad_id = $1 AND ${anonymousViewer.column} = $2 AND user_id IS NULL ORDER BY last_viewed_at DESC LIMIT 1`,
                     [adId, anonymousViewer.value]
                 );
             }
 
             const existingRow = existingViewResult.rows[0] || null;
             const isNewViewer = !existingRow;
-            const is24hElapsed = existingRow
-                ? (Date.now() - new Date(existingRow.last_viewed_at).getTime()) >= TWENTY_FOUR_HOURS_MS
-                : false;
-            // Reach increments for brand-new viewers AND for returning viewers whose
-            // 24-hour window has reset.  Impressions always increment regardless.
-            const isUniqueReach = isNewViewer || is24hElapsed;
+            const lastCountedViewAt = existingRow?.last_viewed_at ? new Date(existingRow.last_viewed_at) : null;
+            const shouldIncrementView = !existingRow || !lastCountedViewAt || ((Date.now() - lastCountedViewAt.getTime()) >= 24 * 60 * 60 * 1000);
+            // Reach is unique viewers. Views are counted at most once per viewer
+            // per 24-hour window. Impressions are recorded by the separate
+            // /impression endpoint so view tracking remains independent.
+            const shouldIncrementReach = isNewViewer;
 
             const client = await pool.connect();
             try {
                 await client.query('BEGIN');
+                const adStateResult = await client.query(
+                    `SELECT
+                         a.impressions,
+                         a.current_reach,
+                         a.reach,
+                         a.max_reach_cap,
+                         a.status,
+                         COALESCE(ad_view_stats.views_count, 0)::int AS views_count
+                     FROM ads a
+                     LEFT JOIN (
+                        SELECT ad_id, COUNT(*)::int AS views_count
+                        FROM ad_views
+                        GROUP BY ad_id
+                     ) ad_view_stats ON ad_view_stats.ad_id = a.ad_id
+                     WHERE a.ad_id = $1
+                     FOR UPDATE OF a`,
+                    [adId]
+                );
+                const adState = adStateResult.rows[0] || null;
+                const existingImpressions = Number(adState?.impressions || 0);
+                const existingViewsCount = Number(adState?.views_count || 0);
+                const maxReachCap = adState?.max_reach_cap == null ? null : Number(adState.max_reach_cap);
+                const capReached = Number.isFinite(maxReachCap) && maxReachCap > 0 && existingImpressions >= maxReachCap;
+
+                if (!adState || String(adState.status || '').trim() !== 'Active' || capReached) {
+                    await client.query('COMMIT');
+                    return res.status(200).json({
+                        success: true,
+                        incremented: false,
+                        uniqueReachIncremented: false,
+                        impressions: existingImpressions,
+                        views_count: existingViewsCount,
+                        viewCount: existingViewsCount,
+                        reach: Number(adState?.current_reach || adState?.reach || 0),
+                        current_reach: Number(adState?.current_reach || adState?.reach || 0),
+                    });
+                }
+
                 if (isNewViewer) {
+                    // Brand-new viewer: new row, increment reach only.
                     await client.query(
                         `INSERT INTO ad_views (ad_id, user_id, viewer_key, ip_address, view_count, last_viewed_at)
                          VALUES ($1, $2, $3, $4, 1, CURRENT_TIMESTAMP)`,
                         [adId, userId, viewerKey, ipAddress]
                     );
-                } else {
-                    // Reset last_viewed_at only when the 24h window has elapsed so that
-                    // the NEXT view 24h+ later can again count as a new reach.
+                    await client.query(
+                        `UPDATE ads
+                         SET current_reach  = COALESCE(current_reach, 0) + 1,
+                             reach          = COALESCE(reach, 0) + 1,
+                             updated_at     = CURRENT_TIMESTAMP
+                         WHERE ad_id = $1`,
+                        [adId]
+                    );
+                } else if (existingRow && shouldIncrementView) {
+                    await client.query(
+                        `INSERT INTO ad_views (ad_id, user_id, viewer_key, ip_address, view_count, last_viewed_at)
+                         VALUES ($1, $2, $3, $4, 1, CURRENT_TIMESTAMP)`,
+                        [adId, userId, viewerKey, ipAddress]
+                    );
+                } else if (existingRow) {
                     await client.query(
                         `UPDATE ad_views
-                         SET view_count = COALESCE(view_count, 0) + 1,
-                             viewer_key  = COALESCE($1, viewer_key),
-                             ip_address  = $2,
-                             last_viewed_at = CASE WHEN $4 THEN CURRENT_TIMESTAMP ELSE last_viewed_at END
+                         SET viewer_key = COALESCE($1, viewer_key),
+                             ip_address = $2
                          WHERE id = $3`,
-                        [viewerKey, ipAddress, existingRow.id, isUniqueReach]
+                        [viewerKey, ipAddress, existingRow.id]
                     );
                 }
 
-                const updatedAnalytics = await client.query(
-                    `UPDATE ads
-                     SET impressions    = COALESCE(impressions, 0) + 1,
-                         current_reach  = COALESCE(current_reach, 0) + $2,
-                         reach          = COALESCE(reach, 0) + $2,
-                         updated_at     = CURRENT_TIMESTAMP
-                     WHERE ad_id = $1
-                     RETURNING impressions, current_reach, reach, clicks, message_clicks, visit_clicks, call_clicks`,
-                    [adId, isUniqueReach ? 1 : 0]
+                // Fetch final counts: reach = unique viewers, views = one per viewer per 24h,
+                // impressions = total sponsored exposures from ads.impressions.
+                const countsResult = await client.query(
+                    `SELECT
+                         COUNT(*) AS reach_count,
+                         COUNT(*) AS views_count
+                     FROM ad_views WHERE ad_id = $1`,
+                    [adId]
                 );
+                const analyticsRow = await client.query(
+                    `SELECT impressions, current_reach, reach, clicks, message_clicks, visit_clicks, call_clicks
+                     FROM ads WHERE ad_id = $1`,
+                    [adId]
+                );
+                const reachCount = Number(countsResult.rows[0]?.reach_count || 0);
+                const viewsCount = Number(countsResult.rows[0]?.views_count || 0);
+                const adRow = analyticsRow.rows[0] || {};
+                const impressionsCount = Number(adRow.impressions || 0);
+
+                if (maxReachCap !== null && maxReachCap > 0 && Number(adRow.impressions || 0) >= maxReachCap) {
+                    await client.query(
+                        `UPDATE ads
+                         SET status = 'Completed',
+                             remaining_budget = CASE
+                                 WHEN LOWER(COALESCE(campaign_type, '')) IN ('product promote','photo promote','video promote','photo and video','photo & video')
+                                 THEN 0
+                                 ELSE remaining_budget
+                             END,
+                             completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+                             updated_at = CURRENT_TIMESTAMP
+                         WHERE ad_id = $1 AND status = 'Active'`,
+                        [adId]
+                    );
+                }
 
                 await client.query('COMMIT');
 
                 return res.status(200).json({
                     success: true,
-                    incremented: true,
-                    uniqueReachIncremented: isUniqueReach,
-                    impressions: Number(updatedAnalytics.rows[0]?.impressions || 0),
-                    reach: Number(updatedAnalytics.rows[0]?.current_reach || updatedAnalytics.rows[0]?.reach || 0),
-                    current_reach: Number(updatedAnalytics.rows[0]?.current_reach || updatedAnalytics.rows[0]?.reach || 0),
-                    clicks: Number(updatedAnalytics.rows[0]?.clicks || 0),
-                    link_actions: Number(updatedAnalytics.rows[0]?.clicks || 0),
-                    message_clicks: Number(updatedAnalytics.rows[0]?.message_clicks || 0),
-                    visit_clicks: Number(updatedAnalytics.rows[0]?.visit_clicks || 0),
-                    call_clicks: Number(updatedAnalytics.rows[0]?.call_clicks || 0),
+                    incremented: shouldIncrementView,
+                    viewIncremented: shouldIncrementView,
+                    uniqueReachIncremented: shouldIncrementReach,
+                    impressions: impressionsCount,
+                    views_count: viewsCount,
+                    viewCount: viewsCount,
+                    reach: reachCount,
+                    current_reach: reachCount,
+                    clicks: Number(adRow.clicks || 0),
+                    link_actions: Number(adRow.clicks || 0),
+                    message_clicks: Number(adRow.message_clicks || 0),
+                    visit_clicks: Number(adRow.visit_clicks || 0),
+                    call_clicks: Number(adRow.call_clicks || 0),
                 });
             } catch (error) {
                 await client.query('ROLLBACK');
@@ -3737,6 +3880,58 @@ exports.logView = async (req, res) => {
     } catch (error) {
         console.error('Error logging view:', error);
         res.status(500).json({ success: false, message: 'Server error logging view' });
+    }
+};
+
+exports.logAdImpression = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!isSponsoredFeedItemId(id)) {
+            return res.status(400).json({ success: false, message: 'Impressions are only available for sponsored ads' });
+        }
+
+        await ensureSponsoredAdsEngagementSchema();
+        const adId = normalizeSponsoredAdId(id);
+        const ad = await recordAdImpression(pool, adId, 1);
+
+        if (!ad) {
+            const existing = await pool.query(
+                `SELECT impressions, current_reach, reach, max_reach_cap, status, clicks,
+                        message_clicks, visit_clicks, call_clicks
+                 FROM ads
+                 WHERE ad_id = $1
+                 LIMIT 1`,
+                [adId]
+            );
+            const row = existing.rows[0] || null;
+            return res.status(200).json({
+                success: true,
+                incremented: false,
+                capped: !!row && row.max_reach_cap !== null && Number(row.impressions || 0) >= Number(row.max_reach_cap),
+                status: row?.status || null,
+                impressions: Number(row?.impressions || 0),
+                current_reach: Number(row?.current_reach || row?.reach || 0),
+                reach: Number(row?.current_reach || row?.reach || 0),
+                clicks: Number(row?.clicks || 0),
+                link_actions: Number(row?.clicks || 0),
+                message_clicks: Number(row?.message_clicks || 0),
+                visit_clicks: Number(row?.visit_clicks || 0),
+                call_clicks: Number(row?.call_clicks || 0),
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            incremented: true,
+            capped: ad.max_reach_cap !== null && Number(ad.impressions || 0) >= Number(ad.max_reach_cap),
+            status: ad.max_reach_cap !== null && Number(ad.impressions || 0) >= Number(ad.max_reach_cap) ? 'Completed' : ad.status,
+            impressions: Number(ad.impressions || 0),
+            current_reach: Number(ad.current_reach || ad.reach || 0),
+            reach: Number(ad.current_reach || ad.reach || 0),
+        });
+    } catch (error) {
+        console.error('Error logging ad impression:', error);
+        res.status(500).json({ success: false, message: 'Server error logging ad impression' });
     }
 };
 
@@ -3963,9 +4158,9 @@ exports.getViews = async (req, res) => {
             await ensureSponsoredAdsEngagementSchema();
             const adId = normalizeSponsoredAdId(id);
             const result = await pool.query(
-                `SELECT v.*, u.username, u.profile_picture
+                `SELECT v.*, u.username, u.full_name, u.user_type, u.profile_picture
                  FROM ad_views v
-                 LEFT JOIN users u ON v.user_id = u.id
+                 JOIN users u ON v.user_id = u.id
                  WHERE v.ad_id = $1
                  ORDER BY v.last_viewed_at DESC`,
                 [adId]
@@ -3974,6 +4169,11 @@ exports.getViews = async (req, res) => {
                 success: true,
                 data: result.rows.map((row) => ({
                     ...row,
+                    username: String(row.user_type || '').toLowerCase().replace(/[\s-]+/g, '_') === 'superadmin' || String(row.user_type || '').toLowerCase().replace(/[\s-]+/g, '_') === 'super_admin'
+                        ? 'Googer Support'
+                        : String(row.user_type || '').toLowerCase() === 'admin'
+                            ? (row.username || row.full_name || 'User')
+                            : (row.full_name || row.username || 'User'),
                     created_at: toUtcIso(row.last_viewed_at || row.created_at),
                 })),
             });
@@ -4004,8 +4204,11 @@ exports.getAdPublic = async (req, res) => {
         const result = await pool.query(
             `SELECT a.*, u.username as owner_username, u.profile_picture 
              FROM ads a 
-             LEFT JOIN users u ON a.user_id = u.id 
-             WHERE a.ad_id = $1`,
+             JOIN users u ON a.user_id = u.id 
+             WHERE a.ad_id = $1
+               AND a.status = 'Active'
+               AND COALESCE(u.is_deactivated, false) = false
+               AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
             [id]
         );
         if (result.rows.length === 0) {
@@ -4029,7 +4232,10 @@ exports.getProductByCodePublic = async (req, res) => {
             const candidateResult = await pool.query(
                 `SELECT m.id, m.product_code
                  FROM market m
-                 WHERE m.status IN ('approved', 'active')`
+                 JOIN users u ON m.user_id = u.id
+                 WHERE m.status IN ('approved', 'active')
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'`
             );
             const matched = (candidateResult.rows || []).find((row) => {
                 const codeByProductCode = buildShortShareCode('p', row.product_code || '');
@@ -4044,8 +4250,10 @@ exports.getProductByCodePublic = async (req, res) => {
         const result = await pool.query(
             `SELECT m.*, u.username as owner_username, u.profile_picture 
              FROM market m 
-             LEFT JOIN users u ON m.user_id = u.id 
-             WHERE m.product_code = $1 OR LOWER(m.product_code) = LOWER($1) OR m.id::text = $1`,
+             JOIN users u ON m.user_id = u.id 
+             WHERE (m.product_code = $1 OR LOWER(m.product_code) = LOWER($1) OR m.id::text = $1)
+               AND COALESCE(u.is_deactivated, false) = false
+               AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
             [resolvedCode]
         );
 
@@ -4056,8 +4264,10 @@ exports.getProductByCodePublic = async (req, res) => {
                 `SELECT m.*, u.username as owner_username, u.profile_picture
                  FROM product_share_aliases psa
                  JOIN market m ON m.id = psa.product_id
-                 LEFT JOIN users u ON m.user_id = u.id
+                 JOIN users u ON m.user_id = u.id
                  WHERE LOWER(psa.alias_code) = LOWER($1)
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'
                  LIMIT 1`,
                 [normalizedShareCode]
             );
@@ -4082,9 +4292,11 @@ exports.getProductByCodePublic = async (req, res) => {
                     `SELECT m.*, u.username as owner_username, u.profile_picture
                      FROM ads a
                      JOIN market m ON (${linkedClauses.join(' OR ')})
-                     LEFT JOIN users u ON m.user_id = u.id
+                     JOIN users u ON m.user_id = u.id
                      WHERE (${whereClauses.join(' OR ')})
                        AND m.status IN ('approved', 'active', 'reviewing')
+                       AND COALESCE(u.is_deactivated, false) = false
+                       AND COALESCE(u.status, 'Active') <> 'Deactivated'
                      LIMIT 1`,
                     [normalizedShareCode, `%${normalizedShareCode}%`]
                 );
@@ -4097,9 +4309,11 @@ exports.getProductByCodePublic = async (req, res) => {
                 `SELECT m.*, u.username as owner_username, u.profile_picture
                  FROM ads a
                  JOIN market m ON a.edit_draft::text ILIKE ('%' || m.product_code || '%')
-                 LEFT JOIN users u ON m.user_id = u.id
+                 JOIN users u ON m.user_id = u.id
                  WHERE a.edit_draft::text ILIKE $1
                    AND m.status IN ('approved', 'active', 'reviewing')
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'
                  LIMIT 1`,
                 [`%${normalizedShareCode}%`]
             );
@@ -4143,7 +4357,9 @@ exports.getUnifiedShareItem = async (req, res) => {
                 userResult = await pool.query(
                     `SELECT id, user_id, username, full_name, bio, profile_picture, email, created_at
                      FROM users
-                     WHERE id = $1 OR user_id = $2
+                     WHERE (id = $1 OR user_id = $2)
+                       AND COALESCE(is_deactivated, false) = false
+                       AND COALESCE(status, 'Active') <> 'Deactivated'
                      LIMIT 1`,
                     [Number(userTarget), userTarget]
                 );
@@ -4154,6 +4370,8 @@ exports.getUnifiedShareItem = async (req, res) => {
                     `SELECT id, user_id, username, full_name, bio, profile_picture, email, created_at
                      FROM users
                      WHERE LOWER(username) = LOWER($1)
+                       AND COALESCE(is_deactivated, false) = false
+                       AND COALESCE(status, 'Active') <> 'Deactivated'
                      LIMIT 1`,
                     [userTarget]
                 );
@@ -4172,7 +4390,9 @@ exports.getUnifiedShareItem = async (req, res) => {
         if (/^[0-9A-Za-z]{4,16}$/.test(decodedShareCode)) {
             const profileByCode = await pool.query(
                 `SELECT id, user_id, username, full_name, bio, profile_picture, email, created_at
-                 FROM users`
+                 FROM users
+                 WHERE COALESCE(is_deactivated, false) = false
+                   AND COALESCE(status, 'Active') <> 'Deactivated'`
             );
             for (const profile of profileByCode.rows || []) {
                 const usernameCode = buildShortShareCode('u', profile.username || '');
@@ -4217,7 +4437,10 @@ exports.getUnifiedShareItem = async (req, res) => {
                     `SELECT gp.*, u.username, u.full_name, u.profile_picture, gp.share_code
                      FROM goog_posts gp
                      JOIN users u ON u.id = gp.user_id
-                     WHERE gp.id = $1`,
+                     WHERE gp.id = $1
+                       AND COALESCE(gp.is_active, true) = true
+                       AND COALESCE(u.is_deactivated, false) = false
+                       AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                     [Number(matchedGoogId)]
                 );
                 if (googResult.rows.length > 0) {
@@ -4235,8 +4458,11 @@ exports.getUnifiedShareItem = async (req, res) => {
                 const adResult = await pool.query(
                     `SELECT a.*, u.username as owner_username, u.profile_picture 
                      FROM ads a 
-                     LEFT JOIN users u ON a.user_id = u.id 
-                     WHERE a.ad_id = $1`,
+                     JOIN users u ON a.user_id = u.id 
+                     WHERE a.ad_id = $1
+                       AND a.status = 'Active'
+                       AND COALESCE(u.is_deactivated, false) = false
+                       AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                     [matchedAd.ad_id]
                 );
                 if (adResult.rows.length > 0) {
@@ -4258,7 +4484,10 @@ exports.getUnifiedShareItem = async (req, res) => {
                 `SELECT gp.*, u.username, u.full_name, u.profile_picture, gp.share_code
                  FROM goog_posts gp
                  JOIN users u ON u.id = gp.user_id
-                 WHERE gp.id = $1`,
+                 WHERE gp.id = $1
+                   AND COALESCE(gp.is_active, true) = true
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                 [parseInt(googMatch[1], 10)]
             );
             if (googResult.rows.length > 0) {
@@ -4275,8 +4504,11 @@ exports.getUnifiedShareItem = async (req, res) => {
             const adResult = await pool.query(
                 `SELECT a.*, u.username as owner_username, u.profile_picture 
                  FROM ads a 
-                 LEFT JOIN users u ON a.user_id = u.id 
-                 WHERE a.ad_id = $1`,
+                 JOIN users u ON a.user_id = u.id 
+                 WHERE a.ad_id = $1
+                   AND a.status = 'Active'
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                 [adId]
             );
             if (adResult.rows.length > 0) {
@@ -4294,8 +4526,12 @@ exports.getUnifiedShareItem = async (req, res) => {
                 const adResult = await pool.query(
                     `SELECT a.*, u.username as owner_username, u.profile_picture 
                      FROM ads a 
-                     LEFT JOIN users u ON a.user_id = u.id 
-                     WHERE a.product_code IS NOT NULL AND (a.product_code = $1 OR LOWER(a.product_code) = LOWER($1))`,
+                     JOIN users u ON a.user_id = u.id 
+                     WHERE a.product_code IS NOT NULL
+                       AND (a.product_code = $1 OR LOWER(a.product_code) = LOWER($1))
+                       AND a.status = 'Active'
+                       AND COALESCE(u.is_deactivated, false) = false
+                       AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                     [normalizedShareCode]
                 );
                 if (adResult.rows.length > 0) {
@@ -4314,7 +4550,10 @@ exports.getUnifiedShareItem = async (req, res) => {
                 `SELECT gp.*, u.username, u.full_name, u.profile_picture, gp.share_code
                  FROM goog_posts gp
                  JOIN users u ON u.id = gp.user_id
-                 WHERE gp.id = $1`,
+                 WHERE gp.id = $1
+                   AND COALESCE(gp.is_active, true) = true
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                 [parseInt(normalizedShareCode, 10)]
             );
             if (googResult.rows.length > 0) {

@@ -98,7 +98,7 @@ const safeParseJson = (value: string | null) => {
 };
 
 const getAuthToken = () =>
-  typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  typeof window !== 'undefined' ? (sessionStorage.getItem('token') || localStorage.getItem('token')) : null;
 
 const hasAuthenticatedSession = () => Boolean(getAuthToken());
 

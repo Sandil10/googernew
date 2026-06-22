@@ -123,22 +123,47 @@ export const getProductShareCode = (product: any) => {
   return target ? toShareCode("p", target) : "";
 };
 
-export const getShareCodeForItem = (item: any, type?: "goog" | "ad" | "product") => {
+export const getUploadContentShareCode = (item: any) => {
+  const storedCode = firstCanonicalCode(
+    item?.canonical_share_code,
+    item?.uploadShareCode,
+    item?.upload_share_code,
+    item?.reel_share_code,
+    item?.share_code,
+    item?.shareCode,
+  );
+  if (storedCode) return storedCode;
+
+  const rawId = String(
+    item?.contentId ??
+    item?.content_id ??
+    item?.upload_content_id ??
+    item?.id ??
+    "",
+  ).trim();
+  const id = stripPrefix(stripPrefix(rawId, "upload-"), "reel-");
+  return id ? toShareCode("u", id) : "";
+};
+
+export const getShareCodeForItem = (item: any, type?: "goog" | "ad" | "product" | "upload") => {
   if (type === "goog") return getGoogShareCode(item);
   if (type === "ad") return getAdShareCode(item);
   if (type === "product") return getProductShareCode(item);
+  if (type === "upload") return getUploadContentShareCode(item);
 
   if (String(item?.id ?? "").startsWith("goog-") || item?.text) return getGoogShareCode(item);
+  if (String(item?.id ?? "").startsWith("upload-") || item?.content_type || item?.media_preview || item?.preview_url) return getUploadContentShareCode(item);
   if (item?.campaign_type === "Product Promote") return getProductShareCode(item);
   if (item?.is_sponsored) return getAdShareCode(item);
   return getProductShareCode(item);
 };
 
-export const getShareUrlForItem = (item: any, type?: "goog" | "ad" | "product") => {
+export const getShareUrlForItem = (item: any, type?: "goog" | "ad" | "product" | "upload") => {
   const shareCode = getShareCodeForItem(item, type);
   if (!shareCode) return "";
   const isGoogLike = type === "goog" || String(item?.id ?? "").startsWith("goog-") || typeof item?.text === "string";
   const isAdLike = type === "ad" || (!!item?.is_sponsored && item?.campaign_type !== "Product Promote");
+  const isUploadLike = type === "upload" || String(item?.id ?? "").startsWith("upload-") || !!item?.content_type || !!item?.media_preview || !!item?.preview_url;
   const isProductLike =
     type === "product" ||
     item?.campaign_type === "Product Promote" ||
@@ -153,6 +178,9 @@ export const getShareUrlForItem = (item: any, type?: "goog" | "ad" | "product") 
       item?.promo_price !== undefined
     ));
 
+  if (isUploadLike) {
+    return buildPublicUrl(`/reel/${encodeURIComponent(shareCode)}`);
+  }
   if (isProductLike) {
     return buildPublicUrl(`/product/${encodeURIComponent(shareCode)}`);
   }

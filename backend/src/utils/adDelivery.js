@@ -1,4 +1,5 @@
 const normalizeText = (value) => String(value || '').trim().toLowerCase();
+const { getGraceDurationSeconds } = require('./subscriptionRenewal');
 
 const REACH_FIRST_CAMPAIGN_TYPES = new Set([
     'product promote',
@@ -13,6 +14,7 @@ const isReachFirstCampaign = (adRow) => {
     return REACH_FIRST_CAMPAIGN_TYPES.has(type);
 };
 const DAY_MS = 24 * 60 * 60 * 1000;
+const getGraceIntervalSql = () => `((${getGraceDurationSeconds()}::text || ' seconds')::interval)`;
 
 const safeJsonParse = (value, fallback = null) => {
     if (!value) return fallback;
@@ -211,7 +213,7 @@ const syncExpiredAds = async (pool, adId = null) => {
                          JOIN subscription_plans sp ON sp.id = ups.plan_id
                          WHERE ups.user_id = a.user_id
                            AND ups.status = 'active'
-                           AND (ups.expires_at IS NULL OR ups.expires_at > NOW())
+                           AND (ups.expires_at IS NULL OR ups.expires_at + ${getGraceIntervalSql()} > NOW())
                          ORDER BY ups.started_at DESC
                          LIMIT 1
                      ),
@@ -284,7 +286,7 @@ const syncExpiredAds = async (pool, adId = null) => {
                      FROM user_plan_subscriptions ups
                      JOIN subscription_plans sp ON sp.id = ups.plan_id
                      WHERE ups.user_id = a.user_id AND ups.status = 'active'
-                       AND (ups.expires_at IS NULL OR ups.expires_at > NOW())
+                       AND (ups.expires_at IS NULL OR ups.expires_at + ${getGraceIntervalSql()} > NOW())
                      ORDER BY ups.started_at DESC LIMIT 1
                  ) AS paid_plan_expiry,
                  (
@@ -322,7 +324,7 @@ const syncExpiredAds = async (pool, adId = null) => {
          WHERE status = 'Active'
            AND max_reach_cap IS NOT NULL
            AND max_reach_cap > 0
-           AND COALESCE(current_reach, 0) >= max_reach_cap
+           AND COALESCE(impressions, 0) >= max_reach_cap
            ${adFilter}`,
         params
     );
@@ -455,12 +457,8 @@ const adIsWithinDeliveryRules = (adRow) => {
     if (normalizeText(adRow?.status) !== 'active') return false;
 
     const cap = adRow?.max_reach_cap == null ? null : Number(adRow.max_reach_cap);
-    const currentReach = Math.max(
-        Number(adRow?.current_reach || 0),
-        Number(adRow?.reach || 0),
-        Number(adRow?.impressions || 0)
-    );
-    if (Number.isFinite(cap) && cap > 0 && currentReach >= cap) return false;
+    const impressions = Number(adRow?.impressions || 0);
+    if (Number.isFinite(cap) && cap > 0 && impressions >= cap) return false;
 
     // Reach-first campaigns (Product Promote, Photo/Video) complete only when target reach is
     // met — duration elapsed does not end delivery for these types.
@@ -485,18 +483,20 @@ const recordAdImpression = async (pool, adId, amount = 1) => {
     const increment = Math.max(1, Number.parseInt(String(amount), 10) || 1);
     const result = await pool.query(
         `UPDATE ads
-         SET impressions = COALESCE(impressions, 0) + $1,
-             current_reach = COALESCE(current_reach, 0) + $1,
-             reach = COALESCE(reach, 0) + $1,
+         SET impressions = CASE
+                 WHEN max_reach_cap IS NOT NULL AND max_reach_cap > 0
+                 THEN LEAST(max_reach_cap, COALESCE(impressions, 0) + $1)
+                 ELSE COALESCE(impressions, 0) + $1
+             END,
              updated_at = CURRENT_TIMESTAMP
          WHERE ad_id = $2 AND status = 'Active'
-           AND (max_reach_cap IS NULL OR COALESCE(current_reach, 0) < max_reach_cap)
-         RETURNING current_reach, max_reach_cap`,
+           AND (max_reach_cap IS NULL OR COALESCE(impressions, 0) < max_reach_cap)
+         RETURNING impressions, current_reach, reach, max_reach_cap, status`,
         [increment, adId]
     );
 
     const row = result.rows[0];
-    if (row && row.max_reach_cap !== null && Number(row.current_reach || 0) >= Number(row.max_reach_cap)) {
+    if (row && row.max_reach_cap !== null && Number(row.impressions || 0) >= Number(row.max_reach_cap)) {
         await pool.query(
             `UPDATE ads
              SET status = 'Completed',

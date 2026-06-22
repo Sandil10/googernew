@@ -3,6 +3,16 @@ const pool = require('../config/database');
 let categoriesTableEnsured = false;
 let commissionSettingsTableEnsured = false;
 let categorySeedPromise = null;
+const PUBLIC_CATEGORY_CACHE_TTL_MS = Number(process.env.PUBLIC_CATEGORY_CACHE_TTL_MS || 30000);
+const PUBLIC_COMMISSION_CACHE_TTL_MS = Number(process.env.PUBLIC_COMMISSION_CACHE_TTL_MS || 30000);
+let managedCategoriesCache = {
+    activeOnly: { expiresAt: 0, value: null },
+    includeInactive: { expiresAt: 0, value: null },
+};
+let commissionValueCache = {
+    global: { expiresAt: 0, value: null },
+    manualEnabled: { expiresAt: 0, value: null },
+};
 
 const GLOBAL_CATEGORY_COMMISSION_KEY = 'general_category_commission';
 const MANUAL_CATEGORY_COMMISSION_ENABLED_KEY = 'manual_category_commission_enabled';
@@ -316,6 +326,20 @@ const normalizeCommission = (value) => {
     return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const invalidateCategoryCaches = () => {
+    managedCategoriesCache = {
+        activeOnly: { expiresAt: 0, value: null },
+        includeInactive: { expiresAt: 0, value: null },
+    };
+};
+
+const invalidateCommissionCaches = () => {
+    commissionValueCache = {
+        global: { expiresAt: 0, value: null },
+        manualEnabled: { expiresAt: 0, value: null },
+    };
+};
+
 const seedCategoryNode = async (client, node, parentId = null, level = 1, sortOrder = 0) => {
     const inserted = await client.query(
         `INSERT INTO managed_categories (name, parent_id, level, commission_percentage, sort_order, is_active)
@@ -436,6 +460,11 @@ const buildCategoryTree = (rows) => {
 };
 
 const getManagedCategories = async (includeInactive = false) => {
+    const cacheBucket = includeInactive ? managedCategoriesCache.includeInactive : managedCategoriesCache.activeOnly;
+    if (cacheBucket.value && cacheBucket.expiresAt > Date.now()) {
+        return cacheBucket.value;
+    }
+
     const client = await pool.connect();
     try {
         await ensureManagedCategoriesTable(client);
@@ -448,7 +477,20 @@ const getManagedCategories = async (includeInactive = false) => {
              ORDER BY level ASC, sort_order ASC, name ASC`
         );
 
-        return buildCategoryTree(result.rows);
+        const tree = buildCategoryTree(result.rows);
+        if (PUBLIC_CATEGORY_CACHE_TTL_MS > 0) {
+            const nextCache = {
+                expiresAt: Date.now() + PUBLIC_CATEGORY_CACHE_TTL_MS,
+                value: tree,
+            };
+            if (includeInactive) {
+                managedCategoriesCache.includeInactive = nextCache;
+            } else {
+                managedCategoriesCache.activeOnly = nextCache;
+            }
+        }
+
+        return tree;
     } finally {
         client.release();
     }
@@ -476,6 +518,9 @@ const updateRelatedProductCategories = async (client, level, oldName, nextName) 
 };
 
 const getGlobalCategoryCommissionValue = async (client = pool) => {
+    if (client === pool && commissionValueCache.global.value !== null && commissionValueCache.global.expiresAt > Date.now()) {
+        return commissionValueCache.global.value;
+    }
     await ensureCommissionSettingsTable(client);
 
     const result = await client.query(
@@ -493,13 +538,23 @@ const getGlobalCategoryCommissionValue = async (client = pool) => {
              ON CONFLICT (setting_key) DO NOTHING`,
             [GLOBAL_CATEGORY_COMMISSION_KEY]
         );
+        if (client === pool && PUBLIC_COMMISSION_CACHE_TTL_MS > 0) {
+            commissionValueCache.global = { value: 0, expiresAt: Date.now() + PUBLIC_COMMISSION_CACHE_TTL_MS };
+        }
         return 0;
     }
 
-    return Number(result.rows[0]?.setting_value || 0);
+    const value = Number(result.rows[0]?.setting_value || 0);
+    if (client === pool && PUBLIC_COMMISSION_CACHE_TTL_MS > 0) {
+        commissionValueCache.global = { value, expiresAt: Date.now() + PUBLIC_COMMISSION_CACHE_TTL_MS };
+    }
+    return value;
 };
 
 const getManualCategoryCommissionEnabledValue = async (client = pool) => {
+    if (client === pool && commissionValueCache.manualEnabled.value !== null && commissionValueCache.manualEnabled.expiresAt > Date.now()) {
+        return commissionValueCache.manualEnabled.value;
+    }
     await ensureCommissionSettingsTable(client);
 
     const result = await client.query(
@@ -517,10 +572,17 @@ const getManualCategoryCommissionEnabledValue = async (client = pool) => {
              ON CONFLICT (setting_key) DO NOTHING`,
             [MANUAL_CATEGORY_COMMISSION_ENABLED_KEY]
         );
+        if (client === pool && PUBLIC_COMMISSION_CACHE_TTL_MS > 0) {
+            commissionValueCache.manualEnabled = { value: false, expiresAt: Date.now() + PUBLIC_COMMISSION_CACHE_TTL_MS };
+        }
         return false;
     }
 
-    return Number(result.rows[0]?.setting_value || 0) > 0;
+    const value = Number(result.rows[0]?.setting_value || 0) > 0;
+    if (client === pool && PUBLIC_COMMISSION_CACHE_TTL_MS > 0) {
+        commissionValueCache.manualEnabled = { value, expiresAt: Date.now() + PUBLIC_COMMISSION_CACHE_TTL_MS };
+    }
+    return value;
 };
 
 exports.getCategoryTree = async (req, res) => {
@@ -601,6 +663,7 @@ exports.setGlobalCategoryCommission = async (req, res) => {
             [GLOBAL_CATEGORY_COMMISSION_KEY, commissionPercentage]
         );
         await client.query('COMMIT');
+        invalidateCommissionCaches();
 
         res.status(200).json({
             success: true,
@@ -640,6 +703,7 @@ exports.setManualCategoryCommissionEnabled = async (req, res) => {
             [MANUAL_CATEGORY_COMMISSION_ENABLED_KEY, isEnabled ? 1 : 0]
         );
         await client.query('COMMIT');
+        invalidateCommissionCaches();
 
         res.status(200).json({
             success: true,
@@ -700,6 +764,7 @@ exports.createCategory = async (req, res) => {
         );
 
         await client.query('COMMIT');
+        invalidateCategoryCaches();
         const categories = await getManagedCategories(true);
         res.status(201).json({ success: true, category: result.rows[0], categories });
     } catch (error) {
@@ -754,6 +819,7 @@ exports.updateCategory = async (req, res) => {
         }
 
         await client.query('COMMIT');
+        invalidateCategoryCaches();
         const categories = await getManagedCategories(true);
         res.status(200).json({ success: true, categories });
     } catch (error) {
@@ -802,6 +868,7 @@ exports.deleteCategory = async (req, res) => {
         );
 
         await client.query('COMMIT');
+        invalidateCategoryCaches();
         const categories = await getManagedCategories(true);
         res.status(200).json({ success: true, categories });
     } catch (error) {

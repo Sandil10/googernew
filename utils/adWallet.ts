@@ -31,7 +31,7 @@ export function getStoredUser() {
     if (typeof window === "undefined") return null;
 
     try {
-        const rawUser = window.localStorage.getItem("user");
+        const rawUser = window.sessionStorage.getItem("user") || window.localStorage.getItem("user");
         return rawUser ? JSON.parse(rawUser) : null;
     } catch {
         return null;

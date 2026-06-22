@@ -71,13 +71,12 @@ function DonutChart({ segments, totalReach }: {
     useEffect(() => { const t = setTimeout(() => setReady(true), 120); return () => clearTimeout(t); }, []);
 
     // build arc parameters — start from 12 o'clock, go clockwise
-    let accumulated = 0;
-    const arcs = segments.map((seg) => {
+    const arcs = segments.reduce<Array<{ label: string; pct: number; len: number; dashOffset: number; color: string }>>((items, seg) => {
+        const accumulated = items.reduce((sum, item) => sum + item.pct, 0);
         const len = ready ? (seg.pct / 100) * circ : 0;
         const dashOffset = circ / 4 - (accumulated / 100) * circ;
-        accumulated += seg.pct;
-        return { ...seg, len, dashOffset, color: GENDER_COLORS[seg.label] || GENDER_COLORS.Unknown };
-    });
+        return [...items, { ...seg, len, dashOffset, color: GENDER_COLORS[seg.label] || GENDER_COLORS.Unknown }];
+    }, []);
 
     const displayedReach = useCountUp(totalReach);
 
@@ -353,7 +352,7 @@ export function AdAnalyticsModal({ adId, adTitle, campaignType, onClose }: Props
                                 <div className="flex items-center justify-around border-t border-white/[0.06] px-4 py-2.5">
                                     <RawCount label="Views" val={totals?.views || 0} />
                                     <RawCount label="Reach" val={totals?.reach || 0} />
-                                    <RawCount label="Impr." val={totals?.impressions || 0} />
+                                    <RawCount label="Views" val={totals?.impressions || 0} />
                                     <RawCount label="Clicks" val={totals?.clicks || 0} />
                                     <RawCount label="Likes" val={totals?.likes || 0} />
                                 </div>

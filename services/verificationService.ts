@@ -1,7 +1,7 @@
 const isClient = typeof window !== 'undefined';
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+import { API_URL } from './apiConfig';
 
-const getToken = () => (isClient ? localStorage.getItem('token') : null);
+const getToken = () => (isClient ? (sessionStorage.getItem('token') || localStorage.getItem('token')) : null);
 const authHeaders = () => ({ Authorization: `Bearer ${getToken()}` });
 
 export type VerificationStatus = 'None' | 'Under Review' | 'Verified' | 'Rejected';

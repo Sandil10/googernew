@@ -17,8 +17,25 @@ const formatLockedAmount = (value?: number | string | null) => {
     return Number.isFinite(numeric) ? numeric.toFixed(2) : "0.00";
 };
 
+const findMatchingUser = (users: any[], targetId: string) => {
+    const normalizedTarget = String(targetId).trim().toLowerCase();
+
+    return users.find((candidate: any) => {
+        const candidateValues = [
+            candidate?.user_id,
+            candidate?.googer_id,
+            candidate?.id,
+            candidate?.username,
+            candidate?.full_name
+        ];
+
+        return candidateValues.some((value) => String(value || "").trim().toLowerCase() === normalizedTarget);
+    }) || users[0];
+};
+
 export default function CoinsManagementPage() {
     const router = useRouter();
+    const [targetUserId, setTargetUserId] = useState("");
     const [amount, setAmount] = useState("");
     const [searchQuery, setSearchQuery] = useState("");
     const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -40,6 +57,11 @@ export default function CoinsManagementPage() {
 
     useEffect(() => {
         fetchData();
+    }, []);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        setTargetUserId(new URLSearchParams(window.location.search).get("to") || "");
     }, []);
 
     useEffect(() => {
@@ -81,6 +103,36 @@ export default function CoinsManagementPage() {
 
         loadLockedManualPayment();
     }, []);
+
+    useEffect(() => {
+        const loadQrTargetUser = async () => {
+            const trimmedTargetId = targetUserId.trim();
+            if (!trimmedTargetId || lockedManualPayment) return;
+
+            setSearchQuery(trimmedTargetId);
+            setIsSearching(true);
+
+            try {
+                const users = await walletService.searchUsers(trimmedTargetId);
+                const matchedUser = findMatchingUser(users || [], trimmedTargetId);
+
+                if (matchedUser) {
+                    setSelectedUser(matchedUser);
+                    setSearchQuery(String(matchedUser.user_id || matchedUser.googer_id || trimmedTargetId));
+                    setSearchResults([]);
+                } else {
+                    setSelectedUser(null);
+                    setSearchResults([]);
+                }
+            } catch (error) {
+                console.error("Failed to load wallet QR target user", error);
+            } finally {
+                setIsSearching(false);
+            }
+        };
+
+        loadQrTargetUser();
+    }, [targetUserId, lockedManualPayment]);
 
     const fetchData = async () => {
         try {

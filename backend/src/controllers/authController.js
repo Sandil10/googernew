@@ -179,6 +179,64 @@ const ensureExtendedUserProfileSchema = async () => {
     extendedUserProfileSchemaEnsured = true;
 };
 
+const ensureSuspensionColumns = async () => {
+    await pool.query(`ALTER TABLE users ALTER COLUMN status TYPE VARCHAR(40)`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_deactivated BOOLEAN NOT NULL DEFAULT false`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS self_deactivated_at TIMESTAMP DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS self_deleted_at TIMESTAMP DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS permanent_deactivated_at TIMESTAMP DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS marked_for_deletion_at TIMESTAMP DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivation_reason TEXT DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_reason_category VARCHAR(120) DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_reason_custom TEXT DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_action VARCHAR(80) DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_days INTEGER DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMP DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_ends_at TIMESTAMP DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_text TEXT DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_status VARCHAR(30) DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_submitted_at TIMESTAMP DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_reviewed_at TIMESTAMP DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_admin_note TEXT DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_id VARCHAR(12) DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_contact_email TEXT DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_phone_number TEXT DEFAULT NULL`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS appeal_agreement_confirmed BOOLEAN NOT NULL DEFAULT false`).catch(() => {});
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_wallet_access BOOLEAN NOT NULL DEFAULT false`).catch(() => {});
+};
+
+const generateAppealId = () => String(Math.floor(10000000 + Math.random() * 90000000));
+const PERMANENT_DEACTIVATION_MESSAGE = 'Your account is permanently deactivated.';
+
+const isPermanentlyDeactivatedUser = (user) => {
+    const status = String(user?.status || '').toLowerCase();
+    const appealStatus = String(user?.appeal_status || '').toLowerCase();
+    return Boolean(user?.permanent_deactivated_at)
+        || status === 'permanently deactivated'
+        || (Boolean(user?.is_deactivated) && appealStatus === 'rejected');
+};
+
+const isSelfDeletedUser = (user) => {
+    const status = String(user?.status || '').toLowerCase();
+    return Boolean(user?.self_deleted_at) || status === 'deleted';
+};
+
+const pauseActiveAdsForUser = async (client, userId) => {
+    const result = await client.query(
+        `UPDATE ads
+         SET status = 'Paused',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $1
+           AND status IN ('Active', 'Approved')
+         RETURNING id`,
+        [userId]
+    ).catch((error) => {
+        if (error.code === '42P01') return { rowCount: 0 };
+        throw error;
+    });
+    return result.rowCount || 0;
+};
+
 const ensureUserBlocksTable = async () => {
     if (userBlocksTableEnsured) return;
 
@@ -366,6 +424,7 @@ const validatePassword = (password) => {
 exports.register = async (req, res) => {
     try {
         const { username, fullName, email, password, isSeller, referralCode } = req.body; // Accept referralCode
+        await ensureSuspensionColumns();
 
         // Validate required fields
         if (!username || !fullName || !email || !password) {
@@ -393,6 +452,18 @@ exports.register = async (req, res) => {
         if (userExists.rows.length > 0) {
             const existingUser = userExists.rows[0];
             if (existingUser.email === email) {
+                if (isSelfDeletedUser(existingUser)) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'Profile not found'
+                    });
+                }
+                if (isPermanentlyDeactivatedUser(existingUser)) {
+                    return res.status(403).json({
+                        success: false,
+                        message: PERMANENT_DEACTIVATION_MESSAGE
+                    });
+                }
                 return res.status(400).json({
                     success: false,
                     message: 'Email already registered'
@@ -513,6 +584,7 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
     try {
         const { email, password } = req.body;
+        await ensureSuspensionColumns();
 
         if (!email || !password) {
             return res.status(400).json({ success: false, message: 'Please provide email and password' });
@@ -524,10 +596,40 @@ exports.login = async (req, res) => {
             return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
 
+        if (isPermanentlyDeactivatedUser(user.rows[0])) {
+            return res.status(403).json({
+                success: false,
+                message: PERMANENT_DEACTIVATION_MESSAGE,
+                status: 'permanently_deactivated'
+            });
+        }
+
+        if (isSelfDeletedUser(user.rows[0])) {
+            return res.status(404).json({
+                success: false,
+                message: 'Profile not found',
+                status: 'profile_not_found'
+            });
+        }
+
         const isMatch = await bcrypt.compare(password, user.rows[0].password);
 
         if (!isMatch) {
             return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        }
+
+        // Auto-reactivate self-deactivated accounts on login
+        let userData = user.rows[0];
+        if (userData.is_deactivated && userData.suspension_reason_category === 'Self Deactivated') {
+            const reactivated = await pool.query(
+                `UPDATE users SET is_deactivated = false, deactivation_reason = NULL, suspension_reason_category = NULL,
+                 suspension_action = NULL, self_deactivated_at = NULL, status = 'Active'
+                 WHERE id = $1 RETURNING *`,
+                [userData.id]
+            );
+            if (reactivated.rows.length > 0) {
+                userData = reactivated.rows[0];
+            }
         }
 
         const secret = process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET;
@@ -538,12 +640,12 @@ exports.login = async (req, res) => {
         await ensureGoogerIdNormalization();
 
         const token = jwt.sign(
-            { id: user.rows[0].id, userId: user.rows[0].user_id, tokenVersion: user.rows[0].token_version ?? 0 },
+            { id: userData.id, userId: userData.user_id, tokenVersion: userData.token_version ?? 0 },
             secret,
             { expiresIn: process.env.JWT_EXPIRE || '7d' }
         );
 
-        const { password: _, ...userWithoutPassword } = user.rows[0];
+        const { password: _, ...userWithoutPassword } = userData;
 
         res.status(200).json({
             success: true,
@@ -626,7 +728,11 @@ exports.getUserById = async (req, res) => {
             publicColumns.push('shipping_address');
         }
         const result = await pool.query(
-            `SELECT ${publicColumns.join(', ')} FROM users WHERE id = $1`,
+            `SELECT ${publicColumns.join(', ')}
+             FROM users
+             WHERE id = $1
+               AND COALESCE(is_deactivated, false) = false
+               AND COALESCE(status, 'Active') <> 'Deactivated'`,
             [id]
         );
 
@@ -671,6 +777,7 @@ exports.getProfile = async (req, res) => {
         await ensureSubscriptionsTable();
         await ensureProfileViewsTable();
         await ensureExtendedUserProfileSchema();
+        await ensureSuspensionColumns();
         await ensureUserBlocksTable();
 
         const includeShippingAddress = await hasUsersTableColumn('shipping_address');
@@ -698,6 +805,20 @@ exports.getProfile = async (req, res) => {
             'referral_code',
             'wallet_balance',
             'user_type',
+            'is_deactivated',
+            'deactivation_reason',
+            'suspension_reason_category',
+            'suspension_reason_custom',
+            'suspension_action',
+            'suspension_days',
+            'suspended_at',
+            'suspension_ends_at',
+            'appeal_text',
+            'appeal_status',
+            'appeal_submitted_at',
+            'appeal_reviewed_at',
+            'appeal_admin_note',
+            'suspended_wallet_access',
             'created_at'
         ];
 
@@ -764,6 +885,191 @@ exports.getProfile = async (req, res) => {
             message: `Server error fetching profile: ${error.message}`,
             error: error.message
         });
+    }
+};
+
+exports.getMySuspension = async (req, res) => {
+    try {
+        await ensureSuspensionColumns();
+        const result = await pool.query(
+            `SELECT id, username, full_name, is_deactivated, deactivation_reason,
+                    suspension_reason_category, suspension_reason_custom, suspension_action,
+                    suspension_days, suspended_at, self_deactivated_at, suspension_ends_at,
+                    appeal_text, appeal_status, appeal_submitted_at, appeal_reviewed_at, appeal_admin_note,
+                    appeal_id, appeal_contact_email, appeal_phone_number, appeal_agreement_confirmed,
+                    suspended_wallet_access
+             FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+        if (!result.rows.length) return res.status(404).json({ success: false, message: 'User not found' });
+        res.json({ success: true, suspension: result.rows[0] });
+    } catch (error) {
+        console.error('Get suspension error:', error);
+        res.status(500).json({ success: false, message: 'Server error fetching suspension' });
+    }
+};
+
+exports.submitSuspensionAppeal = async (req, res) => {
+    try {
+        await ensureSuspensionColumns();
+        const appealText = String(req.body?.appeal || '').trim();
+        const contactEmail = String(req.body?.contactEmail || '').trim();
+        const phoneNumber = String(req.body?.phoneNumber || '').trim();
+        const agreementConfirmed = Boolean(req.body?.agreementConfirmed);
+        if (!appealText) return res.status(400).json({ success: false, message: 'Appeal message is required' });
+        if (appealText.length > 2000) return res.status(400).json({ success: false, message: 'Appeal must be 2000 characters or less' });
+        if (!contactEmail) return res.status(400).json({ success: false, message: 'Contact email is required' });
+        if (!phoneNumber) return res.status(400).json({ success: false, message: 'Phone number is required' });
+        if (!agreementConfirmed) return res.status(400).json({ success: false, message: 'Please confirm the user agreement' });
+
+        const current = await pool.query(
+            `SELECT is_deactivated, appeal_status FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+        if (!current.rows.length) return res.status(404).json({ success: false, message: 'User not found' });
+        if (!current.rows[0].is_deactivated) return res.status(400).json({ success: false, message: 'Account is not suspended' });
+        if (current.rows[0].appeal_status === 'pending') return res.status(409).json({ success: false, message: 'Appeal already submitted and pending review' });
+
+        let result;
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            const appealId = generateAppealId();
+            try {
+                result = await pool.query(
+                    `UPDATE users
+                     SET appeal_text = $1,
+                         appeal_status = 'pending',
+                         appeal_submitted_at = NOW(),
+                         appeal_reviewed_at = NULL,
+                         appeal_admin_note = NULL,
+                         appeal_id = $2,
+                         appeal_contact_email = $3,
+                         appeal_phone_number = $4,
+                         appeal_agreement_confirmed = $5
+                     WHERE id = $6
+                       AND NOT EXISTS (
+                           SELECT 1 FROM users existing
+                           WHERE existing.appeal_id = $2 AND existing.id <> $6
+                       )
+                     RETURNING id, is_deactivated, deactivation_reason, suspension_reason_category,
+                               suspension_action, suspension_days, suspension_ends_at,
+                               appeal_text, appeal_status, appeal_submitted_at, appeal_reviewed_at, appeal_admin_note,
+                               appeal_id, appeal_contact_email, appeal_phone_number, appeal_agreement_confirmed,
+                               suspended_wallet_access`,
+                    [appealText, appealId, contactEmail, phoneNumber, agreementConfirmed, req.user.id]
+                );
+                if (result.rows.length) break;
+            } catch (error) {
+                if (attempt === 4) throw error;
+            }
+        }
+        if (!result?.rows?.length) return res.status(500).json({ success: false, message: 'Failed to generate appeal ID' });
+        res.json({ success: true, suspension: result.rows[0] });
+    } catch (error) {
+        console.error('Submit suspension appeal error:', error);
+        res.status(500).json({ success: false, message: 'Server error submitting appeal' });
+    }
+};
+
+exports.selfDeactivateAccount = async (req, res) => {
+    const client = await pool.connect();
+    try {
+        await ensureSuspensionColumns();
+        await client.query('BEGIN');
+
+        const pausedAdsCount = await pauseActiveAdsForUser(client, req.user.id);
+        const result = await client.query(
+            `UPDATE users
+             SET is_deactivated = true,
+                 status = 'Deactivated',
+                 marked_for_deletion_at = NULL,
+                 self_deactivated_at = NOW(),
+                 deactivation_reason = 'Self Deactivated',
+                 suspension_reason_category = 'Self Deactivated',
+                 suspension_reason_custom = NULL,
+                 suspension_action = 'Self Deactivated',
+                 suspension_days = NULL,
+                 suspended_at = NOW(),
+                 suspension_ends_at = NULL,
+                 suspended_wallet_access = false,
+                 appeal_text = NULL,
+                 appeal_status = NULL,
+                 appeal_submitted_at = NULL,
+                 appeal_reviewed_at = NULL,
+                 appeal_admin_note = NULL,
+                 appeal_id = NULL,
+                 appeal_contact_email = NULL,
+                 appeal_phone_number = NULL,
+                 appeal_agreement_confirmed = false
+             WHERE id = $1
+             RETURNING id, username, full_name, is_deactivated, status, self_deactivated_at, deactivation_reason`,
+            [req.user.id]
+        );
+
+        if (!result.rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        await client.query('COMMIT');
+        res.json({ success: true, paused_ads_count: pausedAdsCount, user: result.rows[0] });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Self deactivate account error:', error);
+        res.status(500).json({ success: false, message: 'Server error deactivating account' });
+    } finally {
+        client.release();
+    }
+};
+
+exports.selfDeleteAccount = async (req, res) => {
+    const client = await pool.connect();
+    try {
+        await ensureSuspensionColumns();
+        await client.query('BEGIN');
+
+        const pausedAdsCount = await pauseActiveAdsForUser(client, req.user.id);
+        const result = await client.query(
+            `UPDATE users
+             SET is_deactivated = true,
+                 status = 'Deleted',
+                 marked_for_deletion_at = NULL,
+                 self_deactivated_at = NULL,
+                 self_deleted_at = NOW(),
+                 deactivation_reason = 'User Deleted Account',
+                 suspension_reason_category = 'User Deleted Account',
+                 suspension_reason_custom = NULL,
+                 suspension_action = 'User Deleted Account',
+                 suspension_days = NULL,
+                 suspended_at = NOW(),
+                 suspension_ends_at = NULL,
+                 suspended_wallet_access = false,
+                 appeal_text = NULL,
+                 appeal_status = NULL,
+                 appeal_submitted_at = NULL,
+                 appeal_reviewed_at = NULL,
+                 appeal_admin_note = NULL,
+                 appeal_id = NULL,
+                 appeal_contact_email = NULL,
+                 appeal_phone_number = NULL,
+                 appeal_agreement_confirmed = false
+             WHERE id = $1
+             RETURNING id, username, full_name, email, phone_number, is_deactivated, status, self_deleted_at`,
+            [req.user.id]
+        );
+
+        if (!result.rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        await client.query('COMMIT');
+        res.json({ success: true, paused_ads_count: pausedAdsCount, user: result.rows[0] });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Self delete account error:', error);
+        res.status(500).json({ success: false, message: 'Server error deleting account' });
+    } finally {
+        client.release();
     }
 };
 
@@ -1076,6 +1382,8 @@ exports.getUserByUsername = async (req, res) => {
             `SELECT ${publicColumns.join(', ')}
              FROM users
              WHERE LOWER(username) = LOWER($1)
+               AND COALESCE(is_deactivated, false) = false
+               AND COALESCE(status, 'Active') <> 'Deactivated'
              LIMIT 1`,
             [username]
         );
@@ -1150,6 +1458,7 @@ exports.getFollowingUsers = async (req, res) => {
                 u.user_id,
                 u.username,
                 u.full_name,
+                u.user_type,
                 u.profile_picture,
                 u.bio,
                 us.created_at AS subscribed_at
@@ -1185,6 +1494,7 @@ exports.getFollowerUsers = async (req, res) => {
                 u.user_id,
                 u.username,
                 u.full_name,
+                u.user_type,
                 u.profile_picture,
                 u.bio,
                 us.created_at AS followed_at
@@ -1242,6 +1552,7 @@ exports.getBlockedUsers = async (req, res) => {
                 u.user_id,
                 u.username,
                 u.full_name,
+                u.user_type,
                 u.profile_picture,
                 u.bio,
                 ub.created_at AS blocked_at
@@ -1256,6 +1567,31 @@ exports.getBlockedUsers = async (req, res) => {
     } catch (error) {
         console.error('Get blocked users error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching blocked users' });
+    }
+};
+
+exports.toggleBlockUser = async (req, res) => {
+    try {
+        const blockerId = req.user.id;
+        const blockedUserId = Number(req.params.id);
+        if (!blockedUserId || blockedUserId === blockerId) {
+            return res.status(400).json({ success: false, message: 'Invalid target' });
+        }
+        await ensureUserBlocksTable();
+        const existing = await pool.query(
+            'SELECT 1 FROM user_blocks WHERE blocker_id = $1 AND blocked_user_id = $2',
+            [blockerId, blockedUserId]
+        );
+        if (existing.rows.length) {
+            await pool.query('DELETE FROM user_blocks WHERE blocker_id = $1 AND blocked_user_id = $2', [blockerId, blockedUserId]);
+            return res.status(200).json({ success: true, blocked: false, message: 'User unblocked' });
+        } else {
+            await pool.query('INSERT INTO user_blocks (blocker_id, blocked_user_id) VALUES ($1, $2)', [blockerId, blockedUserId]);
+            return res.status(200).json({ success: true, blocked: true, message: 'User blocked' });
+        }
+    } catch (error) {
+        console.error('Toggle block error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
     }
 };
 
@@ -1451,5 +1787,51 @@ exports.toggleSubscription = async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error updating subscription' });
     } finally {
         client.release();
+    }
+};
+
+exports.reportUser = async (req, res) => {
+    try {
+        const reportedUserId = Number(req.params.id);
+        const reporterId = req.user.id;
+        const { reason, custom_reason } = req.body;
+
+        if (!reportedUserId || reportedUserId === reporterId) {
+            return res.status(400).json({ success: false, message: 'Invalid report target' });
+        }
+        if (!reason) {
+            return res.status(400).json({ success: false, message: 'Reason is required' });
+        }
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS user_reports (
+                id SERIAL PRIMARY KEY,
+                reported_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                reporter_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                reason VARCHAR(100) NOT NULL,
+                custom_reason TEXT,
+                status VARCHAR(20) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(reported_user_id, reporter_id)
+            )
+        `);
+
+        const existing = await pool.query(
+            'SELECT 1 FROM user_reports WHERE reported_user_id = $1 AND reporter_id = $2',
+            [reportedUserId, reporterId]
+        );
+        if (existing.rows.length) {
+            return res.status(400).json({ success: false, message: 'You have already reported this user' });
+        }
+
+        await pool.query(
+            'INSERT INTO user_reports (reported_user_id, reporter_id, reason, custom_reason) VALUES ($1, $2, $3, $4)',
+            [reportedUserId, reporterId, reason, custom_reason || null]
+        );
+
+        res.status(201).json({ success: true, message: 'Report submitted successfully' });
+    } catch (error) {
+        console.error('Report user error:', error);
+        res.status(500).json({ success: false, message: 'Server error submitting report' });
     }
 };

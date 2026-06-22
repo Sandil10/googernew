@@ -281,13 +281,17 @@ export default function TransactionsPage() {
                 console.error("Error refreshing transactions:", error);
             }
         };
+        const refreshTransactionsIfVisible = () => {
+            if (document.visibilityState === "hidden") return;
+            void refreshTransactions();
+        };
 
-        window.addEventListener("googer-wallet-updated", refreshTransactions);
-        window.addEventListener("focus", refreshTransactions);
+        window.addEventListener("googer-wallet-updated", refreshTransactionsIfVisible);
+        window.addEventListener("focus", refreshTransactionsIfVisible);
 
         return () => {
-            window.removeEventListener("googer-wallet-updated", refreshTransactions);
-            window.removeEventListener("focus", refreshTransactions);
+            window.removeEventListener("googer-wallet-updated", refreshTransactionsIfVisible);
+            window.removeEventListener("focus", refreshTransactionsIfVisible);
         };
     }, []);
 

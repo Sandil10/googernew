@@ -1,8 +1,8 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+import { API_URL } from './apiConfig';
 
 const getToken = () => {
     if (typeof window === 'undefined') return null;
-    try { return localStorage.getItem('token'); } catch { return null; }
+    try { return sessionStorage.getItem('token') || localStorage.getItem('token'); } catch { return null; }
 };
 
 const authHeaders = () => {
@@ -25,6 +25,8 @@ export type SubscriptionPlan = {
     verified_tick: boolean;
     features: string[];
     extra: Record<string, any>;
+    billing_interval_label?: string;
+    test_duration_minutes?: number | null;
     is_active?: boolean;
     sort_order?: number;
 };
@@ -68,6 +70,8 @@ export type UserSubscription = {
     status: 'active' | 'cancelled' | 'expired';
     started_at: string;
     expires_at: string | null;
+    grace_ends_at?: string | null;
+    in_grace_period?: boolean;
     cancelled_at: string | null;
     auto_renew: boolean;
 };
@@ -79,11 +83,11 @@ export const subscriptionService = {
         const data = await res.json();
         return data.subscription || null;
     },
-    subscribe: async (planId: number): Promise<{ subscription: UserSubscription } | { error: string; code?: number }> => {
+    subscribe: async (planId: number, options?: { switchPlan?: boolean }): Promise<{ subscription: UserSubscription } | { error: string; code?: number }> => {
         let res: Response;
         try {
             res = await fetch(`${API_URL}/subscriptions/subscribe`, {
-                method: 'POST', headers: authHeaders(), body: JSON.stringify({ plan_id: planId }),
+                method: 'POST', headers: authHeaders(), body: JSON.stringify({ plan_id: planId, switch_plan: options?.switchPlan === true }),
             });
         } catch (e: any) {
             return { error: `Network error: ${e.message || 'could not reach server'}` };
@@ -183,7 +187,7 @@ export const subscriptionService = {
         }
     },
 
-    getBadgeForUser: async (userId: number | string): Promise<{ color: string } | null> => {
+    getBadgeForUser: async (userId: number | string): Promise<{ color: string; tickColor?: string | null } | null> => {
         try {
             const res = await fetch(`${API_URL}/subscriptions/badge/${userId}`);
             if (!res.ok) return null;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { getItemUsername } from "@/app/lib/userDisplay";
@@ -24,6 +24,17 @@ export function ProfilePromoteCarousel({
   const [profilePromoteIndex, setProfilePromoteIndex] = useState(0);
   const containerRef = useRef<HTMLElement>(null);
   const [isInViewport, setIsInViewport] = useState(false);
+  const visibleCount = Math.max(2, Math.min(4, cardsPerView));
+  const canSlide = ads.length > visibleCount;
+  const visibleAds = useMemo(() => {
+    if (!ads.length) return [];
+    return canSlide
+      ? Array.from({ length: visibleCount }, (_, offset) => ads[(profilePromoteIndex + offset) % ads.length])
+      : ads.slice(0, visibleCount);
+  }, [ads, canSlide, profilePromoteIndex, visibleCount]);
+  const visibleAdsKey = visibleAds
+    .map((profileAd) => String(profileAd?.id || profileAd?.adId || profileAd?.ad_id || ""))
+    .join("|");
 
   // Only log views once the carousel has actually scrolled into the viewport
   useEffect(() => {
@@ -44,17 +55,6 @@ export function ProfilePromoteCarousel({
     setProfilePromoteIndex((current) => (ads.length ? current % ads.length : 0));
   }, [ads.length]);
 
-  if (!ads.length) return null;
-
-  const visibleCount = Math.max(2, Math.min(4, cardsPerView));
-  const canSlide = ads.length > visibleCount;
-  const visibleAds = canSlide
-    ? Array.from({ length: visibleCount }, (_, offset) => ads[(profilePromoteIndex + offset) % ads.length])
-    : ads.slice(0, visibleCount);
-  const visibleAdsKey = visibleAds
-    .map((profileAd) => String(profileAd?.id || profileAd?.adId || profileAd?.ad_id || ""))
-    .join("|");
-
   useEffect(() => {
     if (!visibleAds.length || !isInViewport) return;
     const updateAdState = useAdStore.getState().updateAdState;
@@ -63,11 +63,28 @@ export function ProfilePromoteCarousel({
       const adId = profileAd?.adId || profileAd?.ad_id;
       const viewId = adId ? `ad-${adId}` : String(profileAd?.id || "");
       if (!viewId) return;
-      void marketService.logView(viewId).then((result: any) => {
+      void marketService.logAdImpression(viewId).then((result: any) => {
         if (!result?.success) return;
         updateAdState(profileAd, {
-          views_count: Number(result.impressions || 0),
-          viewCount: Number(result.impressions || 0),
+          impressions: Number(result.impressions ?? profileAd?.impressions ?? profileAd?.impressions_count ?? 0),
+          impressions_count: Number(result.impressions ?? profileAd?.impressions ?? profileAd?.impressions_count ?? 0),
+          current_reach: Number(result.current_reach ?? result.reach ?? profileAd?.current_reach ?? profileAd?.reach ?? 0),
+          reach: Number(result.current_reach ?? result.reach ?? profileAd?.current_reach ?? profileAd?.reach ?? 0),
+        });
+      });
+      void marketService.logView(viewId).then((result: any) => {
+        if (!result?.success) return;
+        const nextViewsCount = Number(
+          result.views_count ??
+          result.viewCount ??
+          result.views ??
+          profileAd?.views_count ??
+          profileAd?.viewCount ??
+          0
+        );
+        updateAdState(profileAd, {
+          views_count: nextViewsCount,
+          viewCount: nextViewsCount,
           current_reach: Number(result.current_reach ?? result.reach ?? 0),
           reach: Number(result.current_reach ?? result.reach ?? 0),
           clicks: Number(result.clicks || result.link_actions || 0),
@@ -78,7 +95,9 @@ export function ProfilePromoteCarousel({
         });
       });
     });
-  }, [visibleAdsKey, isInViewport]);
+  }, [isInViewport, visibleAds, visibleAdsKey]);
+
+  if (!ads.length) return null;
 
   return (
     <article ref={containerRef} className={className}>

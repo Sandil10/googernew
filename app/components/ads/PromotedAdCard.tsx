@@ -7,7 +7,7 @@ import { SharedProductPromoteAdCard } from "@/app/components/ads/SharedProductPr
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
-import { isPhotoVideoPromotableAd } from "@/app/lib/ads/promoteAgain";
+import { isPhotoVideoPromotableAd, isProductPromotableAd } from "@/app/lib/ads/promoteAgain";
 
 type PromotedAdCardProps = {
   ad: any;
@@ -22,7 +22,7 @@ type PromotedAdCardProps = {
   onToggleLike?: (ad: any) => void | Promise<void>;
   onOpenSheet?: (type: any, ad: any) => void;
   onShare?: (ad: any) => void;
-  onLogView?: (ad: any) => void;
+  onLogView?: (ad: any, item?: any) => void;
   onReport?: (ad: any) => void;
   onNotInterested?: (id: string | number) => void;
   onPromoteAgain?: (ad: any) => void | Promise<void>;
@@ -35,9 +35,18 @@ type PromotedAdCardProps = {
   isSaved?: boolean;
   saveAtLimit?: boolean;
   showExpiryWarning?: boolean;
+  allowPhotoVideoPromoteAgain?: boolean;
 };
 
 const EMPTY_OBJECT = {};
+
+function getNormalizedStatus(value: unknown) {
+  return String(value ?? "").trim().toLowerCase().replace(/[_-]+/g, " ");
+}
+
+function isActivePhotoVideoStatus(status: string) {
+  return status === "active" || status === "running" || status === "approved";
+}
 
 export function PromotedAdCard({
   ad,
@@ -65,6 +74,7 @@ export function PromotedAdCard({
   isSaved,
   saveAtLimit,
   showExpiryWarning,
+  allowPhotoVideoPromoteAgain = false,
 }: PromotedAdCardProps) {
   const normalized = normalizeAdData(ad);
   const actionAd = normalized.raw || ad;
@@ -110,10 +120,40 @@ export function PromotedAdCard({
     .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
     .map((v) => String(v));
 
+  const adOwnerNameCandidates: string[] = [
+    normalized.username,
+    normalized.owner_username,
+    (actionAd as any)?.owner_username,
+    (actionAd as any)?.ownerUsername,
+    (actionAd as any)?.username,
+    ad?.owner_username,
+    ad?.ownerUsername,
+    ad?.username,
+    (nestedRawAd as any)?.owner_username,
+    (nestedRawAd as any)?.ownerUsername,
+    (nestedRawAd as any)?.username,
+  ]
+    .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+    .map((v) => String(v).trim().toLowerCase());
+
+  const currentUserNameCandidates: string[] = [
+    currentUser?.username,
+    currentUser?.name,
+    currentUser?.full_name,
+  ]
+    .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+    .map((v) => String(v).trim().toLowerCase());
+
   const isAdOwner =
-    adOwnerCandidates.length > 0 &&
-    currentUserCandidates.length > 0 &&
-    adOwnerCandidates.some((oid) => currentUserCandidates.includes(oid));
+    (
+      adOwnerCandidates.length > 0 &&
+      currentUserCandidates.length > 0 &&
+      adOwnerCandidates.some((oid) => currentUserCandidates.includes(oid))
+    ) || (
+      adOwnerNameCandidates.length > 0 &&
+      currentUserNameCandidates.length > 0 &&
+      adOwnerNameCandidates.some((name) => currentUserNameCandidates.includes(name))
+    );
 
   const guardedCanShowCollectCoin = isAdOwner
     ? () => false
@@ -135,6 +175,8 @@ export function PromotedAdCard({
     ad_like_locked: liveState.ad_like_locked ?? normalized.ad_like_locked ?? liveState.ad_coin_collected ?? normalized.ad_coin_collected,
     viewCount: liveState.views_count ?? liveState.viewCount ?? normalized.viewCount,
     views_count: liveState.views_count ?? liveState.viewCount ?? normalized.views_count,
+    impressions: liveState.impressions ?? liveState.impressions_count ?? normalized.impressions,
+    impressions_count: liveState.impressions ?? liveState.impressions_count ?? normalized.impressions_count,
     commentCount: liveState.comments_count ?? liveState.commentCount ?? normalized.commentCount,
     comments_count: liveState.comments_count ?? liveState.commentCount ?? normalized.comments_count,
     shareCount: liveState.shares_count ?? liveState.shareCount ?? normalized.shareCount,
@@ -149,7 +191,11 @@ export function PromotedAdCard({
   };
   const campaignType = String(merged.campaign_type || merged.campaignType || actionAd?.campaign_type || actionAd?.campaignType || "").trim();
   const isProductPromote = campaignType.toLowerCase() === "product promote";
-  const canPromotePhotoVideoAgain = isAdOwner && isPhotoVideoPromotableAd(merged);
+  const promoteAgainLabel = isAdOwner ? "Promote Again" : "Promote";
+  const photoVideoStatus = getNormalizedStatus(merged.status || actionAd?.status || ad?.status);
+  const isSavedProfilePhotoVideo = source === "profile" && allowPhotoVideoPromoteAgain && isSaved === true && !isActivePhotoVideoStatus(photoVideoStatus);
+  const canPromotePhotoVideoAgain = isAdOwner && isSavedProfilePhotoVideo && isPhotoVideoPromotableAd(merged);
+  const canPromoteProductAgain = isProductPromotableAd(merged);
 
   if (merged.type === "product" || isProductPromote) {
     const hydratedProduct = (normalized.raw as any) || actionAd || ad;
@@ -174,6 +220,36 @@ export function PromotedAdCard({
       raw: hydratedProduct?.raw || hydratedProduct,
       adId: merged.adId || actionAd?.adId || hydratedProduct?.adId,
       ad_id: merged.ad_id || actionAd?.ad_id || hydratedProduct?.ad_id,
+      productId:
+        hydratedProduct?.productId ??
+        hydratedProduct?.product_id ??
+        hydratedProduct?.linked_product_id ??
+        merged.productId ??
+        merged.product_id ??
+        merged.linked_product_id,
+      product_id:
+        hydratedProduct?.product_id ??
+        hydratedProduct?.productId ??
+        hydratedProduct?.linked_product_id ??
+        merged.product_id ??
+        merged.productId ??
+        merged.linked_product_id,
+      linked_product_id:
+        hydratedProduct?.linked_product_id ??
+        hydratedProduct?.product_id ??
+        hydratedProduct?.productId ??
+        merged.linked_product_id ??
+        merged.product_id ??
+        merged.productId,
+      linkedProductId:
+        hydratedProduct?.linkedProductId ??
+        hydratedProduct?.linked_product_id ??
+        hydratedProduct?.productId ??
+        hydratedProduct?.product_id ??
+        merged.linkedProductId ??
+        merged.linked_product_id ??
+        merged.productId ??
+        merged.product_id,
       campaign_type: merged.campaign_type || campaignType,
       is_sponsored: true,
       user_liked: merged.user_liked,
@@ -184,6 +260,7 @@ export function PromotedAdCard({
       ad_coin_collected: merged.ad_coin_collected,
       ad_like_locked: !!(merged.ad_like_locked ?? merged.ad_coin_collected),
     };
+    const productAdViewId = productItem.adId || productItem.ad_id || merged.adId || merged.ad_id || merged.id;
 
     return (
       <SharedProductPromoteAdCard
@@ -193,12 +270,14 @@ export function PromotedAdCard({
         onToggleLike={onToggleLike || (() => {})}
         onOpenSheet={onOpenSheet || (() => {})}
         onShare={onShare || (() => {})}
-        onLogView={() => onLogView?.(merged.raw || merged)}
+        onLogView={() => onLogView?.(`ad-${String(productAdViewId).replace(/^ad-/, "")}`, productItem)}
         onReport={onReport || (() => {})}
         onNotInterested={onNotInterested || (() => {})}
         onCollectCoin={onCollectCoin || (() => {})}
         canShowCollectCoin={guardedCanShowCollectCoin || (() => false)}
         onNavigateToProfile={(event) => onNavigateToProfile?.(event, actionAd.user_id)}
+        onPromoteAgain={canPromoteProductAgain ? onPromoteAgain : undefined}
+        promoteAgainLabel={promoteAgainLabel}
         currentUser={currentUser}
         compact={compact}
       />
@@ -230,6 +309,7 @@ export function PromotedAdCard({
       onReport={onReport || (() => {})}
       onNotInterested={onNotInterested || (() => {})}
       onPromoteAgain={canPromotePhotoVideoAgain ? onPromoteAgain : undefined}
+      promoteAgainLabel={promoteAgainLabel}
       onCollectCoin={onCollectCoin || (() => {})}
       onNavigateToProfile={onNavigateToProfile || (() => {})}
       canShowCollectCoin={guardedCanShowCollectCoin || (() => false)}

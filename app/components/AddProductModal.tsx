@@ -209,6 +209,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
     });
 
     const [variants, setVariants] = useState<any[]>([]);
+    const activeVariantIndex = uploadMode === 'single' ? 0 : activeImageIndex;
 
     useEffect(() => {
         // ALWAYS reset states when initialData changes to avoid leakage from previous products
@@ -298,6 +299,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                     setVariants(variantsData.map((v: any) => {
                         const raw = v.selections || (v.selection ? [{ value: v.selection, stock: v.stock || "" }] : []);
                         return {
+                            ...v,
                             promo_price: v.promo_price || "",
                             type: v.type || "Size",
                             selections: raw.map((s: any) => ({
@@ -1039,15 +1041,28 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
     const assignColorToActiveImage = (colorName: string) => {
         if (variants.length === 0) return;
         const newColors = [...imageColors];
+        const colorCount = Math.max(previews.length, variants.length, newColors.length, 1);
 
         if (uploadMode === 'single') {
             // Apply to all in single mode
-            newColors.fill(colorName);
+            for (let i = 0; i < colorCount; i += 1) {
+                newColors[i] = colorName;
+            }
         } else {
             newColors[activeImageIndex] = colorName;
         }
 
         setImageColors(newColors);
+        setVariants(prev => {
+            if (!Array.isArray(prev) || prev.length === 0) return prev;
+            const next = [...prev];
+            const targetIdx = uploadMode === 'single' ? 0 : activeImageIndex;
+            if (uploadMode === 'single') {
+                return next.map(variant => ({ ...(variant || {}), color: colorName }));
+            }
+            next[targetIdx] = { ...(next[targetIdx] || {}), color: colorName };
+            return next;
+        });
     };
 
     const handleVariantChange = (index: number, field: string, value: string) => {
@@ -1245,25 +1260,27 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             const submissionVariants = previews.map((preview, i) => {
                 const v = variants[i] || {};
                 return {
-                    color: imageColors[i] || "None",
+                    ...v,
+                    color: imageColors[i] || v.color || "None",
                     index: i,
                     image_url: preview || null,
                     media_type: mediaTypes[i] || "image",
                     video_url: videoUrls[i] || null,
-                    ...v
                 };
             });
             data.append('variants_data', JSON.stringify(submissionVariants));
 
-            // Multiple Images (only real files)
+            // Multiple media files. Existing URLs are kept in variants_data; only new local files are uploaded.
             if (selectedImages.length > 0) {
                 selectedImages.forEach((item, index) => {
                     const needsUpload =
-                        mediaTypes[index] === "video" &&
-                        videoUrls[index] &&
-                        videoUrls[index]?.startsWith("blob:");
+                        item instanceof File &&
+                        (
+                            (mediaTypes[index] === "image" && previews[index]?.startsWith("data:")) ||
+                            (mediaTypes[index] === "video" && !!videoUrls[index]?.startsWith("blob:"))
+                        );
 
-                    if (needsUpload && item instanceof File) {
+                    if (needsUpload) {
                         data.append('images', item);
                     }
                 });
@@ -1759,7 +1776,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
 
                         {/* Variant Details: Integrated Image Picker Workflow */}
-                        {variants[uploadMode === 'single' ? 0 : activeImageIndex] && (
+                        {variants[activeVariantIndex] && (
                             <div id="field-variants" className="p-6 rounded-[2.5rem] bg-white/[0.03] border border-white/10 flex flex-col gap-6 shadow-2xl backdrop-blur-sm animate-in fade-in slide-in-from-top-4 duration-500">
                                 <div className="flex flex-col gap-3">
                                     <div className="flex items-center justify-between mb-2">
@@ -1795,14 +1812,14 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             </div>
                                         </div>
                                         <div className="flex gap-1">
-                                            {(variants[uploadMode === 'single' ? 0 : activeImageIndex]?.selections || []).slice(0, 3).map((s: any, idx: number) => (
+                                            {(variants[activeVariantIndex]?.selections || []).slice(0, 3).map((s: any, idx: number) => (
                                                 <div key={idx} className="w-6 h-6 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center text-[8px] font-bold text-blue-400">
                                                     {s.value.substring(0, 2)}
                                                 </div>
                                             ))}
-                                            {(variants[uploadMode === 'single' ? 0 : activeImageIndex]?.selections || []).length > 3 && (
+                                            {(variants[activeVariantIndex]?.selections || []).length > 3 && (
                                                 <div className="w-6 h-6 rounded-lg bg-slate-800 border border-white/10 flex items-center justify-center text-[8px] font-bold text-slate-400/80">
-                                                    +{(variants[uploadMode === 'single' ? 0 : activeImageIndex]?.selections || []).length - 3}
+                                                    +{(variants[activeVariantIndex]?.selections || []).length - 3}
                                                 </div>
                                             )}
                                         </div>
@@ -1870,8 +1887,8 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             </label>
                                         <input
                                             type="number"
-                                            value={variants[activeImageIndex]?.promo_price || ""}
-                                            onChange={(e) => handleVariantChange(activeImageIndex, 'promo_price', e.target.value)}
+                                            value={variants[activeVariantIndex]?.promo_price || ""}
+                                            onChange={(e) => handleVariantChange(activeVariantIndex, 'promo_price', e.target.value)}
                                             className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white mt-1 focus:ring-1 focus:ring-white outline-none transition-all placeholder:text-white/40"
                                                 placeholder="Example: 599.00 (Promo Price Box)"
                                                 onKeyPress={(e) => {
@@ -1907,7 +1924,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
 
                                     {/* Selection List with Individual Stock (STOCK ALWAYS VISIBLE - Point 4) */}
                                     <div className="flex flex-col gap-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                                        {(variants[uploadMode === 'single' ? 0 : activeImageIndex]?.selections || []).map((sel: any, sIdx: number) => (
+                                        {(variants[activeVariantIndex]?.selections || []).map((sel: any, sIdx: number) => (
                                             <div key={sIdx} className="flex flex-col gap-2 bg-black/40 border border-white/5 p-4 rounded-2xl animate-in slide-in-from-right-4 duration-300">
                                                 <div className="flex items-center justify-between">
                                                     <div className="flex flex-col">
@@ -1920,7 +1937,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                         type="button"
                                                         onClick={() => {
                                                             const newVariants = [...variants];
-                                                            const targetIdx = uploadMode === 'single' ? 0 : activeImageIndex;
+                                                            const targetIdx = activeVariantIndex;
                                                             newVariants[targetIdx].selections = newVariants[targetIdx].selections.filter((_: any, i: number) => i !== sIdx);
                                                             setVariants(newVariants);
                                                         }}
@@ -1939,7 +1956,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                                 value={sel.detail || ""}
                                                                 onChange={(e) => {
                                                                     let newVariants = [...variants];
-                                                                    const targetIdx = activeImageIndex;
+                                                                    const targetIdx = activeVariantIndex;
                                                                     if (uploadMode === 'single') {
                                                                         newVariants = newVariants.map(v => {
                                                                             if (v.selections && v.selections[sIdx]) {
@@ -1973,7 +1990,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                                 value={sel.stock}
                                                                 onChange={(e) => {
                                                                     let newVariants = [...variants];
-                                                                    const targetIdx = activeImageIndex;
+                                                                    const targetIdx = activeVariantIndex;
                                                                     if (uploadMode === 'single') {
                                                                         newVariants = newVariants.map(v => {
                                                                             if (v.selections && v.selections[sIdx]) {
@@ -2007,17 +2024,17 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     </div>
 
                                     {/* Point 5: Clickable summary chips for selected variants */}
-                                    {(variants[activeImageIndex]?.selections || []).length > 0 && (
+                                    {(variants[activeVariantIndex]?.selections || []).length > 0 && (
                                         <div className="mt-4 border-t border-white/5 pt-4">
                                             <span className="text-[8px] font-black text-slate-400/80 uppercase tracking-widest block mb-2">Applied Variants Summary</span>
                                             <div className="flex flex-wrap gap-2">
-                                                {(variants[activeImageIndex]?.selections || []).map((sel: any, sIdx: number) => (
+                                                {(variants[activeVariantIndex]?.selections || []).map((sel: any, sIdx: number) => (
                                                     <div
                                                         key={sIdx}
                                                         onClick={(e) => {
                                                             e.stopPropagation();
                                                             const newVariants = [...variants];
-                                                            const targetIdx = activeImageIndex;
+                                                            const targetIdx = activeVariantIndex;
                                                             newVariants[targetIdx].selections = newVariants[targetIdx].selections.filter((_: any, idx: number) => idx !== sIdx);
                                                             setVariants(newVariants);
                                                         }}
@@ -2904,7 +2921,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                             } else if (openPicker?.type === 'variant') {
                                                 const isUOM = openPicker.title.includes('UOM');
                                                 const newVariants = [...variants];
-                                                const targetIdx = activeImageIndex;
+                                                const targetIdx = activeVariantIndex;
                                                 const currentSelections = newVariants[targetIdx]?.selections || [];
 
                                                 // Ensure uniqueness
@@ -2919,6 +2936,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                 }));
                                                 newVariants[targetIdx] = {
                                                     ...newVariants[targetIdx],
+                                                    color: imageColors[targetIdx] || newVariants[targetIdx]?.color || "None",
                                                     selections: [...currentSelections, ...newSelections],
                                                     type: isUOM ? 'UOM' : 'Size'
                                                 };

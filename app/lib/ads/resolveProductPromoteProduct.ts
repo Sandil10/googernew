@@ -91,14 +91,18 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
   const adShareCode = String(source?.shareCode || source?.share_code || "").trim();
   const productShareCode = String(realProduct?.shareCode || realProduct?.share_code || realProduct?.product_code || "").trim();
   const shareCode = adShareCode || productShareCode;
+  const productFirstSource = {
+    ...source,
+    ...realProduct,
+  };
 
   const resolvedProduct = normalizeProductAd({
-    ...realProduct,
-    id: realProduct?.id ?? resolvedId,
-    product_id: realProduct?.product_id ?? resolvedId,
-    linked_product_id: realProduct?.linked_product_id ?? resolvedId,
-    linked_product_share_code: realProduct?.linked_product_share_code ?? realProduct?.product_code ?? source?.linked_product_share_code,
-    linked_product_code: realProduct?.linked_product_code ?? realProduct?.product_code ?? source?.linked_product_code,
+    ...productFirstSource,
+    id: productFirstSource?.id ?? realProduct?.id ?? resolvedId,
+    product_id: productFirstSource?.product_id ?? realProduct?.product_id ?? resolvedId,
+    linked_product_id: productFirstSource?.linked_product_id ?? realProduct?.linked_product_id ?? resolvedId,
+    linked_product_share_code: productFirstSource?.linked_product_share_code ?? realProduct?.product_code ?? source?.linked_product_share_code,
+    linked_product_code: productFirstSource?.linked_product_code ?? realProduct?.product_code ?? source?.linked_product_code,
     shareCode: shareCode || productShareCode || resolvedId,
     share_code: shareCode || productShareCode || resolvedId,
     is_sponsored: true,
@@ -113,8 +117,8 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
     adId: source?.adId || source?.ad_id || adId,
     ad_id: source?.ad_id || source?.adId || adId,
     raw: {
-      ...(realProduct?.raw || realProduct || {}),
       ...source,
+      ...(realProduct?.raw || realProduct || {}),
       id: realProduct?.id ?? resolvedId,
       product_id: realProduct?.id ?? resolvedId,
       linked_product_id: realProduct?.id ?? resolvedId,

@@ -1,6 +1,34 @@
 const pool = require('../config/database');
+const { getGraceDurationSeconds, getPlanIntervalLabel, getTestDurationMinutes } = require('../utils/subscriptionRenewal');
 
 let tableReady = false;
+let tableReadyPromise = null;
+const PUBLIC_PLANS_CACHE_TTL_MS = Math.max(
+    0,
+    Number.parseInt(process.env.PUBLIC_SUBSCRIPTION_PLANS_CONTROLLER_CACHE_TTL_MS || '30000', 10) || 30000
+);
+let publicPlansCache = null;
+
+const getCachedPublicPlans = () => {
+    if (!publicPlansCache) return null;
+    if (publicPlansCache.expiresAt <= Date.now()) {
+        publicPlansCache = null;
+        return null;
+    }
+    return publicPlansCache.payload;
+};
+
+const setCachedPublicPlans = (payload) => {
+    if (PUBLIC_PLANS_CACHE_TTL_MS <= 0) return;
+    publicPlansCache = {
+        payload,
+        expiresAt: Date.now() + PUBLIC_PLANS_CACHE_TTL_MS,
+    };
+};
+
+const invalidatePublicPlansCache = () => {
+    publicPlansCache = null;
+};
 
 // Rebuild auto-generated feature lines from extra limit fields.
 // Manual features (not matching known auto patterns) are preserved.
@@ -19,7 +47,9 @@ const syncAutoFeatures = (features = [], extra = {}) => {
 
 const ensureTable = async () => {
     if (tableReady) return;
+    if (tableReadyPromise) return tableReadyPromise;
 
+    tableReadyPromise = (async () => {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS subscription_plans (
             id              SERIAL PRIMARY KEY,
@@ -63,7 +93,7 @@ const ensureTable = async () => {
              features, extra, is_active, is_free, is_default, sort_order)
          VALUES ('basic', 'Basic', 0, 0, 'silver', 'zinc', 5, FALSE,
                  '["Write goog (up to 5)", "Goog letter limit – 75 characters", "🔻 Product Upload Limit – 15"]'::jsonb,
-                 '{"write_goog_limit":5,"product_upload_limit":15,"goog_letter_limit":75,"ads_expiry_days":30,"text_messaging":true,"voice_calls":true,"video_calls":false,"chat_auto_delete_24h":true}'::jsonb,
+                 '{"write_goog_limit":5,"product_upload_limit":15,"goog_letter_limit":75,"content_upload_limit":5,"content_daily_upload_limit":1,"content_video_limit_minutes":1,"ads_expiry_days":30,"text_messaging":true,"voice_calls":true,"video_calls":false,"chat_auto_delete_24h":true}'::jsonb,
                  TRUE, TRUE, TRUE, 0)
          ON CONFLICT (slug) DO UPDATE SET
              is_default = TRUE,
@@ -74,7 +104,25 @@ const ensureTable = async () => {
              updated_at = NOW()`
     );
 
+    await pool.query(`
+        UPDATE subscription_plans
+        SET extra = COALESCE(extra, '{}'::jsonb)
+            || CASE WHEN extra->>'content_upload_limit' IS NULL THEN jsonb_build_object('content_upload_limit', CASE WHEN is_default OR slug = 'basic' THEN 5 WHEN slug = 'package-1' THEN 15 WHEN slug = 'package-2' THEN 30 WHEN slug = 'package-3' THEN 50 ELSE 15 END) ELSE '{}'::jsonb END
+            || CASE WHEN extra->>'content_daily_upload_limit' IS NULL THEN jsonb_build_object('content_daily_upload_limit', CASE WHEN is_default OR slug = 'basic' THEN 1 WHEN slug = 'package-1' THEN 3 WHEN slug = 'package-2' THEN 5 WHEN slug = 'package-3' THEN 10 ELSE 3 END) ELSE '{}'::jsonb END
+            || CASE WHEN extra->>'content_video_limit_minutes' IS NULL THEN jsonb_build_object('content_video_limit_minutes', CASE WHEN is_default OR slug = 'basic' THEN 1 WHEN slug = 'package-1' THEN 5 WHEN slug = 'package-2' THEN 10 WHEN slug = 'package-3' THEN 20 ELSE 5 END) ELSE '{}'::jsonb END,
+            updated_at = NOW()
+        WHERE extra->>'content_upload_limit' IS NULL
+           OR extra->>'content_daily_upload_limit' IS NULL
+           OR extra->>'content_video_limit_minutes' IS NULL
+    `);
+
     tableReady = true;
+    })();
+    try {
+        await tableReadyPromise;
+    } finally {
+        tableReadyPromise = null;
+    }
 };
 
 exports.getMyPlan = async (req, res) => {
@@ -90,9 +138,9 @@ exports.getMyPlan = async (req, res) => {
              FROM user_plan_subscriptions ups
              JOIN subscription_plans sp ON sp.id = ups.plan_id
              WHERE ups.user_id = $1 AND ups.status = 'active'
-               AND (ups.expires_at IS NULL OR ups.expires_at > NOW())
+               AND (ups.expires_at IS NULL OR ups.expires_at + (($2::text || ' seconds')::interval) > NOW())
              ORDER BY ups.started_at DESC LIMIT 1`,
-            [userId]
+            [userId, getGraceDurationSeconds()]
         );
 
         if (rows.length > 0) {
@@ -117,6 +165,10 @@ exports.getMyPlan = async (req, res) => {
 exports.getPublicPlans = async (req, res) => {
     try {
         await ensureTable();
+        const cached = getCachedPublicPlans();
+        if (cached) {
+            return res.status(200).json(cached);
+        }
         const { rows } = await pool.query(
             `SELECT id, slug, name, price, duration_days, badge_color, accent_color,
                     googs_limit, verified_tick, features, extra, sort_order
@@ -124,7 +176,16 @@ exports.getPublicPlans = async (req, res) => {
              WHERE is_active = TRUE AND is_free = FALSE
              ORDER BY sort_order ASC, price ASC`
         );
-        return res.status(200).json({ success: true, plans: rows });
+        const payload = {
+            success: true,
+            plans: rows.map((plan) => ({
+                ...plan,
+                billing_interval_label: getPlanIntervalLabel(plan),
+                test_duration_minutes: getTestDurationMinutes() || null,
+            })),
+        };
+        setCachedPublicPlans(payload);
+        return res.status(200).json(payload);
     } catch (err) {
         console.error('[subscriptionPlans] getPublicPlans error:', err);
         return res.status(500).json({ success: false, message: 'Failed to fetch subscription plans' });
@@ -173,6 +234,7 @@ exports.createPlan = async (req, res) => {
                 is_active ?? true, is_free ?? false, sort_order ?? 0,
             ]
         );
+        invalidatePublicPlansCache();
         return res.status(201).json({ success: true, plan: rows[0] });
     } catch (err) {
         console.error('[subscriptionPlans] createPlan error:', err);
@@ -232,6 +294,7 @@ exports.updatePlan = async (req, res) => {
         );
 
         if (rows.length === 0) return res.status(404).json({ success: false, message: 'Plan not found' });
+        invalidatePublicPlansCache();
         return res.status(200).json({ success: true, plan: rows[0] });
     } catch (err) {
         console.error('[subscriptionPlans] updatePlan error:', err);
@@ -263,6 +326,7 @@ exports.deletePlan = async (req, res) => {
         }
 
         await client.query('COMMIT');
+        invalidatePublicPlansCache();
         return res.status(200).json({ success: true, subscriptions_cancelled: cancelled.rowCount });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});

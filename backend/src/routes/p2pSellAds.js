@@ -91,22 +91,45 @@ const ensureTable = async () => {
     await pool.query(`ALTER TABLE p2p_sell_transactions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE p2p_sell_transactions ADD COLUMN IF NOT EXISTS receive_currency TEXT`);
     await pool.query(`ALTER TABLE p2p_sell_transactions ADD COLUMN IF NOT EXISTS buyer_fields JSONB NOT NULL DEFAULT '[]'`);
+    await pool.query(`ALTER TABLE p2p_sell_transactions ADD COLUMN IF NOT EXISTS buyer_report_reason TEXT`);
+    await pool.query(`ALTER TABLE p2p_sell_transactions ADD COLUMN IF NOT EXISTS buyer_reported_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE p2p_sell_transactions ADD COLUMN IF NOT EXISTS seller_report_reason TEXT`);
+    await pool.query(`ALTER TABLE p2p_sell_transactions ADD COLUMN IF NOT EXISTS seller_reported_at TIMESTAMPTZ`);
+    // Disable any database-level auto-cancel triggers so transactions only cancel on explicit user action
+    await pool.query(`
+        DO $$ BEGIN
+            DROP TRIGGER IF EXISTS auto_cancel_pending ON p2p_sell_transactions;
+            DROP TRIGGER IF EXISTS cancel_expired_transactions ON p2p_sell_transactions;
+            DROP TRIGGER IF EXISTS expire_pending_transactions ON p2p_sell_transactions;
+            DROP TRIGGER IF EXISTS auto_expire_p2p_sell_transactions ON p2p_sell_transactions;
+        END $$;
+    `).catch(() => {});
+    await pool.query(`
+        DO $$ BEGIN
+            PERFORM cron.unschedule(jobname) FROM cron.job
+            WHERE jobname ILIKE '%p2p%sell%cancel%' OR jobname ILIKE '%p2p%sell%expire%'
+               OR command ILIKE '%p2p_sell_transactions%cancel%';
+        END $$;
+    `).catch(() => {});
 };
 
 const resolveUserId = (req) => req.user.id || req.user.userId;
 
+const USED_AMOUNT_SQL = `
+    COALESCE((
+        SELECT SUM(t.amount)
+        FROM p2p_sell_transactions t
+        WHERE t.ad_id = a.id
+          AND t.status IN ('pending', 'completed')
+    ), 0)
+`;
+const AVAILABLE_AMOUNT_SQL = `GREATEST(a.max_amount - ${USED_AMOUNT_SQL}, 0)`;
+
 const getAdAvailability = async (adId) => pool.query(`
     SELECT a.user_id, a.min_amount, a.max_amount,
-           GREATEST(
-               a.max_amount - COALESCE((
-                   SELECT SUM(t.amount)
-                   FROM p2p_sell_transactions t
-                   WHERE t.ad_id = a.id
-                     AND t.status IN ('pending', 'completed')
-               ), 0),
-               0
-           ) AS available_amount
+           ${AVAILABLE_AMOUNT_SQL} AS available_amount
     FROM p2p_sell_ads a
+    JOIN users u ON u.id = a.user_id
     WHERE a.id=$1
 `, [adId]);
 
@@ -171,46 +194,6 @@ router.get('/', authMiddleware, async (req, res) => {
         await ensureTable();
         const requesterId = resolveUserId(req);
         await pool.query(`DELETE FROM p2p_sell_active_buyers WHERE created_at < NOW() - INTERVAL '25 seconds'`);
-        // Auto-expire only truly unsubmitted sell transactions after the ad's release time.
-        // A seller can submit either a transaction ID or a screenshot, so both must be empty.
-        const stalePending = await pool.query(`
-            SELECT t.id, t.buyer_id, t.amount
-            FROM p2p_sell_transactions t
-            JOIN p2p_sell_ads a ON a.id = t.ad_id
-            WHERE t.status = 'pending'
-              AND NULLIF(t.tx_id, '') IS NULL
-              AND NULLIF(t.screenshot_data, '') IS NULL
-              AND NULLIF(t.screenshot_name, '') IS NULL
-              AND (
-                  CASE
-                      WHEN a.release_value ~ '^[0-9]+(\\.[0-9]+)?$' THEN a.release_value::double precision
-                      ELSE 0
-                  END
-              ) > 0
-              AND t.created_at + (
-                  (
-                      CASE
-                          WHEN a.release_value ~ '^[0-9]+(\\.[0-9]+)?$' THEN a.release_value::double precision
-                          ELSE 0
-                      END
-                  ) *
-                  CASE
-                      WHEN a.release_unit = 's' THEN INTERVAL '1 second'
-                      WHEN a.release_unit = 'min' THEN INTERVAL '1 minute'
-                      ELSE INTERVAL '1 hour'
-                  END
-              ) < NOW()
-        `);
-        for (const row of stalePending.rows) {
-            const hold = parseFloat(row.amount) || 0;
-            if (hold > 0) {
-                await pool.query(
-                    'UPDATE users SET hold_balance = GREATEST(hold_balance - $1, 0), wallet_balance = wallet_balance + $1 WHERE id = $2',
-                    [hold, row.buyer_id]
-                );
-            }
-            await pool.query("UPDATE p2p_sell_transactions SET status='cancelled' WHERE id=$1", [row.id]);
-        }
         const result = await pool.query(`
             SELECT a.*,
                    u.username, u.profile_picture, u.full_name,
@@ -219,19 +202,19 @@ router.get('/', authMiddleware, async (req, res) => {
                        SELECT 1 FROM p2p_sell_transactions t
                        WHERE t.ad_id = a.id AND t.status = 'pending'
                    ) AS is_locked,
-                   GREATEST(
-                       a.max_amount - COALESCE((
-                           SELECT SUM(t.amount)
-                           FROM p2p_sell_transactions t
-                           WHERE t.ad_id = a.id
-                             AND t.status IN ('pending', 'completed')
-                       ), 0),
-                       0
-                   ) AS available_amount
+                   ${AVAILABLE_AMOUNT_SQL} AS available_amount,
+                   (u.wallet_balance < ${AVAILABLE_AMOUNT_SQL}) AS is_inactive
             FROM p2p_sell_ads a
             JOIN users u ON u.id = a.user_id
             LEFT JOIN p2p_sell_active_buyers ab ON ab.ad_id = a.id
-            GROUP BY a.id, u.username, u.profile_picture, u.full_name
+            WHERE a.user_id = $1
+               OR u.wallet_balance >= ${AVAILABLE_AMOUNT_SQL}
+               OR EXISTS (
+                   SELECT 1 FROM p2p_sell_transactions mine
+                   WHERE mine.ad_id = a.id
+                     AND (mine.buyer_id = $1 OR mine.seller_id = $1)
+               )
+            GROUP BY a.id, u.username, u.profile_picture, u.full_name, u.wallet_balance
             ORDER BY a.created_at DESC
         `, [requesterId]);
         res.json({ success: true, ads: result.rows });
@@ -297,6 +280,40 @@ router.get('/transactions/:transactionId', authMiddleware, async (req, res) => {
     } catch (err) {
         console.error('GET /p2p-sell-ads/transactions/:id error:', err);
         res.status(500).json({ success: false, message: 'Failed to fetch transaction.' });
+    }
+});
+
+router.post('/transactions/:transactionId/report', authMiddleware, async (req, res) => {
+    try {
+        await ensureTable();
+        const userId = resolveUserId(req);
+        const transactionId = parseInt(req.params.transactionId, 10);
+        const reason = String(req.body?.reason || '').trim().slice(0, 500);
+        if (isNaN(transactionId)) return res.status(400).json({ success: false, message: 'Invalid transaction ID.' });
+        if (!reason) return res.status(400).json({ success: false, message: 'Report reason is required.' });
+
+        const txRow = await pool.query(
+            `SELECT * FROM p2p_sell_transactions
+             WHERE id=$1
+               AND status IN ('pending', 'completed')
+               AND (buyer_id=$2 OR seller_id=$2)`,
+            [transactionId, userId]
+        );
+        if (!txRow.rows.length) return res.status(404).json({ success: false, message: 'Transaction not found.' });
+
+        const tx = txRow.rows[0];
+        const isBuyer = String(tx.buyer_id) === String(userId);
+        const reasonColumn = isBuyer ? 'buyer_report_reason' : 'seller_report_reason';
+        const timeColumn = isBuyer ? 'buyer_reported_at' : 'seller_reported_at';
+        const result = await pool.query(
+            `UPDATE p2p_sell_transactions SET ${reasonColumn}=$1, ${timeColumn}=NOW() WHERE id=$2 RETURNING *`,
+            [reason, transactionId]
+        );
+
+        res.json({ success: true, transaction: result.rows[0] });
+    } catch (err) {
+        console.error('POST /p2p-sell-ads/transactions/:transactionId/report error:', err);
+        res.status(500).json({ success: false, message: 'Failed to submit report.' });
     }
 });
 
@@ -374,6 +391,10 @@ router.post('/transactions/:transactionId/confirm', authMiddleware, async (req, 
                 'UPDATE users SET hold_balance = GREATEST(hold_balance - $1, 0) WHERE id = $2',
                 [holdAmount, tx.buyer_id]
             );
+            await client.query(
+                'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
+                [holdAmount, tx.seller_id]
+            );
         }
 
         const txResult = await client.query(
@@ -432,6 +453,21 @@ router.post('/:id/start', authMiddleware, async (req, res) => {
         if (requestedAmount > buyerBalance) {
             await client.query('ROLLBACK');
             return res.status(400).json({ success: false, message: 'Insufficient wallet balance.' });
+        }
+
+        const sellerRow = await client.query(
+            'SELECT wallet_balance FROM users WHERE id=$1 FOR UPDATE',
+            [adRow.rows[0].user_id]
+        );
+        const sellerBalance = parseFloat(sellerRow.rows[0]?.wallet_balance || 0);
+        const requiredAvailableBalance = Number(adRow.rows[0].available_amount) || 0;
+        if (sellerBalance < requiredAvailableBalance) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, message: 'Seller ad is inactive due to insufficient balance.' });
+        }
+        if (requestedAmount > sellerBalance) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, message: 'Seller has insufficient balance for this trade.' });
         }
 
         if (requestedAmount > 0) {

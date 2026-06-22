@@ -103,7 +103,9 @@ export function normalizeAdData(ad: any): NormalizedAd {
   ).replace(/^ad-/, "");
 
   // Media
-  const image = firstPresent(ad.image_url, ad.media_preview, ad.image, ad.thumbnail);
+  const image = type === "photo" || type === "video"
+    ? firstPresent(ad.media_preview, ad.image, ad.thumbnail, ad.image_url)
+    : firstPresent(ad.image_url, ad.media_preview, ad.image, ad.thumbnail);
   const video = ad.video_url || ad.video || (type === "video" ? ad.media_preview : undefined);
 
   // Advertiser/user metadata
@@ -150,6 +152,7 @@ export function normalizeAdData(ad: any): NormalizedAd {
   const ctaTopic = firstPresent(ad.cta_topic, ad.ctaTopic);
   const ctaValue = firstPresent(ad.cta_value, ad.ctaValue);
   const draft = safeParse(ad.editDraft || ad.edit_draft) || {};
+  const carryOverViews = Number(draft?.carryOverViews ?? draft?.carry_over_views ?? 0);
   const title = resolveAdDisplayTitle(ad, draft, ad.campaign_type || ad.campaignType);
   const description = firstPresent(ad.description, draft.description, ad.caption, draft.caption, title);
   const price = numberOrUndefined(ad.price ?? ad.main_price ?? ad.product_price);
@@ -160,7 +163,9 @@ export function normalizeAdData(ad: any): NormalizedAd {
   const likeCount = Number(ad.likes_count ?? ad.likeCount ?? ad.likes ?? 0);
   const commentCount = Number(ad.comments_count ?? ad.commentCount ?? ad.comments ?? 0);
   const shareCount = Number(ad.shares_count ?? ad.shareCount ?? ad.shares ?? 0);
-  const viewCount = Number(ad.views_count ?? ad.viewCount ?? ad.views ?? ad.impressions ?? 0);
+  const baseViewCount = Number(ad.views_count ?? ad.viewCount ?? ad.views ?? 0);
+  const viewCount = baseViewCount + (Number.isFinite(carryOverViews) ? Math.max(0, carryOverViews) : 0);
+  const impressions = Number(ad.impressions ?? ad.impressions_count ?? ad.impressionsCount ?? 0);
   const reachCount = Number(ad.current_reach ?? ad.reach ?? 0);
   const clickCount = Number(ad.clicks ?? ad.link_actions ?? 0);
   const messageClicks = Number(ad.message_clicks ?? 0);
@@ -213,6 +218,8 @@ export function normalizeAdData(ad: any): NormalizedAd {
     shares_count: shareCount,
     viewCount,
     views_count: viewCount,
+    impressions,
+    impressions_count: impressions,
     current_reach: reachCount,
     reach: reachCount,
     clicks: clickCount,
@@ -250,6 +257,8 @@ export function normalizeAdData(ad: any): NormalizedAd {
       shareCount,
       views_count: viewCount,
       viewCount,
+      impressions,
+      impressions_count: impressions,
       current_reach: reachCount,
       reach: reachCount,
       clicks: clickCount,

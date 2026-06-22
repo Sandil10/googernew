@@ -16,6 +16,9 @@ type AdHistoryRow = {
     adId: string;
     displayAdId: string;
     campaignType: string;
+    profileUsername?: string;
+    ownerUsername?: string;
+    profilePicture?: string | null;
     createdAt: string;
     publishedAt?: string | null;
     ownerKey?: string;
@@ -26,7 +29,7 @@ type AdHistoryRow = {
     description?: string;
     mediaPreview?: string;
     mediaGallery?: string[];
-    mediaType?: "image" | "video" | "link" | "";
+    mediaType?: "image" | "video" | "link" | "profile" | "";
     genderTarget?: string;
     ageMin?: number;
     ageMax?: number;
@@ -35,6 +38,7 @@ type AdHistoryRow = {
     estimatedReachMin?: number | null;
     estimatedReachMax?: number | null;
     maxReachCap?: number | null;
+    views?: number;
     impressions?: number;
     clicks?: number;
     spend?: number;
@@ -65,6 +69,7 @@ const STATUS_FILTERS: Array<{ label: StatusFilter; slug: string; icon: string }>
 ];
 
 const VALID_STATUSES: AdStatus[] = ["Under Review", "Active", "Paused", "Removed", "Completed", "Expired", "Cancelled"];
+const SRI_LANKA_TIME_ZONE = "Asia/Colombo";
 
 
 function supportsRemainingBudgetRefund(campaignType: string) {
@@ -99,6 +104,15 @@ function normalizeApiAds(input: any[]) {
             adId: typeof data.adId === "string" ? data.adId : "",
             displayAdId: typeof data.adId === "string" ? data.adId.slice(-10) : "",
             campaignType: typeof data.campaignType === "string" ? data.campaignType : "Ad Campaign",
+            profileUsername: typeof data.profileUsername === "string"
+                ? data.profileUsername
+                : (typeof data.editDraft?.profileUsername === "string" ? data.editDraft.profileUsername : undefined),
+            ownerUsername: typeof data.ownerUsername === "string"
+                ? data.ownerUsername
+                : (typeof data.user?.username === "string" ? data.user.username : undefined),
+            profilePicture: typeof data.profilePicture === "string"
+                ? data.profilePicture
+                : (typeof data.user?.profile_picture === "string" ? data.user.profile_picture : null),
             createdAt: typeof data.createdAt === "string" ? data.createdAt : new Date().toISOString(),
             publishedAt: typeof data.publishedAt === "string" ? data.publishedAt : (typeof data.published_at === "string" ? data.published_at : null),
             ownerKey: typeof data.ownerKey === "string" ? data.ownerKey : undefined,
@@ -113,7 +127,7 @@ function normalizeApiAds(input: any[]) {
                 : Array.isArray(data.editDraft?.mediaGallery)
                     ? data.editDraft.mediaGallery.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
                 : [],
-            mediaType: ["image", "video", "link", ""].includes(data.mediaType) ? data.mediaType : "",
+            mediaType: ["image", "video", "link", "profile", ""].includes(data.mediaType) ? data.mediaType : "",
             genderTarget: typeof data.genderTarget === "string" ? data.genderTarget : undefined,
             ageMin: typeof data.ageMin === "number" ? data.ageMin : Number.isFinite(Number(data.ageMin)) ? Number(data.ageMin) : undefined,
             ageMax: typeof data.ageMax === "number" ? data.ageMax : Number.isFinite(Number(data.ageMax)) ? Number(data.ageMax) : undefined,
@@ -122,6 +136,9 @@ function normalizeApiAds(input: any[]) {
             estimatedReachMin: Number.isFinite(Number(data.estimatedReachMin ?? data.estimated_reach_min)) ? Number(data.estimatedReachMin ?? data.estimated_reach_min) : null,
             estimatedReachMax: Number.isFinite(Number(data.estimatedReachMax ?? data.estimated_reach_max)) ? Number(data.estimatedReachMax ?? data.estimated_reach_max) : null,
             maxReachCap: Number.isFinite(Number(data.maxReachCap ?? data.max_reach_cap)) ? Number(data.maxReachCap ?? data.max_reach_cap) : null,
+            views: typeof data.views === "number"
+                ? data.views
+                : Number(data.views ?? data.views_count ?? data.viewCount ?? 0),
             impressions: typeof data.impressions === "number" ? data.impressions : Number(data.impressions || 0),
             clicks: typeof data.clicks === "number" ? data.clicks : Number(data.clicks || 0),
             spend: typeof data.spend === "number" ? data.spend : Number(data.spend || 0),
@@ -149,6 +166,7 @@ function normalizeApiAds(input: any[]) {
 }
 
 function getAdGallery(ad: AdHistoryRow) {
+    if (shouldHideCompletedRawPhotoVideoMedia(ad)) return [];
     const gallery = (ad.mediaGallery || []).filter((value) => typeof value === "string" && value.trim().length > 0);
     if (gallery.length > 0) return gallery;
     if (ad.mediaPreview) return [ad.mediaPreview];
@@ -156,7 +174,12 @@ function getAdGallery(ad: AdHistoryRow) {
 }
 
 function getPrimaryMedia(ad: AdHistoryRow) {
+    if (shouldHideCompletedRawPhotoVideoMedia(ad)) return "";
     return getAdGallery(ad)[0] || ad.mediaPreview || "";
+}
+
+function isProfilePromoteAd(ad: AdHistoryRow) {
+    return ad.campaignType.trim().toLowerCase() === "profile promote" || ad.mediaType === "profile";
 }
 
 function isRawPhotoVideoAd(ad: AdHistoryRow) {
@@ -169,6 +192,23 @@ function isRawPhotoVideoAd(ad: AdHistoryRow) {
 
     const primaryMedia = getPrimaryMedia(ad).trim();
     if (!primaryMedia) return false;
+    return !/^https?:\/\//i.test(primaryMedia) || /\/uploads?\//i.test(primaryMedia);
+}
+
+function shouldHideCompletedRawPhotoVideoMedia(ad: AdHistoryRow) {
+    if (ad.status !== "Completed" && ad.status !== "Expired") return false;
+
+    const campaignType = ad.campaignType.trim().toLowerCase();
+    const isPhotoVideo = campaignType === "photo and video" || campaignType === "photo & video";
+    if (!isPhotoVideo) return false;
+
+    const activeLink = String(ad.activeLink || ad.editDraft?.activeLink || ad.editDraft?.active_link || "").trim();
+    if (activeLink) return false;
+
+    const rawGallery = (ad.mediaGallery || []).filter((value) => typeof value === "string" && value.trim().length > 0);
+    const primaryMedia = String(rawGallery[0] || ad.mediaPreview || "").trim();
+    if (!primaryMedia) return false;
+
     return !/^https?:\/\//i.test(primaryMedia) || /\/uploads?\//i.test(primaryMedia);
 }
 
@@ -197,12 +237,12 @@ function formatDateTimeLabel(value: string) {
         day: "2-digit",
         month: "short",
         year: "numeric",
-        timeZone: "Asia/Colombo",
+        timeZone: SRI_LANKA_TIME_ZONE,
     });
     const timeLabel = parsedDate.toLocaleTimeString("en-GB", {
         hour: "2-digit",
         minute: "2-digit",
-        timeZone: "Asia/Colombo",
+        timeZone: SRI_LANKA_TIME_ZONE,
     });
     return `${dateLabel}, ${timeLabel}`;
 }
@@ -247,7 +287,7 @@ function getDurationStatusLabel(ad: AdHistoryRow, nowMs: number) {
 }
 
 function getAdStartTime(ad: AdHistoryRow) {
-    return ad.activeStartTime || ad.startedAt || ad.publishedAt || ad.createdAt || null;
+    return ad.activeStartTime || ad.startedAt || null;
 }
 
 function getAdEndTime(ad: AdHistoryRow) {
@@ -287,12 +327,12 @@ function formatDateTime(value: string) {
         day: "2-digit",
         month: "short",
         year: "numeric",
-        timeZone: "Asia/Colombo",
+        timeZone: SRI_LANKA_TIME_ZONE,
     });
     const timeLabel = parsedDate.toLocaleTimeString("en-GB", {
         hour: "2-digit",
         minute: "2-digit",
-        timeZone: "Asia/Colombo",
+        timeZone: SRI_LANKA_TIME_ZONE,
     });
     return `${dateLabel} • ${timeLabel}`;
 }
@@ -326,6 +366,15 @@ function getTitle(ad: AdHistoryRow) {
     return cleanAdText(ad.title) || cleanAdText(ad.description) || ad.campaignType;
 }
 
+function getProfilePromoteName(ad: AdHistoryRow) {
+    return cleanAdText(ad.ownerUsername) || cleanAdText(ad.profileUsername) || "Profile Promote";
+}
+
+function getProfilePromoteHandle(ad: AdHistoryRow) {
+    const handle = cleanAdText(ad.profileUsername) || cleanAdText(ad.ownerUsername);
+    return handle ? `@${handle.replace(/^@+/, "")}` : "@profile";
+}
+
 function getEstimatedReachLabel(ad: AdHistoryRow) {
     const minReach = Number(ad.estimatedReachMin || 0);
     const maxReach = Number(ad.estimatedReachMax || ad.maxReachCap || 0);
@@ -336,6 +385,10 @@ function getEstimatedReachLabel(ad: AdHistoryRow) {
     const fallbackMinReach = Math.round((budget / 100) * 300);
     const fallbackMaxReach = Math.round((budget / 100) * 500);
     return `${formatReachCount(fallbackMinReach)} - ${formatReachCount(fallbackMaxReach)}`;
+}
+
+function getPublishedAdReachValue(ad: AdHistoryRow) {
+    return Number(ad.views || 0);
 }
 
 function getLocationLabel(ad: AdHistoryRow) {
@@ -355,6 +408,75 @@ function getStatusClasses(status: AdStatus) {
     if (status === "Removed") return "border-orange-400/25 bg-orange-400/10 text-orange-200";
     if (status === "Completed" || status === "Expired") return "border-violet-400/25 bg-violet-400/10 text-violet-200";
     return "border-rose-400/25 bg-rose-400/10 text-rose-200";
+}
+
+function renderPublishedAdPreview(ad: AdHistoryRow) {
+    if (isProfilePromoteAd(ad)) {
+        return (
+            <div className="flex items-center gap-4 min-w-0">
+                <div className="relative h-16 w-16 overflow-hidden rounded-full bg-black/25 shrink-0 border border-white/10">
+                    {ad.profilePicture ? (
+                        <img src={ad.profilePicture} alt={getProfilePromoteName(ad)} className="h-full w-full object-cover" />
+                    ) : (
+                        <div className="flex h-full w-full items-center justify-center text-white/30">
+                            <IonIcon name="person-outline" className="text-3xl" />
+                        </div>
+                    )}
+                </div>
+
+                <div className="min-w-0">
+                    <h3 className="truncate text-[0.95rem] font-black uppercase leading-none text-white">{getProfilePromoteName(ad)}</h3>
+                    <p className="mt-1 text-[10px] font-bold text-white/40">{getProfilePromoteHandle(ad)}</p>
+                    <p className="mt-2 line-clamp-2 text-[10px] font-semibold leading-4 text-white/58">
+                        {cleanAdText(ad.description) || "Profile promotion ad."}
+                    </p>
+                    <div className="mt-1.5 flex items-center gap-1.5 text-[8px] font-black uppercase tracking-[0.08em] text-white/34">
+                        <IonIcon name="person-circle-outline" className="text-[11px]" />
+                        <span className="truncate">Profile Promote</span>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="flex items-center gap-4 min-w-0">
+            <div className="relative h-16 w-16 overflow-hidden rounded-[1rem] bg-black/25 shrink-0">
+                {ad.mediaType === "video" && getPrimaryMedia(ad) ? (
+                    <video src={getPrimaryMedia(ad)} className="h-full w-full object-cover" muted playsInline />
+                ) : getPrimaryMedia(ad) ? (
+                    <img src={getPrimaryMedia(ad)} alt={getTitle(ad)} className="h-full w-full object-cover" />
+                ) : (
+                    <div className="flex h-full w-full items-center justify-center text-white/30">
+                        <IonIcon name={ad.mediaType === "video" ? "videocam-outline" : "image-outline"} className="text-3xl" />
+                    </div>
+                )}
+            </div>
+
+            <div className="min-w-0">
+                <h3 className="truncate text-[0.95rem] font-black uppercase leading-none text-white">{getTitle(ad)}</h3>
+                <p className="mt-2 line-clamp-2 text-[10px] font-semibold leading-4 text-white/58">{cleanAdText(ad.description) || "No description added."}</p>
+                {ad.mediaType === "image" && getAdGallery(ad).length > 1 && (
+                    <div className="mt-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                        {getAdGallery(ad).slice(1, 5).map((image, index) => (
+                            <div key={`${ad.adId}-thumb-${index}`} className="relative h-8 w-8 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-black/25">
+                                <img src={image} alt={`${getTitle(ad)} thumbnail ${index + 2}`} className="h-full w-full object-cover" />
+                            </div>
+                        ))}
+                        {getAdGallery(ad).length > 5 && (
+                            <div className="flex h-8 min-w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] px-1.5 text-[8px] font-black text-white/70">
+                                +{getAdGallery(ad).length - 5}
+                            </div>
+                        )}
+                    </div>
+                )}
+                <div className="mt-1.5 flex items-center gap-1.5 text-[8px] font-black uppercase tracking-[0.08em] text-white/34">
+                    <IonIcon name="location-outline" className="text-[11px]" />
+                    <span className="truncate">{getLocationLabel(ad)}</span>
+                </div>
+            </div>
+        </div>
+    );
 }
 
 export default function AdCenterPage() {
@@ -377,7 +499,10 @@ export default function AdCenterPage() {
     const planRef = useRef<any>(null);
 
     useEffect(() => {
-        const timerId = window.setInterval(() => setNowMs(Date.now()), 1000);
+        const timerId = window.setInterval(() => {
+            if (document.visibilityState === "hidden") return;
+            setNowMs(Date.now());
+        }, 1000);
         return () => window.clearInterval(timerId);
     }, []);
 
@@ -387,28 +512,37 @@ export default function AdCenterPage() {
                 const nextAds = normalizeApiAds(await adsService.getMyAds());
                 setAds(nextAds);
             } catch (error) {
+                const message = error instanceof Error ? error.message : "";
+                if (message && /authentication|token|session/i.test(message)) return;
                 console.error("Failed to fetch ads:", error);
-                setAds([]);
             }
         };
         const syncFilter = () => setActiveFilter(getInitialFilter());
+        const refreshAdsIfVisible = () => {
+            if (document.visibilityState === "hidden") return;
+            void refreshAds();
+        };
+        const refreshAdsOnStorage = (event: StorageEvent) => {
+            if (event.storageArea && event.storageArea !== window.localStorage && event.storageArea !== window.sessionStorage) return;
+            refreshAdsIfVisible();
+        };
 
         refreshAds();
         syncFilter();
         const intervalId = window.setInterval(() => {
-            if (document.visibilityState !== "hidden") void refreshAds();
+            refreshAdsIfVisible();
         }, 10000);
-        window.addEventListener("storage", refreshAds);
-        window.addEventListener("googer-ad-history-updated", refreshAds);
-        window.addEventListener("focus", refreshAds);
-        document.addEventListener("visibilitychange", refreshAds);
+        window.addEventListener("storage", refreshAdsOnStorage);
+        window.addEventListener("googer-ad-history-updated", refreshAdsIfVisible);
+        window.addEventListener("focus", refreshAdsIfVisible);
+        document.addEventListener("visibilitychange", refreshAdsIfVisible);
         window.addEventListener("popstate", syncFilter);
 
         return () => {
-            window.removeEventListener("storage", refreshAds);
-            window.removeEventListener("googer-ad-history-updated", refreshAds);
-            window.removeEventListener("focus", refreshAds);
-            document.removeEventListener("visibilitychange", refreshAds);
+            window.removeEventListener("storage", refreshAdsOnStorage);
+            window.removeEventListener("googer-ad-history-updated", refreshAdsIfVisible);
+            window.removeEventListener("focus", refreshAdsIfVisible);
+            document.removeEventListener("visibilitychange", refreshAdsIfVisible);
             window.removeEventListener("popstate", syncFilter);
             window.clearInterval(intervalId);
         };
@@ -647,81 +781,53 @@ export default function AdCenterPage() {
                     paginatedAds.map((ad) => {
                         return (
                             <article key={ad.adId} className="overflow-hidden rounded-[2rem] border border-white/8 bg-[#1a1614] shadow-[0_20px_50px_rgba(0,0,0,0.3)]">
-                                <div className="flex items-start justify-between gap-4 border-b border-white/6 px-5 py-4 md:px-6">
-                                    <div className="flex items-start gap-3">
-                                        <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/50">
+                                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/6 px-4 py-4 sm:px-5 md:px-6">
+                                    <div className="flex min-w-0 items-start gap-3">
+                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-white/50 sm:h-12 sm:w-12">
                                             <IonIcon name="megaphone-outline" className="text-lg" />
                                         </div>
-                                        <div>
-                                            <h2 className="text-[15px] font-black tracking-[0.04em] text-white">Ad ID: {ad.displayAdId}</h2>
+                                        <div className="min-w-0">
+                                            <h2 className="truncate text-[13px] font-black tracking-[0.04em] text-white sm:text-[15px]">Ad ID: {ad.displayAdId}</h2>
                                             <p className="mt-1 text-[9px] font-black uppercase tracking-[0.08em] text-white/35">
                                                 {ad.campaignType} - {getPublishedTimeLabel(ad, nowMs)}
                                             </p>
                                         </div>
                                     </div>
-                                    <div className="flex items-start gap-3">
+                                    <div className="flex shrink-0 items-center gap-2">
+                                        <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-right">
+                                            <p className="text-[8px] font-black uppercase tracking-[0.12em] text-white/28">Impressions</p>
+                                            <div className="mt-1 flex items-center justify-end gap-1.5 text-white">
+                                                <IonIcon name="eye-outline" className="text-sm text-white/65" />
+                                                <span className="text-[0.95rem] font-black tracking-tight">{formatReachCount(ad.impressions || 0)}</span>
+                                            </div>
+                                        </div>
                                         <div className="text-right">
                                             <p className="text-[8px] font-black uppercase tracking-[0.12em] text-white/28">Total Budget</p>
-                                            <p className="mt-1 text-[1.35rem] font-black tracking-tight text-white">{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.budget)}</p>
+                                            <p className="mt-1 text-[1.2rem] font-black tracking-tight text-white sm:text-[1.35rem]">{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.budget)}</p>
                                         </div>
                                         <button
                                             type="button"
                                             onClick={() => setAnalyticsAd(ad)}
                                             title="Analytics"
-                                            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-violet-500/20 bg-violet-500/[0.08] text-violet-300/70 transition hover:bg-violet-500/[0.15] hover:text-violet-200"
+                                            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-violet-500/20 bg-violet-500/[0.08] text-violet-300/70 transition hover:bg-violet-500/[0.15] hover:text-violet-200 sm:h-10 sm:w-10"
                                         >
                                             <IonIcon name="stats-chart" className="text-base" />
                                         </button>
                                         <button
                                             type="button"
                                             onClick={() => setSelectedAd(ad)}
-                                            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-white/65 transition hover:bg-white/[0.08] hover:text-white"
+                                            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-white/65 transition hover:bg-white/[0.08] hover:text-white sm:h-10 sm:w-10"
                                         >
                                             <IonIcon name="eye-outline" className="text-base" />
                                         </button>
                                     </div>
                                 </div>
 
-                                <div className="px-5 py-4 md:px-6">
-                                    <div className="grid gap-3 rounded-[1.5rem] border border-white/6 bg-[#121212] p-3 lg:grid-cols-[1.75fr_0.3fr]">
-                                        <div className="flex items-center gap-4 min-w-0">
-                                            <div className="relative h-16 w-16 overflow-hidden rounded-[1rem] bg-black/25 shrink-0">
-                                                {ad.mediaType === "video" && getPrimaryMedia(ad) ? (
-                                                    <video src={getPrimaryMedia(ad)} className="h-full w-full object-cover" muted playsInline />
-                                                ) : getPrimaryMedia(ad) ? (
-                                                    <img src={getPrimaryMedia(ad)} alt={getTitle(ad)} className="h-full w-full object-cover" />
-                                                ) : (
-                                                    <div className="flex h-full w-full items-center justify-center text-white/30">
-                                                        <IonIcon name={ad.mediaType === "video" ? "videocam-outline" : "image-outline"} className="text-3xl" />
-                                                    </div>
-                                                )}
-                                            </div>
+                                <div className="px-3 py-4 sm:px-5 md:px-6">
+                                    <div className="grid gap-3 rounded-[1.5rem] border border-white/6 bg-[#121212] p-3 sm:grid-cols-[1fr_auto] lg:grid-cols-[1.75fr_0.3fr]">
+                                        {renderPublishedAdPreview(ad)}
 
-                                            <div className="min-w-0">
-                                                <h3 className="truncate text-[0.95rem] font-black uppercase leading-none text-white">{getTitle(ad)}</h3>
-                                                <p className="mt-2 line-clamp-2 text-[10px] font-semibold leading-4 text-white/58">{cleanAdText(ad.description) || "No description added."}</p>
-                                                {ad.mediaType === "image" && getAdGallery(ad).length > 1 && (
-                                                    <div className="mt-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-                                                        {getAdGallery(ad).slice(1, 5).map((image, index) => (
-                                                            <div key={`${ad.adId}-thumb-${index}`} className="relative h-8 w-8 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-black/25">
-                                                                <img src={image} alt={`${getTitle(ad)} thumbnail ${index + 2}`} className="h-full w-full object-cover" />
-                                                            </div>
-                                                        ))}
-                                                        {getAdGallery(ad).length > 5 && (
-                                                            <div className="flex h-8 min-w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] px-1.5 text-[8px] font-black text-white/70">
-                                                                +{getAdGallery(ad).length - 5}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                )}
-                                                <div className="mt-1.5 flex items-center gap-1.5 text-[8px] font-black uppercase tracking-[0.08em] text-white/34">
-                                                    <IonIcon name="location-outline" className="text-[11px]" />
-                                                    <span className="truncate">{getLocationLabel(ad)}</span>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className="flex items-center justify-end gap-2 lg:flex-col lg:justify-center">
+                                        <div className="flex flex-wrap items-center justify-end gap-2 sm:flex-col sm:justify-center lg:flex-col lg:justify-center">
                                             {ad.status === "Active" ? (
                                                 <button
                                                     type="button"
@@ -820,7 +926,7 @@ export default function AdCenterPage() {
                                         </div>
                                     )}
 
-                                    <div className="mt-3 grid gap-2 lg:grid-cols-[1.15fr_0.85fr_0.85fr]">
+                                    <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-[1.15fr_0.85fr_0.85fr]">
                                         <div className="rounded-[0.95rem] border border-white/8 bg-[#0b0b0b] p-2">
                                             <p className="text-[8px] font-black uppercase tracking-[0.1em] text-white/38">Order Summary</p>
                                             <div className="mt-2 grid gap-1 text-[9px] font-black text-white">
@@ -863,12 +969,16 @@ export default function AdCenterPage() {
                                                     <span>{getAdRemainingTimeLabel(ad, nowMs)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
-                                                    <span className="text-white/55">Reach</span>
-                                                    <span>{formatReachCount(ad.currentReach ?? ad.reach ?? 0)}</span>
+                                                    <span className="text-white/55">Views</span>
+                                                    <span>{formatReachCount(ad.views || 0)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Impressions</span>
                                                     <span>{formatReachCount(ad.impressions || 0)}</span>
+                                                </div>
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <span className="text-white/55">Reach</span>
+                                                    <span>{formatReachCount(getPublishedAdReachValue(ad))}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Clicks</span>
@@ -974,8 +1084,16 @@ export default function AdCenterPage() {
                                 <div className="mt-3 rounded-[1.35rem] border border-white/8 bg-white/[0.04] p-3">
                                     <div className="flex items-start gap-3">
                                         <div className="shrink-0">
-                                        <div className="relative h-14 w-14 overflow-hidden rounded-[0.9rem] bg-black/25 sm:h-16 sm:w-16">
-                                            {selectedAd.mediaType === "video" && getPrimaryMedia(selectedAd) ? (
+                                        <div className={`overflow-hidden bg-black/25 ${isProfilePromoteAd(selectedAd) ? "h-14 w-14 rounded-full border border-white/10 sm:h-16 sm:w-16" : "relative h-14 w-14 rounded-[0.9rem] sm:h-16 sm:w-16"}`}>
+                                            {isProfilePromoteAd(selectedAd) ? (
+                                                selectedAd.profilePicture ? (
+                                                    <img src={selectedAd.profilePicture} alt={getProfilePromoteName(selectedAd)} className="h-full w-full object-cover" />
+                                                ) : (
+                                                    <div className="flex h-full w-full items-center justify-center text-white/30">
+                                                        <IonIcon name="person-outline" className="text-3xl" />
+                                                    </div>
+                                                )
+                                            ) : selectedAd.mediaType === "video" && getPrimaryMedia(selectedAd) ? (
                                                 <video src={getPrimaryMedia(selectedAd)} className="h-full w-full object-cover" muted playsInline />
                                             ) : getPrimaryMedia(selectedAd) ? (
                                                 <img src={getPrimaryMedia(selectedAd)} alt={getTitle(selectedAd)} className="h-full w-full object-cover" />
@@ -985,7 +1103,7 @@ export default function AdCenterPage() {
                                                 </div>
                                             )}
                                         </div>
-                                        {selectedAd.mediaType === "image" && getAdGallery(selectedAd).length > 1 && (
+                                        {selectedAd.mediaType === "image" && getAdGallery(selectedAd).length > 1 && !isProfilePromoteAd(selectedAd) && (
                                             <div className="mt-2 flex max-w-[220px] items-center gap-1.5 overflow-x-auto no-scrollbar">
                                                 {getAdGallery(selectedAd).slice(1).map((image, index) => (
                                                     <div key={`${selectedAd.adId}-modal-thumb-${index}`} className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-black/25">
@@ -996,8 +1114,19 @@ export default function AdCenterPage() {
                                         )}
                                         </div>
                                         <div className="min-w-0 flex-1">
-                                            <h3 className="truncate text-[0.9rem] font-black uppercase text-white sm:text-[1rem]">{getTitle(selectedAd)}</h3>
-                                            <p className="mt-1 text-[10px] font-bold text-white/45">{cleanAdText(selectedAd.description) || "No description added."}</p>
+                                            <h3 className="truncate text-[0.9rem] font-black uppercase text-white sm:text-[1rem]">
+                                                {isProfilePromoteAd(selectedAd) ? getProfilePromoteName(selectedAd) : getTitle(selectedAd)}
+                                            </h3>
+                                            <p className="mt-1 text-[10px] font-bold text-white/45">
+                                                {isProfilePromoteAd(selectedAd)
+                                                    ? getProfilePromoteHandle(selectedAd)
+                                                    : (cleanAdText(selectedAd.description) || "No description added.")}
+                                            </p>
+                                            {isProfilePromoteAd(selectedAd) && (
+                                                <p className="mt-1 text-[10px] font-semibold leading-4 text-white/55">
+                                                    {cleanAdText(selectedAd.description) || "Profile promotion ad."}
+                                                </p>
+                                            )}
                                         </div>
                                         <div className="text-right">
                                             <p className="text-sm font-black text-white sm:text-base">{isPromoFreeAd(selectedAd) ? "Free" : formatCurrency(selectedAd.budget)}</p>
@@ -1048,12 +1177,12 @@ export default function AdCenterPage() {
                                             <span className="text-white">{selectedAd.genderTarget || "All"}</span>
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
-                                            <span>Reach</span>
-                                            <span className="text-white">{selectedAd.reach || 0}</span>
+                                            <span>Views</span>
+                                            <span className="text-white">{selectedAd.views || 0}</span>
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
-                                            <span>Impressions</span>
-                                            <span className="text-white">{selectedAd.impressions || 0}</span>
+                                            <span>Reach</span>
+                                            <span className="text-white">{getPublishedAdReachValue(selectedAd)}</span>
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
                                             <span>Clicks</span>

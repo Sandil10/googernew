@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+backend/transaction-audits/
 
 # next.js
 /.next/
@@ -19,6 +20,12 @@
 
 # production
 /build
+
+# runtime media/uploads
+/public/uploads/
+/.cloudflared/
+cloudflared.exe
+*.log
 
 # misc
 .DS_Store

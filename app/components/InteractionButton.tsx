@@ -7,7 +7,7 @@ import IonIcon from "@/app/components/IonIcon";
 interface InteractionButtonProps {
   icon: string;
   activeIcon?: string;
-  count: number;
+  count: number | string;
   color?: string;
   activeColor?: string;
   isActive?: boolean;
@@ -16,7 +16,13 @@ interface InteractionButtonProps {
   type?: string;
   orientation?: "horizontal" | "vertical";
   iconSize?: string;
+  buttonSize?: string;
+  countSize?: string;
+  className?: string;
+  iconWrapperClassName?: string;
+  countClassName?: string;
   product?: any;
+  appearance?: "default" | "compact";
 }
 
 export const InteractionButton = memo(({
@@ -31,7 +37,12 @@ export const InteractionButton = memo(({
   type,
   orientation = "horizontal",
   iconSize = "text-[13px] md:text-xl",
-  product,
+  buttonSize = "h-8 w-8",
+  countSize = "text-[10px]",
+  className = "",
+  iconWrapperClassName = "",
+  countClassName = "",
+  appearance = "default",
 }: InteractionButtonProps) => {
   const timerRef = useRef<any>(null);
   const longPressedRef = useRef(false);
@@ -60,39 +71,54 @@ export const InteractionButton = memo(({
     if (timerRef.current) clearTimeout(timerRef.current);
   };
 
-  const displayCount = count > 0 ? (count > 999 ? "999+" : count.toString()) : "";
+  const displayCount = typeof count === "number"
+    ? (count > 0 ? (count > 999 ? "999+" : count.toString()) : "")
+    : count;
   const isLikeButton = type === "likes";
+
+  const compact = appearance === "compact";
+  const resolvedIconSize = compact && iconSize === "text-[13px] md:text-xl" ? "text-[21px]" : iconSize;
+  const resolvedCountSize = compact && countSize === "text-[10px]" ? "text-[7px] md:text-[9px]" : countSize;
+  const resolvedColor = isLikeButton && isActive ? "text-red-500" : isActive ? activeColor : color;
+  const currentIcon = isLikeButton
+    ? (isActive ? activeIcon || "heart" : "heart-outline")
+    : (isActive && activeIcon ? activeIcon : icon);
+  const iconRenderKey = isLikeButton ? `likes-${isActive ? "liked" : "unliked"}` : currentIcon;
+  const iconColorStyle = isLikeButton ? { color: isActive ? "#ef4444" : "#ffffff" } : undefined;
 
   return (
     <button
       type="button"
+      data-interaction-type={type}
       onPointerDown={handleStart}
       onPointerUp={handleEnd}
       onPointerCancel={handleCancel}
       onPointerLeave={handleCancel}
-      className={`group flex items-center gap-1.5 transition-all active:scale-95 ${
+      className={`group flex touch-none select-none items-center transition-all duration-300 active:scale-75 focus:outline-none focus:ring-0 ${compact ? "gap-1" : "gap-1.5"} ${
         orientation === "vertical" ? "flex-col" : ""
-      }`}
+      } ${className}`}
+      aria-pressed={isLikeButton ? isActive : undefined}
     >
       <div
-        className={`flex h-8 w-8 items-center justify-center rounded-full transition-all ${
+        className={`flex items-center justify-center transition-all ${compact ? "" : `${buttonSize} rounded-full`} ${
+          compact ? "" :
           isActive
             ? isLikeButton ? "bg-red-500/15" : "bg-blue-500/20"
             : "bg-white/5 group-hover:bg-white/10"
-        }`}
+        } ${iconWrapperClassName}`}
       >
         <IonIcon
-          name={isActive && activeIcon ? activeIcon : icon}
-          className={`${iconSize} transition-colors ${
+          key={iconRenderKey}
+          name={currentIcon}
+          className={`${resolvedIconSize} shrink-0 transition-colors ${
             isLikeButton ? (isActive ? "text-red-500" : "text-white") : isActive ? activeColor : color
           }`}
+          style={iconColorStyle}
         />
       </div>
       {displayCount && (
         <span
-          className={`text-[10px] font-black uppercase tracking-widest transition-colors ${
-            isActive ? activeColor : color
-          }`}
+          className={`${resolvedCountSize} shrink-0 font-black tracking-tighter transition-colors ${resolvedColor} ${countClassName}`}
         >
           {displayCount}
         </span>

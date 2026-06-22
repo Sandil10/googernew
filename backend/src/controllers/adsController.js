@@ -20,10 +20,17 @@ const {
 } = require('../utils/adDelivery');
 const { getUserPlanLimits, getUserSubscriptionFeatures } = require('../utils/planLimits');
 const { distributeReferralCommission } = require('../utils/referralCommission');
+const { getGraceDurationSeconds } = require('../utils/subscriptionRenewal');
+
+// Define getGraceIntervalSql here before it's used in template strings below
+const getGraceIntervalSql = () => `((${getGraceDurationSeconds()}::text || ' seconds')::interval)`;
 
 let adSavesTableReady = false;
+let adSavesSchemaPromise = null;
 const ensureAdSavesSchema = async () => {
     if (adSavesTableReady) return;
+    if (adSavesSchemaPromise) return adSavesSchemaPromise;
+    adSavesSchemaPromise = (async () => {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS ad_saves (
             id              SERIAL PRIMARY KEY,
@@ -54,7 +61,13 @@ const ensureAdSavesSchema = async () => {
         CREATE INDEX IF NOT EXISTS idx_ad_saves_user ON ad_saves(user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_ad_saves_count ON ad_saves(user_id, ad_media_type, ad_source_type);
     `);
-    adSavesTableReady = true;
+        adSavesTableReady = true;
+    })();
+    try {
+        await adSavesSchemaPromise;
+    } finally {
+        adSavesSchemaPromise = null;
+    }
 };
 
 // Classifies an ad row into media_type (photo|video) and source_type (upload|link).
@@ -90,6 +103,59 @@ const RAW_PHOTO_VIDEO_UPLOAD_SQL = `
     )
 `;
 
+const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
+    CASE
+        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
+        ELSE NULL
+    END,
+    (
+        SELECT
+            CASE
+                WHEN NULLIF(sp.extra->>'ads_expiry_value', '')::numeric > 0 THEN
+                    NULLIF(sp.extra->>'ads_expiry_value', '')::numeric *
+                    CASE LOWER(COALESCE(sp.extra->>'ads_expiry_unit', 'days'))
+                        WHEN 'minutes' THEN INTERVAL '1 minute'
+                        WHEN 'hours' THEN INTERVAL '1 hour'
+                        ELSE INTERVAL '1 day'
+                    END
+                WHEN NULLIF(sp.extra->>'ads_expiry_days', '')::numeric > 0 THEN
+                    NULLIF(sp.extra->>'ads_expiry_days', '')::numeric * INTERVAL '1 day'
+                ELSE NULL
+            END
+        FROM user_plan_subscriptions ups
+        JOIN subscription_plans sp ON sp.id = ups.plan_id
+        WHERE ups.user_id = a.user_id
+          AND ups.status = 'active'
+          AND (ups.expires_at IS NULL OR ups.expires_at + ${getGraceIntervalSql()} > NOW())
+        ORDER BY ups.started_at DESC
+        LIMIT 1
+    ),
+    (
+        SELECT
+            CASE
+                WHEN NULLIF(sp.extra->>'ads_expiry_value', '')::numeric > 0 THEN
+                    NULLIF(sp.extra->>'ads_expiry_value', '')::numeric *
+                    CASE LOWER(COALESCE(sp.extra->>'ads_expiry_unit', 'days'))
+                        WHEN 'minutes' THEN INTERVAL '1 minute'
+                        WHEN 'hours' THEN INTERVAL '1 hour'
+                        ELSE INTERVAL '1 day'
+                    END
+                WHEN NULLIF(sp.extra->>'ads_expiry_days', '')::numeric > 0 THEN
+                    NULLIF(sp.extra->>'ads_expiry_days', '')::numeric * INTERVAL '1 day'
+                ELSE NULL
+            END
+        FROM subscription_plans sp
+        WHERE sp.slug = 'basic' AND sp.is_active = TRUE
+        LIMIT 1
+    )
+)`;
+
+const RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL = `
+    a.active_start_time IS NOT NULL
+    AND (${getRawPhotoVideoProfileExpiryIntervalSql()}) IS NOT NULL
+    AND a.active_start_time > NOW() - (${getRawPhotoVideoProfileExpiryIntervalSql()})
+`;
+
 const isRawUploadedPhotoVideoAd = (row) => {
     const campaignType = String(row?.campaign_type || row?.campaignType || '').trim().toLowerCase();
     const isPhotoVideo = campaignType === 'photo and video' || campaignType === 'photo & video';
@@ -107,8 +173,14 @@ const isRawUploadedPhotoVideoAd = (row) => {
 };
 
 let adsTableReady = false;
+let adsTableReadyPromise = null;
 const VALID_STATUSES = new Set(['Under Review', 'Pending Approval', 'Approved', 'Active', 'Paused', 'Completed', 'Expired', 'Cancelled', 'Removed']);
 const DAY_MS = 24 * 60 * 60 * 1000;
+const ANONYMOUS_PUBLIC_ADS_CACHE_TTL_MS = Math.max(
+    0,
+    Number.parseInt(process.env.ANONYMOUS_PUBLIC_ADS_CACHE_TTL_MS || '5000', 10) || 5000
+);
+const anonymousPublicAdsCache = new Map();
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
 const canonicalAdStatus = (status) => {
     if (status === 'Approved') return 'Active';
@@ -144,6 +216,37 @@ const toUtcIso = (value) => {
     return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 };
 
+const readDurationMs = (startNs) => Number(process.hrtime.bigint() - startNs) / 1e6;
+const shouldLogPublicAdsTiming = () => /^(1|true|yes|on)$/i.test(String(process.env.PUBLIC_ADS_TIMING_LOG || '').trim());
+const getAnonymousPublicAdsCacheKey = (req, limit, offset, ownerUserId) => {
+    if (ownerUserId) return null;
+    const queryKeys = Object.keys(req.query || {}).filter((key) => !['limit', 'offset'].includes(key));
+    if (queryKeys.length > 0) return null;
+    return `anon:${limit}:${offset}`;
+};
+const getCachedAnonymousPublicAds = (cacheKey) => {
+    if (!cacheKey || ANONYMOUS_PUBLIC_ADS_CACHE_TTL_MS <= 0) return null;
+    const cached = anonymousPublicAdsCache.get(cacheKey);
+    if (!cached) return null;
+    if (cached.expiresAt <= Date.now()) {
+        anonymousPublicAdsCache.delete(cacheKey);
+        return null;
+    }
+    return cached.payload;
+};
+const setCachedAnonymousPublicAds = (cacheKey, payload) => {
+    if (!cacheKey || ANONYMOUS_PUBLIC_ADS_CACHE_TTL_MS <= 0) return;
+    const now = Date.now();
+    anonymousPublicAdsCache.set(cacheKey, {
+        payload,
+        expiresAt: now + ANONYMOUS_PUBLIC_ADS_CACHE_TTL_MS,
+    });
+    if (anonymousPublicAdsCache.size <= 100) return;
+    for (const [key, value] of anonymousPublicAdsCache.entries()) {
+        if (value.expiresAt <= now) anonymousPublicAdsCache.delete(key);
+    }
+};
+
 const normalizeMediaGallery = (value, fallback = []) => {
     const source = Array.isArray(value) ? value : fallback;
     return source
@@ -166,6 +269,83 @@ const getDisplayReach = (row) => {
     return Number(row.impressions || 0);
 };
 
+const PHOTO_VIDEO_CAMPAIGN_SQL = `LOWER(TRIM(COALESCE(campaign_type, ''))) IN ('photo and video', 'photo & video', 'photo promote', 'video promote', 'photo_video_ad', 'photo video')`;
+const PRODUCT_PROMOTE_CAMPAIGN_SQL = `LOWER(TRIM(COALESCE(campaign_type, ''))) IN ('product promote', 'product_promote')`;
+const PROFILE_PROMOTE_CAMPAIGN_SQL = `LOWER(TRIM(COALESCE(campaign_type, ''))) IN ('profile promote', 'profile_promote')`;
+
+const campaignTypeSqlForReachTier = (adType) => {
+    if (adType === 'product_promote_ad') return PRODUCT_PROMOTE_CAMPAIGN_SQL;
+    if (adType === 'profile_promote_ad') return PROFILE_PROMOTE_CAMPAIGN_SQL;
+    return PHOTO_VIDEO_CAMPAIGN_SQL;
+};
+
+const getAdsMaintenanceSweepMs = () => {
+    const raw = Number(process.env.ADS_MAINTENANCE_SWEEP_SECONDS || 60);
+    const seconds = Number.isFinite(raw) && raw > 0 ? raw : 60;
+    return seconds * 1000;
+};
+
+const syncAdsReachCaps = async (adId = null) => {
+    const { rows: tiers } = await pool.query(`
+        SELECT id, ad_type, budget_from, budget_to, max_reach_multiplier
+        FROM reach_tiers
+        ORDER BY ad_type ASC, budget_from ASC
+    `).catch(() => ({ rows: [] }));
+
+    for (const tier of tiers) {
+        const adTypeCondition = campaignTypeSqlForReachTier(tier.ad_type);
+        const params = [Number(tier.budget_from), Number(tier.budget_to)];
+        const adFilter = adId ? ` AND a.ad_id = $${params.push(adId)}` : '';
+
+        if (tier.max_reach_multiplier === null || tier.max_reach_multiplier === undefined || tier.max_reach_multiplier === '') {
+            await pool.query(
+                `UPDATE ads a
+                 SET max_reach_cap = NULL,
+                     current_reach = GREATEST(COALESCE(a.current_reach, 0), COALESCE(a.impressions, 0)),
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE ${adTypeCondition}
+                   AND COALESCE(a.budget, 0) >= $1
+                   AND COALESCE(a.budget, 0) <= $2${adFilter}`,
+                params
+            );
+            continue;
+        }
+
+        params.push(Number(tier.max_reach_multiplier));
+        await pool.query(
+            `UPDATE ads a
+             SET max_reach_cap = GREATEST(1, ROUND(COALESCE(a.budget, 0)::numeric * $3::numeric))::integer,
+                 current_reach = GREATEST(COALESCE(a.current_reach, 0), COALESCE(a.impressions, 0)),
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE ${adTypeCondition}
+               AND COALESCE(a.budget, 0) >= $1
+               AND COALESCE(a.budget, 0) <= $2${adFilter}`,
+            params
+        );
+    }
+
+    const completionParams = [];
+    const completionFilter = adId ? ` AND ad_id = $${completionParams.push(adId)}` : '';
+    await pool.query(
+        `UPDATE ads
+         SET status = 'Completed',
+             completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+             last_resumed_at = NULL,
+             paused_at = NULL,
+             remaining_budget = CASE
+                 WHEN LOWER(COALESCE(campaign_type, '')) IN ('product promote','photo promote','video promote','photo and video','photo & video','profile promote')
+                 THEN 0
+                 ELSE remaining_budget
+             END,
+             current_reach = GREATEST(COALESCE(current_reach, 0), COALESCE(impressions, 0)),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE LOWER(TRIM(REPLACE(REPLACE(COALESCE(status, ''), '_', ' '), '-', ' '))) IN ('active', 'approved')
+           AND COALESCE(max_reach_cap, 0) > 0
+           AND COALESCE(impressions, 0) >= COALESCE(max_reach_cap, 0)${completionFilter}`,
+        completionParams
+    );
+};
+
 const getOptionalViewerId = (req) => {
     try {
         const authHeader = req.header('Authorization');
@@ -185,6 +365,8 @@ const getOptionalViewerId = (req) => {
 };
 
 const ensureAdEngagementTables = async () => {
+    if (ensureAdEngagementTables._promise) return ensureAdEngagementTables._promise;
+    ensureAdEngagementTables._promise = (async () => {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS ad_likes (
             id SERIAL PRIMARY KEY,
@@ -216,10 +398,18 @@ const ensureAdEngagementTables = async () => {
             ADD COLUMN IF NOT EXISTS commission DECIMAL(10, 2) NOT NULL DEFAULT 0.25,
             ADD COLUMN IF NOT EXISTS advertiser_charge DECIMAL(10, 2) NOT NULL DEFAULT 1.25;
     `);
+    })();
+    try {
+        await ensureAdEngagementTables._promise;
+    } finally {
+        ensureAdEngagementTables._promise = null;
+    }
 };
 
 const ensureAdsTable = async () => {
     if (adsTableReady) return;
+    if (adsTableReadyPromise) return adsTableReadyPromise;
+    adsTableReadyPromise = (async () => {
 
     await pool.query(`
         CREATE TABLE IF NOT EXISTS ads (
@@ -360,6 +550,7 @@ const ensureAdsTable = async () => {
           AND status IN ('Active', 'Completed', 'Expired', 'Paused', 'Removed');
     `);
 
+
     await pool.query(`
         UPDATE ads
         SET current_reach = GREATEST(COALESCE(current_reach, 0), COALESCE(impressions, 0)),
@@ -378,7 +569,13 @@ const ensureAdsTable = async () => {
         CREATE INDEX IF NOT EXISTS idx_ads_created_at ON ads(created_at DESC);
     `);
 
-    adsTableReady = true;
+        adsTableReady = true;
+    })();
+    try {
+        await adsTableReadyPromise;
+    } finally {
+        adsTableReadyPromise = null;
+    }
 };
 
 const getSeededRandom = (seedText) => {
@@ -420,17 +617,17 @@ const mapRow = (row) => {
     id: row.id,
     adId: row.ad_id,
     ad_id: row.ad_id,
-    userId: row.user_id,
-    user_id: row.user_id,
+    userId: row.display_user_id ?? row.user_id,
+    user_id: row.display_user_id ?? row.user_id,
     ad_owner_user_id: row.user_id,
     advertiser_id: row.user_id,
     ownerUserId: row.owner_user_id,
     ownerUsername: row.owner_username_joined || row.owner_username,
     user: {
-        id: row.user_id,
-        user_id: row.owner_user_id,
+        id: row.display_user_id ?? row.user_id,
+        user_id: row.display_public_user_id ?? row.owner_user_id,
         username: row.owner_username_joined || row.owner_username,
-        profile_picture: row.profile_picture || null,
+        profile_picture: row.profile_picture || row.edit_draft?.sourceOwnerProfilePicture || null,
     },
     campaignType: row.campaign_type,
     title: row.title,
@@ -441,10 +638,10 @@ const mapRow = (row) => {
     genderTarget: row.gender_target,
     ageMin: row.age_min,
     ageMax: row.age_max,
-    reach: getDisplayReach(row),
-    impressions: Number(row.impressions || 0),
-    views_count: Number(row.impressions || row.views_count || 0),
-    viewCount: Number(row.impressions || row.views_count || 0),
+    reach: Number(row.reach_count ?? row.counted_views ?? 0),
+    impressions: Number(row.impressions_count ?? row.impressions ?? 0),
+    views_count: Number(row.counted_views ?? row.reach_count ?? 0),
+    viewCount: Number(row.counted_views ?? row.reach_count ?? 0),
     likes_count: Number(row.likes_count || 0),
     likeCount: Number(row.likes_count || 0),
     comments_count: Number(row.comments_count || 0),
@@ -503,6 +700,9 @@ const mapRow = (row) => {
     duration_total_ms: durationState.totalMs,
     updatedAt: toUtcIso(row.updated_at),
     updated_at: toUtcIso(row.updated_at),
+    savedAt: toUtcIso(row.saved_at),
+    saved_at: toUtcIso(row.saved_at),
+    profile_picture: row.profile_picture || row.edit_draft?.sourceOwnerProfilePicture || null,
     };
 };
 
@@ -731,6 +931,8 @@ const normalizePayload = (body = {}, fallback = {}) => {
         status: typeof body.status === 'string' && VALID_STATUSES.has(body.status) ? canonicalAdStatus(body.status) : (fallback.status || 'Under Review'),
         campaignPath: typeof body.campaignPath === 'string' ? body.campaignPath : (fallback.campaignPath || ''),
         walletTransferId: hasOwn(body, 'walletTransferId') ? (body.walletTransferId ?? null) : (fallback.walletTransferId ?? null),
+        ownerId: typeof body.ownerId === 'string' || typeof body.ownerId === 'number' ? String(body.ownerId).trim() : (fallback.ownerId ?? ''),
+        ownerUsername: typeof body.ownerUsername === 'string' ? body.ownerUsername.trim() : (fallback.ownerUsername || ''),
         productId: hasOwn(body, 'productId') ? body.productId : (body.product_id ?? fallback.productId ?? fallback.product_id ?? null),
         product_id: hasOwn(body, 'product_id') ? body.product_id : (body.productId ?? fallback.product_id ?? fallback.productId ?? null),
         productCode: hasOwn(body, 'productCode') ? body.productCode : (body.product_code ?? fallback.productCode ?? fallback.product_code ?? null),
@@ -884,15 +1086,35 @@ exports.createAd = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Valid adId is required' });
         }
 
-        const ownerResult = await pool.query(
+        const sponsorResult = await pool.query(
             'SELECT user_id, username FROM users WHERE id = $1 LIMIT 1',
             [userId]
         );
 
-        const owner = ownerResult.rows[0];
-        if (!owner) {
+        const sponsor = sponsorResult.rows[0];
+        if (!sponsor) {
             return res.status(404).json({ success: false, message: 'User not found' });
         }
+
+        const payloadSourceOwnerPublicId = String(
+            payload?.editDraft?.sourceOwnerPublicId ??
+            payload?.ownerId ??
+            ''
+        ).trim();
+        const payloadSourceOwnerUsername = String(
+            payload?.editDraft?.sourceOwnerUsername ??
+            payload?.ownerUsername ??
+            ''
+        ).trim();
+        const isPromoteAgainPhotoVideo =
+            payload.promoteAgain === true &&
+            (campaignTypeLower === 'photo and video' || campaignTypeLower === 'photo & video');
+        const displayOwnerPublicId = isPromoteAgainPhotoVideo && payloadSourceOwnerPublicId
+            ? payloadSourceOwnerPublicId
+            : String(sponsor.user_id || '').trim();
+        const displayOwnerUsername = isPromoteAgainPhotoVideo && payloadSourceOwnerUsername
+            ? payloadSourceOwnerUsername
+            : String(sponsor.username || '').trim();
 
         const result = await pool.query(
             `INSERT INTO ads (
@@ -937,7 +1159,7 @@ exports.createAd = async (req, res) => {
                             completedAt: initialStatus === 'Completed' ? new Date() : null,
                         };
                     return [
-                payload.adId, userId, owner.user_id, owner.username, payload.campaignType, payload.title, payload.description,
+                payload.adId, userId, displayOwnerPublicId, displayOwnerUsername, payload.campaignType, payload.title, payload.description,
                 payload.mediaPreview, JSON.stringify(payload.mediaGallery), payload.mediaType, payload.genderTarget, payload.ageMin, payload.ageMax, payload.reach, payload.impressions,
                 payload.clicks, payload.budget, payload.durationDays, payload.spend, payload.remainingBudget, initialStatus, payload.campaignPath,
                 productPromoteIdentity.linkedProductId, productPromoteIdentity.linkedProductShareCode,
@@ -1280,6 +1502,12 @@ exports.updateAd = async (req, res) => {
         }
 
         const timingState = buildTimingUpdateState(existingRow, payload.status);
+        const previousStatus = String(existingAd.status || '').trim();
+        const isActivatingAd = String(payload.status || '') === 'Active' && previousStatus !== 'Active';
+        const isApprovalActivation = String(payload.status || '') === 'Active'
+            && ['Under Review', 'Pending Approval', 'Approved'].includes(previousStatus);
+        const isPausingAd = String(payload.status || '') === 'Paused' && previousStatus === 'Active';
+        const isCompletingAd = ['Completed', 'Cancelled', 'Removed'].includes(String(payload.status || '')) && previousStatus === 'Active';
         const result = await client.query(
             `UPDATE ads
              SET campaign_type = $1,
@@ -1310,12 +1538,12 @@ exports.updateAd = async (req, res) => {
                  estimated_reach_min = COALESCE($26, estimated_reach_min),
                  estimated_reach_max = COALESCE($27, estimated_reach_max),
                  max_reach_cap = $28,
-                 active_start_time = CASE WHEN $29 THEN NULL ELSE COALESCE($30::timestamp, active_start_time) END,
-                 started_at = CASE WHEN $29 THEN NULL ELSE COALESCE($31::timestamp, started_at) END,
-                 last_resumed_at = CASE WHEN $29 THEN NULL ELSE $32::timestamp END,
-                 paused_at = CASE WHEN $29 THEN NULL ELSE $33::timestamp END,
+                 active_start_time = CASE WHEN $29 THEN NULL WHEN $38 THEN (NOW()) ELSE COALESCE($30::timestamp, active_start_time) END,
+                 started_at = CASE WHEN $29 THEN NULL WHEN $38 THEN (NOW()) ELSE COALESCE($31::timestamp, started_at) END,
+                 last_resumed_at = CASE WHEN $29 THEN NULL WHEN $39 THEN (NOW()) ELSE $32::timestamp END,
+                 paused_at = CASE WHEN $29 THEN NULL WHEN $40 THEN (NOW()) ELSE $33::timestamp END,
                  accumulated_active_ms = CASE WHEN $29 THEN 0 ELSE COALESCE($34, accumulated_active_ms) END,
-                 completed_at = CASE WHEN $29 THEN NULL ELSE $35::timestamp END,
+                 completed_at = CASE WHEN $29 THEN NULL WHEN $41 THEN (NOW()) ELSE $35::timestamp END,
                  current_reach = COALESCE($36, current_reach),
                  updated_at = CURRENT_TIMESTAMP
              WHERE ad_id = $37
@@ -1336,7 +1564,11 @@ exports.updateAd = async (req, res) => {
                 timingState.accumulatedActiveMs,
                 timingState.completedAt,
                 isPromoteAgainRequest ? 0 : null,
-                adId,
+                 adId,
+                 isApprovalActivation,
+                 isActivatingAd,
+                 isPausingAd,
+                 isCompletingAd,
             ]
         );
 
@@ -1363,11 +1595,25 @@ exports.updateAd = async (req, res) => {
 exports.getMyAds = async (req, res) => {
     try {
         await ensureAdsTable();
+        await ensureAdSavesSchema();
+        await ensureAdEngagementTables();
         await syncExpiredAds(pool);
+        await syncAdsReachCaps();
         const result = await pool.query(
-            `SELECT a.*, u.username AS owner_username_joined, u.profile_picture
+            `SELECT a.*,
+                    COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
+                    COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
+                    COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
+                    COALESCE(owner_u.profile_picture, sponsor_u.profile_picture) AS profile_picture,
+                    COALESCE(av.counted_views, 0) AS counted_views
              FROM ads a
-             LEFT JOIN users u ON a.user_id = u.id
+             LEFT JOIN users sponsor_u ON a.user_id = sponsor_u.id
+             LEFT JOIN users owner_u ON owner_u.user_id::text = a.owner_user_id
+             LEFT JOIN (
+                 SELECT ad_id, COUNT(*) AS counted_views
+                 FROM ad_views
+                 GROUP BY ad_id
+             ) av ON av.ad_id = a.ad_id
              WHERE a.user_id = $1
              ORDER BY a.created_at DESC`,
             [req.user.id]
@@ -1384,10 +1630,22 @@ exports.getMyAdById = async (req, res) => {
     try {
         await ensureAdsTable();
         await syncExpiredAds(pool, req.params.adId);
+        await syncAdsReachCaps(req.params.adId);
         const result = await pool.query(
-            `SELECT a.*, u.username AS owner_username_joined, u.profile_picture
+            `SELECT a.*,
+                    COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
+                    COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
+                    COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
+                    COALESCE(owner_u.profile_picture, sponsor_u.profile_picture) AS profile_picture,
+                    COALESCE(av.counted_views, 0) AS counted_views
              FROM ads a
-             LEFT JOIN users u ON a.user_id = u.id
+             LEFT JOIN users sponsor_u ON a.user_id = sponsor_u.id
+             LEFT JOIN users owner_u ON owner_u.user_id::text = a.owner_user_id
+             LEFT JOIN (
+                 SELECT ad_id, COUNT(*) AS counted_views
+                 FROM ad_views
+                 GROUP BY ad_id
+             ) av ON av.ad_id = a.ad_id
              WHERE a.ad_id = $1 AND a.user_id = $2
              LIMIT 1`,
             [req.params.adId, req.user.id]
@@ -1408,6 +1666,7 @@ exports.getAllAds = async (req, res) => {
     try {
         await ensureAdsTable();
         await syncExpiredAds(pool);
+        await syncAdsReachCaps();
         const isAdmin = await assertAdmin(req.user.id);
         if (!isAdmin) {
             return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -1416,9 +1675,29 @@ exports.getAllAds = async (req, res) => {
         const includeAll = String(req.query.include_all || req.query.includeAll || '').toLowerCase() === 'true';
         const approvalOnlyWhere = includeAll ? '' : "WHERE a.status IN ('Under Review', 'Pending Approval')";
         const result = await pool.query(
-            `SELECT a.*, u.username AS owner_username_joined, u.profile_picture
+            `SELECT a.*,
+                    COALESCE(av.counted_views, 0) AS counted_views,
+                    COALESCE(av.unique_reach, 0) AS reach_count,
+                    COALESCE(click_stats.click_events, 0) AS click_events,
+                    COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
+                    COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
+                    COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
+                    COALESCE(owner_u.profile_picture, sponsor_u.profile_picture) AS profile_picture
              FROM ads a 
-             LEFT JOIN users u ON a.user_id = u.id 
+             LEFT JOIN users sponsor_u ON a.user_id = sponsor_u.id 
+             LEFT JOIN users owner_u ON owner_u.user_id::text = a.owner_user_id
+             LEFT JOIN (
+                 SELECT ad_id,
+                        COUNT(*)::int AS counted_views,
+                        COUNT(DISTINCT COALESCE(user_id::text, viewer_key, ip_address, id::text))::int AS unique_reach
+                 FROM ad_views
+                 GROUP BY ad_id
+             ) av ON av.ad_id = a.ad_id
+             LEFT JOIN (
+                 SELECT ad_id, COUNT(*)::int AS click_events
+                 FROM ad_click_events
+                 GROUP BY ad_id
+             ) click_stats ON click_stats.ad_id = a.ad_id
              ${approvalOnlyWhere}
              ORDER BY a.created_at DESC`
         );
@@ -1431,17 +1710,32 @@ exports.getAllAds = async (req, res) => {
 };
 
 exports.getActiveAdsPublic = async (req, res) => {
+    const requestStartedAt = process.hrtime.bigint();
+    const timings = {};
+    const mark = (label, startedAt) => {
+        timings[label] = Number(readDurationMs(startedAt).toFixed(2));
+    };
     try {
-        await ensureAdsTable();
-        await syncExpiredAds(pool);
         const viewerId = getOptionalViewerId(req);
-        if (viewerId) await ensureAdEngagementTables();
+        const isAnonymousRequest = !viewerId;
+        await ensureAdsTable();
+        if (!isAnonymousRequest) {
+            const ensureEngagementStartedAt = process.hrtime.bigint();
+            await ensureAdEngagementTables();
+            mark('ensureEngagementMs', ensureEngagementStartedAt);
+        }
         const limitRaw = Number.parseInt(req.query.limit, 10);
         const offsetRaw = Number.parseInt(req.query.offset, 10);
         const shuffleSeed = String(req.query.shuffle || req.query.feedSession || '').trim();
         const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 20;
         const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
         const ownerUserId = req.query.user_id ? Number.parseInt(req.query.user_id, 10) : null;
+        const cacheKey = isAnonymousRequest ? getAnonymousPublicAdsCacheKey(req, limit, offset, ownerUserId) : null;
+        const cachedPayload = getCachedAnonymousPublicAds(cacheKey);
+        if (cachedPayload) {
+            res.setHeader('X-Public-Ads-Cache', 'HIT');
+            return res.status(200).json(cachedPayload);
+        }
         const viewerSelect = viewerId
             ? `,
                 EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $3) AS user_liked,
@@ -1457,31 +1751,74 @@ exports.getActiveAdsPublic = async (req, res) => {
             ? `(
                    a.status = 'Active'
                    OR a.status IN ('Removed', 'Paused')
+                   OR (
+                       a.status = 'Completed'
+                       AND EXISTS (
+                           SELECT 1
+                           FROM ad_saves profile_save
+                           WHERE profile_save.ad_id = a.ad_id
+                             AND profile_save.user_id = a.user_id
+                             AND profile_save.ad_source_type = 'upload'
+                       )
+                       AND ${RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL}
+                   )
                )`
             : `a.status = 'Active'`;
+        const countViewsSelect = ownerUserId && Number.isFinite(ownerUserId)
+            ? `COALESCE(av.counted_views, 0) AS counted_views,`
+            : `COALESCE(a.current_reach, a.impressions, 0) AS counted_views,`;
+        const countViewsJoin = ownerUserId && Number.isFinite(ownerUserId)
+            ? `LEFT JOIN (
+                 SELECT ad_id, COUNT(*) AS counted_views
+                 FROM ad_views
+                 GROUP BY ad_id
+             ) av ON av.ad_id = a.ad_id`
+            : '';
+        const queryStartedAt = process.hrtime.bigint();
         const result = await pool.query(
-            `SELECT a.*, u.username AS owner_username_joined, u.profile_picture${viewerSelect}
+            `SELECT a.*, ${countViewsSelect}
+                    COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
+                    COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
+                    COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
+                    COALESCE(owner_u.profile_picture, sponsor_u.profile_picture) AS profile_picture${viewerSelect}
              FROM ads a
-             LEFT JOIN users u ON a.user_id = u.id
+             JOIN users sponsor_u ON a.user_id = sponsor_u.id
+             LEFT JOIN users owner_u ON owner_u.user_id::text = a.owner_user_id
+             ${countViewsJoin}
              WHERE ${statusFilter}
+               AND COALESCE(sponsor_u.is_deactivated, false) = false
+               AND COALESCE(sponsor_u.status, 'Active') <> 'Deactivated'
                AND (
                    a.status <> 'Active'
                    OR a.max_reach_cap IS NULL
-                   OR COALESCE(a.current_reach, 0) < a.max_reach_cap
+                   OR COALESCE(a.impressions, 0) < a.max_reach_cap
                )
                ${ownerFilter}
              ORDER BY COALESCE(a.active_start_time, a.created_at) DESC
              LIMIT $1 OFFSET $2`,
             queryParams
         );
+        mark('queryMs', queryStartedAt);
 
-        const viewerProfile = await loadViewerAdProfile(pool, viewerId, req);
+        let viewerProfile = null;
+        if (!isAnonymousRequest) {
+            const viewerProfileStartedAt = process.hrtime.bigint();
+            viewerProfile = await loadViewerAdProfile(pool, viewerId, req);
+            mark('viewerProfileMs', viewerProfileStartedAt);
+        }
+        const eligibilityStartedAt = process.hrtime.bigint();
         const eligibleRows = (result.rows || []).filter((row) => {
             if (ownerUserId && Number.isFinite(ownerUserId)) {
-                return ['Active', 'Removed', 'Paused'].includes(String(row.status || '').trim());
+                const status = String(row.status || '').trim();
+                if (['Active', 'Removed', 'Paused'].includes(status)) return true;
+                if (status !== 'Completed') return false;
+                const mediaType = String(row.media_type || '').trim().toLowerCase();
+                if (!['image', 'photo', 'video'].includes(mediaType)) return false;
+                return true;
             }
             return adIsWithinDeliveryRules(row);
         });
+        mark('eligibilityMs', eligibilityStartedAt);
         let rows;
 
         if (ownerUserId && Number.isFinite(ownerUserId)) {
@@ -1489,20 +1826,25 @@ exports.getActiveAdsPublic = async (req, res) => {
         } else if (viewerProfile?.isAnonymous) {
             rows = eligibleRows;
         } else {
+            const targetingStartedAt = process.hrtime.bigint();
             const targetedRows = eligibleRows.filter((row) => adMatchesViewer(row, viewerProfile || {}));
             const targetedIds = new Set(targetedRows.map((row) => String(row.ad_id || row.id)));
             const fallbackRows = eligibleRows.filter((row) => !targetedIds.has(String(row.ad_id || row.id)));
             rows = [...targetedRows, ...fallbackRows];
+            mark('targetingMs', targetingStartedAt);
         }
 
         if (shuffleSeed) {
+            const shuffleStartedAt = process.hrtime.bigint();
             rows = shuffleRowsWithSeed(
                 rows,
                 `${shuffleSeed}:${viewerId || 'guest'}`,
                 (row) => String(row?.ad_id || row?.id || Math.random())
             );
+            mark('shuffleMs', shuffleStartedAt);
         }
 
+        const mapAdsStartedAt = process.hrtime.bigint();
         const ads = rows.slice(0, limit).map((row) => {
             const ad = {
                 ...mapRow(row),
@@ -1539,7 +1881,9 @@ exports.getActiveAdsPublic = async (req, res) => {
                 ad_like_locked: !!ad.ad_coin_collected,
             };
         });
+        mark('mapAdsMs', mapAdsStartedAt);
 
+        const hydrateProductsStartedAt = process.hrtime.bigint();
         const productPromoteTargets = ads
             .map((ad) => {
                 if (!isProductPromoteCampaign(ad)) return null;
@@ -1561,7 +1905,9 @@ exports.getActiveAdsPublic = async (req, res) => {
                  FROM market m
                  INNER JOIN users u ON m.user_id = u.id
                  WHERE (m.id = ANY($1::int[]) OR m.product_code = ANY($2::text[]))
-                   AND m.status IN ('approved', 'active')`,
+                   AND m.status IN ('approved', 'active')
+                   AND COALESCE(u.is_deactivated, false) = false
+                   AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
                 [productIds.length ? productIds : [0], productCodes.length ? productCodes : ['']]
             );
             linkedProducts = linkedResult.rows || [];
@@ -1653,15 +1999,16 @@ exports.getActiveAdsPublic = async (req, res) => {
                 commentCount: Number(ad.comments_count || 0),
                 shares_count: Number(ad.shares_count || 0),
                 shareCount: Number(ad.shares_count || 0),
-                views_count: Number(ad.views_count || ad.impressions || 0),
-                viewCount: Number(ad.views_count || ad.impressions || 0),
+                views_count: Number(ad.views_count || 0),
+                viewCount: Number(ad.views_count || 0),
                 user_liked: !!ad.user_liked,
                 ad_coin_collected: !!ad.ad_coin_collected,
                 ad_like_locked: !!ad.ad_coin_collected,
             };
         }).filter(Boolean);
+        mark('hydrateProductsMs', hydrateProductsStartedAt);
 
-        return res.status(200).json({
+        const payload = {
             success: true,
             ads: hydratedAds,
             pagination: {
@@ -1670,7 +2017,30 @@ exports.getActiveAdsPublic = async (req, res) => {
                 nextOffset: offset + hydratedAds.length,
                 hasMore: rows.length > limit || result.rows.length > limit,
             },
-        });
+        };
+
+        if (cacheKey) {
+            setCachedAnonymousPublicAds(cacheKey, payload);
+            res.setHeader('X-Public-Ads-Cache', 'MISS');
+        }
+
+        mark('totalMs', requestStartedAt);
+        if (shouldLogPublicAdsTiming()) {
+            console.info('[public-ads-timing]', {
+                viewerId: viewerId || null,
+                isAnonymousRequest,
+                limit,
+                offset,
+                ownerUserId: ownerUserId || null,
+                fetchLimit,
+                rowsFetched: result.rows.length,
+                rowsEligible: eligibleRows.length,
+                adsReturned: hydratedAds.length,
+                timings,
+            });
+        }
+
+        return res.status(200).json(payload);
     } catch (error) {
         console.error('Get active public ads error:', error);
         return res.status(500).json({ success: false, message: 'Failed to fetch active ads' });
@@ -1680,18 +2050,29 @@ exports.getActiveAdsPublic = async (req, res) => {
 exports.getAdPublic = async (req, res) => {
     try {
         await ensureAdsTable();
-        await syncExpiredAds(pool, req.params.adId);
         const { adId } = req.params;
         const result = await pool.query(
-            `SELECT a.*, u.username AS owner_username_joined, u.profile_picture
+            `SELECT a.*,
+                    COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
+                    COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
+                    COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
+                    COALESCE(owner_u.profile_picture, sponsor_u.profile_picture) AS profile_picture
              FROM ads a
-             LEFT JOIN users u ON a.user_id = u.id
+             JOIN users sponsor_u ON a.user_id = sponsor_u.id
+             LEFT JOIN users owner_u ON owner_u.user_id::text = a.owner_user_id
              WHERE a.ad_id = $1
-             LIMIT 1`,
+               AND a.status = 'Active'
+               AND COALESCE(sponsor_u.is_deactivated, false) = false
+               AND COALESCE(sponsor_u.status, 'Active') <> 'Deactivated'
+               LIMIT 1`,
             [adId]
         );
 
         if (!result.rows.length) {
+            return res.status(404).json({ success: false, message: 'Ad not found' });
+        }
+
+        if (!adIsWithinDeliveryRules(result.rows[0])) {
             return res.status(404).json({ success: false, message: 'Ad not found' });
         }
 
@@ -1744,10 +2125,10 @@ exports.getAdAnalytics = async (req, res) => {
         }
         const adRow = ownerCheck.rows[0];
 
-        // Totals from ad_views
+        // View/reach totals from ad_views. Impressions come from ads.impressions.
         const viewTotals = await pool.query(
-            `SELECT COALESCE(SUM(view_count), 0) AS impressions,
-                    COUNT(*) AS reach
+            `SELECT COUNT(*) AS views,
+                    COUNT(DISTINCT COALESCE(user_id::text, viewer_key, ip_address, id::text)) AS reach
              FROM ad_views WHERE ad_id = $1`,
             [adId]
         );
@@ -1858,10 +2239,10 @@ exports.getAdAnalytics = async (req, res) => {
         // Use ads table as the single source of truth so analytics always matches
         // the numbers displayed on the ad card in the dashboard.
         const totals = {
-            views: Number(adRow.impressions || 0),
-            reach: Number(adRow.current_reach || 0),
+            views: Number(viewTotals.rows[0]?.views || 0),
+            reach: Number(viewTotals.rows[0]?.reach || 0),
             impressions: Number(adRow.impressions || 0),
-            clicks: Number(adRow.clicks || 0),
+            clicks: Number(clickTotals.rows[0]?.clicks || 0),
             likes: Number(likeTotals.rows[0]?.likes || 0),
         };
 
@@ -2019,6 +2400,94 @@ exports.getMySavedAdIds = async (req, res) => {
     }
 };
 
+exports.getMySavedAds = async (req, res) => {
+    try {
+        await ensureAdsTable();
+        await ensureAdSavesSchema();
+        await ensureAdEngagementTables();
+        await syncExpiredAds(pool);
+        const userId = req.user?.id || req.user?.userId;
+        if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+        const { rows } = await pool.query(
+            `SELECT a.*,
+                    COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
+                    COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
+                    COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
+                    COALESCE(owner_u.profile_picture, sponsor_u.profile_picture) AS profile_picture,
+                    COALESCE(av.reach_count, 0) AS reach_count,
+                    s.created_at AS saved_at
+             FROM ad_saves s
+             JOIN ads a ON a.ad_id = s.ad_id
+             LEFT JOIN users sponsor_u ON a.user_id = sponsor_u.id
+             LEFT JOIN users owner_u ON owner_u.user_id::text = a.owner_user_id
+             LEFT JOIN (
+                 SELECT ad_id, COUNT(*) AS reach_count
+                 FROM ad_views
+                 GROUP BY ad_id
+             ) av ON av.ad_id = a.ad_id
+             WHERE s.user_id = $1
+               AND NOT (
+                   a.status = 'Completed'
+                   AND s.ad_source_type = 'upload'
+                   AND ${RAW_PHOTO_VIDEO_UPLOAD_SQL}
+                   AND NOT (${RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL})
+               )
+             ORDER BY s.created_at DESC`,
+            [userId]
+        );
+
+        return res.json({ success: true, ads: rows.map(mapRow) });
+    } catch (err) {
+        console.error('[ads] getMySavedAds error:', err);
+        return res.status(500).json({ success: false, message: 'Failed to fetch saved ads' });
+    }
+};
+
+exports.getPublicSavedAdsByUser = async (req, res) => {
+    try {
+        await ensureAdsTable();
+        await ensureAdSavesSchema();
+        await ensureAdEngagementTables();
+        await syncExpiredAds(pool);
+
+        const profileUserId = Number(req.params.userId);
+        if (!Number.isFinite(profileUserId) || profileUserId <= 0) {
+            return res.status(400).json({ success: false, message: 'Invalid user ID' });
+        }
+
+        const { rows } = await pool.query(
+            `SELECT a.*,
+                    COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
+                    COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
+                    COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
+                    COALESCE(owner_u.profile_picture, sponsor_u.profile_picture) AS profile_picture,
+                    COALESCE(av.reach_count, 0) AS reach_count,
+                    s.created_at AS saved_at
+             FROM ad_saves s
+             JOIN ads a ON a.ad_id = s.ad_id
+             LEFT JOIN users sponsor_u ON a.user_id = sponsor_u.id
+             LEFT JOIN users owner_u ON owner_u.user_id::text = a.owner_user_id
+             LEFT JOIN (
+                 SELECT ad_id, COUNT(*) AS reach_count
+                 FROM ad_views
+                 GROUP BY ad_id
+              ) av ON av.ad_id = a.ad_id
+             WHERE s.user_id = $1
+               AND a.user_id = $1
+               AND LOWER(COALESCE(a.campaign_type, '')) IN ('photo and video', 'photo & video')
+               AND LOWER(TRIM(REPLACE(REPLACE(COALESCE(a.status, ''), '_', ' '), '-', ' '))) = 'completed'
+             ORDER BY s.created_at DESC`,
+            [profileUserId]
+        );
+
+        return res.json({ success: true, ads: rows.map(mapRow) });
+    } catch (err) {
+        console.error('[ads] getPublicSavedAdsByUser error:', err);
+        return res.status(500).json({ success: false, message: 'Failed to fetch public saved ads' });
+    }
+};
+
 exports.getMySavedAdCounts = async (req, res) => {
     try {
         await ensureAdSavesSchema();
@@ -2049,3 +2518,8 @@ exports.getMySavedAdCounts = async (req, res) => {
         return res.status(500).json({ success: false, message: 'Failed to fetch counts' });
     }
 };
+
+exports.ensureAdsTable = ensureAdsTable;
+exports.ensureAdEngagementTables = ensureAdEngagementTables;
+exports.getAdsMaintenanceSweepMs = getAdsMaintenanceSweepMs;
+exports.syncAdsReachCaps = syncAdsReachCaps;

@@ -57,6 +57,7 @@ const MAX_PROFILE_IMAGE_BYTES = 200 * 1024;
 const MAX_PROFILE_IMAGE_DIMENSION = 1200;
 const MAX_BIO_LENGTH = 50;
 const MAX_BIO_LINKS = 2;
+const TODAY_DATE_STRING = new Date().toISOString().slice(0, 10);
 
 const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -194,6 +195,36 @@ export default function SettingsPage() {
         newPassword: "",
         confirmPassword: "",
     });
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+    const [showDeactivateModal, setShowDeactivateModal] = useState(false);
+    const [isDeactivatingAccount, setIsDeactivatingAccount] = useState(false);
+
+    const handleDeactivateAccount = async () => {
+        try {
+            setIsDeactivatingAccount(true);
+            await authService.selfDeactivateAccount();
+            authService.logout();
+        } catch (err: any) {
+            setNotification({ type: "error", message: err?.message || "Could not deactivate your account." });
+        } finally {
+            setIsDeactivatingAccount(false);
+            setShowDeactivateModal(false);
+        }
+    };
+
+    const handleDeleteAccount = async () => {
+        try {
+            setIsDeletingAccount(true);
+            await authService.selfDeleteAccount();
+            router.replace("/");
+        } catch (err: any) {
+            setNotification({ type: "error", message: err?.message || "Could not delete your account." });
+        } finally {
+            setIsDeletingAccount(false);
+            setShowDeleteModal(false);
+        }
+    };
 
     const applyUserToForms = useCallback((profile: SettingsUser) => {
         setGeneralForm({
@@ -272,6 +303,7 @@ export default function SettingsPage() {
         if (!generalForm.username.trim()) nextErrors.username = "Username is required";
         if (!generalForm.country.trim()) nextErrors.country = "Country is required";
         if (!generalForm.dateOfBirth) nextErrors.dateOfBirth = "Date of birth is required";
+        if (generalForm.dateOfBirth && generalForm.dateOfBirth > TODAY_DATE_STRING) nextErrors.dateOfBirth = "Date of birth cannot be in the future";
         if (!generalForm.gender.trim()) nextErrors.gender = "Gender is required";
         setGeneralErrors(nextErrors);
     }, [generalForm.country, generalForm.dateOfBirth, generalForm.firstName, generalForm.gender, generalForm.username]);
@@ -368,6 +400,10 @@ export default function SettingsPage() {
     const handleSaveGeneral = async () => {
         if (!generalForm.firstName.trim() || !generalForm.username.trim() || !generalForm.country.trim() || !generalForm.dateOfBirth || !generalForm.gender.trim()) {
             setNotification({ type: "error", message: "First name, username, country, gender, and date of birth are required." });
+            return;
+        }
+        if (generalForm.dateOfBirth > TODAY_DATE_STRING) {
+            setNotification({ type: "error", message: "Date of birth cannot be in the future." });
             return;
         }
         if (bioTextLength > MAX_BIO_LENGTH) {
@@ -484,7 +520,6 @@ export default function SettingsPage() {
     }
 
     if (!user) return null;
-    const isAdminUser = user.user_type === "admin";
 
     return (
         <div className="mx-auto max-w-[1280px] pb-10 text-white">
@@ -549,41 +584,6 @@ export default function SettingsPage() {
                     </div>
 
                     <div className="space-y-4">
-                        {isAdminUser && (
-                            <div className="space-y-3">
-                                <div className="rounded-3xl border border-cyan-500/20 bg-cyan-500/10 p-4">
-                                    <div className="flex flex-col gap-3 min-[780px]:flex-row min-[780px]:items-center min-[780px]:justify-between">
-                                        <div>
-                                            <h2 className="text-sm font-black text-white">Admin Category Manager</h2>
-                                            <p className="mt-1 text-xs text-white/45">Manage the DB-backed category tree and commissions used by Add Product.</p>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={() => router.push("/dashboard/categories")}
-                                            className="rounded-xl bg-white px-4 py-2.5 text-[11px] font-bold uppercase tracking-[0.16em] text-black transition hover:bg-zinc-200"
-                                        >
-                                            Open Categories
-                                        </button>
-                                    </div>
-                                </div>
-                                <div className="rounded-3xl border border-amber-500/20 bg-amber-500/10 p-4">
-                                    <div className="flex flex-col gap-3 min-[780px]:flex-row min-[780px]:items-center min-[780px]:justify-between">
-                                        <div>
-                                            <h2 className="text-sm font-black text-white">Ad Management</h2>
-                                            <p className="mt-1 text-xs text-white/45">Review, approve, pause or reject user-submitted ads.</p>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={() => router.push("/dashboard/admin/ads")}
-                                            className="rounded-xl bg-amber-500 px-4 py-2.5 text-[11px] font-bold uppercase tracking-[0.16em] text-black transition hover:bg-amber-400"
-                                        >
-                                            Manage Ads
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
                         <div className="overflow-hidden rounded-3xl border border-white/8 bg-white/[0.03]">
                             <div className="flex flex-nowrap items-center gap-2 overflow-x-auto border-b border-white/8 px-3 py-3 min-[960px]:px-4">
                                 {EDIT_TABS.map((tab) => (
@@ -677,7 +677,7 @@ export default function SettingsPage() {
                                     </label>
                                     <label className="space-y-2">
                                         <span className="text-[11px] font-semibold uppercase tracking-widest text-white/35">Date of Birth <span className="text-red-400">*</span></span>
-                                        <input type="date" value={generalForm.dateOfBirth} onChange={(e) => setGeneralForm((prev) => ({ ...prev, dateOfBirth: e.target.value }))} className={`w-full rounded-2xl border bg-white/[0.05] px-4 py-3 text-sm text-white focus:border-blue-500/50 focus:outline-none ${generalErrors.dateOfBirth ? "border-red-500/60" : "border-white/[0.08]"}`} />
+                                        <input type="date" max={TODAY_DATE_STRING} value={generalForm.dateOfBirth} onChange={(e) => setGeneralForm((prev) => ({ ...prev, dateOfBirth: e.target.value }))} className={`w-full rounded-2xl border bg-white/[0.05] px-4 py-3 text-sm text-white focus:border-blue-500/50 focus:outline-none ${generalErrors.dateOfBirth ? "border-red-500/60" : "border-white/[0.08]"}`} />
                                         {generalErrors.dateOfBirth && <p className="text-xs text-red-300">{generalErrors.dateOfBirth}</p>}
                                     </label>
                                 </div>
@@ -925,14 +925,42 @@ export default function SettingsPage() {
                                     <p className="mt-1 text-xs text-white/45">High-impact account actions.</p>
                                 </div>
                                 <div className="flex flex-col gap-3 min-[900px]:flex-row">
-                                    <button type="button" onClick={() => setNotification({ type: "error", message: "Deactivate account is not enabled yet." })} className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-amber-200 transition hover:bg-amber-500/15">Deactivate Account</button>
-                                    <button type="button" onClick={() => setNotification({ type: "error", message: "Delete account is not enabled yet." })} className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-red-300 transition hover:bg-red-500/15">Delete Account</button>
+                                    <button type="button" onClick={() => setShowDeactivateModal(true)} className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-amber-200 transition hover:bg-amber-500/15">Deactivate Account</button>
+                                    <button type="button" onClick={() => setShowDeleteModal(true)} className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-red-300 transition hover:bg-red-500/15">Delete Account</button>
                                 </div>
                             </section>
                         )}
                     </div>
                 </div>
             </section>
+
+            {showDeactivateModal && (
+                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/80" onClick={() => setShowDeactivateModal(false)} />
+                    <div className="relative w-full max-w-sm rounded-[2rem] border border-white/10 bg-[#141416] p-6 shadow-2xl">
+                        <h3 className="text-sm font-black uppercase tracking-[0.18em] text-white">Deactivate Account</h3>
+                        <p className="mt-3 text-xs leading-5 text-white/55">Your public profile, Googs, products, and running ads will be hidden. You can reactivate anytime by logging back in.</p>
+                        <div className="mt-5 flex gap-3">
+                            <button type="button" onClick={() => setShowDeactivateModal(false)} className="flex-1 rounded-2xl border border-white/10 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-white/60 transition hover:bg-white/5">Cancel</button>
+                            <button type="button" onClick={handleDeactivateAccount} disabled={isDeactivatingAccount} className="flex-1 rounded-2xl bg-amber-500 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-black transition hover:bg-amber-400 disabled:opacity-50">{isDeactivatingAccount ? "Deactivating..." : "Deactivate"}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showDeleteModal && (
+                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/80" onClick={() => setShowDeleteModal(false)} />
+                    <div className="relative w-full max-w-sm rounded-[2rem] border border-white/10 bg-[#141416] p-6 shadow-2xl">
+                        <h3 className="text-sm font-black uppercase tracking-[0.18em] text-white">Delete Account</h3>
+                        <p className="mt-3 text-xs leading-5 text-white/55">This is permanent. All your data, Googs, products, and ads will be deleted and cannot be recovered.</p>
+                        <div className="mt-5 flex gap-3">
+                            <button type="button" onClick={() => setShowDeleteModal(false)} className="flex-1 rounded-2xl border border-white/10 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-white/60 transition hover:bg-white/5">Cancel</button>
+                            <button type="button" onClick={handleDeleteAccount} disabled={isDeletingAccount} className="flex-1 rounded-2xl bg-red-500 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-white transition hover:bg-red-600 disabled:opacity-50">{isDeletingAccount ? "Deleting..." : "Delete"}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {isUploadLinkModalOpen && (
                 <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">

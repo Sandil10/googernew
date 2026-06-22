@@ -4,10 +4,13 @@ import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import IonIcon from "@/app/components/IonIcon";
+import UploadContentSettingsSection, { type UploadContentSubscriptionPackage } from "./upload-content/UploadContentSettingsSection";
+import { useUploadContentSettings } from "./upload-content/useUploadContentSettings";
 import { authService } from "@/services/authService";
 import { walletService } from "@/services/walletService";
 import { adsService } from "@/services/adsService";
 import { marketService } from "@/services/marketService";
+import { uploadContentService } from "@/services/uploadContentService";
 import { subscriptionService } from "@/services/subscriptionService";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { addAdWalletRefund, getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
@@ -52,6 +55,20 @@ type PendingVideoCrop = {
     width: number;
     height: number;
 };
+type UploadControlSettings = {
+    min_upload_price: number;
+    max_upload_price: number;
+    flash_content_price?: number;
+    flash_preview_seconds?: number;
+    default_topic: string;
+    default_content_access_mode: "blurred" | "unblurred";
+    normal_user_video_limit_seconds: number;
+    subscribed_user_video_limit_seconds: number;
+    commission_tiers?: Array<{ min: number; max: number; commission: number }>;
+    subscription_commission_tiers?: Array<{ min: number; max: number; commission: number }>;
+};
+type StoredUploadSubscriptionPackage = UploadContentSubscriptionPackage;
+type SubscriptionPlanExtra = Record<string, any>;
 type PublishedAdReview = {
     adId: string;
     createdAt: string;
@@ -82,12 +99,19 @@ type PublishedAdReview = {
     promoDiscount?: number | null;
     status?: "Under Review" | "Active" | "Completed" | "Cancelled";
     campaignPath?: string;
-    editDraft?: {
-        editingAdId?: string;
-        promoteAgain?: boolean;
-        activeLink: string;
-        linkInput: string;
-        description: string;
+        editDraft?: {
+            editingAdId?: string;
+            promoteAgain?: boolean;
+            activeLink: string;
+            linkInput: string;
+            description: string;
+        uploadTopic?: string;
+        uploadAffiliateCommission?: number;
+        uploadShowLinkedContentOnHome?: boolean;
+        uploadVisibility?: "public" | "subscribers_only" | "private";
+        hashtags?: string;
+        allowComments?: boolean;
+        acceptedUploadTerms?: boolean;
         ctaTopic: CtaTopic;
         ctaValue: string;
         selectedCountryCode: string;
@@ -101,13 +125,40 @@ type PublishedAdReview = {
         durationDays: number;
         promoCode: string;
         hasPromoCodeAdded: boolean;
+        carryOverViews?: number;
         mediaPreview?: string;
         mediaGallery?: string[];
         mediaType?: "image" | "video" | "link" | "profile" | "";
         imageName?: string;
+        thumbnailPreview?: string;
+        thumbnailName?: string;
+        contentAccessMode?: "blurred" | "unblurred";
+        uploadPreviewMode?: "none" | "thumbnail" | "auto_preview" | "blurred";
         linkedProductId?: number | string;
+        sourceOwnerDbId?: number | string | null;
+        sourceOwnerPublicId?: string;
+        sourceOwnerUsername?: string;
+        sourceOwnerProfilePicture?: string;
     };
 };
+
+const isStorageQuotaError = (error: unknown) => (
+    error instanceof DOMException
+    && (error.name === "QuotaExceededError" || error.name === "NS_ERROR_DOM_QUOTA_REACHED")
+);
+
+const sanitizeDraftAsset = (value: string | null | undefined) => {
+    const normalized = String(value || "").trim();
+    if (!normalized) return "";
+    if (/^(data:|blob:)/i.test(normalized)) return "";
+    return normalized;
+};
+
+const sanitizeDraftAssetList = (values: string[]) => (
+    values
+        .map((value) => sanitizeDraftAsset(value))
+        .filter(Boolean)
+);
 
 const CTA_OPTIONS: CtaTopic[] = [
     "Visit",
@@ -162,12 +213,39 @@ const AD_ID_START = 100000000012;
 const VIDEO_MAX_DURATION_SECONDS = 60;
 const GENDER_OPTIONS: GenderTarget[] = ["All", "Male", "Female"];
 const INTEREST_TOPIC_LIMIT = 10;
+const UPLOAD_CONTENT_TOPICS = [
+    "Comedy",
+    "Food & Cooking",
+    "Education",
+    "Technology",
+    "Business",
+    "Finance",
+    "Health",
+    "Sports",
+    "Entertainment",
+    "Science",
+    "Travel",
+    "Music",
+    "Gaming",
+    "AI",
+    "Programming",
+    "News",
+    "Lifestyle",
+    "Agriculture",
+    "Real Estate",
+    "Automotive",
+    "Marketing",
+    "Beauty & Fashion",
+    "Pets & Animals",
+    "Kids & Family",
+    "Films & Animation",
+] as const;
 const INTEREST_TOPIC_OPTIONS = [
-    "Fashion",
+    "Comedy",
+    "Food & Cooking",
     "Electronics",
     "Beauty",
     "Fitness",
-    "Food",
     "Travel",
     "Gaming",
     "Education",
@@ -183,6 +261,10 @@ const INTEREST_TOPIC_OPTIONS = [
     "Real Estate",
     "Events",
     "Shopping",
+    "Beauty & Fashion",
+    "Pets & Animals",
+    "Kids & Family",
+    "Films & Animation",
 ];
 const PLACEMENT_OPTIONS = [
     { label: "All", selectable: true },
@@ -197,6 +279,44 @@ const PLACEMENT_OPTIONS = [
 const AVAILABLE_PLACEMENT_LABELS = PLACEMENT_OPTIONS.filter((placement) => placement.selectable && placement.label !== "All").map((placement) => placement.label);
 const PROFILE_PROMOTE_FEATURED_LIMIT = 3;
 const PROFILE_PROMOTE_PICKER_VISIBLE_COUNT = 5;
+const MAX_UPLOAD_SUBSCRIPTION_PACKAGES = 3;
+
+function sanitizeUploadSubscriptionPackages(value: unknown): StoredUploadSubscriptionPackage[] {
+    if (!Array.isArray(value)) return [];
+    const normalized: StoredUploadSubscriptionPackage[] = [];
+    value.forEach((item: any, index) => {
+            const price = Number(item?.price ?? 0);
+            const days = Number(item?.days ?? 0);
+            if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(days) || days <= 0) {
+                return;
+            }
+            normalized.push({
+                id: typeof item?.id === "string" && item.id.trim() ? item.id : `upload-package-${index + 1}`,
+                price: Math.round(price),
+                days: Math.max(1, Math.round(days)),
+                affiliateCommission: Number.isFinite(Number(item?.affiliateCommission)) ? Math.min(100, Math.max(0, Number(item.affiliateCommission))) : 0,
+            });
+        });
+    return normalized.slice(0, MAX_UPLOAD_SUBSCRIPTION_PACKAGES);
+}
+
+function getUploadSubscriptionPackageValidationMessage(
+    packages: StoredUploadSubscriptionPackage[],
+    subscriptionCommissionTiers: Array<{ min: number; max: number; commission: number }>,
+) {
+    for (const item of sanitizeUploadSubscriptionPackages(packages)) {
+        const price = Number(item.price ?? 0);
+        if (subscriptionCommissionTiers.length > 0) {
+            const matchesTier = subscriptionCommissionTiers.some((tier) => price >= Number(tier.min) && price <= Number(tier.max));
+            if (!matchesTier) {
+                const minimum = Math.min(...subscriptionCommissionTiers.map((tier) => Number(tier.min)));
+                const maximum = Math.max(...subscriptionCommissionTiers.map((tier) => Number(tier.max)));
+                return `Please add a subscription package price within the available price range (R ${minimum.toLocaleString()} - R ${maximum.toLocaleString()}).`;
+            }
+        }
+    }
+    return "";
+}
 
 function normalizePlacementLabel(value: unknown) {
     if (value === "Chat") return "Goog Msg";
@@ -315,6 +435,47 @@ function getSocialEmbedUrl(value: string) {
     return null;
 }
 
+function getMediaUrlFromQuery(value: string) {
+    try {
+        const url = new URL(normalizeUrl(value));
+        const mediaKeys = ["imgurl", "image", "image_url", "media", "media_url", "file", "src", "url"];
+        for (const key of mediaKeys) {
+            const candidate = url.searchParams.get(key);
+            if (candidate?.trim()) return decodeURIComponent(candidate.trim());
+        }
+    } catch {
+        return "";
+    }
+
+    return "";
+}
+
+function isImageLikeUrl(value: string) {
+    const normalized = normalizeUrl(value);
+    if (!normalized) return false;
+
+    const imagePattern = /\.(png|jpe?g|gif|webp|bmp|svg|avif)(\?.*)?$/i;
+    if (imagePattern.test(normalized)) return true;
+
+    const mediaQueryUrl = getMediaUrlFromQuery(normalized);
+    if (mediaQueryUrl && imagePattern.test(mediaQueryUrl)) return true;
+
+    return /[?&](format|fm|ext|type)=((p|jpe?g|png|gif|webp|bmp|svg|avif))/i.test(normalized);
+}
+
+function isVideoLikeUrl(value: string) {
+    const normalized = normalizeUrl(value);
+    if (!normalized) return false;
+
+    const videoPattern = /\.(mp4|webm|ogg|mov|m4v|avi|mkv)(\?.*)?$/i;
+    if (videoPattern.test(normalized)) return true;
+
+    const mediaQueryUrl = getMediaUrlFromQuery(normalized);
+    if (mediaQueryUrl && videoPattern.test(mediaQueryUrl)) return true;
+
+    return /[?&](format|ext|type)=(mp4|webm|ogg|mov|m4v|avi|mkv)/i.test(normalized);
+}
+
 function getLinkPreviewType(value: string): LinkPreviewType {
     const normalized = normalizeUrl(value);
     if (!normalized) return null;
@@ -322,13 +483,11 @@ function getLinkPreviewType(value: string): LinkPreviewType {
     const socialEmbed = getSocialEmbedUrl(normalized);
     if (socialEmbed) return "embed";
 
-    const imagePattern = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
-    const videoPattern = /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i;
     const googleImageSource = getGoogleImageSourceUrl(normalized);
 
     if (googleImageSource) return "image";
-    if (imagePattern.test(normalized)) return "image";
-    if (videoPattern.test(normalized)) return "video";
+    if (isImageLikeUrl(normalized)) return "image";
+    if (isVideoLikeUrl(normalized)) return "video";
     return "website";
 }
 
@@ -356,8 +515,7 @@ function getLinkPreviewThumbnail(value: string) {
     const googleImageSource = getGoogleImageSourceUrl(normalized);
     if (googleImageSource) return googleImageSource;
 
-    const imagePattern = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
-    if (imagePattern.test(normalized)) return normalized;
+    if (isImageLikeUrl(normalized)) return getMediaUrlFromQuery(normalized) || normalized;
 
     const youtubeThumbnail = getYouTubeVideoId(normalized)
         ? `https://img.youtube.com/vi/${getYouTubeVideoId(normalized)}/hqdefault.jpg`
@@ -381,10 +539,21 @@ function getDefaultLinkTitle(value: string) {
 }
 
 function getProductImageSrc(product: any) {
+    const imageArray = Array.isArray(product?.images) ? product.images : [];
+    const galleryArray = Array.isArray(product?.media_gallery) ? product.media_gallery : [];
+    const variantArray = Array.isArray(product?.variants) ? product.variants : [];
     const candidates = [
         product?.image_url,
+        product?.main_image,
         product?.media_preview,
-        ...(Array.isArray(product?.media_gallery) ? product.media_gallery : []),
+        ...imageArray.map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
+        ...galleryArray.map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
+        ...variantArray.map((value: any) => value?.image_url || value?.url || value?.image),
+        product?.raw?.image_url,
+        product?.raw?.main_image,
+        product?.raw?.media_preview,
+        ...(Array.isArray(product?.raw?.images) ? product.raw.images : []).map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
+        ...(Array.isArray(product?.raw?.media_gallery) ? product.raw.media_gallery : []).map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
     ]
         .map((value) => String(value || "").trim())
         .filter(Boolean);
@@ -428,6 +597,60 @@ function getProductShareTarget(rawLink: string) {
     }
 
     return null;
+}
+
+function getProductSearchText(rawValue: string) {
+    const trimmed = rawValue.trim();
+    if (!trimmed) return "";
+
+    const fromPath = (value: string) => value
+        .split(/[\\/]/)
+        .pop()
+        ?.split(/[?#]/)[0]
+        ?.replace(/\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i, "")
+        ?.replace(/[-_+.%]+/g, " ")
+        ?.replace(/\s+/g, " ")
+        .trim() || "";
+
+    try {
+        const parsed = new URL(normalizeUrl(trimmed));
+        const googleImage = parsed.searchParams.get("imgurl");
+        if (googleImage) return getProductSearchText(decodeURIComponent(googleImage));
+
+        const queryText = parsed.searchParams.get("q") || parsed.searchParams.get("query") || parsed.searchParams.get("search");
+        if (queryText) return queryText.trim();
+
+        const fromUrlPath = fromPath(parsed.pathname);
+        if (fromUrlPath && !/^(image|img|photo|product|share|shop)$/i.test(fromUrlPath)) return fromUrlPath;
+    } catch {
+        // Plain text falls through below.
+    }
+
+    return trimmed
+        .replace(/\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i, "")
+        .replace(/[-_+.%]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function getPastedProductSearchValue(event: React.ClipboardEvent<HTMLInputElement>) {
+    const html = event.clipboardData.getData("text/html");
+    if (html) {
+        const altMatch = html.match(/\s(?:alt|title)=["']([^"']+)["']/i);
+        if (altMatch?.[1]) return altMatch[1].trim();
+        const srcMatch = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+        if (srcMatch?.[1]) return srcMatch[1].trim();
+    }
+
+    const text = event.clipboardData.getData("text/plain");
+    if (text?.trim()) return text.trim();
+
+    const imageFile = Array.from(event.clipboardData.files || []).find((file) => file.type.startsWith("image/"));
+    if (imageFile?.name && !/^image\.(png|jpe?g|webp|gif|bmp)$/i.test(imageFile.name)) {
+        return imageFile.name;
+    }
+
+    return "";
 }
 
 function getProfileUsernameFromLink(rawLink: string) {
@@ -474,13 +697,29 @@ function ctaUsesCountryPhone(topic: CtaTopic) {
     return topic === "Call Now" || topic === "WhatsApp";
 }
 
+function sanitizePhoneDigits(value: string) {
+    return String(value || "").replace(/\D/g, "");
+}
+
+function buildInternationalPhoneValue(dialCode: string, localNumber: string) {
+    const normalizedDialCode = String(dialCode || "").trim().replace(/[^\d+]/g, "");
+    const normalizedLocalNumber = sanitizePhoneDigits(localNumber).replace(/^0+/, "");
+    const fullNumber = `${normalizedDialCode}${normalizedLocalNumber}`;
+    return {
+        dialCode: normalizedDialCode,
+        localNumber: normalizedLocalNumber,
+        fullNumber,
+        fullDigits: sanitizePhoneDigits(fullNumber),
+    };
+}
+
 function ctaNeedsDetailField(topic: CtaTopic) {
     return topic !== "Message" && topic !== "No Button";
 }
 
 function renderHighlightedDescription(value: string) {
     if (!value) {
-        return <span className="text-white/25">Write a short ad description...</span>;
+        return <span className="text-white/25">Write short description...</span>;
     }
 
     const tokenPattern = /(https?:\/\/[^\s]+|www\.[^\s]+|@[a-zA-Z0-9_.]+|#[a-zA-Z0-9_]+)/g;
@@ -498,6 +737,15 @@ function renderHighlightedDescription(value: string) {
 
         return <span key={`${part}-${index}`}>{part}</span>;
     });
+}
+
+function normalizeHashtagInput(value: string) {
+    return String(value || "")
+        .split(/\s+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map((item) => item.startsWith("#") ? item : `#${item}`)
+        .join(" ");
 }
 
 export default function CampaignEditor({ campaignType }: { campaignType: string }) {
@@ -523,11 +771,13 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [publishedAd, setPublishedAd] = useState<PublishedAdReview | null>(null);
     const [showPublishedPopup, setShowPublishedPopup] = useState(false);
     const [isPublishing, setIsPublishing] = useState(false);
+    const [publishUploadProgress, setPublishUploadProgress] = useState(0);
     const [adIdCopied, setAdIdCopied] = useState(false);
     const [description, setDescription] = useState("");
     const [ctaTopic, setCtaTopic] = useState<CtaTopic>("Visit");
     const [ctaValue, setCtaValue] = useState("");
     const [countries, setCountries] = useState<CountryOption[]>([]);
+    const [allowedCountryCodes, setAllowedCountryCodes] = useState<string[] | null>(null);
     const [selectedCountryCode, setSelectedCountryCode] = useState("US");
     const [isCountryDropdownOpen, setIsCountryDropdownOpen] = useState(false);
     const [countrySearch, setCountrySearch] = useState("");
@@ -546,6 +796,19 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [budget, setBudget] = useState<number | null>(null);
     const [budgetInput, setBudgetInput] = useState("");
     const [isBudgetEditing, setIsBudgetEditing] = useState(false);
+    const [uploadTopic, setUploadTopic] = useState<string>("");
+    const [isUploadTopicOpen, setIsUploadTopicOpen] = useState(false);
+    const [uploadAffiliateCommission, setUploadAffiliateCommission] = useState(0);
+    const [uploadSubscriptionPackages, setUploadSubscriptionPackages] = useState<StoredUploadSubscriptionPackage[]>([]);
+    const [uploadShowLinkedContentOnHome, setUploadShowLinkedContentOnHome] = useState(false);
+    const [uploadHashtags, setUploadHashtags] = useState("");
+    const [uploadTagInput, setUploadTagInput] = useState("");
+    const [uploadVisibility, setUploadVisibility] = useState<"public" | "subscribers_only" | "private">("public");
+    const [isUploadVisibilityOpen, setIsUploadVisibilityOpen] = useState(false);
+    const [uploadPreviewMode, setUploadPreviewMode] = useState<"none" | "thumbnail" | "auto_preview" | "blurred">("none");
+    const [uploadAllowComments, setUploadAllowComments] = useState(true);
+    const [uploadControlSettings, setUploadControlSettings] = useState<UploadControlSettings | null>(null);
+    const [uploadMaxPriceInput, setUploadMaxPriceInput] = useState<number | null>(null);
     const [durationDays, setDurationDays] = useState(1);
     const [promoCode, setPromoCode] = useState("");
     const [isPromoEditing, setIsPromoEditing] = useState(true);
@@ -561,9 +824,15 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [isInsufficientBalanceDismissed, setIsInsufficientBalanceDismissed] = useState(false);
     const [showCancelConfirm, setShowCancelConfirm] = useState(false);
     const [acceptedProfileNonRefundable, setAcceptedProfileNonRefundable] = useState(false);
+    const [acceptedUploadTerms, setAcceptedUploadTerms] = useState(false);
     const [editingAdId, setEditingAdId] = useState("");
     const [editingOriginalBudget, setEditingOriginalBudget] = useState<number | null>(null);
+    const [carryOverViews, setCarryOverViews] = useState(0);
     const [isPromoteAgain, setIsPromoteAgain] = useState(false);
+    const [sourceOwnerDbId, setSourceOwnerDbId] = useState<number | string | null>(null);
+    const [sourceOwnerPublicId, setSourceOwnerPublicId] = useState("");
+    const [sourceOwnerUsername, setSourceOwnerUsername] = useState("");
+    const [sourceOwnerProfilePicture, setSourceOwnerProfilePicture] = useState("");
     const [linkedProduct, setLinkedProduct] = useState<any | null>(null);
     const [profilePromoteUser, setProfilePromoteUser] = useState<any | null>(null);
     const [profilePromoteProducts, setProfilePromoteProducts] = useState<any[]>([]);
@@ -572,6 +841,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [profilePromoteAvailableSlideIndex, setProfilePromoteAvailableSlideIndex] = useState(0);
     const [profileLinkCopied, setProfileLinkCopied] = useState(false);
     const [userHasPaidSubscription, setUserHasPaidSubscription] = useState<boolean | null>(null);
+    const [subscriptionPlanExtra, setSubscriptionPlanExtra] = useState<SubscriptionPlanExtra>({});
     const [adsExpiryLabel, setAdsExpiryLabel] = useState<string>("30 days");
 
     useEffect(() => {
@@ -584,6 +854,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 ]);
                 if (active) {
                     setUserHasPaidSubscription(!!sub && sub.plan_slug !== 'basic');
+                    setSubscriptionPlanExtra(plan?.extra || {});
                     const expiryValue = Number(plan?.extra?.ads_expiry_value ?? plan?.extra?.ads_expiry_days ?? 0);
                     const expiryUnit = String(plan?.extra?.ads_expiry_unit || 'days').toLowerCase();
                     if (expiryValue > 0) {
@@ -600,6 +871,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 console.error("Failed to load subscription status:", error);
                 if (active) {
                     setUserHasPaidSubscription(false);
+                    setSubscriptionPlanExtra({});
                 }
             }
         };
@@ -609,20 +881,51 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         };
     }, []);
     const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
+    const [autoPreviewFile, setAutoPreviewFile] = useState<File | null>(null);
+    const [autoPreviewUrl, setAutoPreviewUrl] = useState("");
+    const [isGeneratingAutoPreview, setIsGeneratingAutoPreview] = useState(false);
     const [pendingVideoCrop, setPendingVideoCrop] = useState<PendingVideoCrop | null>(null);
     const [trimStartSeconds, setTrimStartSeconds] = useState(0);
     const [trimEndSeconds, setTrimEndSeconds] = useState(VIDEO_MAX_DURATION_SECONDS);
     const [trimError, setTrimError] = useState("");
     const [isTrimmingVideo, setIsTrimmingVideo] = useState(false);
+    const [isPreparingVideoUpload, setIsPreparingVideoUpload] = useState(false);
+    const [showVideoLimitUpgradeNotice, setShowVideoLimitUpgradeNotice] = useState(false);
     const [isDraggingTrimWindow, setIsDraggingTrimWindow] = useState(false);
     const [playingPreview, setPlayingPreview] = useState<Record<PreviewMode, boolean>>({
         mobile: false,
         desktop: false,
     });
+    const uploadTopicDropdownRef = useRef<HTMLDivElement | null>(null);
+    const showPopupError = (message: string) => {
+        const lower = message.toLowerCase();
+        if (
+            lower.includes("too many") ||
+            lower.includes("rate limit") ||
+            lower.includes("429") ||
+            lower.includes("try again later")
+        ) return;
+        setPopupError(message);
+    };
 
     const hasLink = activeLink.trim().length > 0;
     const isProductPromote = campaignType === "Product Promote";
     const isProfilePromote = campaignType === "Profile Promote";
+    const isVaultContent = campaignType === "Upload Content" || campaignType === "Vault Content";
+    const isFlashContent = campaignType === "Flash Content";
+    const isUploadContent = isVaultContent || isFlashContent;
+    const contentTypeLabel = isFlashContent ? "Flash Content" : "Vault Content";
+    const isStandardCreativeCampaign = !isProductPromote && !isProfilePromote;
+    const persistedCampaignType = isUploadContent ? "Photo and Video" : campaignType;
+    const previewPanelTitle = isUploadContent ? "Content Preview" : "Ad Preview";
+    const previewPanelSubtitle = isProductPromote
+        ? "Marketplace product card"
+        : isProfilePromote
+            ? "Profile promotion card"
+            : isUploadContent
+                ? `${contentTypeLabel} preview`
+                : "Live device preview";
+    const editorChromeLabel = isUploadContent ? `${contentTypeLabel} Studio` : "Ad Bar";
     const profileUsername = (typeof userProfile?.username === "string" && userProfile.username) || "your-handle";
     const profileLink = getProfileShareUrl({ username: profileUsername });
     const promotedProfile = profilePromoteUser || userProfile;
@@ -638,11 +941,88 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const isStandardMediaLink = linkPreviewType === "image" || linkPreviewType === "video" || linkPreviewType === "embed";
     const shouldShowRichLinkMeta = hasLink && !isStandardMediaLink;
     const linkPreviewImage = linkPreviewMeta?.thumbnail || (linkPreviewType === "image" ? previewHref : "");
+    const uploadContentMediaKind: "image" | "video" | "" = hasUploadedVideo || linkPreviewType === "video" || linkPreviewType === "embed"
+        ? "video"
+        : (uploadedMediaType === "image" || linkPreviewType === "image")
+            ? "image"
+            : "";
+    const canBlurUploadContent = isVaultContent && (
+        uploadContentMediaKind === "video" ||
+        uploadContentMediaKind === "image" ||
+        uploadedMediaType === "image"
+    );
+    const {
+        thumbnailInputRef,
+        thumbnailPreview,
+        thumbnailName,
+        contentAccessMode,
+        effectiveContentAccessMode,
+        setThumbnailPreview,
+        setThumbnailName,
+        setContentAccessMode,
+        handleThumbnailUploadClick,
+        handleThumbnailChange,
+        handleRemoveThumbnail,
+    } = useUploadContentSettings({
+        canBlurUploadContent,
+        onError: showPopupError,
+    });
+    const isUploadContentImageUpload = isVaultContent && uploadedMediaType === "image" && imageGalleryPreviews.length > 0;
+    const isVaultImageLikeContent = isVaultContent && (
+        isUploadContentImageUpload ||
+        (hasLink && uploadContentMediaKind === "image")
+    );
+    const isVaultVideoLikeContent = isVaultContent && (
+        hasUploadedVideo ||
+        (hasLink && uploadContentMediaKind === "video")
+    );
+    const canUploadContentThumbnail = isUploadContent;
+    const canCreateAutoPreview = isVaultVideoLikeContent;
+    const canSelectUploadThumbnail = canUploadContentThumbnail;
+    const isVaultThumbnailMode = uploadPreviewMode === "thumbnail";
+    const isVaultBlurMode = uploadPreviewMode === "blurred";
+    const isVaultAutoPreviewMode = uploadPreviewMode === "auto_preview";
+    const hasExclusiveVideoPreviewMode = isVaultVideoLikeContent && (
+        isVaultThumbnailMode || isVaultBlurMode || isVaultAutoPreviewMode
+    );
+    const disableVaultBlurButton = !canBlurUploadContent || (
+        isVaultVideoLikeContent && hasExclusiveVideoPreviewMode && !isVaultBlurMode
+    );
+    const disableVaultThumbnailButton = isVaultVideoLikeContent
+        && hasExclusiveVideoPreviewMode
+        && !isVaultThumbnailMode;
+    const disableVaultAutoPreviewButton = !hasUploadedVideo
+        || isGeneratingAutoPreview
+        || (hasExclusiveVideoPreviewMode && !isVaultAutoPreviewMode);
+    const disableVaultNonBlurredButton = isVaultImageLikeContent || (
+        isVaultVideoLikeContent && hasExclusiveVideoPreviewMode
+    );
+    const canShowUploadPreviewPanel = isUploadContent;
+    useEffect(() => {
+        if (isVaultImageLikeContent && uploadPreviewMode === "thumbnail" && !thumbnailPreview) {
+            setUploadPreviewMode("none");
+        }
+        if (isVaultImageLikeContent && uploadPreviewMode === "auto_preview") {
+            setUploadPreviewMode("none");
+        }
+        if (!isVaultContent && uploadPreviewMode === "blurred") {
+            setUploadPreviewMode("none");
+        }
+        if (contentAccessMode === "blurred" && uploadPreviewMode === "auto_preview" && !isVaultVideoLikeContent) {
+            setAutoPreviewFile(null);
+            setAutoPreviewUrl((current) => {
+                if (current) URL.revokeObjectURL(current);
+                return "";
+            });
+            setUploadPreviewMode("none");
+        }
+    }, [contentAccessMode, isVaultContent, isVaultImageLikeContent, isVaultVideoLikeContent, setContentAccessMode, thumbnailPreview, uploadPreviewMode]);
+    const uploadContentThumbnail = thumbnailPreview || linkPreviewMeta?.thumbnail || linkPreviewImage || "";
     const selectedPreviewImage = isProductPromote && linkedProduct
         ? getProductImageSrc(linkedProduct)
         : uploadedMediaType === "image"
             ? (imageGalleryPreviews[selectedGalleryIndex] || imageGalleryPreviews[0] || "")
-            : (imagePreview || linkPreviewImage);
+            : (isUploadContent && uploadContentThumbnail ? uploadContentThumbnail : (imagePreview || linkPreviewImage));
     const persistedImageGallery = historyMediaGallery.length > 0
         ? historyMediaGallery
         : (historyMediaPreview ? [historyMediaPreview] : []);
@@ -662,7 +1042,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         : budget;
     const isFreeProfilePromotePromo = isProfilePromote && hasPromoCodeAdded;
     const showProfileNonRefundableNotice = isProfilePromote && !hasPromoCodeAdded;
-    const hasInsufficientBalance = walletBalanceLoaded && budget !== null && effectivePaymentAmount > walletBalance;
+    const hasInsufficientBalance = !isUploadContent && walletBalanceLoaded && budget !== null && effectivePaymentAmount > walletBalance;
     const isPromoLockingBudget = hasPromoCodeAdded && (
         isProfilePromote
             ? true  // Profile Promote: freeze packages the moment any promo is applied
@@ -681,7 +1061,6 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const filteredLocationCountries = useMemo(() => {
         const query = locationSearch.trim().toLowerCase();
         if (!query) return countries;
-
         return countries.filter((country) =>
             country.name.toLowerCase().includes(query) ||
             country.code.toLowerCase().includes(query)
@@ -707,13 +1086,68 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     }));
     const tiersLoaded = reachTiers.length > 0;
     const isProfileAd = campaignType === "Profile Promote";
-    const globalBudgetMin = tiersLoaded ? Math.min(...reachTiers.map((t) => Number(t.budget_from))) : 1;
-    const globalBudgetMax = tiersLoaded ? Math.max(...reachTiers.map((t) => Number(t.budget_to))) : 10000;
+    const baseBudgetMin = tiersLoaded ? Math.min(...reachTiers.map((t) => Number(t.budget_from))) : 1;
+    const baseBudgetMax = tiersLoaded ? Math.max(...reachTiers.map((t) => Number(t.budget_to))) : 10000;
+    const uploadBudgetMin = Number(uploadControlSettings?.min_upload_price ?? baseBudgetMin);
+    const uploadBudgetMax = Number(uploadControlSettings?.max_upload_price ?? baseBudgetMax);
+    const globalBudgetMin = isUploadContent
+        ? Math.max(0, uploadBudgetMin)
+        : baseBudgetMin;
+    const globalBudgetMax = isUploadContent
+        ? Math.max(uploadBudgetMax, globalBudgetMin)
+        : baseBudgetMax;
+    const uploadDisplayMin = Number(uploadControlSettings?.min_upload_price ?? globalBudgetMin);
+    const uploadDisplayMax = Number(uploadControlSettings?.max_upload_price ?? globalBudgetMax);
+    const flashContentPrice = Math.max(0, Number(uploadControlSettings?.flash_content_price ?? uploadControlSettings?.min_upload_price ?? 0));
+    const flashPreviewSeconds = Math.max(1, Math.floor(Number(uploadControlSettings?.flash_preview_seconds ?? 5)));
+    const uploadSubscriptionCommissionTiers = useMemo(() => Array.isArray(uploadControlSettings?.subscription_commission_tiers)
+        ? uploadControlSettings.subscription_commission_tiers
+            .map((tier) => ({
+                min: Number(tier?.min ?? 0),
+                max: Number(tier?.max ?? 0),
+                commission: Number(tier?.commission ?? 0),
+            }))
+            .filter((tier) => Number.isFinite(tier.min) && Number.isFinite(tier.max) && Number.isFinite(tier.commission))
+        : [], [uploadControlSettings?.subscription_commission_tiers]);
+    const uploadSelectedMinPrice = budget;
+    const uploadSelectedMaxPrice = budget;
+    const uploadSubscriptionPackageError = getUploadSubscriptionPackageValidationMessage(
+        uploadSubscriptionPackages,
+        uploadSubscriptionCommissionTiers,
+    );
+    const fallbackDailyUploadLimit = userHasPaidSubscription ? 3 : 1;
+    const rawDailyUploadLimit = Number(subscriptionPlanExtra.content_daily_upload_limit ?? fallbackDailyUploadLimit);
+    const uploadContentDailyLimit = Number.isFinite(rawDailyUploadLimit)
+        ? Math.max(0, Math.floor(rawDailyUploadLimit))
+        : fallbackDailyUploadLimit;
+    const fallbackUploadContentLimit = userHasPaidSubscription ? 15 : 5;
+    const rawUploadContentLimit = Number(subscriptionPlanExtra.content_upload_limit ?? fallbackUploadContentLimit);
+    const uploadContentTotalLimit = Number.isFinite(rawUploadContentLimit)
+        ? Math.max(0, Math.floor(rawUploadContentLimit))
+        : fallbackUploadContentLimit;
+    const fallbackVideoLimitMinutes = userHasPaidSubscription ? 5 : 1;
+    const planVideoLimitMinutes = Number(subscriptionPlanExtra.content_video_limit_minutes ?? fallbackVideoLimitMinutes);
+    const uploadVideoLimitSeconds = isUploadContent
+        ? Math.max(
+            1,
+            Number.isFinite(planVideoLimitMinutes) && planVideoLimitMinutes > 0
+                ? Math.round(planVideoLimitMinutes * 60)
+                : fallbackVideoLimitMinutes * 60
+        )
+        : VIDEO_MAX_DURATION_SECONDS;
     const budgetSliderIndex = budget !== null ? Math.max(0, budgetOptions.findIndex((o) => o.value === budget)) : 0;
+
+    useEffect(() => {
+        if (!isFlashContent) return;
+        setBudget(flashContentPrice > 0 ? flashContentPrice : null);
+        setContentAccessMode("unblurred");
+        setUploadPreviewMode("auto_preview");
+    }, [flashContentPrice, isFlashContent, setContentAccessMode]);
 
     const sanitizePromoCode = (value: string) => value.replace(/[^a-zA-Z0-9]/g, "").slice(0, 15).toUpperCase();
     const missingWalletAmount = Math.max(0, effectivePaymentAmount - walletBalance);
-    const isAllDraftLocationsSelected = countries.length > 0 && countries.every((country) => draftLocationCodes.includes(country.code));
+    const locationCountryPool = allowedCountryCodes !== null ? countries.filter(c => allowedCountryCodes.includes(c.code)) : countries;
+    const isAllDraftLocationsSelected = locationCountryPool.length > 0 && locationCountryPool.every((country) => draftLocationCodes.includes(country.code));
     const ageMinProgress = ((ageMin - 18) / (65 - 18)) * 100;
     const ageMaxProgress = ((ageMax - 18) / (65 - 18)) * 100;
     const areAllPlacementsSelected = AVAILABLE_PLACEMENT_LABELS.every((placement) => selectedPlacements.includes(placement));
@@ -817,7 +1251,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const profileDisplayName = promotedProfile?.full_name || [promotedProfile?.first_name, promotedProfile?.last_name].filter(Boolean).join(" ") || promotedProfile?.username || "Your Profile";
     const profileImage = promotedProfile?.profile_picture || "";
     const profileInitial = profileDisplayName.trim().charAt(0).toUpperCase() || "G";
-    const previewDescription = description.trim() || "Write a short ad description...";
+    const previewDescription = description.trim() || "Write short description...";
     const popupErrorTitle = (() => {
         const message = popupError.toLowerCase();
         if (!message) return "Error";
@@ -826,17 +1260,6 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         if (message.includes("too many") || message.includes("rate") || message.includes("limit")) return "Too Many Requests";
         return "Required Field";
     })();
-
-    const showPopupError = (message: string) => {
-        const lower = message.toLowerCase();
-        if (
-            lower.includes("too many") ||
-            lower.includes("rate limit") ||
-            lower.includes("429") ||
-            lower.includes("try again later")
-        ) return;
-        setPopupError(message);
-    };
 
     const closeBudgetEditor = () => {
         setIsBudgetEditing(false);
@@ -855,10 +1278,58 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         }
     };
 
+    const applyUploadPriceInput = (value: number | null) => {
+        const normalizedValue = value === null
+            ? null
+            : Number.isFinite(Number(value))
+                ? Math.max(0, Number(value))
+                : null;
+        setBudget(normalizedValue);
+        setUploadMaxPriceInput(normalizedValue);
+        setUploadAffiliateCommission(0);
+    };
+
+    const uploadTagList = useMemo(() => (
+        String(uploadHashtags || "")
+            .split(/\s+/)
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .map((item) => item.startsWith("#") ? item : `#${item}`)
+            .filter((item, index, list) => list.indexOf(item) === index)
+    ), [uploadHashtags]);
+
+    const commitUploadTag = () => {
+        const cleaned = normalizeHashtagInput(uploadTagInput).trim();
+        if (!cleaned) return;
+        const nextTags = cleaned
+            .split(/\s+/)
+            .map((item) => item.trim())
+            .filter(Boolean);
+        const merged = [...uploadTagList, ...nextTags]
+            .map((item) => item.startsWith("#") ? item : `#${item}`)
+            .filter((item, index, list) => list.indexOf(item) === index)
+            .slice(0, 20);
+        setUploadHashtags(merged.join(" "));
+        setUploadTagInput("");
+    };
+
+    const removeUploadTag = (tag: string) => {
+        setUploadHashtags(uploadTagList.filter((item) => item !== tag).join(" "));
+    };
+
     const clearSelectedUpload = () => {
         if (fileInputRef.current) {
             fileInputRef.current.value = "";
         }
+    };
+
+    const clearAutoPreview = () => {
+        setAutoPreviewFile(null);
+        setAutoPreviewUrl((current) => {
+            if (current) URL.revokeObjectURL(current);
+            return "";
+        });
+        setUploadPreviewMode("thumbnail");
     };
 
     const revokeVideoPreviewIfNeeded = (previewUrl: string) => {
@@ -875,39 +1346,39 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             return null;
         });
         setTrimStartSeconds(0);
-        setTrimEndSeconds(VIDEO_MAX_DURATION_SECONDS);
+        setTrimEndSeconds(uploadVideoLimitSeconds);
         setTrimError("");
         setIsTrimmingVideo(false);
         setIsDraggingTrimWindow(false);
+        setShowVideoLimitUpgradeNotice(false);
         clearSelectedUpload();
     };
 
-    const fileToDataUrl = (file: Blob) => new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("File could not be read."));
-        reader.onerror = () => reject(new Error("File could not be read."));
-        reader.readAsDataURL(file);
-    });
-
     const applyVideoUpload = async (file: Blob, fileName: string, width: number, height: number) => {
-        const dataUrl = await fileToDataUrl(file);
-        const uploadFile = file instanceof File
-            ? file
-            : new File([file], fileName, { type: file.type || "video/webm" });
-        if (imagePreview && uploadedMediaType === "video") {
-            revokeVideoPreviewIfNeeded(imagePreview);
-        }
+        setIsPreparingVideoUpload(true);
+        try {
+            const uploadFile = file instanceof File
+                ? file
+                : new File([file], fileName, { type: file.type || "video/webm" });
+            const previewUrl = URL.createObjectURL(uploadFile);
+            if (imagePreview && uploadedMediaType === "video") {
+                revokeVideoPreviewIfNeeded(imagePreview);
+            }
 
-        setImageGalleryPreviews([]);
-        setHistoryMediaGallery([]);
-        setImagePreview(dataUrl);
-        setHistoryMediaPreview(dataUrl);
-        setImageName(fileName);
-        setUploadedMediaType("video");
-        setImageSize({ width, height });
-        setSelectedGalleryIndex(0);
-        setUploadedFiles([uploadFile]);
-        clearSelectedUpload();
+            setImageGalleryPreviews([]);
+            setHistoryMediaGallery([]);
+            setImagePreview(previewUrl);
+            setHistoryMediaPreview("");
+            setImageName(fileName);
+            setUploadedMediaType("video");
+            setImageSize({ width, height });
+            setSelectedGalleryIndex(0);
+            setUploadedFiles([uploadFile]);
+            clearAutoPreview();
+            clearSelectedUpload();
+        } finally {
+            setIsPreparingVideoUpload(false);
+        }
     };
 
     const trimVideoClip = async (sourceUrl: string, startSeconds: number, endSeconds: number) => {
@@ -942,8 +1413,12 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         canvas.width = width;
         canvas.height = height;
 
-        const captureFn = (canvas as any).captureStream as ((frameRate?: number) => MediaStream) | undefined;
-        const canvasStream = !nativeStream && captureFn && context ? captureFn(30) : null;
+        const canvasWithCapture = canvas as HTMLCanvasElement & {
+            captureStream?: (frameRate?: number) => MediaStream;
+        };
+        const canvasStream = !nativeStream && typeof canvasWithCapture.captureStream === "function" && context
+            ? canvasWithCapture.captureStream(30)
+            : null;
         if (!nativeStream && !canvasStream) {
             throw new Error("Video export is unavailable in this browser. Please try Chrome or Edge.");
         }
@@ -1018,6 +1493,29 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         };
     };
 
+    const generateThreeSecondPreview = async () => {
+        if (!hasUploadedVideo || !imagePreview) return null;
+        setIsGeneratingAutoPreview(true);
+        try {
+            const previewSeconds = isFlashContent ? flashPreviewSeconds : 3;
+            const trimmed = await trimVideoClip(imagePreview, 0, previewSeconds);
+            const previewFile = new File([trimmed.blob], `${previewSeconds}-second-preview.webm`, { type: trimmed.blob.type || "video/webm" });
+            const nextUrl = URL.createObjectURL(previewFile);
+            setAutoPreviewUrl((current) => {
+                if (current) URL.revokeObjectURL(current);
+                return nextUrl;
+            });
+            setAutoPreviewFile(previewFile);
+            setUploadPreviewMode("auto_preview");
+            return previewFile;
+        } catch (error) {
+            showPopupError(error instanceof Error ? error.message : "Unable to create the three-second preview.");
+            return null;
+        } finally {
+            setIsGeneratingAutoPreview(false);
+        }
+    };
+
     const openVideoCropModal = (sourceUrl: string, fileName: string, duration: number, width: number, height: number) => {
         setPendingVideoCrop({
             sourceUrl,
@@ -1027,18 +1525,19 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             height,
         });
         setTrimStartSeconds(0);
-        setTrimEndSeconds(Math.min(duration, VIDEO_MAX_DURATION_SECONDS));
+        setTrimEndSeconds(Math.min(duration, uploadVideoLimitSeconds));
         setTrimError("");
         setIsTrimmingVideo(false);
         setIsDraggingTrimWindow(false);
+        setShowVideoLimitUpgradeNotice(duration > uploadVideoLimitSeconds);
     };
 
-    const getMaxTrimStart = (duration: number) => Math.max(0, duration - VIDEO_MAX_DURATION_SECONDS);
+    const getMaxTrimStart = (duration: number) => Math.max(0, duration - uploadVideoLimitSeconds);
 
     const setTrimWindowStart = (nextStart: number, duration: number) => {
         const start = clamp(nextStart, 0, getMaxTrimStart(duration));
         setTrimStartSeconds(start);
-        setTrimEndSeconds(Math.min(duration, start + VIDEO_MAX_DURATION_SECONDS));
+        setTrimEndSeconds(Math.min(duration, start + uploadVideoLimitSeconds));
         setTrimError("");
     };
 
@@ -1047,7 +1546,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
         const rect = cropTimelineRef.current.getBoundingClientRect();
         const pointerRatio = clamp((clientX - rect.left) / rect.width, 0, 1);
-        const centeredStart = (pointerRatio * pendingVideoCrop.duration) - (VIDEO_MAX_DURATION_SECONDS / 2);
+        const centeredStart = (pointerRatio * pendingVideoCrop.duration) - (uploadVideoLimitSeconds / 2);
         setTrimWindowStart(centeredStart, pendingVideoCrop.duration);
     };
 
@@ -1075,8 +1574,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
         const clampedStart = clamp(trimStartSeconds, 0, Math.max(0, pendingVideoCrop.duration - 1));
         const clampedEnd = clamp(trimEndSeconds, clampedStart + 1, pendingVideoCrop.duration);
-        if (clampedEnd - clampedStart > VIDEO_MAX_DURATION_SECONDS) {
-            setTrimError("The selected clip must be 60 seconds or shorter.");
+        if (clampedEnd - clampedStart > uploadVideoLimitSeconds) {
+            setTrimError(`The selected clip must be ${uploadVideoLimitSeconds} seconds or shorter.`);
             return;
         }
 
@@ -1142,22 +1641,27 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     };
 
     const saveLocationSelection = () => {
-        setSelectedLocationCodes(draftLocationCodes);
+        const allowedDraftCodes = allowedCountryCodes !== null
+            ? draftLocationCodes.filter((code) => allowedCountryCodes.includes(code))
+            : draftLocationCodes;
+        setSelectedLocationCodes(allowedDraftCodes);
         setLocationSearch("");
         setIsLocationModalOpen(false);
     };
 
     const selectAllAvailableLocations = () => {
         setDraftLocationCodes((current) => {
-            const allCountryCodes = countries.map((country) => country.code);
+            const allCountryCodes = locationCountryPool.map((country) => country.code);
             const allCountriesSelected = allCountryCodes.length > 0 && allCountryCodes.every((code) => current.includes(code));
             return allCountriesSelected ? [] : allCountryCodes;
         });
     };
 
     const selectLocationCode = (code: string) => {
+        if (allowedCountryCodes !== null && !allowedCountryCodes.includes(code)) return;
+
         setDraftLocationCodes((current) => {
-            if (countries.length > 0 && countries.every((country) => current.includes(country.code)) && current.includes(code)) {
+            if (locationCountryPool.length > 0 && locationCountryPool.every((country) => current.includes(country.code)) && current.includes(code)) {
                 return current;
             }
 
@@ -1210,6 +1714,10 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     };
 
     const validateFinalForm = () => {
+        const normalizedPhoneCta = ctaUsesCountryPhone(ctaTopic)
+            ? buildInternationalPhoneValue(selectedCountry?.dialCode || "+1", ctaValue)
+            : null;
+
         if (isProductPromote) {
             if (!linkedProduct) {
                 showPopupError("Please apply a product share link first.");
@@ -1225,8 +1733,64 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             return false;
         }
 
+        if (isUploadContent) {
+            if (!uploadTopic.trim()) {
+                showPopupError("Please select topics.");
+                return false;
+            }
+            if (isFlashContent) {
+                const isVideoLink = hasLink && (linkPreviewType === "video" || linkPreviewType === "embed");
+                if (!hasUploadedVideo && !isVideoLink) {
+                    showPopupError("Flash Content accepts videos or playable video links only.");
+                    return false;
+                }
+                if (uploadedMediaType === "image") {
+                    showPopupError("Images cannot be added to Flash Content.");
+                    return false;
+                }
+                if (flashContentPrice <= 0) {
+                    showPopupError("Flash Content price is not configured by admin yet.");
+                    return false;
+                }
+            }
+            if (
+                budget === null
+                || !Number.isFinite(Number(budget))
+                || Number(budget) <= 0
+            ) {
+                showPopupError("Please enter a content price.");
+                return false;
+            }
+            if (isVaultContent) {
+                const min = Number(uploadDisplayMin || 0);
+                const max = Number(uploadDisplayMax || 0);
+                const selectedPrice = Number(budget);
+                if (selectedPrice < min || selectedPrice > max) {
+                    showPopupError(`Price must stay between R ${formatRuppier(min)} and R ${formatRuppier(max)}.`);
+                    return false;
+                }
+            }
+            if (isVaultImageLikeContent && uploadPreviewMode === "none") {
+                showPopupError("Please choose Thumbnail or Blurred for this vault image content.");
+                return false;
+            }
+            if (isVaultContent && (!Number.isFinite(uploadAffiliateCommission) || uploadAffiliateCommission < 0 || uploadAffiliateCommission > 100)) {
+                showPopupError("Affiliate commission must be between 0 and 100.");
+                return false;
+            }
+            if (isVaultContent && uploadSubscriptionPackageError) {
+                showPopupError(uploadSubscriptionPackageError);
+                return false;
+            }
+            if (!acceptedUploadTerms) {
+                showPopupError("Please accept the terms and conditions.");
+                return false;
+            }
+            return true;
+        }
+
         // CTA and description are not required for Product Promote / Profile Promote — they are hidden on those pages.
-        if (!isProductPromote && !isProfilePromote) {
+        if (isStandardCreativeCampaign && !isUploadContent) {
             if (!ctaTopic) {
                 showPopupError("Please select a call to action.");
                 return false;
@@ -1235,6 +1799,18 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             if (ctaNeedsDetailField(ctaTopic) && !ctaValue.trim()) {
                 showPopupError(`Please enter ${CTA_FIELD_LABELS[ctaTopic].toLowerCase()}.`);
                 return false;
+            }
+
+            if (ctaTopic === "Call Now") {
+                if (!normalizedPhoneCta?.localNumber) {
+                    showPopupError("Please enter the full phone number without the starting 0.");
+                    return false;
+                }
+
+                if (normalizedPhoneCta.localNumber.length < 7 || normalizedPhoneCta.fullDigits.length < 10) {
+                    showPopupError("Please enter the full phone number with country code. Half numbers cannot be published.");
+                    return false;
+                }
             }
         }
 
@@ -1263,6 +1839,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             return false;
         }
 
+        if (allowedCountryCodes !== null && locationCountryPool.length === 0) {
+            showPopupError("No countries are available for this ad type right now.");
+            return false;
+        }
+
         if (selectedLocationCodes.length === 0) {
             showPopupError("Please select at least one location.");
             return false;
@@ -1286,9 +1867,42 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         return true;
     };
 
+    const validateUploadContentLimits = async () => {
+        if (!isUploadContent || editingAdId) return true;
+
+        try {
+            const contents = await uploadContentService.getMine();
+            if (uploadContentTotalLimit > 0 && contents.length >= uploadContentTotalLimit) {
+                showPopupError(`Upload content limit reached. Your plan allows ${uploadContentTotalLimit} total upload${uploadContentTotalLimit === 1 ? "" : "s"}. Upgrade to the next plan to upload more content.`);
+                return false;
+            }
+
+            if (uploadContentDailyLimit <= 0) return true;
+            const todayStart = new Date();
+            todayStart.setHours(0, 0, 0, 0);
+            const todayCount = contents.filter((content) => {
+                const createdValue = content.created_at || content.updated_at;
+                if (!createdValue) return false;
+                const createdAt = new Date(createdValue);
+                return !Number.isNaN(createdAt.getTime()) && createdAt >= todayStart;
+            }).length;
+
+            if (todayCount >= uploadContentDailyLimit) {
+                showPopupError(`Daily upload limit reached. Your plan allows ${uploadContentDailyLimit} upload${uploadContentDailyLimit === 1 ? "" : "s"} per day. Upgrade to the next plan for a higher limit.`);
+                return false;
+            }
+        } catch {
+            showPopupError("Could not check your upload content limits. Please try again.");
+            return false;
+        }
+
+        return true;
+    };
+
     const handlePublish = async () => {
         if (isPublishing) return;
         if (!validateFinalForm()) return;
+        if (!(await validateUploadContentLimits())) return;
         if (hasInsufficientBalance && !isFreeProfilePromotePromo) {
             setIsInsufficientBalanceDismissed(false);
             setShowInsufficientBalanceModal(true);
@@ -1296,23 +1910,47 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         }
 
         const ownerKey = getUserIdentityKey(userProfile);
-        const ownerId = userProfile?.id ?? userProfile?._id ?? userProfile?.user_id;
-        const ownerUsername = typeof userProfile?.username === "string" ? userProfile.username : "";
+        const sponsorId = userProfile?.id ?? userProfile?._id ?? userProfile?.user_id;
+        const sponsorPublicId = typeof userProfile?.user_id === "string" ? userProfile.user_id : String(userProfile?.user_id ?? "");
+        const sponsorUsername = typeof userProfile?.username === "string" ? userProfile.username : "";
         const existingReview = editingAdId ? await adsService.getAdById(editingAdId).catch(() => null) : null;
         // Fall back to editingOriginalBudget from draft if the API fetch failed, so we never charge the full budget on an edit
         const existingBudget = isPromoteAgain ? 0 : Number(existingReview?.budget ?? editingOriginalBudget ?? 0);
-        const nextAdId = existingReview?.adId && typeof existingReview.adId === "string" ? existingReview.adId : createNextAdId();
+        const nextAdId = !isPromoteAgain && existingReview?.adId && typeof existingReview.adId === "string"
+            ? existingReview.adId
+            : createNextAdId();
+        const carryOverViews = isPromoteAgain
+            ? Number(existingReview?.views_count ?? existingReview?.viewCount ?? existingReview?.views ?? 0)
+            : 0;
         const selectedBudget = budget ?? 0;
         const publishBudget = effectiveBudget ?? selectedBudget;
         const budgetDifference = selectedBudget - existingBudget;
+        const effectiveCtaTopic: CtaTopic = isUploadContent ? "No Button" : ctaTopic;
+        const normalizedCtaValue = ctaUsesCountryPhone(effectiveCtaTopic)
+            ? buildInternationalPhoneValue(selectedCountry?.dialCode || "+1", ctaValue).fullNumber
+            : ctaValue.trim();
+
+        const preserveOriginalOwner = isPromoteAgain && !isProductPromote && !isProfilePromote;
+        const displayOwnerDbId = preserveOriginalOwner
+            ? (sourceOwnerDbId ?? existingReview?.user?.id ?? existingReview?.user_id ?? null)
+            : sponsorId;
+        const displayOwnerPublicId = preserveOriginalOwner
+            ? (sourceOwnerPublicId || existingReview?.ownerUserId || existingReview?.user?.user_id || "")
+            : sponsorPublicId;
+        const displayOwnerUsername = preserveOriginalOwner
+            ? (sourceOwnerUsername || existingReview?.ownerUsername || existingReview?.user?.username || "")
+            : sponsorUsername;
+        const displayOwnerProfilePicture = preserveOriginalOwner
+            ? (sourceOwnerProfilePicture || existingReview?.user?.profile_picture || existingReview?.profile_picture || "")
+            : (typeof userProfile?.profile_picture === "string" ? userProfile.profile_picture : "");
 
         const reviewRecord: PublishedAdReview = {
             adId: nextAdId,
-            createdAt: typeof existingReview?.createdAt === "string" ? existingReview.createdAt : new Date().toISOString(),
-            campaignType,
+            createdAt: !isPromoteAgain && typeof existingReview?.createdAt === "string" ? existingReview.createdAt : new Date().toISOString(),
+            campaignType: persistedCampaignType,
             ownerKey: ownerKey || undefined,
-            ownerId: ownerId !== undefined && ownerId !== null ? String(ownerId) : undefined,
-            ownerUsername: ownerUsername || undefined,
+            ownerId: displayOwnerPublicId || (displayOwnerDbId !== undefined && displayOwnerDbId !== null ? String(displayOwnerDbId) : undefined),
+            ownerUsername: displayOwnerUsername || undefined,
             budget: publishBudget,
             durationDays: effectiveDurationDays,
             title: isProductPromote && linkedProduct
@@ -1336,8 +1974,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             ageMin,
             ageMax,
             reach: 0,
-            impressions: isPromoteAgain ? Number(existingReview?.impressions || existingReview?.views_count || existingReview?.viewCount || 0) : 0,
-            clicks: isPromoteAgain ? Number(existingReview?.clicks || 0) : 0,
+            impressions: 0,
+            clicks: 0,
             spend: 0,
             remainingBudget: selectedBudget,
             tierId: activeTier?.id ?? undefined,
@@ -1352,15 +1990,24 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                     ? "/dashboard/ad-campaign/product-promote"
                     : campaignType === "Profile Promote"
                         ? "/dashboard/ad-campaign/profile-promote"
-                        : "/dashboard/ad-campaign/photo-video",
+                        : isUploadContent
+                            ? (isFlashContent ? "/dashboard/ad-campaign/flash-content" : "/dashboard/ad-campaign/upload-content")
+                            : "/dashboard/ad-campaign/photo-video",
             editDraft: {
                 editingAdId: nextAdId,
                 promoteAgain: isPromoteAgain,
                 activeLink,
                 linkInput,
                 description,
-                ctaTopic,
-                ctaValue,
+                uploadTopic,
+                uploadAffiliateCommission,
+                uploadShowLinkedContentOnHome,
+                uploadVisibility,
+                hashtags: uploadHashtags,
+                allowComments: uploadAllowComments,
+                acceptedUploadTerms,
+                ctaTopic: effectiveCtaTopic,
+                ctaValue: normalizedCtaValue,
                 selectedCountryCode,
                 selectedLocationCodes,
                 genderTarget,
@@ -1372,6 +2019,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 durationDays,
                 promoCode,
                 hasPromoCodeAdded,
+                carryOverViews: Number.isFinite(carryOverViews) ? Math.max(0, carryOverViews) : 0,
+                sourceOwnerDbId: displayOwnerDbId,
+                sourceOwnerPublicId: displayOwnerPublicId,
+                sourceOwnerUsername: displayOwnerUsername,
+                sourceOwnerProfilePicture: displayOwnerProfilePicture,
                 mediaPreview: isProductPromote && linkedProduct
                     ? getProductImageSrc(linkedProduct)
                     : isProfilePromote
@@ -1384,6 +2036,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         ? "profile"
                         : hasUploadedVideo ? "video" : selectedPreviewImage ? "image" : hasLink ? "link" : "",
                 imageName,
+                thumbnailPreview,
+                thumbnailName,
+                contentAccessMode: effectiveContentAccessMode,
                 ...(isProfilePromote ? {
                 profileUsername: promotedProfile?.username || profileUsername,
                 profileLink: activeLink || profileLink,
@@ -1405,8 +2060,80 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         }
 
         setIsPublishing(true);
+        setPublishUploadProgress(0);
         setPopupError("");
         try {
+            if (isUploadContent) {
+                let publishPreviewFile = autoPreviewFile;
+                if (uploadPreviewMode === "auto_preview" && hasUploadedVideo && !publishPreviewFile) {
+                    publishPreviewFile = await generateThreeSecondPreview();
+                    if (!publishPreviewFile) {
+                        throw new Error("The three-second preview could not be created.");
+                    }
+                }
+                const uploadContentExternalLink = activeLink ? normalizeUrl(activeLink) : "";
+                const uploadContentPreview = persistedImageGallery[0]
+                    || historyMediaPreview
+                    || selectedPreviewImage
+                    || linkPreviewImage
+                    || linkPreviewMeta?.thumbnail
+                    || "";
+                const uploadContentMediaType = hasUploadedVideo
+                    ? "video"
+                    : hasUploadedImage
+                        ? "image"
+                        : uploadContentMediaKind || (hasLink ? "link" : uploadedMediaType);
+                const uploadContentPayload = {
+                    contentId: reviewRecord.adId,
+                    contentType: isFlashContent ? "flash" : "vault",
+                    description: description.trim(),
+                    topic: uploadTopic,
+                    price: isFlashContent ? flashContentPrice : publishBudget,
+                    priceRangeMin: isFlashContent ? flashContentPrice : (uploadSelectedMinPrice ?? 0),
+                    priceRangeMax: isFlashContent ? flashContentPrice : (uploadSelectedMaxPrice ?? 0),
+                    affiliateCommission: isFlashContent ? 0 : uploadAffiliateCommission,
+                    subscriptionPackages: isFlashContent ? [] : sanitizeUploadSubscriptionPackages(uploadSubscriptionPackages),
+                    visibility: uploadVisibility,
+                    previewMode: uploadPreviewMode === "blurred" ? "thumbnail" : uploadPreviewMode,
+                    hashtags: uploadHashtags,
+                    allowComments: uploadAllowComments,
+                    showLinkedContentOnHome: uploadShowLinkedContentOnHome,
+                    externalLink: uploadContentExternalLink,
+                    mediaType: uploadContentMediaType,
+                    mediaPreview: uploadContentPreview,
+                    mediaGallery: persistedImageGallery,
+                    thumbnailPreview,
+                    contentAccessMode: isFlashContent ? "unblurred" : effectiveContentAccessMode,
+                    videoDurationSeconds: hasUploadedVideo && pendingVideoCrop ? Math.max(0, trimEndSeconds - trimStartSeconds) : (hasUploadedVideo ? uploadVideoLimitSeconds : 0),
+                };
+                const uploadFormData = new FormData();
+                uploadFormData.set("data", JSON.stringify(uploadContentPayload));
+                if (uploadedFiles.length > 0) {
+                    uploadedFiles.forEach((file) => {
+                        uploadFormData.append("images", file);
+                    });
+                }
+                if (uploadPreviewMode === "auto_preview" && publishPreviewFile) {
+                    uploadFormData.append("preview", publishPreviewFile);
+                }
+                const savedContent = await uploadContentService.createContent(
+                    uploadedFiles.length > 0 ? uploadFormData : uploadContentPayload,
+                    {
+                        onUploadProgress: (percent) => setPublishUploadProgress(percent),
+                    },
+                );
+                window.localStorage.removeItem(draftStorageKey);
+                setEditingAdId("");
+                setIsPromoteAgain(false);
+                setPublishedAd({
+                    ...reviewRecord,
+                    adId: savedContent.contentId || savedContent.content_id || reviewRecord.adId,
+                    status: "Under Review",
+                });
+                setShowPublishedPopup(true);
+                return;
+            }
+
             const promotionLabel = isProfilePromote
                 ? "Profile Promote"
                 : isProductPromote
@@ -1497,7 +2224,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 formData.set("data", JSON.stringify(uploadAdPayload));
             }
 
-            const savedAd = existingReview
+            const savedAd = (existingReview && !isPromoteAgain)
                 ? await adsService.updateAd(reviewRecord.adId, payload as any)
                 : await adsService.createAd(payload as any);
 
@@ -1524,6 +2251,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             }
         } finally {
             setIsPublishing(false);
+            setPublishUploadProgress(0);
         }
     };
 
@@ -1595,48 +2323,59 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
         if (isProductPromote) {
             const productTarget = getProductShareTarget(trimmedLink);
-            if (!productTarget) {
-                showPopupError("Please paste a valid product share link.");
-                return;
-            }
-
             const fetchByMode = async (mode: "id" | "code", value: string) => {
                 if (mode === "id") {
                     return marketService.getItemById(Number(value));
                 }
                 return marketService.getItemByCode(value);
             };
+            const searchProduct = async () => {
+                const searchText = getProductSearchText(trimmedLink);
+                if (!searchText || searchText.length < 2) return null;
+                const result = await marketService.getProducts({
+                    search: searchText,
+                    status: "approved,active",
+                    limit: 1,
+                });
+                return Array.isArray(result?.data) ? result.data[0] : null;
+            };
 
             try {
                 let product: any = null;
-                try {
-                    product = await fetchByMode(productTarget.mode, productTarget.value);
-                } catch {
-                    product = null;
-                }
+                if (productTarget) {
+                    try {
+                        product = await fetchByMode(productTarget.mode, productTarget.value);
+                    } catch {
+                        product = null;
+                    }
 
-                // Fallback: if first lookup failed, try the alternate mode
-                if (!product?.id) {
-                    const altMode = productTarget.mode === "id" ? "code" : "id";
-                    if (altMode === "id" ? /^\d+$/.test(productTarget.value) : true) {
-                        try {
-                            product = await fetchByMode(altMode, productTarget.value);
-                        } catch {
-                            product = null;
+                    // Fallback: if first lookup failed, try the alternate mode
+                    if (!product?.id) {
+                        const altMode = productTarget.mode === "id" ? "code" : "id";
+                        if (altMode === "id" ? /^\d+$/.test(productTarget.value) : true) {
+                            try {
+                                product = await fetchByMode(altMode, productTarget.value);
+                            } catch {
+                                product = null;
+                            }
                         }
                     }
                 }
 
                 if (!product?.id) {
-                    showPopupError("That product link could not be found.");
+                    product = await searchProduct();
+                }
+
+                if (!product?.id) {
+                    showPopupError("That product could not be found.");
                     return;
                 }
 
                 setLinkedProduct(product);
-                setActiveLink(normalizeUrl(trimmedLink));
+                setActiveLink(productTarget ? normalizeUrl(trimmedLink) : trimmedLink);
                 return;
             } catch {
-                showPopupError("Please paste a valid product share link.");
+                showPopupError("That product could not be found.");
                 return;
             }
         }
@@ -1716,6 +2455,18 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             return;
         }
 
+        if (isFlashContent && !isVideoUpload) {
+            showPopupError("Flash Content supports video uploads only.");
+            clearSelectedUpload();
+            return;
+        }
+
+        if (isVaultContent && !isVideoUpload && files.length > 5) {
+            showPopupError("You can upload up to 5 images.");
+            clearSelectedUpload();
+            return;
+        }
+
         if (imagePreview && uploadedMediaType === "video") {
             revokeVideoPreviewIfNeeded(imagePreview);
         }
@@ -1740,6 +2491,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                     setHistoryMediaGallery(dataUrls);
                     setImageName(files.length === 1 ? files[0].name : `${files.length} images selected`);
                     setUploadedMediaType("image");
+                    clearAutoPreview();
                     setUploadedFiles(files);
 
                     if (primaryImage) {
@@ -1768,7 +2520,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             const probeVideo = document.createElement("video");
             probeVideo.onloadedmetadata = () => {
                 const duration = Number.isFinite(probeVideo.duration) ? probeVideo.duration : 0;
-                if (duration > VIDEO_MAX_DURATION_SECONDS) {
+                if (duration > uploadVideoLimitSeconds) {
                     openVideoCropModal(objectUrl, file.name, duration, probeVideo.videoWidth, probeVideo.videoHeight);
                     return;
                 }
@@ -1823,10 +2575,45 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         setUploadedMediaType("");
         setSelectedGalleryIndex(0);
         setImageSize(null);
+        setUploadedFiles([]);
+        clearAutoPreview();
         if (fileInputRef.current) {
             fileInputRef.current.value = "";
         }
     };
+
+    useEffect(() => {
+        if (isUploadContent && ctaTopic !== "No Button") {
+            setCtaTopic("No Button");
+            setCtaValue("");
+        }
+    }, [ctaTopic, isUploadContent]);
+
+    useEffect(() => {
+        if (!isUploadContent || activeLink) return;
+        setUploadShowLinkedContentOnHome(false);
+    }, [activeLink, isUploadContent]);
+
+    useEffect(() => {
+        if (!isUploadTopicOpen) return;
+        const handlePointerDown = (event: MouseEvent) => {
+            if (!uploadTopicDropdownRef.current?.contains(event.target as Node)) {
+                setIsUploadTopicOpen(false);
+            }
+        };
+        document.addEventListener("mousedown", handlePointerDown);
+        return () => document.removeEventListener("mousedown", handlePointerDown);
+    }, [isUploadTopicOpen]);
+
+    useEffect(() => {
+        if (!isUploadContent) return;
+        if (!hasPromoCodeAdded && !promoCode && !promoDiscount && isPromoEditing) return;
+        setPromoCode("");
+        setHasPromoCodeAdded(false);
+        setIsPromoEditing(true);
+        setPromoDiscount(null);
+        setPromoError("");
+    }, [hasPromoCodeAdded, isPromoEditing, isUploadContent, promoCode, promoDiscount]);
 
     useEffect(() => {
         return () => {
@@ -1852,6 +2639,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                     if (adType === "profile_promote_ad") {
                         // Profile: no auto-select, user must pick a chip
                         setBudget(null);
+                    } else if (isUploadContent) {
+                        setDurationDays(1);
                     } else {
                         // Photo/video & product: auto-init to the global minimum so Order Summary is populated
                         const globalMin = Math.min(...tiers.map((t) => Number(t.budget_from)));
@@ -1863,8 +2652,29 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 }
             })
             .catch(() => { /* tiers unavailable — UI will show "no packages" */ });
+
+        if (isUploadContent) {
+            adsService.getUploadControlSettingsPublic()
+                .then((settings) => {
+                    if (!active || !settings) return;
+                    setUploadControlSettings(settings);
+                    const hasExistingDraft = typeof window !== "undefined" && Boolean(window.localStorage.getItem(draftStorageKey));
+                    if (!editingAdId && !isPromoteAgain && !hasExistingDraft) {
+                        // Keep topic unselected by default so the user explicitly chooses one.
+                        if (settings.default_content_access_mode === "blurred" || settings.default_content_access_mode === "unblurred") {
+                            setContentAccessMode(settings.default_content_access_mode);
+                        }
+                    }
+                })
+                .catch(() => {
+                    if (active) setUploadControlSettings(null);
+                });
+        } else {
+            setUploadControlSettings(null);
+            setUploadMaxPriceInput(null);
+        }
         return () => { active = false; };
-    }, [campaignType]);
+    }, [campaignType, draftStorageKey, editingAdId, isPromoteAgain, isUploadContent, setContentAccessMode]);
 
     useEffect(() => {
         try {
@@ -1899,7 +2709,14 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                     setEditingOriginalBudget(parsed.editingOriginalBudget);
                 }
             }
+            if (typeof parsed.carryOverViews === "number") {
+                setCarryOverViews(Math.max(0, parsed.carryOverViews));
+            }
             setIsPromoteAgain(parsed.promoteAgain === true);
+            setSourceOwnerDbId(parsed.sourceOwnerDbId ?? null);
+            if (typeof parsed.sourceOwnerPublicId === "string") setSourceOwnerPublicId(parsed.sourceOwnerPublicId);
+            if (typeof parsed.sourceOwnerUsername === "string") setSourceOwnerUsername(parsed.sourceOwnerUsername);
+            if (typeof parsed.sourceOwnerProfilePicture === "string") setSourceOwnerProfilePicture(parsed.sourceOwnerProfilePicture);
             // For Product Promote, never restore the previously promoted link/linkInput.
             // The page should always start empty unless the user arrives via query params.
             if (!isProductPromote) {
@@ -1907,8 +2724,40 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 if (typeof parsed.linkInput === "string") setLinkInput(parsed.linkInput);
             }
             if (typeof parsed.description === "string") setDescription(parsed.description.slice(0, 50));
+            if (typeof parsed.uploadTopic === "string" && UPLOAD_CONTENT_TOPICS.includes(parsed.uploadTopic as (typeof UPLOAD_CONTENT_TOPICS)[number])) {
+                setUploadTopic(parsed.uploadTopic);
+            }
+            if (typeof parsed.uploadAffiliateCommission === "number") {
+                setUploadAffiliateCommission(Math.min(100, Math.max(0, parsed.uploadAffiliateCommission)));
+            }
+            if (Array.isArray(parsed.uploadSubscriptionPackages)) {
+                setUploadSubscriptionPackages(sanitizeUploadSubscriptionPackages(parsed.uploadSubscriptionPackages));
+            }
+            if (typeof parsed.uploadShowLinkedContentOnHome === "boolean") {
+                setUploadShowLinkedContentOnHome(parsed.uploadShowLinkedContentOnHome);
+            }
+            if (typeof parsed.uploadHashtags === "string") {
+                setUploadHashtags(parsed.uploadHashtags);
+            }
+            if (parsed.uploadVisibility === "public" || parsed.uploadVisibility === "subscribers_only" || parsed.uploadVisibility === "private") {
+                setUploadVisibility(parsed.uploadVisibility);
+            }
+            if (typeof parsed.uploadAllowComments === "boolean") {
+                setUploadAllowComments(parsed.uploadAllowComments);
+            }
+            if (typeof parsed.acceptedUploadTerms === "boolean") {
+                setAcceptedUploadTerms(parsed.acceptedUploadTerms);
+            }
             if (CTA_OPTIONS.includes(parsed.ctaTopic)) setCtaTopic(parsed.ctaTopic);
             if (typeof parsed.ctaValue === "string") setCtaValue(parsed.ctaValue);
+            if (typeof parsed.thumbnailPreview === "string") setThumbnailPreview(parsed.thumbnailPreview);
+            if (typeof parsed.thumbnailName === "string") setThumbnailName(parsed.thumbnailName);
+            if (parsed.contentAccessMode === "blurred" || parsed.contentAccessMode === "unblurred") {
+                setContentAccessMode(parsed.contentAccessMode);
+            }
+            if (parsed.uploadPreviewMode === "none" || parsed.uploadPreviewMode === "thumbnail" || parsed.uploadPreviewMode === "auto_preview" || parsed.uploadPreviewMode === "blurred") {
+                setUploadPreviewMode(parsed.uploadPreviewMode);
+            }
             if (typeof parsed.selectedCountryCode === "string") setSelectedCountryCode(parsed.selectedCountryCode);
             if (Array.isArray(parsed.selectedLocationCodes)) {
                 setSelectedLocationCodes(parsed.selectedLocationCodes.filter((code: unknown) => typeof code === "string"));
@@ -1937,11 +2786,10 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 }
             }
             if (typeof parsed.budget === "number") {
-                // Only restore if it exactly matches a valid tier option
-                setBudget((prev) => {
-                    const validOption = reachTiers.find((t) => Number(t.budget_from) === parsed.budget);
-                    return validOption ? parsed.budget : prev;
-                });
+                setBudget(parsed.budget);
+            }
+            if (typeof parsed.uploadMaxPriceInput === "number") {
+                setUploadMaxPriceInput(parsed.uploadMaxPriceInput);
             }
             if (typeof parsed.durationDays === "number") {
                 const durationLimit = parsed.hasPromoCodeAdded ? PROMO_DURATION_MAX : 30;
@@ -1989,13 +2837,26 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         if (publishedAd) return;
 
         const timeoutId = window.setTimeout(() => {
-            window.localStorage.setItem(draftStorageKey, JSON.stringify({
+            const draftPayload = {
                 version: AD_DRAFT_VERSION,
                 editingAdId,
                 promoteAgain: isPromoteAgain,
+                carryOverViews,
+                sourceOwnerDbId,
+                sourceOwnerPublicId,
+                sourceOwnerUsername,
+                sourceOwnerProfilePicture,
                 activeLink,
                 linkInput,
                 description,
+                uploadTopic,
+                uploadAffiliateCommission,
+                uploadSubscriptionPackages,
+                uploadShowLinkedContentOnHome,
+                uploadHashtags,
+                uploadVisibility,
+                uploadAllowComments,
+                acceptedUploadTerms,
                 ctaTopic,
                 ctaValue,
                 selectedCountryCode,
@@ -2006,19 +2867,42 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 selectedInterestTopics,
                 selectedPlacements,
                 budget,
+                uploadMaxPriceInput,
                 durationDays,
                 promoCode,
                 hasPromoCodeAdded,
                 promoDiscount,
-                mediaPreview: persistedImageGallery[0] || historyMediaPreview || "",
-                mediaGallery: persistedImageGallery,
+                mediaPreview: sanitizeDraftAsset(persistedImageGallery[0] || historyMediaPreview || ""),
+                mediaGallery: sanitizeDraftAssetList(persistedImageGallery),
                 mediaType: uploadedMediaType,
                 imageName,
-            }));
+                thumbnailPreview: sanitizeDraftAsset(thumbnailPreview),
+                thumbnailName,
+                contentAccessMode,
+                uploadPreviewMode,
+            };
+
+            try {
+                window.localStorage.setItem(draftStorageKey, JSON.stringify(draftPayload));
+            } catch (error) {
+                if (!isStorageQuotaError(error)) return;
+                try {
+                    window.localStorage.setItem(draftStorageKey, JSON.stringify({
+                        ...draftPayload,
+                        mediaPreview: "",
+                        mediaGallery: [],
+                        imageName: "",
+                        thumbnailPreview: "",
+                        thumbnailName: "",
+                    }));
+                } catch {
+                    // Ignore quota failures and continue without cached media-heavy draft fields.
+                }
+            }
         }, 250);
 
         return () => window.clearTimeout(timeoutId);
-    }, [activeLink, ageMax, ageMin, budget, ctaTopic, ctaValue, description, draftStorageKey, durationDays, editingAdId, genderTarget, hasPromoCodeAdded, historyMediaPreview, imageName, isPromoteAgain, persistedImageGallery, linkInput, promoCode, publishedAd, selectedCountryCode, selectedInterestTopics, selectedLocationCodes, selectedPlacements, uploadedMediaType]);
+    }, [acceptedUploadTerms, activeLink, ageMax, ageMin, budget, carryOverViews, contentAccessMode, ctaTopic, ctaValue, description, draftStorageKey, durationDays, editingAdId, genderTarget, hasPromoCodeAdded, historyMediaPreview, imageName, isPromoteAgain, persistedImageGallery, linkInput, promoCode, publishedAd, selectedCountryCode, selectedInterestTopics, selectedLocationCodes, selectedPlacements, sourceOwnerDbId, sourceOwnerProfilePicture, sourceOwnerPublicId, sourceOwnerUsername, thumbnailName, thumbnailPreview, uploadAffiliateCommission, uploadAllowComments, uploadHashtags, uploadMaxPriceInput, uploadPreviewMode, uploadShowLinkedContentOnHome, uploadSubscriptionPackages, uploadTopic, uploadVisibility, uploadedMediaType]);
 
     useEffect(() => {
         const justCrossedIntoInsufficientBalance = hasInsufficientBalance && !wasInsufficientBalanceRef.current;
@@ -2065,6 +2949,35 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     useEffect(() => {
         let isCancelled = false;
 
+        // Fetch admin-configured allowed countries for this ad type
+        const adTypeKey = campaignType === "Product Promote" ? "product_promote"
+            : campaignType === "Profile Promote" ? "profile_promote"
+            : "photo_video";
+
+        const getApiUrl = () => {
+            const isClient = typeof window !== 'undefined';
+            if (!isClient) return '/api';
+            const hostname = window.location.hostname;
+            if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                return 'http://localhost:5000';
+            }
+            return '/api';
+        };
+        const API_URL = getApiUrl();
+        fetch(`${API_URL}/admin/customization/ad-allowed-countries`)
+            .then(r => r.ok ? r.json() : null)
+            .then(d => {
+                if (isCancelled) return;
+                const allowedCountries = d?.allowed_countries;
+                if (allowedCountries && typeof allowedCountries === "object") {
+                    const codes: string[] | undefined = allowedCountries?.[adTypeKey];
+                    setAllowedCountryCodes(Array.isArray(codes) ? codes : []);
+                    return;
+                }
+                setAllowedCountryCodes(null);
+            })
+            .catch(() => { if (!isCancelled) setAllowedCountryCodes(null); });
+
         fetch("https://restcountries.com/v3.1/all?fields=name,flags,idd,cca2")
             .then((response) => (response.ok ? response.json() : []))
             .then((data) => {
@@ -2104,7 +3017,13 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         return () => {
             isCancelled = true;
         };
-    }, []);
+    }, [campaignType, isUploadContent]);
+
+    useEffect(() => {
+        if (allowedCountryCodes === null) return;
+        setSelectedLocationCodes((current) => current.filter((code) => allowedCountryCodes.includes(code)));
+        setDraftLocationCodes((current) => current.filter((code) => allowedCountryCodes.includes(code)));
+    }, [allowedCountryCodes]);
 
     useEffect(() => {
         if (!hasLink) {
@@ -2330,8 +3249,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const frameClass = "relative h-full w-full overflow-hidden bg-[radial-gradient(circle_at_30%_20%,rgba(80,96,130,0.38),transparent_34%),linear-gradient(135deg,#15171c_0%,#07080a_100%)]";
         const isPlaying = playingPreview[context];
         const isPlayableLink = Boolean(hasLink && !hasUploadedImage && (linkPreviewMeta?.isPlayable || socialEmbedUrl || linkPreviewType === "video" || linkPreviewType === "embed"));
+        const showBlurOverlay = isUploadContent && effectiveContentAccessMode === "blurred";
+        const previewPosterImage = isUploadContent && uploadContentThumbnail ? uploadContentThumbnail : selectedPreviewImage;
 
         const startPlayback = () => {
+            if (showBlurOverlay) return;
             setPlayingPreview((current) => ({
                 ...current,
                 [context]: true,
@@ -2357,23 +3279,53 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         }
 
         if (hasUploadedVideo) {
-            return <video src={imagePreview} controls playsInline className="h-full w-full bg-black object-cover" />;
+            if (showBlurOverlay) {
+                return (
+                    <div className={frameClass}>
+                        {thumbnailPreview ? (
+                            <Image src={thumbnailPreview} alt={`${context} upload content thumbnail`} fill className="object-cover" unoptimized />
+                        ) : (
+                            <video src={imagePreview} muted playsInline className="h-full w-full bg-black object-cover" />
+                        )}
+                        <div className="absolute inset-x-0 top-0 h-[34%] bg-gradient-to-b from-black/25 via-transparent to-transparent" />
+                        <div className="absolute inset-x-0 bottom-0 h-[66%] backdrop-blur-xl bg-black/35" />
+                        <div className="absolute left-3 top-3 rounded-full border border-white/15 bg-black/45 px-2.5 py-1 text-[8px] font-black uppercase tracking-[0.14em] text-white/90">
+                            Preview Open
+                        </div>
+                        <div className="absolute bottom-3 left-3 right-3 rounded-2xl border border-white/12 bg-black/55 px-3 py-2">
+                            <p className="text-[9px] font-black uppercase tracking-[0.16em] text-amber-200/95">Blurred Content</p>
+                            <p className="mt-1 text-[10px] font-semibold text-white/80">Viewers need to unlock the full video to remove the blur.</p>
+                        </div>
+                    </div>
+                );
+            }
+            return <video src={imagePreview} controls playsInline poster={thumbnailPreview || undefined} className="h-full w-full bg-black object-cover" />;
         }
 
-        if (selectedPreviewImage) {
+        if (previewPosterImage) {
             return (
                 <div className={frameClass}>
-                    <Image src={selectedPreviewImage} alt={`${context} ad creative`} fill className="object-cover" unoptimized />
+                    <Image src={previewPosterImage} alt={`${context} ad creative`} fill className="object-cover" unoptimized />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/38 via-transparent to-black/10" />
+                    {showBlurOverlay && (
+                        <>
+                            <div className="absolute inset-x-0 top-0 h-[34%]" />
+                            <div className="absolute inset-x-0 bottom-0 h-[66%] backdrop-blur-xl bg-black/35" />
+                            <div className="absolute bottom-3 left-3 right-3 rounded-2xl border border-white/12 bg-black/55 px-3 py-2">
+                                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-amber-200/95">Blurred Content</p>
+                                <p className="mt-1 text-[10px] font-semibold text-white/80">Only the top preview stays clear until the user unlocks it.</p>
+                            </div>
+                        </>
+                    )}
                     {isPlayableLink && (
                         <div className="absolute inset-0 flex items-center justify-center">
                             <button
                                 type="button"
                                 onClick={startPlayback}
-                                className="flex h-12 w-12 items-center justify-center rounded-full bg-black/70 text-white shadow-[0_12px_28px_rgba(0,0,0,0.45)] backdrop-blur-sm transition hover:scale-105 hover:bg-black/85"
+                                className={`flex h-12 w-12 items-center justify-center rounded-full shadow-[0_12px_28px_rgba(0,0,0,0.45)] backdrop-blur-sm transition ${showBlurOverlay ? "cursor-default bg-black/55 text-white/55" : "bg-black/70 text-white hover:scale-105 hover:bg-black/85"}`}
                                 aria-label="Play video preview"
                             >
-                                <IonIcon name="play" className="ml-0.5 text-xl" />
+                                <IonIcon name={showBlurOverlay ? "lock-closed" : "play"} className="ml-0.5 text-xl" />
                             </button>
                         </div>
                     )}
@@ -2429,7 +3381,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         return (
             <div className="flex h-full w-full flex-col justify-between bg-[radial-gradient(circle_at_top_left,rgba(74,92,130,0.32),transparent_34%),linear-gradient(145deg,#17191f,#08090b)] p-4">
                 <div className="inline-flex w-fit rounded-full border border-white/10 bg-white/[0.06] px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.18em] text-white/45">
-                    Live Ad
+                    {isUploadContent ? "Live Content" : "Live Ad"}
                 </div>
                 <div>
                     <div className="text-sm font-black leading-5 text-white/85">{previewTitle}</div>
@@ -2557,6 +3509,17 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     };
 
     if (publishedAd) {
+        const publishedIsUploadContent = publishedAd.campaignPath === "/dashboard/ad-campaign/upload-content"
+            || publishedAd.campaignPath === "/dashboard/ad-campaign/flash-content";
+        const reviewTypeLabel = publishedIsUploadContent ? "Content Review" : "Ad Review";
+        const reviewTitle = publishedIsUploadContent ? "Your content is under review" : "Your ad is under review";
+        const reviewIdLabel = publishedIsUploadContent ? "Content ID" : "Ad ID";
+        const reviewLockText = publishedIsUploadContent
+            ? "This usually takes up to 24 hours. You cannot edit this content while it is being reviewed."
+            : "This usually takes up to 24 hours. You cannot edit this ad while it is being reviewed.";
+        const reviewPrimaryAction = publishedIsUploadContent ? "View Content" : "View Ad Center";
+        const reviewPrimaryHref = publishedIsUploadContent ? "/dashboard/profile?tab=googs" : "/dashboard/wallet/ad-center";
+        const reviewBackHref = publishedIsUploadContent ? "/dashboard/profile?tab=googs" : "/dashboard/shop";
         return (
             <div className="flex min-h-[calc(100vh-8rem)] items-center justify-center px-4 py-8">
                 {showPublishedPopup && (
@@ -2567,17 +3530,17 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 <IonIcon name="checkmark-circle-outline" className="text-2xl" />
                             </div>
                             <p className="mt-4 text-[10px] font-black uppercase tracking-[0.24em] text-emerald-300/80">Published</p>
-                            <h2 className="mt-2 text-xl font-black text-white">Your ad is under review</h2>
+                            <h2 className="mt-2 text-xl font-black text-white">{reviewTitle}</h2>
                             <p className="mt-3 text-sm font-bold leading-6 text-white/62">
                                 This usually takes up to 24 hours.
                             </p>
                             <div className="mt-5 rounded-xl border border-white/10 bg-white/[0.05] px-4 py-3">
-                                <p className="text-[9px] font-black uppercase tracking-[0.18em] text-white/35">Ad ID</p>
+                                <p className="text-[9px] font-black uppercase tracking-[0.18em] text-white/35">{reviewIdLabel}</p>
                                 <button
                                     type="button"
                                     onClick={() => copyAdId(publishedAd.adId)}
                                     className="mt-1 inline-flex items-center justify-center gap-2 rounded-lg px-2 py-1 text-lg font-black tracking-wide text-white transition hover:bg-white/[0.08]"
-                                    aria-label="Copy ad ID"
+                                    aria-label={`Copy ${reviewIdLabel.toLowerCase()}`}
                                 >
                                     <span>{publishedAd.adId}</span>
                                     <IonIcon name={adIdCopied ? "checkmark-outline" : "copy-outline"} className="text-base text-emerald-300" />
@@ -2596,10 +3559,10 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 </button>
                                 <button
                                     type="button"
-                                    onClick={() => router.push("/dashboard/wallet/ad-center")}
+                                    onClick={() => router.push(reviewPrimaryHref)}
                                     className="min-h-10 rounded-xl bg-white px-4 text-[10px] font-black uppercase tracking-[0.14em] text-black transition hover:bg-zinc-200 active:scale-[0.98]"
                                 >
-                                    View Ad Center
+                                    {reviewPrimaryAction}
                                 </button>
                             </div>
                         </div>
@@ -2609,22 +3572,22 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 <div className="w-full max-w-[440px] rounded-[1.75rem] border border-white/10 bg-[#111114] p-6 text-center shadow-[0_28px_80px_rgba(0,0,0,0.42)]">
                     <button
                         type="button"
-                        onClick={() => router.push("/dashboard/shop")}
+                        onClick={() => router.push(reviewBackHref)}
                         className="mb-5 flex h-9 w-9 items-center justify-center rounded-full bg-white/[0.06] text-white/75 transition hover:bg-white/10 hover:text-white active:scale-95"
-                        aria-label="Back to shop"
+                        aria-label={publishedIsUploadContent ? "Back to content" : "Back to shop"}
                     >
                         <IonIcon name="arrow-back-outline" className="text-lg" />
                     </button>
                     <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-400/12 text-emerald-300">
                         <IonIcon name="time-outline" className="text-2xl" />
                     </div>
-                    <p className="mt-5 text-[10px] font-black uppercase tracking-[0.24em] text-white/38">Ad Review</p>
-                    <h1 className="mt-2 text-2xl font-black text-white">Your ad is under review</h1>
+                    <p className="mt-5 text-[10px] font-black uppercase tracking-[0.24em] text-white/38">{reviewTypeLabel}</p>
+                    <h1 className="mt-2 text-2xl font-black text-white">{reviewTitle}</h1>
                     <p className="mt-3 text-sm font-bold leading-6 text-white/55">
-                        This usually takes up to 24 hours. You cannot edit this ad while it is being reviewed.
+                        {reviewLockText}
                     </p>
                     <div className="mt-6 rounded-2xl border border-white/10 bg-black/20 px-4 py-4">
-                        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/35">Ad ID</p>
+                        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/35">{reviewIdLabel}</p>
                         <p className="mt-1 text-xl font-black tracking-wide text-white">{publishedAd.adId}</p>
                     </div>
                 </div>
@@ -2739,7 +3702,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             type="button"
                             onClick={() => {
                                 closeInsufficientBalanceModal();
-                                router.push("/dashboard/wallet/topup");
+                                router.push("/dashboard/wallet/my-wallet");
                             }}
                             className="mt-4 w-full rounded-lg border border-red-500/35 bg-red-500/15 px-4 py-3 text-[10px] font-black uppercase tracking-[0.24em] text-red-300 transition hover:bg-red-500/25 hover:text-red-200 active:scale-[0.98]"
                         >
@@ -2768,10 +3731,10 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             <IonIcon name="document-text-outline" className="text-xl" />
                         </div>
                         <h3 className="mt-4 text-sm font-black uppercase tracking-[0.18em] text-white">
-                            Cancel Ad
+                            {isUploadContent ? `Cancel ${contentTypeLabel}` : "Cancel Ad"}
                         </h3>
                         <p className="mt-2 text-xs leading-5 text-white/45">
-                            Save this form as a draft or close it right away.
+                            {isUploadContent ? `Save this ${contentTypeLabel.toLowerCase()} form as a draft or close it right away.` : "Save this form as a draft or close it right away."}
                         </p>
                         <div className="mt-5 grid grid-cols-2 gap-2">
                             <button
@@ -2820,13 +3783,19 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 <button
                                     type="button"
                                     onClick={selectAllAvailableLocations}
-                                    className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-white/78 transition hover:bg-white/[0.08] hover:text-white"
+                                    disabled={locationCountryPool.length === 0}
+                                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${locationCountryPool.length === 0 ? "cursor-not-allowed text-white/28" : "text-white/78 hover:bg-white/[0.08] hover:text-white"}`}
                                 >
                                     <span className={`flex h-5 w-5 items-center justify-center rounded-md border ${isAllDraftLocationsSelected ? "border-white bg-white text-black" : "border-white/20 bg-white/[0.04] text-transparent"}`}>
                                         <IonIcon name="checkmark" className="text-xs" />
                                     </span>
                                     <IonIcon name="globe-outline" className="text-lg" />
                                     <span className="min-w-0 flex-1 truncate text-[11px] font-bold">All Countries</span>
+                                    {locationCountryPool.length === 0 && (
+                                        <span className="shrink-0 rounded-full border border-red-500/20 bg-red-500/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.12em] text-red-300">
+                                            Not available
+                                        </span>
+                                    )}
                                 </button>
                             )}
 
@@ -2839,13 +3808,15 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 })
                                 .map((country) => {
                                 const isSelected = draftLocationCodes.includes(country.code);
+                                const isAvailable = allowedCountryCodes === null || allowedCountryCodes.includes(country.code);
 
                                 return (
                                     <button
                                         key={country.code}
                                         type="button"
+                                        disabled={!isAvailable}
                                         onClick={() => selectLocationCode(country.code)}
-                                        className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${isSelected ? "bg-white text-black shadow-[0_8px_24px_rgba(255,255,255,0.08)]" : "text-white/78 hover:bg-white/[0.08] hover:text-white"}`}
+                                        className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${!isAvailable ? "cursor-not-allowed opacity-45 text-white/40" : isSelected ? "bg-white text-black shadow-[0_8px_24px_rgba(255,255,255,0.08)]" : "text-white/78 hover:bg-white/[0.08] hover:text-white"}`}
                                     >
                                         <span className={`flex h-5 w-5 items-center justify-center rounded-md border ${isSelected ? "border-white bg-white text-black" : "border-white/20 bg-white/[0.04] text-transparent"}`}>
                                             <IonIcon name="checkmark" className="text-xs" />
@@ -2859,6 +3830,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                             unoptimized
                                         />
                                         <span className="min-w-0 flex-1 truncate text-[11px] font-bold">{country.name}</span>
+                                        {!isAvailable && (
+                                            <span className="shrink-0 rounded-full border border-red-500/20 bg-red-500/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.12em] text-red-300">
+                                                Not available
+                                            </span>
+                                        )}
                                     </button>
                                 );
                             })}
@@ -2890,7 +3866,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 </div>
             )}
 
-            <div className="mb-4 flex items-center gap-3">
+            <div className="mb-4 flex items-start gap-3">
                 <button
                     type="button"
                     onClick={() => router.push("/dashboard/shop")}
@@ -2899,9 +3875,21 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 >
                     <IonIcon name="arrow-back-outline" className="text-lg" />
                 </button>
-                <div className="min-w-0">
-                    <p className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">Ad Bar</p>
-                    <h1 className="mt-0.5 truncate text-xl font-black tracking-tight text-white">{campaignType}</h1>
+                <div className="min-w-0 flex-1">
+                    <p className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">{editorChromeLabel}</p>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                        <h1 className="truncate text-xl font-black tracking-tight text-white">{campaignType}</h1>
+                        {isUploadContent ? (
+                            <button
+                                type="button"
+                                onClick={() => router.push(isFlashContent ? "/dashboard/ad-campaign/upload-content" : "/dashboard/ad-campaign/flash-content")}
+                                className="inline-flex min-h-8 items-center gap-2 rounded-xl border border-white/12 bg-white/[0.05] px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-white/78 transition hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
+                            >
+                                <IonIcon name={isFlashContent ? "cloud-upload-outline" : "flash-outline"} className="text-sm" />
+                                <span>{isFlashContent ? "Vault Content" : "Flash Content"}</span>
+                            </button>
+                        ) : null}
+                    </div>
                 </div>
             </div>
 
@@ -3083,7 +4071,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         <div className="mb-3 flex items-center justify-between gap-3">
                             <div>
                                 <p className="text-sm font-bold text-white">Apply Link</p>
-                                <p className="mt-1 text-xs text-white/45">{hasLink ? previewTitle : "Add landing destination"}</p>
+                                <p className="mt-1 text-xs text-white/45">{hasLink ? previewTitle : isUploadContent ? "Paste a social media, photo, or video link" : "Add landing destination"}</p>
                             </div>
                             {hasLink ? (
                                 <button
@@ -3103,8 +4091,21 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 type="text"
                                 value={linkInput}
                                 onChange={(event) => setLinkInput(event.target.value)}
+                                onPaste={(event) => {
+                                    if (!isProductPromote) return;
+                                    const pastedValue = getPastedProductSearchValue(event);
+                                    if (!pastedValue) return;
+                                    event.preventDefault();
+                                    const trimmedPastedValue = pastedValue.trim();
+                                    const looksLikeUrl = /^https?:\/\//i.test(trimmedPastedValue) || /^[\w.-]+\.[A-Za-z]{2,}(?:\/|$)/.test(trimmedPastedValue);
+                                    if (looksLikeUrl || getProductShareTarget(trimmedPastedValue)) {
+                                        setLinkInput(normalizeUrl(trimmedPastedValue));
+                                        return;
+                                    }
+                                    setLinkInput(getProductSearchText(trimmedPastedValue) || trimmedPastedValue);
+                                }}
                                 disabled={hasUploadedImage}
-                                placeholder={isProductPromote ? "Paste product share link" : "https://your-landing-page.com"}
+                                placeholder={isProductPromote ? "Search goog" : isUploadContent ? "https://your-content-link.com" : "https://your-landing-page.com"}
                                 className={`min-h-10 min-w-0 flex-1 rounded-xl bg-white/[0.06] px-3 text-xs text-white outline-none transition placeholder:text-white/25 focus:bg-white/[0.09] ${hasUploadedImage ? "cursor-not-allowed opacity-45" : ""}`}
                             />
                             <button
@@ -3119,13 +4120,13 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                     </section>
                     )}
 
-                    {!isProductPromote && !isProfilePromote && (
+                    {isStandardCreativeCampaign && (
                     <section>
                         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <div>
-                                <p className="text-sm font-bold text-white">Select Ad Media</p>
+                                <p className="text-sm font-bold text-white">{isUploadContent ? `${contentTypeLabel} Media` : "Select Ad Media"}</p>
                                 <p className="mt-1 text-xs text-white/45">{imageName || "Upload image or video"}</p>
-                                <p className="mt-1 text-[10px] font-bold text-white/30">Video: upload directly up to 1 min, crop longer videos</p>
+                                <p className="mt-1 text-[10px] font-bold text-white/30">Video: upload directly up to {formatVideoTime(uploadVideoLimitSeconds)}, crop longer videos</p>
                             </div>
                             <button
                                 type="button"
@@ -3136,6 +4137,18 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 <span>Upload Media</span>
                             </button>
                         </div>
+
+                        {isPreparingVideoUpload && (
+                            <div className="mb-3 overflow-hidden rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-2">
+                                <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-[0.14em] text-sky-200">
+                                    <span>Preparing video</span>
+                                    <span>Fast preview...</span>
+                                </div>
+                                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/30">
+                                    <div className="h-full w-2/3 animate-pulse rounded-full bg-sky-300" />
+                                </div>
+                            </div>
+                        )}
 
                         <input
                             ref={fileInputRef}
@@ -3201,39 +4214,462 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 onClick={handleUploadClick}
                                 className={`flex min-h-24 w-full items-center justify-center rounded-xl text-[11px] font-bold uppercase tracking-[0.16em] transition ${hasLink ? "bg-white/[0.025] text-white/25" : "bg-white/[0.04] text-white/35 hover:bg-white/[0.07] hover:text-white/60"}`}
                             >
-                                {hasLink ? "Remove link before uploading media" : "Select image or video to preview"}
+                                {hasLink ? "Remove link before uploading media" : isFlashContent ? "Select video only" : isUploadContent ? "Select video or up to 5 images" : "Select image or video to preview"}
                             </button>
                         ) : null}
+
+                        {isUploadContent && (
+                            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                                {canShowUploadPreviewPanel && (
+                                <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-3">
+                                    <div className="mb-3 flex items-center justify-between gap-3">
+                                        <div>
+                                            <p className="text-sm font-bold text-white">{isFlashContent ? "Thumbnail (Optional)" : canCreateAutoPreview ? "Thumbnail / Preview" : "Thumbnail"}</p>
+                                            <p className="mt-1 text-xs text-white/45">
+                                                {isFlashContent
+                                                    ? "Upload an optional image to display before the Flash Content video plays."
+                                                    : canUploadContentThumbnail && canCreateAutoPreview
+                                                    ? "Upload a custom thumbnail or create a three-second automatic video preview."
+                                                    : canUploadContentThumbnail
+                                                        ? "Keep a custom thumbnail ready for images, image links, videos, or video links."
+                                                        : "Create a three-second automatic video preview."}
+                                            </p>
+                                        </div>
+                                        <div className="flex shrink-0 items-center gap-2">
+                                        {canUploadContentThumbnail && thumbnailPreview ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    handleRemoveThumbnail();
+                                                    if (isVaultThumbnailMode) {
+                                                        setUploadPreviewMode("none");
+                                                    }
+                                                }}
+                                                className="flex h-8 items-center justify-center rounded-full bg-white/[0.06] px-3 text-[9px] font-black uppercase tracking-[0.14em] text-white/60 transition hover:bg-white/[0.1] hover:text-white"
+                                            >
+                                                Remove
+                                            </button>
+                                        ) : (
+                                            <IonIcon name="image-outline" className="text-lg text-white/40" />
+                                        )}
+                                        </div>
+                                    </div>
+
+                                    <div className="mb-3 grid grid-cols-1 gap-2">
+                                        {isVaultContent && canUploadContentThumbnail ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    if (isVaultThumbnailMode) {
+                                                        setUploadPreviewMode("none");
+                                                        return;
+                                                    }
+                                                    setUploadPreviewMode("thumbnail");
+                                                    setContentAccessMode("unblurred");
+                                                }}
+                                                disabled={disableVaultThumbnailButton}
+                                                className={`rounded-xl border px-2.5 py-2 text-[9px] font-black uppercase tracking-[0.1em] transition ${uploadPreviewMode === "thumbnail" ? "border-white/35 bg-white text-black" : "border-white/10 bg-black/20 text-white/55 hover:bg-white/[0.06]"} ${disableVaultThumbnailButton ? "cursor-not-allowed opacity-35" : ""}`}
+                                            >
+                                                Thumbnail
+                                            </button>
+                                        ) : null}
+                                        {canCreateAutoPreview ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    if (isVaultAutoPreviewMode) {
+                                                        setUploadPreviewMode("none");
+                                                        return;
+                                                    }
+                                                    setContentAccessMode("unblurred");
+                                                    void generateThreeSecondPreview();
+                                                }}
+                                                disabled={disableVaultAutoPreviewButton}
+                                                className={`rounded-xl border px-2.5 py-2 text-[9px] font-black uppercase tracking-[0.1em] transition ${uploadPreviewMode === "auto_preview" ? "border-sky-300/40 bg-sky-400/15 text-sky-200" : "border-white/10 bg-black/20 text-white/55 hover:bg-white/[0.06]"} disabled:cursor-not-allowed disabled:opacity-35`}
+                                            >
+                                                {isGeneratingAutoPreview ? "Creating..." : "3-sec Preview"}
+                                            </button>
+                                        ) : null}
+                                    </div>
+
+                                    <input
+                                        ref={thumbnailInputRef}
+                                        type="file"
+                                        accept="image/*"
+                                        onChange={(event) => {
+                                            handleThumbnailChange(event);
+                                            setUploadPreviewMode("thumbnail");
+                                            setContentAccessMode("unblurred");
+                                        }}
+                                        className="hidden"
+                                    />
+
+                                    {canCreateAutoPreview && uploadPreviewMode === "auto_preview" ? (
+                                        autoPreviewUrl ? (
+                                        <div className="overflow-hidden rounded-xl border border-sky-300/20 bg-black">
+                                            <video src={autoPreviewUrl} autoPlay loop muted playsInline className="h-28 w-full object-cover" />
+                                            <div className="flex items-center justify-between px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-sky-200">
+                                                <span>Published preview</span>
+                                                <span>3 seconds</span>
+                                            </div>
+                                        </div>
+                                        ) : (
+                                        <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-4 text-center text-[11px] font-semibold text-white/45">
+                                            Click 3-sec Preview to create the video preview.
+                                        </div>
+                                        )
+                                    ) : canUploadContentThumbnail && isVaultThumbnailMode && thumbnailPreview ? (
+                                        <div className="flex items-center gap-3">
+                                            <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-xl bg-white/[0.06]">
+                                                <Image src={thumbnailPreview} alt="Upload content thumbnail" fill className="object-cover" unoptimized />
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="truncate text-xs font-black leading-5 text-white">
+                                                    {thumbnailName || "Thumbnail selected"}
+                                                </div>
+                                                <div className="text-[11px] leading-5 text-white/45">
+                                                    Thumbnail preview
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ) : canUploadContentThumbnail && isVaultThumbnailMode ? (
+                                        <div className="space-y-3">
+                                            <button
+                                                type="button"
+                                                onClick={handleThumbnailUploadClick}
+                                                className="flex min-h-24 w-full items-center justify-center rounded-xl bg-white/[0.04] text-[11px] font-bold uppercase tracking-[0.16em] text-white/35 transition hover:bg-white/[0.07] hover:text-white/60"
+                                            >
+                                                Upload thumbnail
+                                            </button>
+                                        </div>
+                                    ) : isVaultImageLikeContent && isVaultBlurMode ? (
+                                        <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-4 text-center text-[11px] font-semibold text-white/45">
+                                            Blurred preview is active for this image content. Thumbnail is locked.
+                                        </div>
+                                    ) : canUploadContentThumbnail && !thumbnailPreview ? (
+                                        <div className="space-y-3">
+                                            <button
+                                                type="button"
+                                                onClick={handleThumbnailUploadClick}
+                                                disabled={disableVaultThumbnailButton}
+                                                className={`flex min-h-24 w-full items-center justify-center rounded-xl bg-white/[0.04] text-[11px] font-bold uppercase tracking-[0.16em] text-white/35 transition hover:bg-white/[0.07] hover:text-white/60 ${disableVaultThumbnailButton ? "cursor-not-allowed opacity-35 hover:bg-white/[0.04] hover:text-white/35" : ""}`}
+                                            >
+                                                Upload thumbnail
+                                            </button>
+                                            {!isFlashContent && (
+                                                <p className="text-center text-[11px] font-semibold text-white/45">
+                                                    {disableVaultThumbnailButton
+                                                        ? "Blurred is selected, so thumbnail is locked."
+                                                        : "Thumbnail box always stays available here."}
+                                                </p>
+                                            )}
+                                        </div>
+                                    ) : canUploadContentThumbnail && thumbnailPreview ? (
+                                        <div className="flex items-center gap-3">
+                                            <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-xl bg-white/[0.06]">
+                                                <Image src={thumbnailPreview} alt="Upload content thumbnail" fill className="object-cover" unoptimized />
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="truncate text-xs font-black leading-5 text-white">
+                                                    {thumbnailName || "Thumbnail selected"}
+                                                </div>
+                                                <div className="text-[11px] leading-5 text-white/45">
+                                                    Ready to use when Thumbnail mode is selected
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-4 text-center text-[11px] font-semibold text-white/45">
+                                            Click 3-sec Preview to create the video preview.
+                                        </div>
+                                    )}
+                                </div>
+                                )}
+
+                                {isFlashContent && (
+                                <div className="grid content-start grid-cols-2 gap-3 rounded-2xl border border-white/8 bg-white/[0.03] p-3">
+                                    <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+                                        <p className="text-[8px] font-black uppercase tracking-[0.12em] text-white/35">Fixed Price</p>
+                                        <p className="mt-2 text-sm font-black text-white">R {Number(flashContentPrice || 0).toLocaleString()}</p>
+                                    </div>
+                                    <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+                                        <p className="text-[8px] font-black uppercase tracking-[0.12em] text-white/35">Preview Time</p>
+                                        <p className="mt-2 text-sm font-black text-white">{flashPreviewSeconds} sec</p>
+                                    </div>
+                                </div>
+                                )}
+
+                                {isVaultContent && (
+                                <div className={`rounded-2xl border border-white/8 bg-white/[0.03] p-3 ${!canShowUploadPreviewPanel ? "sm:col-span-2" : ""}`}>
+                                    <div className="mb-3">
+                                        <p className="text-sm font-bold text-white">Content Access</p>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (!canBlurUploadContent) return;
+                                                if (isVaultBlurMode) {
+                                                    setUploadPreviewMode("none");
+                                                    setContentAccessMode("unblurred");
+                                                    return;
+                                                }
+                                                setContentAccessMode("blurred");
+                                                setUploadPreviewMode("blurred");
+                                                if (isVaultImageLikeContent) {
+                                                    handleRemoveThumbnail();
+                                                }
+                                            }}
+                                            disabled={disableVaultBlurButton}
+                                            className={`rounded-xl border px-3 py-3 text-left transition ${isVaultBlurMode ? "border-amber-300/50 bg-amber-400/10 text-white" : "border-white/10 bg-white/[0.03] text-white/65"} ${disableVaultBlurButton ? "cursor-not-allowed opacity-40" : "hover:border-white/20 hover:bg-white/[0.05]"}`}
+                                        >
+                                            <div className="text-[10px] font-black uppercase tracking-[0.16em]">Blurred</div>
+                                            <div className="mt-1 text-[11px] font-semibold text-white/70">Preview stays partly visible, rest stays blurred.</div>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setContentAccessMode("unblurred")}
+                                            disabled={disableVaultNonBlurredButton}
+                                            className={`rounded-xl border px-3 py-3 text-left transition ${(!isVaultImageLikeContent && effectiveContentAccessMode === "unblurred") ? "border-emerald-300/45 bg-emerald-400/10 text-white" : "border-white/10 bg-white/[0.03] text-white/65 hover:border-white/20 hover:bg-white/[0.05]"} ${disableVaultNonBlurredButton ? "cursor-not-allowed opacity-35" : ""}`}
+                                        >
+                                            <div className="text-[10px] font-black uppercase tracking-[0.16em]">Non Blurred</div>
+                                            <div className="mt-1 text-[11px] font-semibold text-white/70">{isVaultImageLikeContent ? "Image content uses Blur or Thumbnail only." : "Full media preview opens normally."}</div>
+                                        </button>
+                                    </div>
+
+                                    {activeLink ? (
+                                    <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
+                                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-white/45">Show Linked Content on Home Page</p>
+                                        <div className="mt-3 grid grid-cols-2 gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setUploadShowLinkedContentOnHome(true)}
+                                                className={`rounded-lg border px-3 py-2 text-[11px] font-bold transition ${uploadShowLinkedContentOnHome ? "border-white/35 bg-white text-black" : "border-white/10 bg-white/[0.04] text-white/65 hover:bg-white/[0.08]"}`}
+                                            >
+                                                Yes
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setUploadShowLinkedContentOnHome(false)}
+                                                className={`rounded-lg border px-3 py-2 text-[11px] font-bold transition ${!uploadShowLinkedContentOnHome ? "border-white/35 bg-white text-black" : "border-white/10 bg-white/[0.04] text-white/65 hover:bg-white/[0.08]"}`}
+                                            >
+                                                No
+                                            </button>
+                                        </div>
+                                        <p className="mt-2 text-[11px] font-semibold text-white/45">
+                                            When enabled, the public home card can open the linked content.
+                                        </p>
+                                    </div>
+                                    ) : null}
+                                </div>
+                                )}
+                            </div>
+                        )}
                     </section>
                     )}
 
                     <section className="space-y-4">
-                        {!isProductPromote && !isProfilePromote && (
+                        {isStandardCreativeCampaign && !isUploadContent && (
                         <div>
-                            <div className="mb-2 flex items-center justify-between gap-3">
-                                <label htmlFor="ad-description" className="text-sm font-bold text-white">
-                                    Description
-                                </label>
-                                <span className="text-[10px] font-black text-white/35">{description.length}/50</span>
-                            </div>
-                            <div className="relative min-h-[4.2rem] rounded-xl bg-white/[0.06] px-3 py-2 text-[11px] leading-5">
-                                <div className="pointer-events-none absolute inset-0 whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-5 text-white">
-                                    {renderHighlightedDescription(description)}
-                                </div>
-                                <textarea
-                                    id="ad-description"
-                                    value={description}
-                                    maxLength={50}
-                                    onChange={(event) => setDescription(event.target.value.slice(0, 50))}
-                                    rows={2}
-                                    className="relative z-10 h-full min-h-[3.1rem] w-full resize-none bg-transparent text-transparent caret-white outline-none placeholder:text-transparent"
-                                    placeholder="Write a short ad description..."
-                                />
-                            </div>
+                                <>
+                                    <div className="mb-2 flex items-center justify-between gap-3">
+                                        <label htmlFor="ad-description" className="text-sm font-bold text-white">
+                                            Description
+                                        </label>
+                                        <span className="text-[10px] font-black text-white/35">{description.length}/50</span>
+                                    </div>
+                                    <div className="relative min-h-[4.2rem] rounded-xl bg-white/[0.06] px-3 py-2 text-[11px] leading-5">
+                                        <div className="pointer-events-none absolute inset-0 whitespace-pre-wrap break-words px-3 py-2 text-[11px] leading-5 text-white">
+                                            {renderHighlightedDescription(description)}
+                                        </div>
+                                        <textarea
+                                            id="ad-description"
+                                            value={description}
+                                            maxLength={50}
+                                            onChange={(event) => setDescription(event.target.value.slice(0, 50))}
+                                            rows={2}
+                                            className="relative z-10 h-full min-h-[3.1rem] w-full resize-none bg-transparent text-transparent caret-white outline-none placeholder:text-transparent"
+                                            placeholder="Write short description..."
+                                        />
+                                    </div>
+                                </>
                         </div>
                         )}
 
-                        {!isProductPromote && !isProfilePromote && (
+                        {isStandardCreativeCampaign && isUploadContent && (
+                        <div className="space-y-3">
+                            <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                            <div className="space-y-3">
+                                <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(220px,0.75fr)] lg:items-end">
+                                    <div className="space-y-2">
+                                        <label htmlFor="ad-description-upload" className="text-sm font-bold text-white">
+                                            Title
+                                        </label>
+                                        <div className="relative h-9 overflow-hidden rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-[11px] leading-5 transition focus-within:border-cyan-300/45 focus-within:bg-white/[0.09]">
+                                            <div className="pointer-events-none absolute inset-y-0 left-0 right-10 overflow-hidden whitespace-nowrap px-3 py-2 text-[11px] leading-5 text-white">
+                                                {renderHighlightedDescription(description)}
+                                            </div>
+                                            <textarea
+                                                id="ad-description-upload"
+                                                value={description}
+                                                maxLength={50}
+                                                onChange={(event) => setDescription(event.target.value.slice(0, 50))}
+                                                rows={1}
+                                                className="relative z-10 h-full w-full resize-none overflow-hidden whitespace-nowrap bg-transparent pr-8 text-transparent caret-white outline-none placeholder:text-transparent"
+                                                placeholder="Write short description..."
+                                            />
+                                            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-white/35">
+                                                {description.length}/50
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <label htmlFor="upload-topic" className="block text-sm font-bold text-white">
+                                            Topics <span className="text-red-400">*</span>
+                                        </label>
+                                        <div ref={uploadTopicDropdownRef} className="relative w-full">
+                                            <button
+                                                id="upload-topic"
+                                                type="button"
+                                                onClick={() => setIsUploadTopicOpen((current) => !current)}
+                                                aria-expanded={isUploadTopicOpen}
+                                                className="flex h-9 w-full items-center justify-between rounded-xl border border-white/10 bg-white/[0.06] px-3 text-[11px] font-bold text-white outline-none transition hover:bg-white/[0.09]"
+                                            >
+                                                <span className={`truncate ${uploadTopic ? "text-white" : "text-white/35"}`}>{uploadTopic || "Choose topics"}</span>
+                                                <IonIcon name={isUploadTopicOpen ? "chevron-up-outline" : "chevron-down-outline"} className="text-sm text-white/45" />
+                                            </button>
+                                            {isUploadTopicOpen && (
+                                                <div className="absolute left-0 right-0 top-full z-30 mt-2 rounded-2xl border border-white/10 bg-[#111216]/98 p-2 shadow-[0_24px_70px_rgba(0,0,0,0.48)] backdrop-blur-xl">
+                                                    <div className="max-h-64 space-y-1 overflow-y-auto pr-1 [scrollbar-color:rgba(255,255,255,0.25)_transparent] [scrollbar-width:thin]">
+                                                        {UPLOAD_CONTENT_TOPICS.map((topic) => (
+                                                            <button
+                                                                key={topic}
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setUploadTopic(topic);
+                                                                    setIsUploadTopicOpen(false);
+                                                                }}
+                                                                className={`flex w-full items-center rounded-xl px-3 py-2.5 text-left text-[11px] font-bold transition ${topic === uploadTopic ? "bg-white text-black shadow-[0_8px_24px_rgba(255,255,255,0.08)]" : "text-white/78 hover:bg-white/[0.08] hover:text-white"}`}
+                                                            >
+                                                                {topic}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="space-y-2">
+                                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                        <label htmlFor="upload-hashtags" className="block text-sm font-bold text-white">
+                                            Tags
+                                        </label>
+                                        <div className="flex flex-wrap items-center gap-3 self-start">
+                                            <div className="relative">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setIsUploadVisibilityOpen((current) => !current)}
+                                                    aria-expanded={isUploadVisibilityOpen}
+                                                    className="inline-flex min-h-8 items-center gap-2 rounded-xl border border-white/10 bg-black/20 px-3 text-[10px] font-bold text-white/75 transition hover:bg-white/[0.06]"
+                                                >
+                                                    <IonIcon name={uploadVisibility === "public" ? "earth-outline" : uploadVisibility === "subscribers_only" ? "people-outline" : "lock-closed-outline"} className="text-xs text-cyan-300" />
+                                                    <span>Visibility: {uploadVisibility === "public" ? "Public" : uploadVisibility === "subscribers_only" ? "Subscribers Only" : "Private"}</span>
+                                                    <IonIcon name={isUploadVisibilityOpen ? "chevron-up-outline" : "chevron-down-outline"} className="text-xs text-white/40" />
+                                                </button>
+                                                {isUploadVisibilityOpen && (
+                                                    <div className="absolute right-0 top-full z-40 mt-2 w-48 rounded-xl border border-white/10 bg-[#111216] p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.45)]">
+                                                        {(["public", "subscribers_only", "private"] as const).map((visibility) => {
+                                                            const label = visibility === "public" ? "Public" : visibility === "subscribers_only" ? "Subscribers Only" : "Private";
+                                                            const icon = visibility === "public" ? "earth-outline" : visibility === "subscribers_only" ? "people-outline" : "lock-closed-outline";
+                                                            return (
+                                                                <button
+                                                                    key={visibility}
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setUploadVisibility(visibility);
+                                                                        setIsUploadVisibilityOpen(false);
+                                                                    }}
+                                                                    className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[10px] font-bold transition ${uploadVisibility === visibility ? "bg-white text-black" : "text-white/70 hover:bg-white/[0.08] hover:text-white"}`}
+                                                                >
+                                                                    <IonIcon name={icon} className="text-xs" />
+                                                                    <span>{label}</span>
+                                                                    {uploadVisibility === visibility && <IonIcon name="checkmark-outline" className="ml-auto text-xs" />}
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <label className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-[10px] font-bold text-white/75">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={uploadAllowComments}
+                                                    onChange={(event) => setUploadAllowComments(event.target.checked)}
+                                                    className="h-3.5 w-3.5 shrink-0 accent-white"
+                                                />
+                                                <span>Allow comments</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div className="flex min-h-11 flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-[11px] leading-5 transition focus-within:border-cyan-300/45 focus-within:bg-white/[0.09]">
+                                        <IonIcon name="pricetag-outline" className="text-sm text-sky-400" />
+                                        {uploadTagList.map((tag) => (
+                                            <span key={tag} className="inline-flex items-center gap-1 rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-1 text-[10px] font-bold text-sky-200">
+                                                {tag}
+                                                <button
+                                                    type="button"
+                                                    onClick={() => removeUploadTag(tag)}
+                                                    className="flex h-4 w-4 items-center justify-center rounded-full text-sky-100/70 transition hover:bg-sky-300/20 hover:text-white"
+                                                    aria-label={`Remove ${tag}`}
+                                                >
+                                                    <IonIcon name="close-outline" className="text-xs" />
+                                                </button>
+                                            </span>
+                                        ))}
+                                        <input
+                                            id="upload-hashtags"
+                                            type="text"
+                                            value={uploadTagInput}
+                                            onChange={(event) => setUploadTagInput(event.target.value)}
+                                            onKeyDown={(event) => {
+                                                if (event.key === "Enter" || event.key === "," || event.key === "Tab") {
+                                                    if (uploadTagInput.trim()) {
+                                                        event.preventDefault();
+                                                        commitUploadTag();
+                                                    }
+                                                }
+                                                if (event.key === "Backspace" && !uploadTagInput && uploadTagList.length > 0) {
+                                                    removeUploadTag(uploadTagList[uploadTagList.length - 1]);
+                                                }
+                                            }}
+                                            onBlur={commitUploadTag}
+                                            placeholder={uploadTagList.length ? "Add tag" : "Type tag and press Enter"}
+                                            className="min-w-[140px] flex-1 bg-transparent text-[11px] font-bold text-white outline-none placeholder:text-white/25"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                            </div>
+
+                            {!isFlashContent && (
+                                <UploadContentSettingsSection
+                                      priceValue={uploadSelectedMinPrice}
+                                      adminMinPriceValue={uploadDisplayMin}
+                                      adminMaxPriceValue={uploadDisplayMax}
+                                      affiliateCommission={uploadAffiliateCommission}
+                                      subscriptionCommissionTiers={uploadSubscriptionCommissionTiers}
+                                      subscriptionPackages={uploadSubscriptionPackages}
+                                      onPriceChange={applyUploadPriceInput}
+                                      onAffiliateCommissionChange={setUploadAffiliateCommission}
+                                      onSubscriptionPackagesChange={(packages) => setUploadSubscriptionPackages(sanitizeUploadSubscriptionPackages(packages))}
+                                   />
+                            )}
+                        </div>
+                        )}
+
+                        {isStandardCreativeCampaign && !isUploadContent && (
                         <div className={`grid grid-cols-1 gap-3 sm:items-end ${ctaNeedsDetailField(ctaTopic) ? "sm:grid-cols-[170px_minmax(0,1fr)]" : "sm:grid-cols-[170px]"}`}>
                             <div>
                                 <label htmlFor="button-topic" className="mb-2 block text-sm font-bold text-white">
@@ -3350,7 +4786,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                 id="button-action-value"
                                                 type="tel"
                                                 value={ctaValue}
-                                                onChange={(event) => setCtaValue(event.target.value)}
+                                                onChange={(event) => setCtaValue(event.target.value.replace(/[^\d\s()-]/g, ""))}
                                                 placeholder="Phone number"
                                                 className="min-h-10 w-full rounded-xl bg-white/[0.06] px-3 text-[11px] text-white outline-none transition placeholder:text-white/25 focus:bg-white/[0.09]"
                                             />
@@ -3370,10 +4806,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         </div>
                         )}
 
+                        {isStandardCreativeCampaign && !isUploadContent && (
                         <div className="space-y-4 rounded-2xl bg-white/[0.035] p-4">
                             <div>
                                 <div className="flex items-center justify-between gap-3">
-                                    <p className="text-sm font-bold text-white">Budget</p>
+                                    <p className="text-sm font-bold text-white">{isUploadContent ? "Set Price" : "Budget"}</p>
                                 </div>
                             </div>
 
@@ -3383,8 +4820,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                         <div className="flex items-center gap-2 text-base font-black text-white">
                                             <span className="rounded-lg bg-white/[0.07] px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/55">Rupieer</span>
                                             <span>{budget !== null ? formatRuppier(budget) : "—"}</span>
-                                            <span className="text-xs font-black text-white/45">Total Budget</span>
-                                            {!isProfileAd && (
+                                            <span className="text-xs font-black text-white/45">{isUploadContent ? "Content Price" : "Total Budget"}</span>
+                                            {!isProfileAd && !isUploadContent && (
                                                 <button
                                                     type="button"
                                                     onClick={() => {
@@ -3401,7 +4838,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                 </button>
                                             )}
                                         </div>
-                                        {!isProfileAd && isBudgetEditing && (
+                                        {!isProfileAd && !isUploadContent && isBudgetEditing && (
                                             <input
                                                 type="text"
                                                 inputMode="numeric"
@@ -3416,6 +4853,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                             />
                                         )}
                                     </div>
+                                    {!isUploadContent && (
                                     <div className="flex flex-col items-end gap-1">
                                         <div className="flex flex-wrap items-center justify-end gap-2">
                                             <div className={`flex min-h-9 items-center gap-1 rounded-xl border bg-black/20 px-1.5 py-1 transition focus-within:border-white/30 ${promoError ? "border-red-500/60" : "border-white/10"}`}>
@@ -3476,6 +4914,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                             </p>
                                         )}
                                     </div>
+                                    )}
                                 </div>
                                 {/* Budget slider — full width, photo/video & product only */}
                                 {!isProfileAd && tiersLoaded && (
@@ -3498,6 +4937,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                             <span>R{globalBudgetMin.toLocaleString()}</span>
                                             <span>R{globalBudgetMax.toLocaleString()}</span>
                                         </div>
+                                        {isUploadContent && (
+                                            <p className="mt-2 text-[10px] font-semibold text-white/40">
+                                                This slider uses the admin-configured upload price range.
+                                            </p>
+                                        )}
                                     </div>
                                 )}
                                 {isBudgetInGap && (
@@ -3538,7 +4982,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     {hasInsufficientBalance && (
                                         <button
                                             type="button"
-                                            onClick={() => router.push("/dashboard/wallet/topup")}
+                                            onClick={() => router.push("/dashboard/wallet/my-wallet")}
                                             className="rounded-lg border border-red-500/35 bg-red-500/15 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-red-300 transition hover:bg-red-500/25 hover:text-red-200 active:scale-[0.98]"
                                         >
                                             Top Up
@@ -3552,6 +4996,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 )}
                             </div>
 
+                            {!isUploadContent && (
                             <div className={`transition-opacity ${isDurationLocked ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
                                 <p className="text-sm font-bold text-white">Duration</p>
                                 <div className="mb-3 mt-3 text-sm font-black text-white">
@@ -3578,8 +5023,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     Ads usually complete within your selected time, but may finish sooner or take longer depending on audience reach.
                                 </p>
                             </div>
+                            )}
                         </div>
+                        )}
 
+                        {!isUploadContent && (
                         <div className="space-y-4 rounded-2xl bg-white/[0.035] p-4">
                             <div>
                                 <div className="flex flex-wrap items-center gap-2">
@@ -3640,7 +5088,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 </div>
                             </div>
                         </div>
+                        )}
 
+                        {!isUploadContent && (
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                             <div className="rounded-2xl bg-white/[0.035] p-4">
                                 <p className="text-sm font-bold text-white">Gender</p>
@@ -3709,7 +5159,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 </div>
                             </div>
                         </div>
+                        )}
 
+                        {!isUploadContent && (
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                             <div className="rounded-2xl bg-white/[0.035] p-4">
                                 <button
@@ -3815,8 +5267,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 )}
                             </div>
                         </div>
+                        )}
 
-                        {showProfileNonRefundableNotice && (
+                        {!isUploadContent && showProfileNonRefundableNotice && (
                             <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3 text-left">
                                 <input
                                     type="checkbox"
@@ -3830,16 +5283,49 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             </label>
                         )}
 
+                        {isUploadContent && (
+                            <div className="space-y-3">
+                                <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-white/8 bg-white/[0.03] p-3 text-left">
+                                    <input
+                                        type="checkbox"
+                                        checked={acceptedUploadTerms}
+                                        onChange={(event) => setAcceptedUploadTerms(event.target.checked)}
+                                        className="mt-0.5 h-4 w-4 shrink-0 accent-white"
+                                    />
+                                    <span className="text-[10px] font-bold leading-5 text-white/75">
+                                        I agree to the <span className="underline underline-offset-2">terms and conditions</span>.
+                                        <span className="mt-2 block font-semibold text-white/45">
+                                            This content will be deleted from your profile after 30 days. Get a subscription package to keep it on your profile.
+                                        </span>
+                                    </span>
+                                </label>
+                            </div>
+                        )}
+
                         <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-white/8 pt-4">
                             {campaignType === "Photo and Video" && userHasPaidSubscription === false && (
                                 <p className="w-full text-right text-[10px] text-white/40 mb-2 mt-0.5 leading-relaxed">
                                     This ad will be deleted from your profile in {adsExpiryLabel}. Get a subscription package to keep it on your profile.
                                 </p>
                             )}
+                            {isPublishing && uploadedFiles.length > 0 && (
+                                <div className="mb-2 w-full overflow-hidden rounded-xl border border-red-300/20 bg-red-300/10 px-3 py-2">
+                                    <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-[0.14em] text-red-100">
+                                        <span>{hasUploadedVideo ? "Uploading video" : "Uploading media"}</span>
+                                        <span>{publishUploadProgress > 0 ? `${publishUploadProgress}%` : "Starting..."}</span>
+                                    </div>
+                                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/35">
+                                        <div
+                                            className="h-full rounded-full bg-red-200 transition-[width] duration-200"
+                                            style={{ width: `${Math.max(6, publishUploadProgress)}%` }}
+                                        />
+                                    </div>
+                                </div>
+                            )}
                             <button
                                 type="button"
                                 onClick={() => setShowCancelConfirm(true)}
-                                className="flex min-h-9 items-center justify-center gap-1.5 rounded-[0.9rem] border border-white/10 bg-white/[0.06] px-5 text-[10px] font-black uppercase tracking-[0.14em] text-white/75 transition hover:border-white/18 hover:bg-white/[0.1] hover:text-white active:scale-[0.99]"
+                                className={`flex items-center justify-center gap-1.5 rounded-[0.9rem] border border-white/10 bg-white/[0.06] px-4 text-[9px] font-black uppercase tracking-[0.14em] text-white/75 transition hover:border-white/18 hover:bg-white/[0.1] hover:text-white active:scale-[0.99] ${isUploadContent ? "min-h-8" : "min-h-9"}`}
                             >
                                 <IonIcon name="close-outline" className="text-sm" />
                                 <span>Cancel</span>
@@ -3847,11 +5333,16 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             <button
                                 type="button"
                                 onClick={handlePublish}
-                                disabled={isPublishing}
-                                className="flex min-h-9 items-center justify-center gap-1.5 rounded-[0.9rem] bg-rose-500 px-5 text-[10px] font-black uppercase tracking-[0.14em] text-white shadow-[0_12px_26px_rgba(244,63,94,0.2)] transition hover:bg-rose-400 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                                disabled={isPublishing || (isUploadContent && !acceptedUploadTerms)}
+                                aria-busy={isPublishing}
+                                className={`flex items-center justify-center gap-2 rounded-[0.9rem] bg-red-400 px-4 text-[9px] font-black uppercase tracking-[0.14em] text-white shadow-[0_12px_26px_rgba(248,113,113,0.22)] transition hover:bg-red-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 ${isUploadContent ? "min-h-8 min-w-[118px]" : "min-h-9 min-w-[132px]"}`}
                             >
-                                <IonIcon name={isPublishing ? "hourglass-outline" : "rocket-outline"} className="text-sm" />
-                                <span>{isPublishing ? "Publishing" : "Publish"}</span>
+                                {isPublishing ? (
+                                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/35 border-t-white" aria-hidden="true" />
+                                ) : (
+                                    <IonIcon name="rocket-outline" className="text-sm" />
+                                )}
+                                <span>{isPublishing ? "Publishing..." : "Publish"}</span>
                             </button>
                         </div>
                     </section>
@@ -3862,8 +5353,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                     <div className="flex h-full flex-col gap-3 rounded-[1.75rem] border border-white/8 bg-[linear-gradient(180deg,rgba(18,18,18,0.98),rgba(12,12,12,0.98))] p-4 shadow-[0_28px_64px_rgba(0,0,0,0.36)]">
                         <div className="flex items-center justify-between gap-3">
                             <div>
-                                <p className="text-base font-bold text-white">Ad Preview</p>
-                                <p className="mt-1 text-xs text-white/45">{isProductPromote ? "Marketplace product card" : isProfilePromote ? "Profile promotion card" : "Live device preview"}</p>
+                                <p className="text-base font-bold text-white">{previewPanelTitle}</p>
+                                <p className="mt-1 text-xs text-white/45">{previewPanelSubtitle}</p>
                             </div>
 
                             {!isProductPromote && !isProfilePromote && (
@@ -3927,7 +5418,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                             </button>
                                             <button
                                                 type="button"
-                                                className="flex h-7 w-7 items-center justify-center rounded-full text-white/55 transition hover:bg-white/[0.08] hover:text-white"
+                                                className="light-theme-option-dots flex h-7 w-7 items-center justify-center rounded-full text-white/55 transition hover:bg-white/[0.08] hover:text-white"
                                                 aria-label="More"
                                             >
                                                 <IonIcon name="ellipsis-vertical" className="text-sm" />
@@ -4022,15 +5513,15 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                             <div className="absolute left-1/2 top-1.5 z-10 h-3.5 w-12 -translate-x-1/2 rounded-b-xl bg-[#050507]" />
                                             <div className="flex h-[265px] flex-col pt-5">
                                                 <div className="flex items-center justify-between px-2.5 pb-2 text-[7px] font-black uppercase tracking-[0.12em] text-white/35">
-                                                    <span>Ad</span>
-                                                    <span>Sponsored</span>
+                                                    <span>{isUploadContent ? "Content" : "Ad"}</span>
+                                                    <span>{isUploadContent ? "Featured" : "Sponsored"}</span>
                                                 </div>
                                                 <div className="mx-1.5 overflow-hidden rounded-[0.9rem] border border-white/8 bg-[#121318] shadow-[0_10px_24px_rgba(0,0,0,0.34)]">
                                                     <div className="flex items-center gap-2 px-2.5 py-2">
                                                         {renderPreviewAvatar("h-6 w-6", "text-[9px]")}
                                                         <div className="min-w-0 flex-1">
                                                             <div className="truncate text-[9px] font-black text-white/80">{profileDisplayName}</div>
-                                                            <div className="text-[7px] font-bold text-white/35">Promoted</div>
+                                                            <div className="text-[7px] font-bold text-white/35">{isUploadContent ? "Content Post" : "Promoted"}</div>
                                                         </div>
                                                     </div>
                                                     <div className="mx-2 aspect-square overflow-hidden rounded-[0.8rem] border border-white/8 bg-black">
@@ -4044,10 +5535,10 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                     <div className={`flex items-center gap-1.5 px-2 py-1.5 ${shouldShowCtaButton ? "justify-between" : "justify-start"}`}>
                                                         <div className="min-w-0">
                                                             <div className="truncate text-[8px] font-black text-white/82">
-                                                                {shouldShowRichLinkMeta ? previewTitle : "Media Ad"}
+                                                                {shouldShowRichLinkMeta ? previewTitle : isUploadContent ? "Media Content" : "Media Ad"}
                                                             </div>
                                                             <div className="truncate text-[7px] text-white/38">
-                                                                {shouldShowRichLinkMeta ? previewHref : hasLink ? "Standard media preview" : "Add link to activate landing page"}
+                                                                {shouldShowRichLinkMeta ? previewHref : hasLink ? "Standard media preview" : isUploadContent ? "Add a link or upload media to preview content" : "Add link to activate landing page"}
                                                             </div>
                                                         </div>
                                                         {shouldShowCtaButton && (
@@ -4094,14 +5585,14 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                                 {renderPreviewAvatar("h-7 w-7", "text-[10px]")}
                                                                 <div className="min-w-0 flex-1">
                                                                     <div className="truncate text-[10px] font-black text-white/82">{profileDisplayName}</div>
-                                                            <div className="text-[8px] font-bold text-white/35">Sponsored Ad</div>
+                                                            <div className="text-[8px] font-bold text-white/35">{isUploadContent ? "Featured Content" : "Sponsored Ad"}</div>
                                                                 </div>
                                                             </div>
                                                             <h2 className="mt-2.5 break-words text-[13px] font-black leading-4 text-white/88">
-                                                                {shouldShowRichLinkMeta ? previewTitle : "Media Ad"}
+                                                                {shouldShowRichLinkMeta ? previewTitle : isUploadContent ? "Media Content" : "Media Ad"}
                                                             </h2>
                                                             <p className="mt-1.5 line-clamp-2 text-[9px] leading-4 text-white/46">
-                                                                {shouldShowRichLinkMeta ? previewHref : hasLink ? "Standard media preview" : "Apply a link to show the landing page destination."}
+                                                                {shouldShowRichLinkMeta ? previewHref : hasLink ? "Standard media preview" : isUploadContent ? "Upload or link content to preview the final card." : "Apply a link to show the landing page destination."}
                                                             </p>
                                                         </div>
                                                         <div className={`mt-3 flex items-center gap-2 ${shouldShowCtaButton ? "justify-between" : "justify-start"}`}>
@@ -4137,6 +5628,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             )}
                         </div>
 
+                        {!isUploadContent && (
                         <div className="rounded-[0.95rem] border border-white/8 bg-white/[0.03] px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
                             <div className="flex items-center justify-between gap-2">
                                 <div>
@@ -4183,6 +5675,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 )}
                             </div>
                         </div>
+                        )}
                     </div>
                 </section>
 
@@ -4193,9 +5686,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             <div className="flex items-start justify-between gap-4 border-b border-white/8 px-5 py-4">
                                 <div>
                                     <p className="text-[10px] font-black uppercase tracking-[0.22em] text-rose-300/80">Crop Video</p>
-                                    <h2 className="mt-1 text-xl font-black text-white">Trim your ad to 1 minute</h2>
+                                    <h2 className="mt-1 text-xl font-black text-white">Trim your video</h2>
                                     <p className="mt-2 text-sm font-semibold text-white/55">
-                                        Videos longer than 60 seconds must be trimmed before upload.
+                                        Videos longer than {formatVideoTime(uploadVideoLimitSeconds)} must be trimmed before upload.
                                     </p>
                                 </div>
                                 <button
@@ -4211,6 +5704,45 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
                             <div className="grid gap-5 overflow-y-auto p-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
                                 <div className="space-y-4">
+                                    {showVideoLimitUpgradeNotice && (
+                                        <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 p-4">
+                                            <div className="flex items-start gap-3">
+                                                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-300/15 text-amber-200">
+                                                    <IonIcon name="alert-circle-outline" className="text-lg" />
+                                                </div>
+                                                <div className="min-w-0 flex-1">
+                                                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-200/80">Video limit</p>
+                                                    <p className="mt-1 text-sm font-bold leading-5 text-white/80">
+                                                        Your plan allows videos up to {formatVideoTime(uploadVideoLimitSeconds)}. Subscribe to a higher plan for longer uploads, or trim this video here.
+                                                    </p>
+                                                    <div className="mt-3 flex flex-wrap gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => router.push("/dashboard/wallet/subscription")}
+                                                            className="rounded-lg bg-amber-300 px-3 py-2 text-[9px] font-black uppercase tracking-[0.14em] text-black transition hover:bg-amber-200"
+                                                        >
+                                                            Upgrade Plan
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setShowVideoLimitUpgradeNotice(false)}
+                                                            className="rounded-lg border border-white/10 bg-white/[0.05] px-3 py-2 text-[9px] font-black uppercase tracking-[0.14em] text-white/70 transition hover:bg-white/[0.09]"
+                                                        >
+                                                            Trim Here
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowVideoLimitUpgradeNotice(false)}
+                                                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-white/50 transition hover:bg-white/[0.1] hover:text-white"
+                                                    aria-label="Close video limit notice"
+                                                >
+                                                    <IonIcon name="close-outline" className="text-sm" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                     <div className="overflow-hidden rounded-[1.25rem] border border-white/10 bg-black">
                                         <video
                                             key={pendingVideoCrop.sourceUrl}
@@ -4222,7 +5754,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     </div>
                                     <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
                                         <div className="flex flex-wrap items-center justify-between gap-2">
-                                            <p className="text-sm font-bold text-white">Selected 60-second clip</p>
+                                            <p className="text-sm font-bold text-white">Selected clip</p>
                                             <span className="rounded-full bg-rose-500/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-rose-200">
                                                 {formatVideoTime(Math.max(0, trimEndSeconds - trimStartSeconds))}
                                             </span>
@@ -4270,7 +5802,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                 className="absolute inset-y-2 rounded-2xl border-2 border-white bg-rose-500/35 shadow-[0_12px_30px_rgba(244,63,94,0.35)]"
                                                 style={{
                                                     left: `${(trimStartSeconds / pendingVideoCrop.duration) * 100}%`,
-                                                    width: `${(Math.min(VIDEO_MAX_DURATION_SECONDS, pendingVideoCrop.duration) / pendingVideoCrop.duration) * 100}%`,
+                                                    width: `${(Math.min(uploadVideoLimitSeconds, pendingVideoCrop.duration) / pendingVideoCrop.duration) * 100}%`,
                                                 }}
                                             >
                                                 <div className="absolute left-1 top-1/2 h-8 w-1 -translate-y-1/2 rounded-full bg-white/90" />
@@ -4294,12 +5826,12 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
                                         <p className="text-sm font-bold text-white">Trim controls</p>
                                         <div className="mt-4 rounded-xl border border-white/8 bg-black/20 p-3 text-sm font-semibold leading-6 text-white/60">
-                                            Drag the highlighted window across the timeline to choose any 60-second section.
+                                            Drag the highlighted window across the timeline to choose the allowed section.
                                         </div>
                                         <div className="mt-4 rounded-xl border border-white/8 bg-black/20 p-3 text-sm font-semibold text-white/60">
                                             Original length: {formatVideoTime(pendingVideoCrop.duration)}
                                             <br />
-                                            Maximum allowed clip: {formatVideoTime(VIDEO_MAX_DURATION_SECONDS)}
+                                            Maximum allowed clip: {formatVideoTime(uploadVideoLimitSeconds)}
                                         </div>
                                         {trimError && (
                                             <p className="mt-3 rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-200">

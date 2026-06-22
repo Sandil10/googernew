@@ -1,7 +1,6 @@
+import { API_URL } from './apiConfig';
 
-const isClient = typeof window !== 'undefined';
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
-const getStoredToken = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null);
+const getStoredToken = () => (typeof window !== 'undefined' ? (window.sessionStorage.getItem('token') || window.localStorage.getItem('token')) : null);
 const VIEWER_KEY_STORAGE_KEY = 'googer-viewer-key';
 
 const getViewerKey = () => {
@@ -466,6 +465,19 @@ export const marketService = {
             return await response.json();
         } catch (error) {
             console.error('Error logging view:', error);
+        }
+    },
+
+    logAdImpression: async (id: string | number) => {
+        const engagementId = String(id);
+        try {
+            const response = await fetch(`${API_URL}/market/${engagementId}/impression`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+            });
+            return await response.json();
+        } catch (error) {
+            console.error('Error logging ad impression:', error);
         }
     },
 

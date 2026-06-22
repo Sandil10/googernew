@@ -38,6 +38,36 @@ const getAdSecondViewKind = (ad: any): AdSecondViewKind => {
 };
 
 const PENDING_RESELL_CART_KEY = "googer:pending-resell-cart-add";
+
+const getSponsoredEngagementId = (target: any) => {
+    const raw = target?.raw || target || {};
+    const adId = raw.adId || raw.ad_id || target?.adId || target?.ad_id;
+    if (adId) return `ad-${String(adId).replace(/^ad-/, "")}`;
+    return raw.id || target?.id || target?.productId || raw.productId;
+};
+
+const buildAdViewState = (result: any, fallback: any) => {
+    const nextViewsCount = Number(
+        result?.views_count ??
+        result?.viewCount ??
+        result?.views ??
+        fallback?.views_count ??
+        fallback?.viewCount ??
+        0
+    );
+    const nextReach = Number(result?.current_reach ?? result?.reach ?? fallback?.current_reach ?? fallback?.reach ?? 0);
+    return {
+        views_count: nextViewsCount,
+        viewCount: nextViewsCount,
+        current_reach: nextReach,
+        reach: nextReach,
+        clicks: Number(result?.clicks || result?.link_actions || fallback?.clicks || fallback?.link_actions || 0),
+        link_actions: Number(result?.link_actions || result?.clicks || fallback?.link_actions || fallback?.clicks || 0),
+        message_clicks: Number(result?.message_clicks || fallback?.message_clicks || 0),
+        visit_clicks: Number(result?.visit_clicks || fallback?.visit_clicks || 0),
+        call_clicks: Number(result?.call_clicks || fallback?.call_clicks || 0),
+    };
+};
 const RESELL_ATTRIBUTION_STORAGE_KEY = "googer:resell-attribution";
 
 const userMatchesRef = (user: any, ref: string) => {
@@ -235,13 +265,15 @@ export default function UnifiedSharePage() {
                     }
                     // Log a view automatically (matches feed behavior on render)
                     try {
-                        const id = data.data?.id || data.data?.adId || data.data?.productId;
+                        const id = data.type === "ad" || data.type === "product"
+                            ? getSponsoredEngagementId(data.data)
+                            : data.data?.id || data.data?.productId;
                         if (id != null) {
                             if (data.type === "goog") await googService.logView(Number(id));
                             else {
                                 const result = await marketService.logView(id);
-                                if (result?.incremented === true) {
-                                    updateAdState(data.data, (prev) => ({ views_count: (prev.views_count || 0) + 1 }));
+                                if (result?.success) {
+                                    updateAdState(data.data, buildAdViewState(result, data.data));
                                 }
                             }
                         }
@@ -318,11 +350,15 @@ export default function UnifiedSharePage() {
 
     const handleLogView = async (target: any) => {
         try {
-            const id = target.id || target.adId || target.productId;
+            const id = type === "ad" || type === "product"
+                ? getSponsoredEngagementId(target)
+                : target.id || target.productId;
             if (type === "goog") await googService.logView(Number(id));
             else {
-                await marketService.logView(id);
-                updateAdState(id, (prev) => ({ views_count: (prev.views_count || 0) + 1 }));
+                const result = await marketService.logView(id);
+                if (result?.success) {
+                    updateAdState(target, buildAdViewState(result, target));
+                }
             }
         } catch (err) {
             console.error('Log view failed', err);

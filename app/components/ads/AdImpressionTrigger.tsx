@@ -5,25 +5,30 @@ import { useEffect, useRef } from "react";
 type AdImpressionTriggerProps = {
     adId: string | number;
     onImpression: () => void;
+    minIntervalMs?: number;
     children: React.ReactNode;
 };
 
 /**
- * Wraps any ad card and fires `onImpression` exactly once per mount when at
- * least 50% of the element enters the viewport.  Uses a stable callback ref
- * so the observer is not torn down and re-created on every parent render.
+ * Wraps any ad card and fires `onImpression` for each distinct viewport
+ * exposure. Scrolling away and back counts again, but small observer flickers
+ * are ignored by a short cooldown.
  */
-export function AdImpressionTrigger({ adId, onImpression, children }: AdImpressionTriggerProps) {
+export function AdImpressionTrigger({ adId, onImpression, minIntervalMs = 1500, children }: AdImpressionTriggerProps) {
     const containerRef = useRef<HTMLDivElement>(null);
-    // Track whether we've already fired for this ad instance
-    const firedRef = useRef(false);
+    const visibleRef = useRef(false);
+    const lastFiredAtRef = useRef(0);
     // Always hold the latest callback without rebuilding the observer
     const callbackRef = useRef(onImpression);
-    callbackRef.current = onImpression;
+
+    useEffect(() => {
+        callbackRef.current = onImpression;
+    }, [onImpression]);
 
     // Reset when the ad changes (e.g. feed refresh with same DOM node)
     useEffect(() => {
-        firedRef.current = false;
+        visibleRef.current = false;
+        lastFiredAtRef.current = 0;
     }, [adId]);
 
     useEffect(() => {
@@ -32,8 +37,16 @@ export function AdImpressionTrigger({ adId, onImpression, children }: AdImpressi
 
         const observer = new IntersectionObserver(
             ([entry]) => {
-                if (entry.isIntersecting && !firedRef.current) {
-                    firedRef.current = true;
+                const isVisible = entry.isIntersecting && entry.intersectionRatio >= 0.5;
+                if (!isVisible) {
+                    visibleRef.current = false;
+                    return;
+                }
+
+                const now = Date.now();
+                if (!visibleRef.current && now - lastFiredAtRef.current >= minIntervalMs) {
+                    visibleRef.current = true;
+                    lastFiredAtRef.current = now;
                     callbackRef.current();
                 }
             },
@@ -42,7 +55,7 @@ export function AdImpressionTrigger({ adId, onImpression, children }: AdImpressi
 
         observer.observe(el);
         return () => observer.disconnect();
-    }, []); // intentionally empty — callback changes handled via callbackRef
+    }, []); // intentionally empty - callback changes handled via callbackRef
 
     return <div ref={containerRef}>{children}</div>;
 }

@@ -1,10 +1,27 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+import { API_URL } from './apiConfig';
+
+const VIEWER_KEY_STORAGE_KEY = 'googer-viewer-key';
+
+const getViewerKey = () => {
+    if (typeof localStorage === 'undefined') return '';
+    let value = localStorage.getItem(VIEWER_KEY_STORAGE_KEY);
+    if (!value) {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            value = crypto.randomUUID();
+        } else {
+            value = `viewer-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+        }
+        localStorage.setItem(VIEWER_KEY_STORAGE_KEY, value);
+    }
+    return value;
+};
 
 const getAuthHeaders = () => {
-    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+    const token = typeof window !== 'undefined' ? (window.sessionStorage.getItem('token') || window.localStorage.getItem('token')) : null;
     return {
         'Content-Type': 'application/json',
         'Authorization': token ? `Bearer ${token}` : '',
+        'x-googer-viewer-key': getViewerKey(),
     };
 };
 
@@ -46,11 +63,9 @@ export const googService = {
     },
 
     deletePost: async (idOrPost: any) => {
-        // Handle both raw ID or full post object
         const rawId = typeof idOrPost === 'object' ? (idOrPost.id ?? idOrPost.goog_id) : idOrPost;
         if (!rawId) throw new Error('No post ID provided for deletion');
 
-        // Remove common prefixes like "goog-" or "write-" if they exist
         const cleanId = String(rawId).replace(/^(goog-|write-)/, "");
         await requestJson(`/googs/${cleanId}`, { method: 'DELETE' });
         return true;
@@ -81,6 +96,10 @@ export const googService = {
             method: 'POST',
             body: JSON.stringify({ reason, custom_reason }),
         });
+    },
+
+    reportComment: async (commentId: number) => {
+        return requestJson(`/googs/comments/${commentId}/report`, { method: 'POST' });
     },
 
     addComment: async (id: number, text: string, parentId?: string | number) => {
@@ -138,6 +157,7 @@ export const googService = {
             return null;
         }
     },
+
     getUserPosts: async (userId: number | string) => {
         const data = await requestJson(`/googs/user/${userId}`);
         return data.data || [];

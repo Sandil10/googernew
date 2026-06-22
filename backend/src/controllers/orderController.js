@@ -2,6 +2,11 @@ const pool = require('../config/database');
 const fs = require('fs');
 const path = require('path');
 const { distributeProductDiscountCommission } = require('../utils/referralCommission');
+const { adjustOrderItemStock, parseVariants } = require('../../../../shared/utils/orderStockHelpers');
+const { cancelTransferIfUnused } = require('../../../../shared/utils/orderTransferHelpers');
+const { refundCancelledOrder } = require('../../../../shared/utils/orderRefundHelpers');
+const { finalizeReceivedOrder } = require('../../../../shared/utils/orderSettlementHelpers');
+const { autoReceiveExpiredCodOrders } = require('../../../../shared/utils/orderAutoReceiveHelpers');
 
 function logDebug(message) {
     const timestamp = new Date().toISOString();
@@ -126,19 +131,6 @@ async function ensureResellGoogerCommissionSetting(client) {
             ) VALUES (1.00, 0.25, 1.25, 15, 10.00, true)
         `);
     }
-}
-
-function parseVariants(rawVariants) {
-    if (!rawVariants) return [];
-    if (Array.isArray(rawVariants)) return rawVariants;
-    if (typeof rawVariants === 'string') {
-        try {
-            return JSON.parse(rawVariants);
-        } catch {
-            return [];
-        }
-    }
-    return [];
 }
 
 function parseCommissionInfo(rawInfo) {
@@ -314,114 +306,6 @@ function calculateDiscountedProductAmount(item, quantity = 1) {
     };
 }
 
-async function adjustOrderItemStock(client, marketItem, orderLike, direction = 'decrease') {
-    const quantity = parseInt(orderLike.quantity || 0, 10);
-    if (!quantity) return;
-
-    const delta = direction === 'decrease' ? -quantity : quantity;
-    const variants = parseVariants(marketItem.variants);
-    const variantIndex = orderLike.variant_index !== undefined && orderLike.variant_index !== null
-        ? parseInt(orderLike.variant_index, 10)
-        : null;
-    const selectedSize = typeof orderLike.size === 'string' ? orderLike.size.trim() : null;
-    const normalizedSelectedSize = selectedSize ? selectedSize.toLowerCase() : null;
-
-    let stockAdjusted = false;
-
-    if (variants.length > 0) {
-        let targetVariant = null;
-
-        if (variantIndex !== null && !Number.isNaN(variantIndex) && variants[variantIndex]) {
-            targetVariant = variants[variantIndex];
-        } else if (orderLike.color) {
-            targetVariant = variants.find((variant) => variant.color === orderLike.color) || null;
-        }
-
-        if (targetVariant?.selections && Array.isArray(targetVariant.selections) && normalizedSelectedSize) {
-            const selectionIndex = targetVariant.selections.findIndex((selection) => {
-                const selectionValue = typeof selection?.value === 'string' ? selection.value.trim().toLowerCase() : '';
-                return selectionValue === normalizedSelectedSize;
-            });
-
-            if (selectionIndex !== -1) {
-                const currentStock = parseInt(targetVariant.selections[selectionIndex].stock || 0, 10) || 0;
-                const nextStock = currentStock + delta;
-
-                if (direction === 'decrease' && nextStock < 0) {
-                    throw new Error(`Insufficient stock for ${selectedSize}`);
-                }
-
-                targetVariant.selections[selectionIndex].stock = String(Math.max(0, nextStock));
-                stockAdjusted = true;
-            }
-        }
-
-        if (!stockAdjusted && targetVariant) {
-            const currentStock = parseInt(targetVariant.stock || targetVariant.quantity || 0, 10) || 0;
-            const nextStock = currentStock + delta;
-
-            if (direction === 'decrease' && nextStock < 0) {
-                throw new Error('Insufficient stock for this variant');
-            }
-
-            targetVariant.stock = String(Math.max(0, nextStock));
-            stockAdjusted = true;
-        }
-
-        if (!stockAdjusted && normalizedSelectedSize) {
-            const legacyVariant = variants.find((variant) => {
-                const variantSize = typeof (variant.size || variant.selection) === 'string'
-                    ? (variant.size || variant.selection).trim().toLowerCase()
-                    : '';
-                const sameColor = orderLike.color
-                    ? variant.color === orderLike.color
-                    : true;
-
-                return variantSize === normalizedSelectedSize && sameColor;
-            });
-
-            if (legacyVariant) {
-                const currentStock = parseInt(legacyVariant.stock || legacyVariant.quantity || 0, 10) || 0;
-                const nextStock = currentStock + delta;
-
-                if (direction === 'decrease' && nextStock < 0) {
-                    throw new Error(`Insufficient stock for ${selectedSize}`);
-                }
-
-                legacyVariant.stock = String(Math.max(0, nextStock));
-                stockAdjusted = true;
-            }
-        }
-    }
-
-    if (variants.length > 0 && stockAdjusted) {
-        const totalStock = variants.reduce((sum, variant) => {
-            if (Array.isArray(variant?.selections) && variant.selections.length > 0) {
-                return sum + variant.selections.reduce((selectionSum, selection) => {
-                    return selectionSum + (parseInt(selection?.stock || 0, 10) || 0);
-                }, 0);
-            }
-
-            return sum + (parseInt(variant?.stock || variant?.quantity || 0, 10) || 0);
-        }, 0);
-
-        await client.query(
-            'UPDATE market SET variants = $1, stock = $2 WHERE id = $3',
-            [JSON.stringify(variants), totalStock, marketItem.id]
-        );
-        return;
-    }
-
-    const currentStock = parseInt(marketItem.stock || 0, 10) || 0;
-    const nextStock = currentStock + delta;
-
-    if (direction === 'decrease' && nextStock < 0) {
-        throw new Error('Insufficient overall stock');
-    }
-
-    await client.query('UPDATE market SET stock = $1 WHERE id = $2', [Math.max(0, nextStock), marketItem.id]);
-}
-
 async function createOrderRecord(client, orderData) {
     const {
         item_id,
@@ -492,111 +376,6 @@ async function createOrderRecord(client, orderData) {
             resell_commission_transfer_id
         ]
     );
-}
-
-async function cancelTransferIfUnused(client, transferColumn, transferId, currentOrderId) {
-    if (!transferId) {
-        return;
-    }
-
-    const allowedColumns = new Set([
-        'wallet_transfer_id',
-        'seller_commission_transfer_id',
-        'seller_discount_transfer_id',
-        'resell_commission_transfer_id'
-    ]);
-
-    if (!allowedColumns.has(transferColumn)) {
-        throw new Error(`Unsupported transfer column: ${transferColumn}`);
-    }
-
-    const otherActive = await client.query(
-        `SELECT 1
-         FROM orders
-         WHERE ${transferColumn} = $1
-           AND id != $2
-           AND status NOT IN ('cancelled', 'returned')
-         LIMIT 1`,
-        [transferId, currentOrderId]
-    );
-
-    if (otherActive.rows.length === 0) {
-        await client.query("UPDATE wallet_transfers SET status = 'cancelled' WHERE id = $1", [transferId]);
-    }
-}
-
-async function refundCancelledOrder(client, order) {
-    if (order.wallet_transfer_id) {
-        const holdTxRes = await client.query(
-            'SELECT status FROM wallet_transfers WHERE id = $1 FOR UPDATE',
-            [order.wallet_transfer_id]
-        );
-        const holdStatus = String(holdTxRes.rows[0]?.status || '').toLowerCase();
-        if (holdStatus !== 'cancelled' && holdStatus !== 'completed') {
-            const buyerRefundAmount = parseFloat(order.total_price || 0) + parseFloat(order.shipping_fee || 0);
-            await client.query(
-                'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
-                [buyerRefundAmount, order.buyer_id]
-            );
-            await cancelTransferIfUnused(client, 'wallet_transfer_id', order.wallet_transfer_id, order.id);
-        }
-    }
-
-    if (order.seller_commission_transfer_id) {
-        const commRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_commission_transfer_id]);
-        if (commRes.rows.length > 0) {
-            const commAmount = parseFloat(commRes.rows[0].amount || 0);
-            const commStatus = String(commRes.rows[0].status || '').toLowerCase();
-            if (!['cancelled', 'completed', 'refunded'].includes(commStatus)) {
-                await client.query(
-                    'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
-                    [commAmount, order.seller_id]
-                );
-                await cancelTransferIfUnused(client, 'seller_commission_transfer_id', order.seller_commission_transfer_id, order.id);
-            }
-        }
-    }
-
-    if (order.seller_discount_transfer_id) {
-        const discRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_discount_transfer_id]);
-        if (discRes.rows.length > 0) {
-            const discAmount = parseFloat(discRes.rows[0].amount || 0);
-            const discountStatus = String(discRes.rows[0].status || '').toLowerCase();
-            if (['cancelled', 'refunded'].includes(discountStatus)) return;
-            if (order.payment_method === 'wallet_manual') {
-                await client.query(
-                    'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
-                    [discAmount, order.seller_id]
-                );
-            } else if (discountStatus === 'pending') {
-                await client.query(
-                    'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
-                    [discAmount, order.seller_id]
-                );
-            } else if (order.payment_method !== 'wallet_manual') {
-                await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [discAmount, order.seller_id]);
-            }
-            await cancelTransferIfUnused(client, 'seller_discount_transfer_id', order.seller_discount_transfer_id, order.id);
-        }
-    }
-
-    if (order.resell_commission_transfer_id) {
-        const resellRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.resell_commission_transfer_id]);
-        if (resellRes.rows.length > 0) {
-            const resellAmount = parseFloat(resellRes.rows[0].amount || 0);
-            const resellStatus = String(resellRes.rows[0].status || '').toLowerCase();
-            if (!['cancelled', 'completed', 'accepted', 'refunded'].includes(resellStatus)) {
-                // Refund the held resell amount back to the seller wallet for every payment
-                // method (seller's wallet was debited at place-order time, so cancellation
-                // must put it back regardless of cod/wallet/wallet_manual).
-                await client.query(
-                    'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1), wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
-                    [resellAmount, order.seller_id]
-                );
-                await cancelTransferIfUnused(client, 'resell_commission_transfer_id', order.resell_commission_transfer_id, order.id);
-            }
-        }
-    }
 }
 
 async function validateManualPaymentHoldTransfer(client, { buyerId, sellerId, transferId, expectedAmount }) {
@@ -785,199 +564,6 @@ async function completeWalletTransferIfGroupSettled(client, transferId, currentO
 
     if (activeSiblings.rows.length === 0) {
         await client.query("UPDATE wallet_transfers SET status = 'completed' WHERE id = $1", [transferId]);
-    }
-}
-
-async function finalizeReceivedOrder(client, order) {
-    await ensureOrderResellCommissionColumns(client);
-    let orderAlreadyFinalized = false;
-    const googerUserId = await resolveGoogerMainWalletUserId(client);
-    const orderGrossAmount = Number((
-        parseFloat(order.total_price || 0) + parseFloat(order.shipping_fee || 0)
-    ).toFixed(2));
-    const productCommission = await getOrderGoogerCommission(client, order);
-    const productDiscount = await getOrderProductDiscount(client, order);
-    let discountAlreadyTakenFromSeller = false;
-    let discountAmountForBuyer = productDiscount.amount;
-    let commissionSettledFromSellerHold = false;
-
-    if (order.wallet_transfer_id) {
-        const holdTxRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.wallet_transfer_id]);
-        const holdStatus = String(holdTxRes.rows[0]?.status || '').toLowerCase();
-        if (holdStatus === 'completed' || holdStatus === 'cancelled') {
-            orderAlreadyFinalized = true;
-        }
-    }
-
-    if (order.seller_commission_transfer_id) {
-        const commRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_commission_transfer_id]);
-        if (commRes.rows.length > 0) {
-            const commAmount = parseFloat(commRes.rows[0].amount || 0);
-            const commStatus = String(commRes.rows[0].status || '').toLowerCase();
-            if (!['accepted', 'completed', 'cancelled', 'refunded'].includes(commStatus)) {
-                if (order.payment_method === 'cod') {
-                    await client.query(
-                        'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2',
-                        [commAmount, order.seller_id]
-                    );
-                    await client.query(
-                        `UPDATE wallet_transfers
-                         SET status = 'accepted',
-                             receiver_id = $2,
-                             commission = $3,
-                             commission_percentage = $4,
-                             updated_at = CURRENT_TIMESTAMP
-                         WHERE id = $1`,
-                        [order.seller_commission_transfer_id, googerUserId, commAmount, productCommission.percentage]
-                    );
-                    commissionSettledFromSellerHold = true;
-                } else {
-                    await client.query(
-                        'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1), wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
-                        [commAmount, order.seller_id]
-                    );
-                    await client.query("UPDATE wallet_transfers SET status = 'refunded', receiver_id = sender_id WHERE id = $1", [order.seller_commission_transfer_id]);
-                }
-            }
-        }
-    }
-
-    if (!orderAlreadyFinalized) {
-        if (order.seller_discount_transfer_id) {
-            const discRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.seller_discount_transfer_id]);
-            if (discRes.rows.length > 0) {
-                const discAmount = parseFloat(discRes.rows[0].amount || 0);
-                const discountStatus = String(discRes.rows[0].status || '').toLowerCase();
-                if (!['cancelled', 'refunded'].includes(discountStatus) && discAmount > 0) {
-                    discountAlreadyTakenFromSeller = true;
-                    discountAmountForBuyer = discAmount;
-                    if (order.payment_method === 'wallet_manual' || discountStatus === 'pending') {
-                        await client.query(
-                            'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2',
-                            [discAmount, order.seller_id]
-                        );
-                    }
-                    await client.query("UPDATE wallet_transfers SET status = 'completed', receiver_id = $2 WHERE id = $1", [order.seller_discount_transfer_id, order.buyer_id]);
-                }
-            }
-        }
-
-    }
-
-    if (!orderAlreadyFinalized && order.wallet_transfer_id) {
-
-        const sellerDiscountCharge = discountAlreadyTakenFromSeller ? 0 : discountAmountForBuyer;
-        const resellCommissionAmount = normalizeMoney(parseFloat(order.resell_commission_amount || 0));
-        // NOTE: resellCommissionAmount is NOT subtracted here because the resell commission
-        // was already deducted from the seller wallet at place-order time inside
-        // createResellCommissionHold. Subtracting it again would charge the seller twice.
-        const sellerNetAmount = Math.max(0, orderGrossAmount - productCommission.amount - sellerDiscountCharge);
-
-        await client.query('UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2', [orderGrossAmount, order.buyer_id]);
-
-        if (sellerNetAmount > 0) {
-            await client.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [sellerNetAmount, order.seller_id]);
-        }
-
-        if (productCommission.amount > 0 && !commissionSettledFromSellerHold) {
-            await client.query(
-                `INSERT INTO wallet_transfers
-                    (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, 'commission_hold', 'accepted', $3, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-                [
-                    order.seller_id,
-                    googerUserId,
-                    productCommission.amount,
-                    `Googer commission for Order Item #${order.item_id}`,
-                    productCommission.percentage,
-                ]
-            );
-        }
-        await completeWalletTransferIfGroupSettled(client, order.wallet_transfer_id, order.id);
-    }
-
-    if (!orderAlreadyFinalized && discountAmountForBuyer > 0 && (discountAlreadyTakenFromSeller || order.wallet_transfer_id)) {
-        await distributeProductDiscountCommission(client, {
-            buyerId: order.buyer_id,
-            payerId: order.seller_id,
-            discountAmount: discountAmountForBuyer,
-            sourceId: order.id,
-            description: `Order Item #${order.item_id} (${order.order_number || order.id})`,
-        });
-    }
-
-    const resellCommissionAmount = normalizeMoney(parseFloat(order.resell_commission_amount || 0));
-    const resellerUserId = Number(order.reseller_user_id || 0);
-    if (!orderAlreadyFinalized && resellCommissionAmount > 0 && resellerUserId > 0 && order.resell_commission_transfer_id) {
-        const resellTxRes = await client.query('SELECT amount, status FROM wallet_transfers WHERE id = $1 FOR UPDATE', [order.resell_commission_transfer_id]);
-        const resellStatus = String(resellTxRes.rows[0]?.status || '').toLowerCase();
-
-        if (!['completed', 'accepted', 'cancelled', 'refunded'].includes(resellStatus)) {
-            const googerPct = parseFloat(order.resell_googer_commission_percentage ?? 10);
-            const googerShare = normalizeMoney((resellCommissionAmount * (Number.isFinite(googerPct) ? googerPct : 10)) / 100);
-            const resellerShare = normalizeMoney(Math.max(0, resellCommissionAmount - googerShare));
-
-            // Release the held resell amount from seller's hold for every payment method
-            // (the seller's wallet was debited at place-order time inside createResellCommissionHold).
-            await client.query(
-                'UPDATE users SET hold_balance = GREATEST(0, COALESCE(hold_balance, 0) - $1) WHERE id = $2',
-                [resellCommissionAmount, order.seller_id]
-            );
-
-            if (resellerShare > 0) {
-                await client.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [resellerShare, resellerUserId]);
-            }
-
-            await client.query(
-                `UPDATE wallet_transfers
-                 SET amount = $2,
-                     receiver_id = $3,
-                     status = 'completed',
-                     commission = $2,
-                     updated_at = CURRENT_TIMESTAMP
-                 WHERE id = $1`,
-                [order.resell_commission_transfer_id, resellerShare, resellerUserId]
-            );
-
-            if (googerShare > 0) {
-                await client.query(
-                    `INSERT INTO wallet_transfers
-                        (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
-                     VALUES ($1, $2, $3, $4, 'resell_googer_fee', 'accepted', $3, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-                    [
-                        order.seller_id,
-                        googerUserId,
-                        googerShare,
-                        `Resell Googer commission for Order Item #${order.item_id}`,
-                        Number.isFinite(googerPct) ? googerPct : 10,
-                    ]
-                );
-            }
-        }
-    }
-}
-
-async function autoReceiveExpiredCodOrders(client, userId) {
-    const expiredOrdersRes = await client.query(
-        `SELECT *
-         FROM orders
-         WHERE buyer_id = $1
-           AND status = 'delivered'
-           AND payment_method = 'cod'
-           AND updated_at <= CURRENT_TIMESTAMP - INTERVAL '48 hours'
-         FOR UPDATE`,
-        [userId]
-    );
-
-    for (const order of expiredOrdersRes.rows) {
-        await finalizeReceivedOrder(client, order);
-        await client.query(
-            `UPDATE orders
-             SET status = 'received',
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1`,
-            [order.id]
-        );
     }
 }
 
@@ -1173,7 +759,21 @@ exports.getOrderBadgeCounts = async (req, res) => {
     try {
         await client.query('BEGIN');
         await ensureOrderDeliveryTimestampColumn(client);
-        await autoReceiveExpiredCodOrders(client, req.user.id);
+        await autoReceiveExpiredCodOrders(client, {
+            userId: req.user.id,
+            ageInterval: '48 hours',
+            finalizeReceivedOrder,
+            finalizeOptions: {
+                allowAdvancedSettlement: true,
+                ensureOrderResellCommissionColumns,
+                resolveGoogerMainWalletUserId,
+                getOrderGoogerCommission,
+                getOrderProductDiscount,
+                completeWalletTransferIfGroupSettled,
+                distributeProductDiscountCommission,
+                normalizeMoney,
+            },
+        });
         await client.query('COMMIT');
 
         const allStatuses = ['pending', 'processing', 'shipped', 'delivered', 'received', 'reshipped', 'cancelled', 'returned', 'rejected'];
@@ -1232,7 +832,21 @@ exports.getBuyerOrders = async (req, res) => {
     try {
         await client.query('BEGIN');
         await ensureOrderDeliveryTimestampColumn(client);
-        await autoReceiveExpiredCodOrders(client, req.user.id);
+        await autoReceiveExpiredCodOrders(client, {
+            userId: req.user.id,
+            ageInterval: '48 hours',
+            finalizeReceivedOrder,
+            finalizeOptions: {
+                allowAdvancedSettlement: true,
+                ensureOrderResellCommissionColumns,
+                resolveGoogerMainWalletUserId,
+                getOrderGoogerCommission,
+                getOrderProductDiscount,
+                completeWalletTransferIfGroupSettled,
+                distributeProductDiscountCommission,
+                normalizeMoney,
+            },
+        });
         await client.query('COMMIT');
 
         const { status } = req.query;
@@ -1273,7 +887,21 @@ exports.getSellerOrders = async (req, res) => {
     try {
         await client.query('BEGIN');
         await ensureOrderDeliveryTimestampColumn(client);
-        await autoReceiveExpiredCodOrders(client, req.user.id);
+        await autoReceiveExpiredCodOrders(client, {
+            userId: req.user.id,
+            ageInterval: '48 hours',
+            finalizeReceivedOrder,
+            finalizeOptions: {
+                allowAdvancedSettlement: true,
+                ensureOrderResellCommissionColumns,
+                resolveGoogerMainWalletUserId,
+                getOrderGoogerCommission,
+                getOrderProductDiscount,
+                completeWalletTransferIfGroupSettled,
+                distributeProductDiscountCommission,
+                normalizeMoney,
+            },
+        });
         await client.query('COMMIT');
 
         const { status } = req.query;
@@ -1374,7 +1002,16 @@ exports.updateOrderStatus = async (req, res) => {
 
         // Logic for Receipt (Release Funds)
         if (status === 'received' && order.status !== 'received') {
-            await finalizeReceivedOrder(client, order);
+            await finalizeReceivedOrder(client, order, {
+                allowAdvancedSettlement: true,
+                ensureOrderResellCommissionColumns,
+                resolveGoogerMainWalletUserId,
+                getOrderGoogerCommission,
+                getOrderProductDiscount,
+                completeWalletTransferIfGroupSettled,
+                distributeProductDiscountCommission,
+                normalizeMoney,
+            });
         }
 
         // Handle special status updates for reports
@@ -1395,7 +1032,20 @@ exports.updateOrderStatus = async (req, res) => {
 
         // Logic for Cancel (Refund Funds)
         if (status === 'cancelled' && order.status !== 'cancelled') {
-            await refundCancelledOrder(client, order);
+            await refundCancelledOrder(client, order, {
+                allowResellCommissionRefund: true,
+                allowedTransferColumns: [
+                    'wallet_transfer_id',
+                    'seller_commission_transfer_id',
+                    'seller_discount_transfer_id',
+                    'resell_commission_transfer_id',
+                ],
+                lockTransferRows: true,
+                skipWalletTransferStatuses: ['cancelled', 'completed'],
+                skipSellerCommissionStatuses: ['cancelled', 'completed', 'refunded'],
+                skipSellerDiscountStatuses: ['cancelled', 'refunded'],
+                skipResellCommissionStatuses: ['cancelled', 'completed', 'accepted', 'refunded'],
+            });
             const marketItemRes = await client.query('SELECT * FROM market WHERE id = $1 FOR UPDATE', [order.item_id]);
             if (marketItemRes.rows.length > 0) {
                 await adjustOrderItemStock(client, marketItemRes.rows[0], order, 'increase');
@@ -1696,7 +1346,20 @@ exports.cancelOrderGroup = async (req, res) => {
         for (const order of ordersRes.rows) {
             if (order.status === 'cancelled') continue;
 
-            await refundCancelledOrder(client, order);
+            await refundCancelledOrder(client, order, {
+                allowResellCommissionRefund: true,
+                allowedTransferColumns: [
+                    'wallet_transfer_id',
+                    'seller_commission_transfer_id',
+                    'seller_discount_transfer_id',
+                    'resell_commission_transfer_id',
+                ],
+                lockTransferRows: true,
+                skipWalletTransferStatuses: ['cancelled', 'completed'],
+                skipSellerCommissionStatuses: ['cancelled', 'completed', 'refunded'],
+                skipSellerDiscountStatuses: ['cancelled', 'refunded'],
+                skipResellCommissionStatuses: ['cancelled', 'completed', 'accepted', 'refunded'],
+            });
  
             // Restore stock
             const marketItemRes = await client.query('SELECT * FROM market WHERE id = $1 FOR UPDATE', [order.item_id]);
@@ -1750,7 +1413,16 @@ exports.updateOrderGroupStatus = async (req, res) => {
             const updatedOrders = [];
             for (const order of buyerOrdersRes.rows) {
                 if (order.status !== 'received') {
-                    await finalizeReceivedOrder(client, order);
+                    await finalizeReceivedOrder(client, order, {
+                        allowAdvancedSettlement: true,
+                        ensureOrderResellCommissionColumns,
+                        resolveGoogerMainWalletUserId,
+                        getOrderGoogerCommission,
+                        getOrderProductDiscount,
+                        completeWalletTransferIfGroupSettled,
+                        distributeProductDiscountCommission,
+                        normalizeMoney,
+                    });
                 }
                 const updated = await client.query(
                     'UPDATE orders SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
@@ -1779,7 +1451,20 @@ exports.updateOrderGroupStatus = async (req, res) => {
         for (const order of ordersRes.rows) {
             // 1. Refund Logic if cancelled
             if (status === 'cancelled' && order.status !== 'cancelled') {
-                await refundCancelledOrder(client, order);
+                await refundCancelledOrder(client, order, {
+                    allowResellCommissionRefund: true,
+                    allowedTransferColumns: [
+                        'wallet_transfer_id',
+                        'seller_commission_transfer_id',
+                        'seller_discount_transfer_id',
+                        'resell_commission_transfer_id',
+                    ],
+                    lockTransferRows: true,
+                    skipWalletTransferStatuses: ['cancelled', 'completed'],
+                    skipSellerCommissionStatuses: ['cancelled', 'completed', 'refunded'],
+                    skipSellerDiscountStatuses: ['cancelled', 'refunded'],
+                    skipResellCommissionStatuses: ['cancelled', 'completed', 'accepted', 'refunded'],
+                });
                 const marketItemRes = await client.query('SELECT * FROM market WHERE id = $1 FOR UPDATE', [order.item_id]);
                 if (marketItemRes.rows.length > 0) {
                     await adjustOrderItemStock(client, marketItemRes.rows[0], order, 'increase');

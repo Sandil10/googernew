@@ -4,11 +4,20 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import IonIcon from '@/app/components/IonIcon';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+const getApiUrl = () => {
+    const isClient = typeof window !== 'undefined';
+    if (!isClient) return '/api';
+    const hostname = window.location.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+        return 'http://localhost:5000';
+    }
+    return '/api';
+};
+const API_URL = getApiUrl();
 const PAYREXX_BASE = 'https://raw.githubusercontent.com/payrexx/payment-logos/main/assets/card-icons';
-const ASSIGN_KEY = 'googer_topup_assignments'; // { [requestId]: methodId }
+const ASSIGN_KEY = 'googer_topup_assignments'; // { [requestId]: methodId | { methodId, fields } }
 
-const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+const getToken = () => (typeof window !== 'undefined' ? (sessionStorage.getItem('token') || localStorage.getItem('token')) : null);
 const authFetch = (url: string, opts: RequestInit = {}) =>
     fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${getToken()}` } });
 
@@ -30,6 +39,8 @@ type TopupMethod = {
     fields: FieldDef[];
 };
 
+type TopupAssignment = number | { methodId: number; fields?: Record<string, string> };
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const LETTER_COLORS = ['#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#8b5cf6','#ec4899','#06b6d4'];
 function letterColor(name: string) {
@@ -38,12 +49,20 @@ function letterColor(name: string) {
     return LETTER_COLORS[h % LETTER_COLORS.length];
 }
 
-function loadAssignments(): Record<string, number> {
+function loadAssignments(): Record<string, TopupAssignment> {
     try { return JSON.parse(localStorage.getItem(ASSIGN_KEY) || '{}'); } catch { return {}; }
 }
-function saveAssignment(requestId: number, methodId: number) {
+function getAssignedMethodId(assignment?: TopupAssignment): number | undefined {
+    if (typeof assignment === 'number') return assignment;
+    return assignment?.methodId;
+}
+function getAssignedFields(assignment?: TopupAssignment): Record<string, string> {
+    if (!assignment || typeof assignment === 'number') return {};
+    return assignment.fields || {};
+}
+function saveAssignment(requestId: number, methodId: number, fields: Record<string, string>) {
     const cur = loadAssignments();
-    cur[String(requestId)] = methodId;
+    cur[String(requestId)] = { methodId, fields };
     try { localStorage.setItem(ASSIGN_KEY, JSON.stringify(cur)); } catch {}
 }
 function removeAssignment(requestId: number) {
@@ -100,7 +119,7 @@ export default function RequestPage() {
     const [activeRequestId, setActiveRequestId] = useState<number | null>(null);
 
     // Assignments (requestId → methodId)
-    const [assignments, setAssignments]         = useState<Record<string, number>>({});
+    const [assignments, setAssignments]         = useState<Record<string, TopupAssignment>>({});
 
     useEffect(() => { setAssignments(loadAssignments()); }, []);
 
@@ -150,9 +169,13 @@ export default function RequestPage() {
     };
 
     const openPopup = (method: TopupMethod, requestId: number) => {
-        // Pre-fill defaults
+        // Pre-fill defaults and any saved values for this request/method.
         const defaults: Record<string, string> = {};
         method.fields.forEach(f => { defaults[f.key] = f.defaultValue ?? ''; });
+        const saved = assignments[String(requestId)];
+        if (getAssignedMethodId(saved) === method.id) {
+            Object.assign(defaults, getAssignedFields(saved));
+        }
         setFieldValues(defaults);
         setPopupMethod(method);
         setActiveRequestId(requestId);
@@ -162,7 +185,15 @@ export default function RequestPage() {
 
     const handleAssign = () => {
         if (!popupMethod || !activeRequestId) return;
-        saveAssignment(activeRequestId, popupMethod.id);
+        const missing = popupMethod.fields.find(field =>
+            field.required && !(fieldValues[field.key] ?? field.defaultValue ?? '').toString().trim()
+        );
+        if (missing) return;
+        const values: Record<string, string> = {};
+        popupMethod.fields.forEach(field => {
+            values[field.key] = (fieldValues[field.key] ?? field.defaultValue ?? '').toString();
+        });
+        saveAssignment(activeRequestId, popupMethod.id, values);
         setAssignments(loadAssignments());
         closePopup();
     };
@@ -292,7 +323,7 @@ export default function RequestPage() {
                                                 ) : (
                                                     <div className="grid grid-cols-4 gap-2">
                                                         {activeMethods.map(method => {
-                                                            const isAssigned = assignedMethodId === method.id;
+                                                            const isAssigned = getAssignedMethodId(assignedMethodId) === method.id;
                                                             return (
                                                                 <button
                                                                     key={method.id}
@@ -397,7 +428,7 @@ export default function RequestPage() {
                                 className="flex-1 py-3.5 bg-zinc-800/80 hover:bg-zinc-800 text-white font-bold rounded-full text-xs uppercase tracking-widest transition-all active:scale-95">
                                 Cancel
                             </button>
-                            {activeRequestId && assignments[String(activeRequestId)] === popupMethod?.id ? (
+                            {activeRequestId && getAssignedMethodId(assignments[String(activeRequestId)]) === popupMethod?.id ? (
                                 <button onClick={handleRemove}
                                     className="flex-1 py-3.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 font-bold rounded-full text-xs uppercase tracking-widest transition-all active:scale-95 flex items-center justify-center gap-2 border border-red-500/30">
                                     <IonIcon name="trash-outline" className="text-sm" />
@@ -407,7 +438,7 @@ export default function RequestPage() {
                                 <button onClick={handleAssign}
                                     className="flex-1 py-3.5 bg-white hover:bg-gray-100 text-black font-bold rounded-full text-xs uppercase tracking-widest transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg">
                                     <IonIcon name="checkmark-outline" className="text-sm" />
-                                    Assign
+                                    Save
                                 </button>
                             )}
                         </div>

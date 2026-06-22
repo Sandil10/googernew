@@ -2,25 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const authMiddleware = require('../middleware/auth');
-
-const ensureTable = async () => {
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS coin_requests (
-            id               SERIAL PRIMARY KEY,
-            user_id          INTEGER NOT NULL REFERENCES users(id),
-            method_category  TEXT NOT NULL,
-            method_name      TEXT NOT NULL,
-            bank_name        TEXT,
-            amount           NUMERIC(12,2) NOT NULL,
-            notes            TEXT,
-            status           TEXT NOT NULL DEFAULT 'Pending',
-            rejection_reason TEXT,
-            reviewed_at      TIMESTAMPTZ,
-            created_at       TIMESTAMPTZ DEFAULT NOW(),
-            updated_at       TIMESTAMPTZ DEFAULT NOW()
-        )
-    `);
-};
+const { normalizeMoney } = require('../../../../shared/utils/financeBoundary');
 
 const assertAdmin = async (userId) => {
     const result = await pool.query(
@@ -34,29 +16,65 @@ const resolveUserId = (req) => req.user.id || req.user.userId;
 
 // ── User: submit a coin request ───────────────────────────────────────────────
 router.post('/', authMiddleware, async (req, res) => {
+    const client = await pool.connect();
     try {
-        await ensureTable();
         const userId = resolveUserId(req);
         const { method_category, method_name, bank_name, amount, notes } = req.body;
+        const numAmount = normalizeMoney(amount);
+        const normalizedNotes = notes?.trim() || null;
+        const normalizedBankName = bank_name || null;
 
         if (!method_category || !method_name) {
+            client.release();
             return res.status(400).json({ success: false, message: 'method_category and method_name are required.' });
         }
-        const numAmount = parseFloat(amount);
         if (!numAmount || numAmount <= 0) {
+            client.release();
             return res.status(400).json({ success: false, message: 'Enter a valid amount greater than 0.' });
         }
 
-        const result = await pool.query(
+        await client.query('BEGIN');
+        await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [userId]);
+
+        const duplicate = await client.query(
+            `SELECT id, status, created_at
+             FROM coin_requests
+             WHERE user_id = $1
+               AND method_category = $2
+               AND method_name = $3
+               AND COALESCE(bank_name, '') = COALESCE($4, '')
+               AND amount = $5
+               AND COALESCE(notes, '') = COALESCE($6, '')
+               AND status = 'Pending'
+               AND created_at >= NOW() - INTERVAL '10 minutes'
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [userId, method_category, method_name, normalizedBankName, numAmount, normalizedNotes]
+        );
+        if (duplicate.rows.length > 0) {
+            await client.query('COMMIT');
+            client.release();
+            return res.json({
+                success: true,
+                duplicateSuppressed: true,
+                request: duplicate.rows[0],
+            });
+        }
+
+        const result = await client.query(
             `INSERT INTO coin_requests
                 (user_id, method_category, method_name, bank_name, amount, notes, status, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, 'Pending', NOW(), NOW())
              RETURNING id, status, created_at`,
-            [userId, method_category, method_name, bank_name || null, numAmount, notes?.trim() || null]
+            [userId, method_category, method_name, normalizedBankName, numAmount, normalizedNotes]
         );
 
+        await client.query('COMMIT');
+        client.release();
         res.json({ success: true, request: result.rows[0] });
     } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        client.release();
         console.error('POST /coin-requests error:', err);
         res.status(500).json({ success: false, message: 'Failed to submit request.' });
     }
@@ -65,7 +83,6 @@ router.post('/', authMiddleware, async (req, res) => {
 // ── User: get own requests ────────────────────────────────────────────────────
 router.get('/my', authMiddleware, async (req, res) => {
     try {
-        await ensureTable();
         const userId = resolveUserId(req);
         const result = await pool.query(
             `SELECT id, method_category, method_name, bank_name, amount, notes,
@@ -85,7 +102,6 @@ router.get('/my', authMiddleware, async (req, res) => {
 // ── Admin: list all requests (optional ?status= filter) ───────────────────────
 router.get('/admin', authMiddleware, async (req, res) => {
     try {
-        await ensureTable();
         if (!await assertAdmin(resolveUserId(req))) {
             return res.status(403).json({ success: false, message: 'Admin access required.' });
         }
@@ -118,9 +134,10 @@ router.get('/admin', authMiddleware, async (req, res) => {
 
 // ── Admin: approve or reject a request ───────────────────────────────────────
 router.put('/admin/:id/review', authMiddleware, async (req, res) => {
+    const client = await pool.connect();
     try {
-        await ensureTable();
         if (!await assertAdmin(resolveUserId(req))) {
+            client.release();
             return res.status(403).json({ success: false, message: 'Admin access required.' });
         }
 
@@ -128,17 +145,23 @@ router.put('/admin/:id/review', authMiddleware, async (req, res) => {
         const { action, rejection_reason } = req.body;
 
         if (!['approve', 'reject'].includes(action)) {
+            client.release();
             return res.status(400).json({ success: false, message: 'action must be "approve" or "reject".' });
         }
 
-        const existing = await pool.query(
-            'SELECT status FROM coin_requests WHERE id = $1 LIMIT 1',
+        await client.query('BEGIN');
+        const existing = await client.query(
+            'SELECT status FROM coin_requests WHERE id = $1 FOR UPDATE',
             [requestId]
         );
         if (!existing.rows.length) {
+            await client.query('ROLLBACK');
+            client.release();
             return res.status(404).json({ success: false, message: 'Request not found.' });
         }
         if (existing.rows[0].status !== 'Pending') {
+            await client.query('ROLLBACK');
+            client.release();
             return res.status(409).json({
                 success: false,
                 message: `Request is already ${existing.rows[0].status}.`
@@ -146,6 +169,8 @@ router.put('/admin/:id/review', authMiddleware, async (req, res) => {
         }
 
         if (action === 'reject' && !rejection_reason?.trim()) {
+            await client.query('ROLLBACK');
+            client.release();
             return res.status(400).json({
                 success: false,
                 message: 'rejection_reason is required when rejecting.'
@@ -153,7 +178,7 @@ router.put('/admin/:id/review', authMiddleware, async (req, res) => {
         }
 
         const newStatus = action === 'approve' ? 'Verified' : 'Rejected';
-        await pool.query(
+        await client.query(
             `UPDATE coin_requests
              SET status = $1,
                  rejection_reason = $2,
@@ -163,11 +188,15 @@ router.put('/admin/:id/review', authMiddleware, async (req, res) => {
             [newStatus, action === 'reject' ? rejection_reason.trim() : null, requestId]
         );
 
+        await client.query('COMMIT');
+        client.release();
         res.json({
             success: true,
             message: action === 'approve' ? 'Request approved.' : 'Request rejected.'
         });
     } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        client.release();
         console.error('PUT /coin-requests/admin/:id/review error:', err);
         res.status(500).json({ success: false, message: 'Failed to review request.' });
     }
@@ -176,17 +205,6 @@ router.put('/admin/:id/review', authMiddleware, async (req, res) => {
 // ── User: fetch active topup payment methods ──────────────────────────────────
 router.get('/active-topup-methods', async (req, res) => {
     try {
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS topup_payment_methods (
-                id         SERIAL PRIMARY KEY,
-                name       VARCHAR(100) NOT NULL,
-                icon       VARCHAR(60)  NOT NULL,
-                fields     JSONB        NOT NULL DEFAULT '[]',
-                is_active  BOOLEAN      NOT NULL DEFAULT true,
-                created_at TIMESTAMPTZ  DEFAULT NOW(),
-                updated_at TIMESTAMPTZ  DEFAULT NOW()
-            )
-        `);
         const result = await pool.query(
             `SELECT id, name, icon, fields
              FROM topup_payment_methods

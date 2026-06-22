@@ -1,9 +1,19 @@
 const pool = require('../config/database');
 const { distributeProductDiscountCommission } = require('../utils/referralCommission');
-const { ensureAdminWalletGuard } = require('../utils/adminWalletGuard');
+const { resolveGoogerMainWalletUserId } = require('../../../../shared/utils/financeBoundary');
+const {
+    reserveWalletFunds,
+    refundHeldWalletFunds,
+    consumeHeldWalletFunds,
+    creditWalletBalance,
+    debitWalletBalance,
+    insertWalletTransfer,
+    transferWalletFunds,
+    recordGoogerRevenuePayment,
+} = require('../../../../shared/utils/financeCommands');
 
 const TRANSACTION_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const UTC_NOW_SQL = "(NOW() AT TIME ZONE 'UTC')";
+const UTC_NOW_SQL = "NOW()";
 
 function hashString(value) {
     let hash = 0;
@@ -103,57 +113,6 @@ function mapWalletTransferRow(row) {
     };
 }
 
-async function resolveGoogerMainWalletUserId(client) {
-    const configuredId = Number.parseInt(String(process.env.GOOGER_MAIN_USER_ID || '').trim(), 10);
-    if (Number.isFinite(configuredId) && configuredId > 0) {
-        const configuredResult = await client.query(
-            'SELECT id FROM users WHERE id = $1 LIMIT 1',
-            [configuredId]
-        );
-        if (configuredResult.rows.length > 0) {
-            return configuredResult.rows[0].id;
-        }
-    }
-
-    const adminResult = await client.query(
-        `SELECT id FROM users
-         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
-         ORDER BY id ASC
-         LIMIT 1`
-    );
-
-    if (adminResult.rows.length > 0) {
-        return adminResult.rows[0].id;
-    }
-
-    const googerResult = await client.query(
-        `SELECT id FROM users
-         WHERE LOWER(username) = 'googer'
-         ORDER BY id ASC
-         LIMIT 1`
-    );
-
-    if (googerResult.rows.length > 0) {
-        return googerResult.rows[0].id;
-    }
-
-    const fallbackResult = await client.query(
-        `SELECT id FROM users
-         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
-            OR id = 1
-         ORDER BY
-            CASE
-                WHEN LOWER(COALESCE(user_type, '')) = 'admin' THEN 0
-                WHEN id = 1 THEN 1
-                ELSE 2
-            END,
-            id ASC
-         LIMIT 1`
-    );
-
-    return fallbackResult.rows[0]?.id || null;
-}
-
 // Search users by user_id or username
 exports.searchUsers = async (req, res) => {
     try {
@@ -166,16 +125,37 @@ exports.searchUsers = async (req, res) => {
         }
 
         const result = await pool.query(
-            `SELECT id, user_id, username, full_name, profile_picture, user_type 
-             FROM users 
+            `SELECT id, user_id, username, full_name, profile_picture, user_type
+             FROM users
              WHERE (
                 user_id = $2
                 OR (
-                    LENGTH($2) >= 2
-                    AND (user_id ILIKE $1 OR username ILIKE $1 OR full_name ILIKE $1)
+                    LENGTH($2) >= 1
+                    AND (
+                        user_id ILIKE $1
+                        OR username ILIKE $1
+                        OR full_name ILIKE $1
+                        OR (email IS NOT NULL AND email ILIKE $1)
+                        OR CAST(id AS TEXT) = $2
+                    )
                 )
              )
              AND ($4::boolean = true OR id != $3)
+             AND id NOT IN (
+                 SELECT blocked_user_id FROM user_blocks WHERE blocker_id = $3
+             )
+             AND COALESCE(status, 'Active') <> 'Deleted'
+             AND COALESCE(is_deactivated, false) = false
+             ORDER BY
+                CASE
+                    WHEN user_id = $2 THEN 0
+                    WHEN LOWER(username) = LOWER($2) THEN 1
+                    WHEN LOWER(full_name) = LOWER($2) THEN 2
+                    WHEN username ILIKE ($2 || '%') THEN 3
+                    WHEN user_id ILIKE ($2 || '%') THEN 4
+                    ELSE 5
+                END,
+                id ASC
              LIMIT 10`,
             [`%${normalizedQuery}%`, normalizedQuery, req.user.id, includeSelf]
         );
@@ -208,29 +188,31 @@ exports.initiateTransferRequest = async (req, res) => {
 
         // Manual Googer payment must always stay on hold until order receipt confirmation.
         if (type === 'sell' && manualPaymentOrder) {
-            const senderResult = await client.query(
-                'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
-                [senderId]
-            );
-            const senderBalance = parseFloat(senderResult.rows[0].wallet_balance || 0);
-
-            if (senderBalance < baseAmount) {
+            try {
+                await reserveWalletFunds(client, { userId: senderId, amount: baseAmount });
+            } catch (financeErr) {
                 await client.query('ROLLBACK');
-                return res.status(400).json({ success: false, message: 'Insufficient balance' });
+                if (financeErr.code === 'INSUFFICIENT_WALLET_BALANCE') {
+                    return res.status(400).json({ success: false, message: 'Insufficient balance' });
+                }
+                if (financeErr.code === 'USER_NOT_FOUND') {
+                    return res.status(404).json({ success: false, message: 'Receiver not found' });
+                }
+                throw financeErr;
             }
 
-            await client.query(
-                'UPDATE users SET wallet_balance = wallet_balance - $1, hold_balance = hold_balance + $1 WHERE id = $2',
-                [baseAmount, senderId]
-            );
-
             const txNote = note || 'Googer Manual Payment Hold';
-            const result = await client.query(
-                `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, 'order_hold', 'pending', 0, 0, ${UTC_NOW_SQL}, ${UTC_NOW_SQL})
-                 RETURNING *`,
-                [senderId, receiverId, baseAmount, txNote]
-            );
+            const insertedTransfer = await insertWalletTransfer(client, {
+                senderId,
+                receiverId,
+                amount: baseAmount,
+                note: txNote,
+                type: 'order_hold',
+                status: 'pending',
+                commission: 0,
+                commissionPercentage: 0,
+            });
+            const result = { rows: [{ id: insertedTransfer.id }] };
             const displayTransaction = await getTransferDisplayData(client, result.rows[0].id);
 
             await client.query('COMMIT');
@@ -266,19 +248,20 @@ exports.initiateTransferRequest = async (req, res) => {
                     return res.status(400).json({ success: false, message: 'Insufficient balance' });
                 }
 
-                await client.query(
-                    'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-                    [calculatedCommission, senderId]
-                );
+                await debitWalletBalance(client, { userId: senderId, amount: calculatedCommission });
 
                 const txNote = note || `Send Discount (${commPercent}%)`;
-                const result = await client.query(
-                    `INSERT INTO wallet_transfers
-                        (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission, created_at, updated_at)
-                     VALUES ($1, $2, $3, $4, 'seller_discount', 'accepted', $5, 0, ${UTC_NOW_SQL}, ${UTC_NOW_SQL})
-                     RETURNING *`,
-                    [senderId, receiverId, baseAmount, txNote, commPercent]
-                );
+                const insertedTransfer = await insertWalletTransfer(client, {
+                    senderId,
+                    receiverId,
+                    amount: baseAmount,
+                    note: txNote,
+                    type: 'seller_discount',
+                    status: 'accepted',
+                    commission: 0,
+                    commissionPercentage: commPercent,
+                });
+                const result = { rows: [{ id: insertedTransfer.id }] };
 
                 try {
                     await distributeProductDiscountCommission(client, {
@@ -313,38 +296,27 @@ exports.initiateTransferRequest = async (req, res) => {
         // NEW: DIRECT TRANSFER IF NO COMMISSION
         // ============================================
         if (type === 'sell' && commPercent === 0 && !manualPaymentOrder) {
-            // Check sender's balance
-            const senderResult = await client.query(
-                'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
-                [senderId]
-            );
-            const senderBalance = parseFloat(senderResult.rows[0].wallet_balance);
-
-            if (senderBalance < baseAmount) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ success: false, message: 'Insufficient balance' });
-            }
-
-            // Deduct from sender
-            await client.query(
-                'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-                [baseAmount, senderId]
-            );
-
-            // Add to receiver DIRECTLY
-            await client.query(
-                'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-                [baseAmount, receiverId]
-            );
-
-            // Record as completed transaction (status = 'accepted', not 'pending')
             const txNote = note || 'Direct Money Transfer';
-            const result = await client.query(
-                `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, 'accepted', $6, $7, ${UTC_NOW_SQL}, ${UTC_NOW_SQL})
-                 RETURNING *`,
-                [senderId, receiverId, baseAmount, txNote, type, 0, 0]
-            );
+            let result;
+            try {
+                const transfer = await transferWalletFunds(client, {
+                    senderId,
+                    receiverId,
+                    amount: baseAmount,
+                    note: txNote,
+                    type,
+                    status: 'accepted',
+                    commission: 0,
+                    commissionPercentage: 0,
+                });
+                result = { rows: [{ id: transfer.walletTransferId }] };
+            } catch (financeErr) {
+                await client.query('ROLLBACK');
+                if (financeErr.code === 'INSUFFICIENT_WALLET_BALANCE') {
+                    return res.status(400).json({ success: false, message: 'Insufficient balance' });
+                }
+                throw financeErr;
+            }
 
             await client.query('COMMIT');
 
@@ -369,23 +341,15 @@ exports.initiateTransferRequest = async (req, res) => {
                 calculatedCommission = (baseAmount * commPercent) / 100;
             }
 
-            // Check sender's balance
-            const senderResult = await client.query(
-                'SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE',
-                [senderId]
-            );
-            const senderBalance = parseFloat(senderResult.rows[0].wallet_balance);
-
-            if (senderBalance < amountToHold) {
+            try {
+                await reserveWalletFunds(client, { userId: senderId, amount: amountToHold });
+            } catch (financeErr) {
                 await client.query('ROLLBACK');
-                return res.status(400).json({ success: false, message: 'Insufficient balance' });
+                if (financeErr.code === 'INSUFFICIENT_WALLET_BALANCE') {
+                    return res.status(400).json({ success: false, message: 'Insufficient balance' });
+                }
+                throw financeErr;
             }
-
-            // Deduct full amount from sender's wallet_balance and add to hold_balance
-            await client.query(
-                'UPDATE users SET wallet_balance = wallet_balance - $1, hold_balance = hold_balance + $1 WHERE id = $2',
-                [amountToHold, senderId]
-            );
         } else {
             // For 'request' (buy), calculate the amount that will be requested
             if (commPercent > 0) {
@@ -398,12 +362,17 @@ exports.initiateTransferRequest = async (req, res) => {
 
         // Insert transfer record with status 'pending'
         // Store the full amount and commission separately
-        const result = await client.query(
-            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission_percentage, commission, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, ${UTC_NOW_SQL}, ${UTC_NOW_SQL})
-             RETURNING *`,
-            [senderId, receiverId, amountToHold, txNote, type, commPercent, calculatedCommission]
-        );
+        const insertedTransfer = await insertWalletTransfer(client, {
+            senderId,
+            receiverId,
+            amount: amountToHold,
+            note: txNote,
+            type,
+            status: 'pending',
+            commission: calculatedCommission,
+            commissionPercentage: commPercent,
+        });
+        const result = { rows: [{ id: insertedTransfer.id }] };
 
         await client.query('COMMIT');
 
@@ -561,11 +530,7 @@ exports.respondToRequest = async (req, res) => {
         if (action === 'reject') {
             // If type is 'sell', return the held amount back to sender
             if (transferType === 'sell') {
-                // Remove from hold_balance and add back to wallet_balance
-                await client.query(
-                    'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
-                    [transferAmount, transfer.sender_id]
-                );
+                await refundHeldWalletFunds(client, { userId: transfer.sender_id, amount: transferAmount });
             }
             // If type is 'request' (buy), nothing to return (no money was held)
 
@@ -591,17 +556,10 @@ exports.respondToRequest = async (req, res) => {
 
                 const amountToReceiver = Math.max(0, transferAmount - commission); // 90
 
-                // Remove full amount from sender's hold_balance
-                await client.query(
-                    'UPDATE users SET hold_balance = hold_balance - $1 WHERE id = $2',
-                    [transferAmount, transfer.sender_id]
-                );
+                await consumeHeldWalletFunds(client, { userId: transfer.sender_id, amount: transferAmount });
 
                 // Give (amount - commission) to receiver
-                await client.query(
-                    'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-                    [amountToReceiver, userId]
-                );
+                await creditWalletBalance(client, { userId, amount: amountToReceiver });
 
                 if (commission > 0) {
                     try {
@@ -641,16 +599,10 @@ exports.respondToRequest = async (req, res) => {
                             return res.status(400).json({ success: false, message: 'Insufficient balance' });
                         }
 
-                        await client.query(
-                            'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-                            [amountToDeduct, userId]
-                        );
+                        await debitWalletBalance(client, { userId, amount: amountToDeduct });
 
                         if (isSellerSender && sellerBuyDiscountNet > 0) {
-                            await client.query(
-                                'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
-                                [sellerBuyDiscountNet, transfer.sender_id]
-                            );
+                            await creditWalletBalance(client, { userId: transfer.sender_id, amount: sellerBuyDiscountNet });
                         }
 
                         await distributeProductDiscountCommission(client, {
@@ -681,15 +633,8 @@ exports.respondToRequest = async (req, res) => {
                         return res.status(400).json({ success: false, message: 'Insufficient balance' });
                     }
 
-                    await client.query(
-                        'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-                        [transferAmount, userId]
-                    );
-
-                    await client.query(
-                        'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-                        [transferAmount, transfer.sender_id]
-                    );
+                    await debitWalletBalance(client, { userId, amount: transferAmount });
+                    await creditWalletBalance(client, { userId: transfer.sender_id, amount: transferAmount });
                 }
             }
 
@@ -767,15 +712,9 @@ exports.cancelTransaction = async (req, res) => {
         }
 
         if (transferType === 'sell') {
-            await client.query(
-                'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
-                [transferAmount, transfer.sender_id]
-            );
+            await refundHeldWalletFunds(client, { userId: transfer.sender_id, amount: transferAmount });
         } else if (transferType === 'order_hold') {
-            await client.query(
-                'UPDATE users SET hold_balance = hold_balance - $1, wallet_balance = wallet_balance + $1 WHERE id = $2',
-                [transferAmount, transfer.sender_id]
-            );
+            await refundHeldWalletFunds(client, { userId: transfer.sender_id, amount: transferAmount });
         }
 
         await client.query(
@@ -832,39 +771,33 @@ exports.directTransfer = async (req, res) => {
 
         await client.query('BEGIN');
 
-        // Check sender balance
-        const sender = await client.query('SELECT wallet_balance FROM users WHERE id = $1 FOR UPDATE', [senderId]);
-        const balance = parseFloat(sender.rows[0].wallet_balance);
-
-        if (balance < finalTransferAmount) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ success: false, message: 'Insufficient balance' });
-        }
-
-        // Deduct from sender
-        await client.query(
-            'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-            [finalTransferAmount, senderId]
-        );
-
-        // Add to receiver
-        await client.query(
-            'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
-            [finalTransferAmount, receiverId]
-        );
-
         // Generate descriptive note if none provided
         let txNote = note;
         if (!txNote) {
             txNote = commInput > 0 ? `Commission Transfer (${commInput}%)` : 'Direct Transfer';
         }
 
-        // Log transfer with commission details
-        await client.query(
-            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'transfer', 'accepted', $5, $6, ${UTC_NOW_SQL}, ${UTC_NOW_SQL})`,
-            [senderId, receiverId, finalTransferAmount, txNote, calculatedCommission, commInput]
-        );
+        try {
+            await transferWalletFunds(client, {
+                senderId,
+                receiverId,
+                amount: finalTransferAmount,
+                note: txNote,
+                type: 'transfer',
+                status: 'accepted',
+                commission: calculatedCommission,
+                commissionPercentage: commInput,
+            });
+        } catch (financeErr) {
+            await client.query('ROLLBACK');
+            if (financeErr.code === 'INSUFFICIENT_WALLET_BALANCE') {
+                return res.status(400).json({ success: false, message: 'Insufficient balance' });
+            }
+            if (financeErr.code === 'USER_NOT_FOUND') {
+                return res.status(404).json({ success: false, message: 'Receiver not found' });
+            }
+            throw financeErr;
+        }
 
         await client.query('COMMIT');
         res.status(200).json({ success: true, message: 'Transfer successful', transferAmount: finalTransferAmount });
@@ -925,46 +858,44 @@ exports.payOrder = async (req, res) => {
         // Move amount from wallet_balance → hold_balance (on hold for this order)
         let transferRes;
         if (isAdPromotionCharge) {
-            const googerUserId = await resolveGoogerMainWalletUserId(client);
-            if (!googerUserId) {
-                await client.query('ROLLBACK');
-                return res.status(500).json({ success: false, message: 'Googer wallet account not found' });
-            }
-
-            await client.query(
-                'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-                [holdAmount, userId]
-            );
-
             const txNote = note || (orderId ? `Ad Promote - ${orderId}` : 'Ad Promote');
-            transferRes = await client.query(
-                `INSERT INTO wallet_transfers (
-                    sender_id,
-                    receiver_id,
-                    amount,
-                    note,
-                    type,
-                    status,
-                    commission,
-                    commission_percentage,
-                    created_at,
-                    updated_at
-                 )
-                 VALUES ($1, $2, $3, $4, 'transfer', 'accepted', $3, 100, ${UTC_NOW_SQL}, ${UTC_NOW_SQL}) RETURNING id`,
-                [userId, googerUserId, holdAmount, txNote]
-            );
+            try {
+                const transfer = await recordGoogerRevenuePayment(client, {
+                    payerUserId: userId,
+                    amount: holdAmount,
+                    note: txNote,
+                    transferType: 'transfer',
+                    commissionPercentage: 100,
+                });
+                transferRes = { rows: [{ id: transfer.walletTransferId }] };
+            } catch (financeErr) {
+                await client.query('ROLLBACK');
+                if (financeErr.code === 'GOOGER_WALLET_NOT_CONFIGURED') {
+                    return res.status(500).json({ success: false, message: 'Googer wallet account not found' });
+                }
+                if (financeErr.code === 'INSUFFICIENT_WALLET_BALANCE') {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Insufficient balance. Required: R ${holdAmount.toFixed(2)}, Available: R ${wallet_balance.toFixed(2)}`,
+                    });
+                }
+                throw financeErr;
+            }
         } else {
-            await client.query(
-                'UPDATE users SET wallet_balance = wallet_balance - $1, hold_balance = COALESCE(hold_balance, 0) + $1 WHERE id = $2',
-                [holdAmount, userId]
-            );
+            await reserveWalletFunds(client, { userId, amount: holdAmount });
 
             const txNote = note || (orderId ? `Payment on hold for Order #${orderId}` : 'Payment on hold for Googer Order');
-            transferRes = await client.query(
-                `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, note, type, status, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, 'order_hold', 'pending', ${UTC_NOW_SQL}, ${UTC_NOW_SQL}) RETURNING id`,
-                [userId, userId, holdAmount, txNote]
-            );
+            const transfer = await insertWalletTransfer(client, {
+                senderId: userId,
+                receiverId: userId,
+                amount: holdAmount,
+                note: txNote,
+                type: 'order_hold',
+                status: 'pending',
+                commission: 0,
+                commissionPercentage: 0,
+            });
+            transferRes = { rows: [{ id: transfer.id }] };
         }
 
         await client.query('COMMIT');
@@ -1037,24 +968,30 @@ exports.payProfilePromote = async (req, res) => {
             });
         }
 
-        const googerUserId = await resolveGoogerMainWalletUserId(client);
-        if (!googerUserId) {
-            await client.query('ROLLBACK');
-            return res.status(500).json({ success: false, message: 'Googer wallet account not found' });
-        }
-
-        // Deduct from user
-        await client.query(
-            'UPDATE users SET wallet_balance = wallet_balance - $1 WHERE id = $2',
-            [payAmount, userId]
-        );
-
         const txNote = note || (orderId ? `Profile Promote - ${orderId}` : 'Profile Promote Ad');
-        const transferRes = await client.query(
-            `INSERT INTO wallet_transfers (sender_id, receiver_id, amount, commission, note, type, status, created_at, updated_at)
-             VALUES ($1, $2, $3, $3, $4, 'profile_promote', 'accepted', ${UTC_NOW_SQL}, ${UTC_NOW_SQL}) RETURNING id`,
-            [userId, googerUserId, payAmount, txNote]
-        );
+        let transferRes;
+        try {
+            const transfer = await recordGoogerRevenuePayment(client, {
+                payerUserId: userId,
+                amount: payAmount,
+                note: txNote,
+                transferType: 'profile_promote',
+                commissionPercentage: 0,
+            });
+            transferRes = { rows: [{ id: transfer.walletTransferId }] };
+        } catch (financeErr) {
+            await client.query('ROLLBACK');
+            if (financeErr.code === 'GOOGER_WALLET_NOT_CONFIGURED') {
+                return res.status(500).json({ success: false, message: 'Googer wallet account not found' });
+            }
+            if (financeErr.code === 'INSUFFICIENT_WALLET_BALANCE') {
+                return res.status(400).json({
+                    success: false,
+                    message: `Insufficient balance. Required: R ${payAmount.toFixed(2)}, Available: R ${walletBalance.toFixed(2)}`,
+                });
+            }
+            throw financeErr;
+        }
 
         await client.query('COMMIT');
 
@@ -1115,7 +1052,6 @@ exports.addAdminCapital = async (req, res) => {
         }
 
         await client.query('BEGIN');
-        await ensureAdminWalletGuard(client);
 
         const admin = await client.query(
             `SELECT id, username, wallet_balance
@@ -1133,29 +1069,25 @@ exports.addAdminCapital = async (req, res) => {
 
         await client.query(`SET LOCAL googer.allow_admin_wallet_capital = 'true'`);
 
-        const updated = await client.query(
-            `UPDATE users
-             SET wallet_balance = COALESCE(wallet_balance, 0) + $1
-             WHERE id = $2
-             RETURNING wallet_balance`,
-            [amount, adminId]
-        );
-
-        const transfer = await client.query(
-            `INSERT INTO wallet_transfers
-                (sender_id, receiver_id, amount, commission, note, type, status, created_at, updated_at)
-             VALUES ($1, $1, $2, 0, $3, 'capital_add', 'accepted', ${UTC_NOW_SQL}, ${UTC_NOW_SQL})
-             RETURNING id`,
-            [adminId, amount, req.body?.note || 'Add Capital to Wallet']
-        );
+        const updated = await creditWalletBalance(client, { userId: adminId, amount });
+        const transfer = await insertWalletTransfer(client, {
+            senderId: adminId,
+            receiverId: adminId,
+            amount,
+            note: req.body?.note || 'Add Capital to Wallet',
+            type: 'capital_add',
+            status: 'accepted',
+            commission: 0,
+            commissionPercentage: 0,
+        });
 
         await client.query('COMMIT');
 
         return res.status(200).json({
             success: true,
             message: 'Capital added to admin wallet.',
-            walletBalance: Number(updated.rows[0].wallet_balance || 0),
-            transferId: transfer.rows[0].id,
+            walletBalance: Number(updated.walletBalance || 0),
+            transferId: transfer.id,
         });
     } catch (error) {
         await client.query('ROLLBACK').catch(() => {});
@@ -1163,6 +1095,29 @@ exports.addAdminCapital = async (req, res) => {
         return res.status(500).json({ success: false, message: 'Failed to add admin capital' });
     } finally {
         client.release();
+    }
+};
+
+// Admin: get ALL wallet transactions across all users
+exports.getAllTransactionsAdmin = async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT t.*,
+                    s.username AS sender_username, s.full_name AS sender_full_name, s.user_id AS sender_readable_id, s.user_type AS sender_user_type,
+                    r.username AS receiver_username, r.full_name AS receiver_full_name, r.user_id AS receiver_readable_id, r.user_type AS receiver_user_type
+             FROM wallet_transfers t
+             JOIN users s ON t.sender_id = s.id
+             LEFT JOIN users r ON t.receiver_id = r.id
+             ORDER BY t.created_at DESC`
+        );
+
+        res.status(200).json({
+            success: true,
+            transactions: result.rows.map(mapWalletTransferRow)
+        });
+    } catch (error) {
+        console.error('Admin getAllTransactions error:', error);
+        res.status(500).json({ success: false, message: 'Server error fetching all transactions' });
     }
 };
 

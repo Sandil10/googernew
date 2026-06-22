@@ -1,3 +1,6 @@
+const { resolveGoogerMainWalletUserId } = require('../../../../shared/utils/financeBoundary');
+const { recordReferralCommissionPayout } = require('../../../../shared/utils/financeCommands');
+
 const DEFAULT_PRODUCT_POOL_PERCENTAGE = 20;
 const DEFAULT_AD_POOL_PERCENTAGE = 20;
 const DEFAULT_DISCOUNT_GOOGER_SHARE_PERCENTAGE = 20;
@@ -7,35 +10,6 @@ const SETTING_KEYS = {
     product: 'product_purchase_pool_percentage',
     ad: 'ad_purchase_pool_percentage',
 };
-
-async function resolveGoogerMainWalletUserId(client) {
-    const configuredId = Number.parseInt(String(process.env.GOOGER_MAIN_USER_ID || '').trim(), 10);
-    if (Number.isFinite(configuredId) && configuredId > 0) {
-        const configuredResult = await client.query(
-            'SELECT id FROM users WHERE id = $1 LIMIT 1',
-            [configuredId]
-        );
-        if (configuredResult.rows.length > 0) return configuredResult.rows[0].id;
-    }
-
-    const adminResult = await client.query(
-        `SELECT id FROM users
-         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
-         ORDER BY id ASC
-         LIMIT 1`
-    );
-    if (adminResult.rows.length > 0) return adminResult.rows[0].id;
-
-    const googerResult = await client.query(
-        `SELECT id FROM users
-         WHERE LOWER(username) = 'googer'
-         ORDER BY id ASC
-         LIMIT 1`
-    );
-    if (googerResult.rows.length > 0) return googerResult.rows[0].id;
-
-    return null;
-}
 
 async function ensureReferralCommissionTables(client) {
     await client.query(`
@@ -420,23 +394,22 @@ async function distributeReferralCommission(client, {
             });
 
             if (payout) {
-                await client.query(
-                    'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
-                    [googerAmount, googerUserId]
-                );
-
                 const note = `Referral Purchase Commission - Googer Level - ${description}`;
-                const transfer = await client.query(
-                    `INSERT INTO wallet_transfers
-                        (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
-                     VALUES ($1, $2, $3, $4, $6, 'completed', $3, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                     RETURNING id`,
-                    [buyer, googerUserId, googerAmount, note, googerPercentage, REFERRAL_TRANSFER_TYPE]
-                );
+                const transfer = await recordReferralCommissionPayout(client, {
+                    buyerId: buyer,
+                    payerId: buyer,
+                    earnerId: googerUserId,
+                    amount: googerAmount,
+                    note,
+                    commissionPercentage: googerPercentage,
+                    transferType: REFERRAL_TRANSFER_TYPE,
+                    transferStatus: 'completed',
+                    creditWallet: true,
+                });
 
                 await client.query(
                     'UPDATE referral_commission_payouts SET wallet_transfer_id = $1 WHERE id = $2',
-                    [transfer.rows[0].id, payout.id]
+                    [transfer.walletTransferId, payout.id]
                 );
 
                 payouts.push({
@@ -445,7 +418,7 @@ async function distributeReferralCommission(client, {
                     amount: googerAmount,
                     commissionPercentage: googerPercentage,
                     poolAmount,
-                    walletTransferId: transfer.rows[0].id,
+                    walletTransferId: transfer.walletTransferId,
                 });
             }
         }
@@ -503,23 +476,22 @@ async function distributeReferralCommission(client, {
 
         if (!payout) continue;
 
-        await client.query(
-            'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
-            [amount, row.earner_id]
-        );
-
         const note = `Referral Purchase Commission - Level ${row.level}${row.level_name ? ` ${row.level_name}` : ''} - ${description}`;
-        const transfer = await client.query(
-            `INSERT INTO wallet_transfers
-                (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $6, 'completed', $3, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-             RETURNING id`,
-            [buyer, row.earner_id, amount, note, commissionPercentage, REFERRAL_TRANSFER_TYPE]
-        );
+        const transfer = await recordReferralCommissionPayout(client, {
+            buyerId: buyer,
+            payerId: buyer,
+            earnerId: row.earner_id,
+            amount,
+            note,
+            commissionPercentage,
+            transferType: REFERRAL_TRANSFER_TYPE,
+            transferStatus: 'completed',
+            creditWallet: true,
+        });
 
         await client.query(
             'UPDATE referral_commission_payouts SET wallet_transfer_id = $1 WHERE id = $2',
-            [transfer.rows[0].id, payout.id]
+            [transfer.walletTransferId, payout.id]
         );
 
         payouts.push({
@@ -528,7 +500,7 @@ async function distributeReferralCommission(client, {
             amount,
             commissionPercentage,
             poolAmount,
-            walletTransferId: transfer.rows[0].id,
+            walletTransferId: transfer.walletTransferId,
         });
     }
 
@@ -619,32 +591,21 @@ async function distributeProductDiscountCommission(client, {
             amount: safeAmount,
         });
 
-        if (creditWallet) {
-            await client.query(
-                'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2',
-                [safeAmount, earnerId]
-            );
-        }
-
-        const transfer = await client.query(
-            `INSERT INTO wallet_transfers
-                (sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $3, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-             RETURNING id`,
-            [
-                payer,
-                earnerId,
-                safeAmount,
-                note,
-                transferType,
-                transferStatus,
-                commissionPercentage,
-            ]
-        );
+        const transfer = await recordReferralCommissionPayout(client, {
+            buyerId: buyer,
+            payerId: payer,
+            earnerId,
+            amount: safeAmount,
+            note,
+            commissionPercentage,
+            transferType,
+            transferStatus,
+            creditWallet,
+        });
 
         await client.query(
             'UPDATE referral_commission_payouts SET wallet_transfer_id = $1 WHERE id = $2',
-            [transfer.rows[0].id, payout.id]
+            [transfer.walletTransferId, payout.id]
         );
 
         return {
@@ -654,7 +615,7 @@ async function distributeProductDiscountCommission(client, {
             amount: safeAmount,
             commissionPercentage,
             poolAmount,
-            walletTransferId: transfer.rows[0].id,
+            walletTransferId: transfer.walletTransferId,
         };
     };
 

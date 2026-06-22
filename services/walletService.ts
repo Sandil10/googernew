@@ -1,10 +1,10 @@
 const isClient = typeof window !== 'undefined';
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+import { API_URL } from './apiConfig';
 
 const storage = {
     get: (key: string) => {
         if (!isClient) return null;
-        try { return localStorage.getItem(key); } catch (e) { return null; }
+        try { return sessionStorage.getItem(key) || localStorage.getItem(key); } catch { return null; }
     }
 };
 
@@ -105,7 +105,7 @@ export const walletService = {
         });
         const result = await safeJson(response);
         if (!response.ok) throw new Error(result?.message || 'Failed to fetch history');
-        return result.transactions;
+        return Array.isArray(result?.transactions) ? result.transactions : [];
     },
 
     cancelTransaction: async (transactionId: number) => {

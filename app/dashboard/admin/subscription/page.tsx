@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import IonIcon from "@/app/components/IonIcon";
+import { BadgeSvg } from "@/app/components/VerifiedBadge";
 import { subscriptionService, SubscriptionPlan } from "@/services/subscriptionService";
 
-const BADGE_COLORS = ["silver", "blue", "gold", "green", "purple", "red"];
+const BADGE_COLORS = ["silver", "blue", "gold", "green", "purple", "red", "black"];
 const ACCENT_COLORS = ["zinc", "blue", "amber", "emerald", "purple", "red"];
 
 const BADGE_CLASS: Record<string, { text: string; ring: string; dot: string }> = {
@@ -14,6 +15,7 @@ const BADGE_CLASS: Record<string, { text: string; ring: string; dot: string }> =
     green:  { text: "text-emerald-400",ring: "border-emerald-500/40 bg-emerald-500/10", dot: "bg-emerald-400" },
     purple: { text: "text-purple-400", ring: "border-purple-500/40 bg-purple-500/10", dot: "bg-purple-400" },
     red:    { text: "text-red-400",    ring: "border-red-500/40 bg-red-500/10",     dot: "bg-red-400" },
+    black:  { text: "text-zinc-300",   ring: "border-zinc-500/50 bg-black/60",      dot: "bg-zinc-900" },
 };
 
 const ACCENT_BAR: Record<string, string> = {
@@ -23,6 +25,11 @@ const ACCENT_BAR: Record<string, string> = {
     emerald: "bg-emerald-500",
     purple:  "bg-purple-500",
     red:     "bg-red-500",
+};
+
+const colorPickerValue = (value: unknown, fallback: string) => {
+    const raw = String(value || "").trim();
+    return /^#[0-9a-f]{6}$/i.test(raw) ? raw : fallback;
 };
 
 type DraftPlan = Partial<SubscriptionPlan> & {
@@ -39,6 +46,8 @@ type DraftPlan = Partial<SubscriptionPlan> & {
     videoCallQuality?: "240p" | "240p,360p";
     voiceNotesToText?: boolean;
     textToVoiceNote?: boolean;
+    badgeCustomColor?: string;
+    badgeTickColor?: string;
 };
 
 const blankPlan = (): DraftPlan => ({
@@ -65,6 +74,8 @@ const blankPlan = (): DraftPlan => ({
     videoCallQuality: "240p,360p",
     voiceNotesToText: false,
     textToVoiceNote: false,
+    badgeCustomColor: "",
+    badgeTickColor: "",
 });
 
 export default function AdminSubscriptionPlansPage() {
@@ -123,6 +134,8 @@ export default function AdminSubscriptionPlansPage() {
             videoCallQuality: String(p.extra?.video_call_quality || "240p,360p").includes("360p") ? "240p,360p" : "240p",
             voiceNotesToText: !!(p.extra?.voice_notes_to_text || p.extra?.voice_to_text || p.extra?.speech_to_text),
             textToVoiceNote: !!(p.extra?.text_to_voice_note || p.extra?.text_to_voice || p.extra?.tts),
+            badgeCustomColor: String(p.extra?.badge_custom_color || ""),
+            badgeTickColor: String(p.extra?.badge_tick_color || ""),
         });
         setModalOpen(true);
     };
@@ -169,6 +182,8 @@ export default function AdminSubscriptionPlansPage() {
                 video_call_quality: draft.videoCalls ? (draft.videoCallQuality || "240p,360p") : undefined,
                 voice_notes_to_text: !!draft.voiceNotesToText,
                 text_to_voice_note: !!draft.textToVoiceNote,
+                badge_custom_color: String(draft.badgeCustomColor || "").trim() || undefined,
+                badge_tick_color: String(draft.badgeTickColor || "").trim() || undefined,
             };
 
             const payload: Partial<SubscriptionPlan> = {
@@ -255,6 +270,8 @@ export default function AdminSubscriptionPlansPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
                     {plans.map((p) => {
                         const badge = BADGE_CLASS[p.badge_color] || BADGE_CLASS.silver;
+                        const badgeColor = p.extra?.badge_custom_color || p.badge_color;
+                        const badgeTickColor = p.extra?.badge_tick_color || undefined;
                         const accentBar = ACCENT_BAR[p.accent_color] || ACCENT_BAR.zinc;
                         return (
                             <div key={p.id} className="bg-[#0a0a0a] border border-gray-800 rounded-2xl overflow-hidden flex flex-col">
@@ -265,7 +282,7 @@ export default function AdminSubscriptionPlansPage() {
                                     {/* Top row: badge + price */}
                                     <div className="flex items-start justify-between mb-3">
                                         <div className={`inline-flex items-center gap-1.5 border rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider ${badge.ring} ${badge.text}`}>
-                                            <span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`}></span>
+                                            <BadgeSvg color={badgeColor} tickColor={badgeTickColor} size={12} />
                                             {p.badge_color}
                                         </div>
                                         <div className="text-right">
@@ -475,6 +492,53 @@ export default function AdminSubscriptionPlansPage() {
                                         <option value="0">No</option>
                                     </select>
                                 </Field>
+                                <div className="md:col-span-2 rounded-2xl border border-gray-800 bg-[#050505] p-4">
+                                    <div className="mb-3 flex items-center gap-2">
+                                        <BadgeSvg
+                                            color={draft.badgeCustomColor || draft.badge_color || "silver"}
+                                            tickColor={draft.badgeTickColor || undefined}
+                                            size={18}
+                                        />
+                                        <div>
+                                            <p className="text-xs font-bold text-white">Verification Tick Colors</p>
+                                            <p className="text-[10px] text-gray-500">Customize the badge color and the tick color inside it.</p>
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                        <Field label="badge_custom_color">
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="color"
+                                                    value={colorPickerValue(draft.badgeCustomColor, "#3897F0")}
+                                                    onChange={(e) => setDraft({ ...draft, badgeCustomColor: e.target.value })}
+                                                    className="h-10 w-12 shrink-0 rounded-xl border border-gray-700/50 bg-[#030303] p-1"
+                                                />
+                                                <input
+                                                    value={draft.badgeCustomColor || ""}
+                                                    onChange={(e) => setDraft({ ...draft, badgeCustomColor: e.target.value })}
+                                                    className={inputCls}
+                                                    placeholder="Optional #3897F0"
+                                                />
+                                            </div>
+                                        </Field>
+                                        <Field label="badge_tick_color">
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="color"
+                                                    value={colorPickerValue(draft.badgeTickColor, "#ffffff")}
+                                                    onChange={(e) => setDraft({ ...draft, badgeTickColor: e.target.value })}
+                                                    className="h-10 w-12 shrink-0 rounded-xl border border-gray-700/50 bg-[#030303] p-1"
+                                                />
+                                                <input
+                                                    value={draft.badgeTickColor || ""}
+                                                    onChange={(e) => setDraft({ ...draft, badgeTickColor: e.target.value })}
+                                                    className={inputCls}
+                                                    placeholder="Optional #ffffff"
+                                                />
+                                            </div>
+                                        </Field>
+                                    </div>
+                                </div>
                                 <Field label="Active">
                                     <select value={draft.is_active ? "1" : "0"} onChange={(e) => setDraft({ ...draft, is_active: e.target.value === "1" })} className={inputCls}>
                                         <option value="1">Yes</option>

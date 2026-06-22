@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import { authService } from "@/services/authService";
 import { walletService } from "@/services/walletService";
@@ -10,6 +10,41 @@ import ShareModal from "@/app/components/ShareModal";
 import { getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
 import { adsService } from "@/services/adsService";
 import { formatGoogerId } from "@/app/lib/userDisplay";
+
+const HeaderCopyIcon = () => (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="9" y="9" width="11" height="11" rx="2" />
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+);
+
+const HeaderShareIcon = () => (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="18" cy="5" r="3" />
+        <circle cx="6" cy="12" r="3" />
+        <circle cx="18" cy="19" r="3" />
+        <path d="m8.6 13.5 6.8 4" />
+        <path d="m15.4 6.5-6.8 4" />
+    </svg>
+);
+
+const HeaderCheckIcon = () => (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M20 6 9 17l-5-5" />
+    </svg>
+);
+
+const asTransactionList = (value: any) => Array.isArray(value) ? value : [];
+
+const formatTransactionDate = (value: any) => {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "Pending" : date.toLocaleDateString();
+};
+
+const formatWalletAmount = (value: any) => {
+    const amount = Number.parseFloat(String(value ?? 0));
+    return Number.isFinite(amount) ? amount.toFixed(2) : "0.00";
+};
 
 export default function WalletPage() {
     const [balance, setBalance] = useState(0);
@@ -21,9 +56,21 @@ export default function WalletPage() {
     const [user, setUser] = useState<any>(null);
     // idVerificationName state removed — replaced by /wallet/verification page
     const [showShareModal, setShowShareModal] = useState(false);
+    const [showWalletQr, setShowWalletQr] = useState(false);
+    const [qrCopied, setQrCopied] = useState(false);
     const [adCount, setAdCount] = useState(0);
+    const walletSummarySignatureRef = useRef("");
+    const adCountRef = useRef<number | null>(null);
 
     const referralLink = typeof window !== 'undefined' ? `${window.location.origin}/register?ref=${googerId}` : '';
+    const walletQrLink = typeof window !== 'undefined' && googerId
+        ? `${window.location.origin}/wallet-pay?to=${encodeURIComponent(String(googerId))}`
+        : '';
+    const walletQrImage = walletQrLink
+        ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=1&data=${encodeURIComponent(walletQrLink)}`
+        : '';
+    const safeBalance = Number.isFinite(Number(balance)) ? Number(balance) : 0;
+    const balanceDisplay = safeBalance.toFixed(2);
 
     const handleCopy = async () => {
         if (referralLink) {
@@ -41,20 +88,50 @@ export default function WalletPage() {
         setShowShareModal(true);
     };
 
+    const handleCopyWalletQr = async () => {
+        if (walletQrLink) {
+            try {
+                await navigator.clipboard.writeText(walletQrLink);
+                setQrCopied(true);
+                setTimeout(() => setQrCopied(false), 2000);
+            } catch (err) {
+                console.error('Failed to copy wallet QR link', err);
+            }
+        }
+    };
+
     useEffect(() => {
+        const applyWalletSummary = (profile: any, txData: any[]) => {
+            const safeProfile = profile || {};
+            const safeTransactions = asTransactionList(txData);
+            const nextBalance = getWalletBalanceWithAdAdjustments(parseFloat(safeProfile.wallet_balance) || 0, getUserIdentityKey(safeProfile));
+            const nextGoogerId = safeProfile.user_id || safeProfile.googer_id || safeProfile.id || "";
+            const nextRecentTransactions = safeTransactions.slice(0, 3);
+            const nextSignature = JSON.stringify([
+                safeProfile?.id || "",
+                nextBalance,
+                nextGoogerId,
+                safeTransactions.length || 0,
+                nextRecentTransactions.map((entry: any) => entry?.id || entry?.created_at || entry?.reference || ""),
+            ]);
+
+            if (walletSummarySignatureRef.current === nextSignature) return;
+            walletSummarySignatureRef.current = nextSignature;
+
+            setUser(safeProfile);
+            setBalance(nextBalance);
+            setGoogerId(nextGoogerId);
+            setTxCount(safeTransactions.length || 0);
+            setRecentTransactions(nextRecentTransactions);
+        };
+
         const fetchData = async () => {
             try {
-                const profile = await authService.getProfile();
-                setUser(profile);
-                setBalance(getWalletBalanceWithAdAdjustments(parseFloat(profile.wallet_balance) || 0, getUserIdentityKey(profile)));
-
-                // Use the numeric user_id if available, fallback to username
-                const displayId = profile.user_id || profile.googer_id || profile.id || "";
-                setGoogerId(displayId);
-
-                const txData = await walletService.getTransactionHistory();
-                setTxCount(txData.length || 0);
-                setRecentTransactions(txData.slice(0, 3));
+                const [profile, txData] = await Promise.all([
+                    authService.getProfile(),
+                    walletService.getTransactionHistory(),
+                ]);
+                applyWalletSummary(profile, asTransactionList(txData));
             } catch (error) {
                 console.error("Error fetching wallet summary:", error);
             } finally {
@@ -68,49 +145,88 @@ export default function WalletPage() {
         const refreshAdCount = async () => {
             try {
                 const ads = await adsService.getMyAds();
-                setAdCount(ads.length);
+                const nextCount = ads.length;
+                if (adCountRef.current !== nextCount) {
+                    adCountRef.current = nextCount;
+                    setAdCount(nextCount);
+                }
             } catch {
-                setAdCount(0);
+                if (adCountRef.current !== 0) {
+                    adCountRef.current = 0;
+                    setAdCount(0);
+                }
             }
+        };
+        const refreshAdCountIfVisible = () => {
+            if (document.visibilityState === "hidden") return;
+            void refreshAdCount();
+        };
+        const refreshAdCountOnStorage = (event: StorageEvent) => {
+            if (event.storageArea && event.storageArea !== window.localStorage && event.storageArea !== window.sessionStorage) return;
+            refreshAdCountIfVisible();
         };
 
         refreshAdCount();
-        window.addEventListener("storage", refreshAdCount);
-        window.addEventListener("googer-ad-history-updated", refreshAdCount);
-        window.addEventListener("focus", refreshAdCount);
-        document.addEventListener("visibilitychange", refreshAdCount);
-        const intervalId = window.setInterval(refreshAdCount, 30000);
+        window.addEventListener("storage", refreshAdCountOnStorage);
+        window.addEventListener("googer-ad-history-updated", refreshAdCountIfVisible);
+        window.addEventListener("focus", refreshAdCountIfVisible);
+        document.addEventListener("visibilitychange", refreshAdCountIfVisible);
+        const intervalId = window.setInterval(refreshAdCountIfVisible, 60000);
 
         return () => {
-            window.removeEventListener("storage", refreshAdCount);
-            window.removeEventListener("googer-ad-history-updated", refreshAdCount);
-            window.removeEventListener("focus", refreshAdCount);
-            document.removeEventListener("visibilitychange", refreshAdCount);
+            window.removeEventListener("storage", refreshAdCountOnStorage);
+            window.removeEventListener("googer-ad-history-updated", refreshAdCountIfVisible);
+            window.removeEventListener("focus", refreshAdCountIfVisible);
+            document.removeEventListener("visibilitychange", refreshAdCountIfVisible);
             window.clearInterval(intervalId);
         };
     }, []);
 
     useEffect(() => {
+        const applyWalletSummary = (profile: any, txData: any[]) => {
+            const safeProfile = profile || {};
+            const safeTransactions = asTransactionList(txData);
+            const nextBalance = getWalletBalanceWithAdAdjustments(parseFloat(safeProfile.wallet_balance) || 0, getUserIdentityKey(safeProfile));
+            const nextRecentTransactions = safeTransactions.slice(0, 3);
+            const nextSignature = JSON.stringify([
+                safeProfile?.id || "",
+                nextBalance,
+                safeProfile.user_id || safeProfile.googer_id || safeProfile.id || "",
+                safeTransactions.length || 0,
+                nextRecentTransactions.map((entry: any) => entry?.id || entry?.created_at || entry?.reference || ""),
+            ]);
+
+            if (walletSummarySignatureRef.current === nextSignature) return;
+            walletSummarySignatureRef.current = nextSignature;
+
+            setUser(safeProfile);
+            setBalance(nextBalance);
+            setTxCount(safeTransactions.length || 0);
+            setRecentTransactions(nextRecentTransactions);
+        };
+
         const refreshWalletSummary = async () => {
             try {
-                const profile = await authService.getProfile();
-                setUser(profile);
-                setBalance(getWalletBalanceWithAdAdjustments(parseFloat(profile.wallet_balance) || 0, getUserIdentityKey(profile)));
-
-                const txData = await walletService.getTransactionHistory();
-                setTxCount(txData.length || 0);
-                setRecentTransactions(txData.slice(0, 3));
+                const [profile, txData] = await Promise.all([
+                    authService.getProfile(),
+                    walletService.getTransactionHistory(),
+                ]);
+                applyWalletSummary(profile, asTransactionList(txData));
             } catch (error) {
                 console.error("Error refreshing wallet summary:", error);
             }
         };
+        const refreshWalletSummaryIfVisible = () => {
+            if (document.visibilityState === "hidden") return;
+            void refreshWalletSummary();
+        };
 
-        window.addEventListener("googer-wallet-updated", refreshWalletSummary);
-        window.addEventListener("focus", refreshWalletSummary);
+        window.addEventListener("googer-wallet-updated", refreshWalletSummaryIfVisible);
+        window.addEventListener("focus", refreshWalletSummaryIfVisible);
 
         return () => {
-            window.removeEventListener("googer-wallet-updated", refreshWalletSummary);
-            window.removeEventListener("focus", refreshWalletSummary);
+            window.removeEventListener("googer-wallet-updated", refreshWalletSummaryIfVisible);
+            window.removeEventListener("focus", refreshWalletSummaryIfVisible);
         };
     }, []);
 
@@ -123,7 +239,7 @@ export default function WalletPage() {
             href: "/dashboard/wallet/my-wallet",
             bgColor: "border border-white/10 bg-black/20",
             iconColor: "text-white/75",
-            stats: { label: "Balance", value: balance.toFixed(2) }
+            stats: { label: "Balance", value: balanceDisplay }
         },
         {
             id: 2,
@@ -143,7 +259,7 @@ export default function WalletPage() {
             href: "/dashboard/wallet/withdrawal",
             bgColor: "border border-white/10 bg-black/20",
             iconColor: "text-white/75",
-            stats: { label: "Available", value: balance.toFixed(2) }
+            stats: { label: "Available", value: balanceDisplay }
         },
         {
             id: 4,
@@ -180,18 +296,27 @@ export default function WalletPage() {
                     <div className="flex items-center gap-2 shrink-0">
                         <button
                             onClick={handleCopy}
-                            className={`p-2 rounded-lg shadow-sm transition-all flex items-center justify-center ${copied ? 'bg-green-100 text-green-600' : 'bg-white text-black hover:bg-zinc-200'}`}
+                            className={`wallet-qr-action p-2 rounded-lg shadow-sm transition-all flex items-center justify-center border border-gray-200 ${copied ? 'bg-green-100 text-green-600' : 'bg-[#f8fafc] text-[#111827] hover:bg-zinc-200'}`}
                             title="Copy Link"
                         >
-                            <IonIcon name={copied ? "checkmark-outline" : "copy-outline"} className="text-lg" />
+                            {copied ? <HeaderCheckIcon /> : <HeaderCopyIcon />}
                         </button>
                         <button
                             onClick={handleShare}
-                            className="p-2 bg-white rounded-lg shadow-sm hover:bg-zinc-200 transition-all text-black flex items-center justify-center"
+                            className="wallet-qr-action p-2 rounded-lg border border-gray-200 bg-[#f8fafc] shadow-sm hover:bg-zinc-200 transition-all text-[#111827] flex items-center justify-center"
                             title="Share Link"
                         >
-                            <IonIcon name="share-social-outline" className="text-lg" />
+                            <HeaderShareIcon />
                         </button>
+                        {walletQrImage && (
+                            <button
+                                onClick={() => setShowWalletQr(true)}
+                                className="wallet-qr-action p-1.5 rounded-lg border border-gray-200 bg-[#f8fafc] shadow-sm hover:bg-zinc-200 transition-all text-[#111827] flex items-center justify-center"
+                                title="Wallet QR"
+                            >
+                                <img src={walletQrImage} alt="Wallet QR" className="w-7 h-7 object-contain rounded" />
+                            </button>
+                        )}
                     </div>
                 </div>
             </div>
@@ -210,7 +335,7 @@ export default function WalletPage() {
                             <Image src="/assets/images/rupee.png" alt="Rupee" fill className="object-contain" priority />
                         </div>
                         <h2 className="text-3xl md:text-5xl font-bold text-white tracking-tight leading-none whitespace-nowrap">
-                            {balance.toFixed(2)}
+                            {balanceDisplay}
                         </h2>
                     </div>
                 </div>
@@ -347,22 +472,22 @@ export default function WalletPage() {
 
                             <div className="flex flex-col gap-2">
                                 {recentTransactions.length > 0 ? (
-                                    recentTransactions.map((tx, idx) => {
+                                    recentTransactions.map((tx) => {
                                         const isSent = tx.sender_id === user?.id;
                                         return (
-                                            <div key={tx.id} className="flex items-center justify-between p-3 bg-[#030303] rounded-xl border border-gray-800/50 hover:border-gray-700 transition-all">
+                                            <div key={tx.id || tx.created_at || `${tx.sender_id || "sender"}-${tx.receiver_id || "receiver"}-${tx.amount || "0"}`} className="flex items-center justify-between p-3 bg-[#030303] rounded-xl border border-gray-800/50 hover:border-gray-700 transition-all">
                                                 <div className="flex items-center gap-3">
                                                     <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm ${isSent ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
                                                         <IonIcon name={isSent ? 'arrow-up-outline' : 'arrow-down-outline'} />
                                                     </div>
                                                     <div className="text-left">
-                                                        <p className="text-[10px] font-bold text-white truncate max-w-[80px]">@{isSent ? tx.receiver_username : tx.sender_username}</p>
-                                                        <p className="text-[8px] text-gray-500 font-medium">{new Date(tx.created_at).toLocaleDateString()}</p>
+                                                        <p className="text-[10px] font-bold text-white truncate max-w-[80px]">@{(isSent ? tx.receiver_username : tx.sender_username) || "user"}</p>
+                                                        <p className="text-[8px] text-gray-500 font-medium">{formatTransactionDate(tx.created_at)}</p>
                                                     </div>
                                                 </div>
                                                 <div className="text-right">
                                                     <p className={`text-[10px] font-black tracking-tight ${isSent ? 'text-red-400' : 'text-green-400'}`}>
-                                                        {isSent ? '-' : '+'} R {parseFloat(tx.amount).toFixed(2)}
+                                                        {isSent ? '-' : '+'} R {formatWalletAmount(tx.amount)}
                                                     </p>
                                                 </div>
                                             </div>
@@ -391,6 +516,41 @@ export default function WalletPage() {
                 url={referralLink}
                 description="Join me on Googer and start earning!"
             />
+
+            {showWalletQr && (
+                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 px-4 backdrop-blur-sm">
+                    <div className="w-full max-w-xs rounded-2xl border border-white/10 bg-[#070707] p-5 text-center shadow-2xl">
+                        <div className="mb-4 flex items-center justify-between">
+                            <div className="text-left">
+                                <p className="text-[10px] font-black uppercase tracking-[0.25em] text-gray-500">Wallet QR</p>
+                                <h3 className="text-base font-bold text-white">{formatGoogerId(googerId)}</h3>
+                            </div>
+                            <button
+                                onClick={() => setShowWalletQr(false)}
+                                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white hover:bg-white/10"
+                                title="Close"
+                            >
+                                <IonIcon name="close-outline" />
+                            </button>
+                        </div>
+
+                        <div className="mx-auto mb-4 flex h-48 w-48 items-center justify-center rounded-xl bg-white p-3">
+                            <img src={walletQrImage} alt="Scan to pay wallet" className="h-full w-full object-contain" />
+                        </div>
+
+                        <p className="mb-4 text-xs leading-relaxed text-gray-400">
+                            Scan to open wallet transfer with this Googer ID filled.
+                        </p>
+
+                        <button
+                            onClick={handleCopyWalletQr}
+                            className="w-full rounded-xl bg-white px-4 py-3 text-sm font-bold text-black transition hover:bg-zinc-200"
+                        >
+                            {qrCopied ? "Copied" : "Copy QR Link"}
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

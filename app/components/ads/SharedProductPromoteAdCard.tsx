@@ -16,6 +16,8 @@ interface SharedProductPromoteAdCardProps {
   onCollectCoin?: (event: React.MouseEvent, item: NormalizedProductAd) => void;
   canShowCollectCoin?: (item: NormalizedProductAd) => boolean;
   onNavigateToProfile?: (event: React.MouseEvent, userId: any) => void;
+  onPromoteAgain?: (item: NormalizedProductAd) => void | Promise<void>;
+  promoteAgainLabel?: string;
   currentUser?: any;
   compact?: boolean;
 }
@@ -33,6 +35,8 @@ export function SharedProductPromoteAdCard({
   onCollectCoin,
   canShowCollectCoin,
   onNavigateToProfile,
+  onPromoteAgain,
+  promoteAgainLabel,
   currentUser,
 }: SharedProductPromoteAdCardProps) {
   return (
@@ -51,6 +55,8 @@ export function SharedProductPromoteAdCard({
       onCollectCoin={onCollectCoin as any}
       canShowCollectCoin={canShowCollectCoin as any}
       onNavigateToProfile={onNavigateToProfile}
+      onPromoteProduct={onPromoteAgain as any}
+      promoteProductLabel={promoteAgainLabel}
     />
   );
 }

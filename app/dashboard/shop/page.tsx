@@ -8,6 +8,7 @@ import IonIcon from "@/app/components/IonIcon";
 // import AddProductModal from "@/app/components/AddProductModal"; // Global now
 import { marketService } from "@/services/marketService";
 import { authService } from "@/services/authService";
+import { chatService } from "@/services/chatService";
 import { orderService } from "@/services/orderService";
 import { useCart } from "@/app/context/CartContext";
 import { openLoginRequired } from "@/app/lib/loginRequired";
@@ -21,15 +22,23 @@ import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductS
 import { SharedProductCard } from "@/app/components/market/SharedProductCard";
 import { normalizeAdData, resolveAdDisplayTitle } from "@/app/lib/ads/adNormalizer";
 import { adsService } from "@/services/adsService";
+import { categoryService } from "@/services/categoryService";
 import { AdExpiryWarning } from "@/app/components/ads/AdExpiryWarning";
 import { getAdInteractionId, matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { canShowCollectCoinButton as canShowAdCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
 import { resolveProductPromoteProduct } from "@/app/lib/ads/resolveProductPromoteProduct";
-import { promotePhotoVideoAdAgain } from "@/app/lib/ads/promoteAgain";
+import { filterAdsForViewer } from "@/app/lib/ads/adVisibility";
+import { promotePhotoVideoAdAgain, promoteProductAdAgain } from "@/app/lib/ads/promoteAgain";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { RelativeTime } from "@/app/components/RelativeTime";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
+import { addTopbarNotification } from "@/app/lib/topbarNotifications";
+import {
+  getHiddenFeedItemIds,
+  hideFeedItemFor24Hours,
+  subscribeToHiddenFeedItems,
+} from "@/app/lib/feedHidePreferences";
 import {
   AD_CARD_IMAGE_SIZES,
   AVATAR_IMAGE_SIZES,
@@ -46,6 +55,34 @@ const UOMS = [
   "Carton", "Pallet", "Unit", "Service", "Hour", "Day", "Month"
 ];
 const MARKET_PAGE_SIZE = 20;
+const SHOP_SORT_OPTIONS = [
+  { id: "top-sales", label: "Top sales" },
+  { id: "price-low-high", label: "Price low to high" },
+  { id: "price-high-low", label: "Price high to low" },
+] as const;
+
+const getSessionClientSeed = (storageKey: string) => {
+  if (typeof window === "undefined") return storageKey;
+  try {
+    const existing = window.sessionStorage.getItem(storageKey);
+    if (existing) return existing;
+    const next = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    window.sessionStorage.setItem(storageKey, next);
+    return next;
+  } catch {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+};
+type ShopSortOption = typeof SHOP_SORT_OPTIONS[number]["id"];
+const MARKET_ALGORITHM_OPTIONS = [
+  { id: "trending", label: "Trending Now" },
+  { id: "recommended", label: "Recommended For You" },
+  { id: "best-sellers", label: "Best Sellers" },
+  { id: "new-arrivals", label: "New Arrivals" },
+  { id: "most-viewed", label: "Most Viewed" },
+  { id: "popular-week", label: "Popular This Week" },
+] as const;
+type MarketAlgorithmOption = typeof MARKET_ALGORITHM_OPTIONS[number]["id"];
 
 // --- Sub-components to avoid hook violations ---
 
@@ -159,9 +196,207 @@ const getDeliveredDateTimeText = (order: any) => {
   return `Delivered: ${formatOrderGroupDateTime(deliveredAt)}`;
 };
 
+const getShopSearchText = (rawValue: string) => {
+  const trimmed = String(rawValue || "").trim();
+  if (!trimmed) return "";
+
+  const fromPath = (value: string) =>
+    value
+      .split(/[\\/]/)
+      .pop()
+      ?.split(/[?#]/)[0]
+      ?.replace(/\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i, "")
+      ?.replace(/[-_+.%]+/g, " ")
+      ?.replace(/\s+/g, " ")
+      .trim() || "";
+
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    const googleImage = parsed.searchParams.get("imgurl");
+    if (googleImage) return getShopSearchText(decodeURIComponent(googleImage));
+
+    const queryText = parsed.searchParams.get("q") || parsed.searchParams.get("query") || parsed.searchParams.get("search");
+    if (queryText) return queryText.trim();
+
+    const pathText = fromPath(parsed.pathname);
+    if (pathText && !/^(image|img|photo|product|share|shop)$/i.test(pathText)) return pathText;
+  } catch {
+    // Plain search text falls through.
+  }
+
+  return trimmed
+    .replace(/\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i, "")
+    .replace(/[-_+.%]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
+const getPastedShopSearchValue = (event: any) => {
+  const html = event.clipboardData?.getData?.("text/html") || "";
+  if (html) {
+    const altMatch = html.match(/\s(?:alt|title)=["']([^"']+)["']/i);
+    if (altMatch?.[1]) return altMatch[1].trim();
+    const srcMatch = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+    if (srcMatch?.[1]) return srcMatch[1].trim();
+  }
+
+  const text = event.clipboardData?.getData?.("text/plain") || "";
+  if (text.trim()) return text.trim();
+
+  const imageFile = Array.from(event.clipboardData?.files || []).find((file: any) => String(file?.type || "").startsWith("image/")) as File | undefined;
+  if (imageFile?.name && !/^image\.(png|jpe?g|webp|gif|bmp)$/i.test(imageFile.name)) return imageFile.name;
+
+  const imageItem = Array.from(event.clipboardData?.items || []).find((item: any) => String(item?.type || "").startsWith("image/")) as DataTransferItem | undefined;
+  const itemFile = imageItem?.getAsFile?.();
+  if (itemFile?.name && !/^image\.(png|jpe?g|webp|gif|bmp)$/i.test(itemFile.name)) return itemFile.name;
+
+  return "";
+};
+
 const toFiniteNumber = (value: any, fallback = 0) => {
   const parsed = parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
   return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const getProductPromoPrice = (product: any) => {
+  const promo = toFiniteNumber(product?.promo_price ?? product?.promoPrice, NaN);
+  if (Number.isFinite(promo)) return promo;
+  return toFiniteNumber(product?.price ?? product?.main_price ?? product?.product_price, 0);
+};
+
+const getProductSalesScore = (product: any) =>
+  toFiniteNumber(product?.purchases_count, 0) * 1000 +
+  toFiniteNumber(product?.add_to_cart_count, 0) * 50 +
+  toFiniteNumber(product?.likes_count, 0) * 5 +
+  toFiniteNumber(product?.views_count, 0);
+
+const getProductRankingKey = (product: any) =>
+  String(product?.product_id || product?.linked_product_id || product?.id || product?.product_code || "");
+
+const getProductAgeHours = (product: any) => {
+  const createdTime = new Date(product?.created_at || product?.createdAt || 0).getTime();
+  return Number.isFinite(createdTime) && createdTime > 0 ? Math.max((Date.now() - createdTime) / 36e5, 0) : 9999;
+};
+
+const getProductFreshnessScore = (product: any) => {
+  const hoursOld = getProductAgeHours(product);
+  if (hoursOld <= 24) return 100;
+  if (hoursOld <= 72) return 70;
+  if (hoursOld <= 168) return 45;
+  if (hoursOld <= 720) return 20;
+  return 5;
+};
+
+const getProductStockScore = (product: any) => {
+  const stock = toFiniteNumber(product?.stock ?? product?.total_stock ?? product?.available_stock, 0);
+  if (stock <= 0) return 0;
+  if (stock >= 20) return 100;
+  return 45 + stock * 2.75;
+};
+
+const getProductPriceCompetitivenessScore = (product: any) => {
+  const price = getProductPromoPrice(product);
+  const original = toFiniteNumber(product?.price ?? product?.main_price ?? product?.product_price, price);
+  if (!price) return 0;
+  if (original > price) return Math.min(100, 55 + ((original - price) / original) * 150);
+  return 45;
+};
+
+const getProductSellerPerformanceScore = (product: any) => {
+  let score = 50;
+  if (product?.seller_verified || product?.verified_seller) score += 20;
+  score += Math.min(20, toFiniteNumber(product?.seller_rating ?? product?.rating, 0) * 4);
+  if (product?.seller_fast_response) score += 10;
+  score -= Math.min(35, toFiniteNumber(product?.seller_cancel_rate, 0));
+  if (product?.seller_reported) score -= 45;
+  return Math.max(0, Math.min(100, score));
+};
+
+const getTextMatchScore = (product: any, query: string) => {
+  const keywords = query.toLowerCase().split(/[^a-z0-9]+/i).filter((word) => word.length >= 2);
+  if (!keywords.length) return 0;
+  const haystack = [
+    product?.title,
+    product?.description,
+    product?.category,
+    product?.sub_category,
+    product?.manual_category,
+    product?.username,
+    product?.owner_username,
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  return Math.min(100, keywords.filter((word) => haystack.includes(word)).length * 35);
+};
+
+const getProductCtrScore = (product: any) => {
+  const views = toFiniteNumber(product?.views_count, 0);
+  const clicks = toFiniteNumber(product?.clicks_count ?? product?.click_count ?? product?.likes_count, 0);
+  return views > 0 ? Math.min(100, (clicks / views) * 300) : clicks > 0 ? 40 : 0;
+};
+
+const getProductConversionScore = (product: any) => {
+  const views = toFiniteNumber(product?.views_count, 0);
+  const purchases = toFiniteNumber(product?.purchases_count, 0);
+  const carts = toFiniteNumber(product?.add_to_cart_count, 0);
+  if (views <= 0) return Math.min(100, purchases * 25 + carts * 8);
+  return Math.min(100, ((purchases * 4 + carts) / views) * 100);
+};
+
+const getProductEngagementScore = (product: any) =>
+  toFiniteNumber(product?.views_count, 0) +
+  toFiniteNumber(product?.likes_count, 0) * 3 +
+  toFiniteNumber(product?.comments_count, 0) * 4 +
+  toFiniteNumber(product?.shares_count, 0) * 5 +
+  toFiniteNumber(product?.add_to_cart_count, 0) * 8 +
+  toFiniteNumber(product?.purchases_count, 0) * 15 +
+  Math.min(180, toFiniteNumber(product?._local_time_spent ?? product?.time_spent_seconds, 0)) * 0.2;
+
+const getProductLTRScore = (product: any, searchQuery = "") =>
+  getTextMatchScore(product, searchQuery) * 0.22 +
+  getProductCtrScore(product) * 0.15 +
+  getProductConversionScore(product) * 0.18 +
+  Math.min(100, getProductSalesScore(product) / 10) * 0.14 +
+  getProductPriceCompetitivenessScore(product) * 0.10 +
+  getProductStockScore(product) * 0.10 +
+  getProductSellerPerformanceScore(product) * 0.08 +
+  Math.min(100, toFiniteNumber(product?._local_time_spent ?? product?.time_spent_seconds, 0)) * 0.03;
+
+const getProductTrendingScore = (product: any) => {
+  const hoursOld = Math.max(getProductAgeHours(product), 6);
+  const velocity = getProductEngagementScore(product) / Math.sqrt(hoursOld);
+  return velocity + getProductFreshnessScore(product) * 0.35 + toFiniteNumber(product?.search_count ?? product?.search_frequency, 0) * 6;
+};
+
+const getProductPopularWeekScore = (product: any) => {
+  const freshnessBoost = getProductAgeHours(product) <= 168 ? 1.4 : 0.65;
+  return getProductEngagementScore(product) * freshnessBoost + getProductSalesScore(product) * 0.12;
+};
+
+const rankMarketProducts = (products: any[], algorithm: MarketAlgorithmOption, searchQuery = "") => {
+  const scoreProduct = (product: any) => {
+    if (algorithm === "trending") return getProductTrendingScore(product);
+    if (algorithm === "best-sellers") return getProductSalesScore(product);
+    if (algorithm === "new-arrivals") return getProductFreshnessScore(product) * 100 - getProductAgeHours(product);
+    if (algorithm === "most-viewed") return toFiniteNumber(product?.views_count, 0);
+    if (algorithm === "popular-week") return getProductPopularWeekScore(product);
+    return getProductLTRScore(product, searchQuery) + getProductTrendingScore(product) * 0.18;
+  };
+
+  return [...products].sort((first, second) => {
+    const scoreDiff = scoreProduct(second) - scoreProduct(first);
+    if (scoreDiff !== 0) return scoreDiff;
+    return new Date(second?.created_at || 0).getTime() - new Date(first?.created_at || 0).getTime();
+  });
+};
+
+const getProductCountryValues = (product: any) => {
+  const shippingCountries = parseShippingData(product)
+    .map((entry) => String(entry?.country || "").trim().toLowerCase())
+    .filter(Boolean);
+  return new Set([
+    ...shippingCountries,
+    String(product?.seller_country || "").trim().toLowerCase(),
+    String(product?.seller_shipping_country || "").trim().toLowerCase(),
+  ].filter(Boolean));
 };
 
 const formatPercentValue = (value: number) => {
@@ -1048,15 +1283,51 @@ interface MarketItemWrapperProps {
   product: any;
   children: React.ReactNode;
   isCompact?: boolean;
-  onView?: (id: number) => void;
+  onView?: (id: number | string, item?: any) => void;
+  onImpression?: (id: number | string, item?: any) => void;
   activeTab?: string;
 }
 
 const MarketItemWrapper = memo(
-  ({
-    children,
-  }: MarketItemWrapperProps) => {
-    return <>{children}</>;
+  ({ product, children, onView, onImpression, activeTab }: MarketItemWrapperProps) => {
+    const ref = useRef<HTMLDivElement>(null);
+    const visibleRef = useRef(false);
+    const lastFiredAtRef = useRef(0);
+    useEffect(() => {
+      if (activeTab !== "market" || !product?.id) return;
+      const isSponsored = !!product?.is_sponsored;
+      if (isSponsored && !onImpression && !onView) return;
+      if (!isSponsored && !onView) return;
+      visibleRef.current = false;
+      lastFiredAtRef.current = 0;
+      const el = ref.current;
+      if (!el) return;
+      const observer = new IntersectionObserver(
+        ([entry]) => {
+          const isVisible = entry.isIntersecting && entry.intersectionRatio >= 0.5;
+          if (!isVisible) {
+            visibleRef.current = false;
+            return;
+          }
+
+          const now = Date.now();
+          if (!visibleRef.current && now - lastFiredAtRef.current >= 1500) {
+            visibleRef.current = true;
+            lastFiredAtRef.current = now;
+            if (isSponsored) {
+              onImpression?.(product.id, product);
+              onView?.(product.id, product);
+            } else {
+              onView?.(product.id, product);
+            }
+          }
+        },
+        { threshold: 0.5 }
+      );
+      observer.observe(el);
+      return () => observer.disconnect();
+    }, [product?.id, product?.is_sponsored, onView, onImpression, activeTab]);
+    return <div ref={ref}>{children}</div>;
   },
 );
 
@@ -1262,6 +1533,7 @@ function interleaveShopProductsWithAds(
   storageKey: string,
   shuffleSeed: string,
   productRatio = 6,
+  displayRotation = 0,
 ) {
   if (!ads.length) return products;
 
@@ -1277,7 +1549,11 @@ function interleaveShopProductsWithAds(
   );
   if (!uniqueAds.length) return products;
 
-  const rotatedAds = getShuffledShopAdCycle(uniqueAds, storageKey, shuffleSeed);
+  const shuffledAds = getShuffledShopAdCycle(uniqueAds, storageKey, shuffleSeed);
+  const rotationOffset = shuffledAds.length > 0 ? Math.abs(displayRotation) % shuffledAds.length : 0;
+  const rotatedAds = rotationOffset > 0
+    ? [...shuffledAds.slice(rotationOffset), ...shuffledAds.slice(0, rotationOffset)]
+    : shuffledAds;
 
   if (!products.length) {
     const firstAd = rotatedAds[0];
@@ -1319,28 +1595,30 @@ function insertProfilePromoteCarouselRows(items: any[], profilePromoteAds: any[]
     }];
   }
 
+  // Grid is 4 columns on desktop (1 line = 4 items).
+  // Pattern: line 1 is the topic row, line 2 is 4 normal cards, line 3 is profile promote ads only.
+  // After that, show another profile promote row after six more normal rows (lines 4-9).
+  const intervals = [4, 24];
+  let intervalIndex = 0;
   const output: any[] = [];
-  let gridSlotsSinceCarousel = 0;
+  let slotsSinceCarousel = 0;
   let carouselCount = 0;
-  const firstCarouselSlots = 8;
-  const repeatCarouselSlots = 32;
-  let nextCarouselAfterSlots = firstCarouselSlots;
 
   items.forEach((item) => {
     output.push(item);
     if (item?.type === "profilePromoteCarousel") return;
 
-    gridSlotsSinceCarousel += 1;
+    slotsSinceCarousel += 1;
 
-    if (gridSlotsSinceCarousel === nextCarouselAfterSlots) {
+    if (slotsSinceCarousel === intervals[intervalIndex]) {
       carouselCount += 1;
       output.push({
         type: "profilePromoteCarousel",
         id: `shop-profile-promote-carousel-${carouselCount}`,
         ads: profilePromoteAds,
       });
-      gridSlotsSinceCarousel = 0;
-      nextCarouselAfterSlots = repeatCarouselSlots;
+      slotsSinceCarousel = 0;
+      if (intervalIndex < intervals.length - 1) intervalIndex += 1;
     }
   });
 
@@ -1365,7 +1643,7 @@ const mapPublicActiveAdToShopAd = (ad: any) => {
   const likesCount = Number(ad?.likes_count ?? ad?.likeCount ?? ad?.likes ?? 0);
   const commentsCount = Number(ad?.comments_count ?? ad?.commentCount ?? ad?.comments ?? 0);
   const sharesCount = Number(ad?.shares_count ?? ad?.shareCount ?? ad?.shares ?? 0);
-  const viewsCount = Number(ad?.views_count ?? ad?.viewCount ?? ad?.views ?? ad?.impressions ?? 0);
+  const viewsCount = Number(ad?.views_count ?? ad?.viewCount ?? ad?.views ?? 0);
   const activeStartTime = ad?.active_start_time || ad?.activeStartTime || ad?.started_at || ad?.startedAt || null;
 
   return {
@@ -1433,6 +1711,7 @@ export default function ShopPage() {
   const MARKET_FEED_HISTORY_KEY = "googer-market-feed-history-v2";
   const MARKET_FEED_LAST_ORDER_KEY = "googer-market-feed-last-order-v1";
   const SHOP_VIEW_STATE_KEY = "googer-shop-view-state-v1";
+  const SHOP_PRODUCT_TIME_SPENT_KEY = "googer-shop-product-time-spent-v1";
   const readStoredShopView = () => {
     if (typeof window === "undefined") return null;
     try {
@@ -1447,7 +1726,27 @@ export default function ShopPage() {
   const validListingTabs = new Set(["active", "all", "reviewing", "deleted"]);
   const validOrderTabs = new Set(["all", "processing", "shipped", "delivered", "returns"]);
   const [selectedCategory, setSelectedCategory] = useState(""); // Filter state
+  const [selectedSubCategory, setSelectedSubCategory] = useState("");
+  const [selectedLevel3, setSelectedLevel3] = useState("");
+  const [categoryTree, setCategoryTree] = useState<any[]>([]);
+  const [searchDraft, setSearchDraft] = useState("");
   const [marketSearchQuery, setMarketSearchQuery] = useState("");
+  const [isShopFilterOpen, setIsShopFilterOpen] = useState(false);
+  const [isCountryFilterOpen, setIsCountryFilterOpen] = useState(false);
+  const [countryFilterSearch, setCountryFilterSearch] = useState("");
+  const [shopFilterCountries, setShopFilterCountries] = useState<{ name: string; code: string }[]>([]);
+  const [selectedFilterCountry, setSelectedFilterCountry] = useState("");
+  const [marketSortOption, setMarketSortOption] = useState<ShopSortOption | "">("");
+  const [activeMarketAlgorithm, setActiveMarketAlgorithm] = useState<MarketAlgorithmOption>("recommended");
+  const applyPastedSearch = (event: any) => {
+    const pastedValue = getPastedShopSearchValue(event);
+    if (!pastedValue) return;
+    const nextSearch = getShopSearchText(pastedValue) || pastedValue;
+    if (!nextSearch.trim()) return;
+    event.preventDefault();
+    setSearchDraft(nextSearch);
+    setMarketSearchQuery(nextSearch);
+  };
   const router = useRouter();
   const searchParams = useSearchParams();
   const [showFilters, setShowFilters] = useState(false);
@@ -1469,10 +1768,12 @@ export default function ShopPage() {
   });
   const [isCategoriesDrawerOpen, setIsCategoriesDrawerOpen] = useState(false);
   const [products, setProducts] = useState<any[]>([]);
+  const [productTimeSpentMap, setProductTimeSpentMap] = useState<Record<string, number>>({});
   const [isBottomSheetLoading, setIsBottomSheetLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isRefreshingProducts, setIsRefreshingProducts] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
   const [isUserResolved, setIsUserResolved] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [subscribedSellerIds, setSubscribedSellerIds] = useState<Set<string>>(new Set());
@@ -1506,9 +1807,13 @@ export default function ShopPage() {
     null,
   );
   const [hiddenProductIds, setHiddenProductIds] = useState<number[]>([]);
+  const [hiddenShopAdIds, setHiddenShopAdIds] = useState<Set<string>>(new Set());
   const [reportingProduct, setReportingProduct] = useState<any>(null);
   const [reportReason, setReportReason] = useState<string>("");
   const [reportDetail, setReportDetail] = useState<string>("");
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const [reportSubmitted, setReportSubmitted] = useState(false);
+  const [reportError, setReportError] = useState("");
   const [pendingAdCoinProduct, setPendingAdCoinProduct] = useState<any>(null);
   const [adVideoCoinEligibility, setAdVideoCoinEligibility] = useState<Record<string, boolean>>({});
   const [requiredAdWatchSeconds, setRequiredAdWatchSeconds] = useState(5);
@@ -1529,13 +1834,118 @@ export default function ShopPage() {
   const [marketHasMore, setMarketHasMore] = useState(false);
   const [marketNextOffset, setMarketNextOffset] = useState(0);
   const [isLoadingMoreProducts, setIsLoadingMoreProducts] = useState(false);
-  const [shopAdShuffleSeed, setShopAdShuffleSeed] = useState(() => `${Date.now()}-${Math.random()}`);
+  const marketLoadMoreRef = useRef<HTMLDivElement | null>(null);
+  const [shopAdShuffleSeed] = useState(() => getSessionClientSeed("googer-shop-ad-pool-seed-v2"));
+  const [shopAdRotation] = useState(() => {
+    if (typeof window === "undefined") return 0;
+    try {
+      const previousRotation = Number.parseInt(window.localStorage.getItem("googer-shop-ad-row-rotation-v1") || "0", 10) || 0;
+      const nextRotation = previousRotation + 1;
+      window.localStorage.setItem("googer-shop-ad-row-rotation-v1", String(nextRotation));
+      return nextRotation;
+    } catch {
+      return 0;
+    }
+  });
+  const [productShuffleSeed, setProductShuffleSeed] = useState(() => `${Date.now()}-${Math.random()}`);
   const marketFeedSessionRef = useRef<string>("");
   const marketShuffleTokenRef = useRef<string>("");
+  const productDwellRef = useRef<{ key: string; startedAt: number } | null>(null);
   const ordersPageSize = 8;
+  const getBlockedOwnerId = (item: any) => String(
+    item?.user_id ||
+    item?.owner_user_id ||
+    item?.owner_id ||
+    item?.seller_id ||
+    item?.user?.id ||
+    item?.raw?.user_id ||
+    item?.raw?.owner_user_id ||
+    item?.raw?.owner_id ||
+    "",
+  );
+  const isBlockedOwnerItem = (item: any) => {
+    const ownerId = getBlockedOwnerId(item);
+    return !!ownerId && blockedUserIds.has(ownerId);
+  };
+
+  useEffect(() => {
+    if (!currentUser?.id) {
+      setHiddenShopAdIds(new Set());
+      return;
+    }
+    const syncHiddenFeedItems = () => {
+      setHiddenShopAdIds(getHiddenFeedItemIds(currentUser.id, "ad"));
+    };
+    syncHiddenFeedItems();
+    return subscribeToHiddenFeedItems(syncHiddenFeedItems);
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser?.id) {
+      setBlockedUserIds(new Set());
+      return;
+    }
+    let cancelled = false;
+    const loadBlockedUsers = async () => {
+      try {
+        const blockedUsers = await chatService.getBlockedUsers();
+        if (cancelled) return;
+        setBlockedUserIds(new Set((blockedUsers || []).map((entry: any) => String(entry.id))));
+      } catch {
+        if (!cancelled) setBlockedUserIds(new Set());
+      }
+    };
+    void loadBlockedUsers();
+    const handleBlockedUsersUpdated = () => { void loadBlockedUsers(); };
+    window.addEventListener("googer-blocked-users-updated", handleBlockedUsersUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("googer-blocked-users-updated", handleBlockedUsersUpdated);
+    };
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(SHOP_PRODUCT_TIME_SPENT_KEY);
+      const parsed = stored ? JSON.parse(stored) : {};
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        setProductTimeSpentMap(parsed);
+      }
+    } catch {
+      // ignore local ranking history read failures
+    }
+  }, []);
+
+  useEffect(() => {
+    const commitDwellTime = () => {
+      const active = productDwellRef.current;
+      if (!active?.key) return;
+      const seconds = Math.max(0, Math.round((Date.now() - active.startedAt) / 1000));
+      if (seconds < 2) return;
+      setProductTimeSpentMap((current) => {
+        const next = {
+          ...current,
+          [active.key]: Math.min(3600, toFiniteNumber(current[active.key], 0) + seconds),
+        };
+        try {
+          window.localStorage.setItem(SHOP_PRODUCT_TIME_SPENT_KEY, JSON.stringify(next));
+        } catch {
+          // ignore local ranking history write failures
+        }
+        return next;
+      });
+    };
+
+    commitDwellTime();
+    const nextKey = selectedProduct ? getProductRankingKey(selectedProduct) : "";
+    productDwellRef.current = nextKey ? { key: nextKey, startedAt: Date.now() } : null;
+  }, [selectedProduct]);
+
   const visibleMarketplaceProducts = useMemo(() => {
     const filteredProducts = products
       .filter((p) => !hiddenProductIds.includes(p.id))
+      .filter((p) => !(p?.is_sponsored || p?.campaign_type) || !hiddenShopAdIds.has(getAdInteractionId(p)))
+      .filter((p) => !isBlockedOwnerItem(p))
       .filter((p) => {
         if (p?.is_sponsored) return false;
         if (activeTab === "my-products" && myListingsTab === "reviewing") {
@@ -1543,12 +1953,36 @@ export default function ShopPage() {
         }
         return true;
       });
+    const countryFilteredProducts = activeTab === "market" && selectedFilterCountry
+      ? filteredProducts.filter((product) => {
+        const countries = getProductCountryValues(product);
+        const selected = selectedFilterCountry.toLowerCase();
+        return countries.has(selected) || countries.has("worldwide");
+      })
+      : filteredProducts;
+    const personalizedProducts = activeTab === "market"
+      ? countryFilteredProducts.map((product) => ({
+        ...product,
+        _local_time_spent: toFiniteNumber(productTimeSpentMap[getProductRankingKey(product)], 0),
+      }))
+      : countryFilteredProducts;
+    const algorithmRankedProducts = activeTab === "market"
+      ? rankMarketProducts(personalizedProducts, activeMarketAlgorithm, marketSearchQuery || searchDraft)
+      : personalizedProducts;
+    const sortedProducts = marketSortOption
+      ? [...algorithmRankedProducts].sort((a, b) => {
+        if (marketSortOption === "price-low-high") return getProductPromoPrice(a) - getProductPromoPrice(b);
+        if (marketSortOption === "price-high-low") return getProductPromoPrice(b) - getProductPromoPrice(a);
+        if (marketSortOption === "top-sales") return getProductSalesScore(b) - getProductSalesScore(a);
+        return 0;
+      })
+      : algorithmRankedProducts;
 
     const approvedAds = activeTab === "market"
       ? Array.from(
         [
-          ...products.filter((p) => !!p?.is_sponsored && !hiddenProductIds.includes(p.id)),
-          ...marketAds.filter((ad) => !hiddenProductIds.includes(ad.id)),
+          ...products.filter((p) => !!p?.is_sponsored && !hiddenProductIds.includes(p.id) && !hiddenShopAdIds.has(getAdInteractionId(p)) && !isBlockedOwnerItem(p)),
+          ...marketAds.filter((ad) => !hiddenProductIds.includes(ad.id) && !hiddenShopAdIds.has(getAdInteractionId(ad)) && !isBlockedOwnerItem(ad)),
         ]
           .reduce((map, ad) => {
             const key = getShopAdRotationKey(ad);
@@ -1564,15 +1998,16 @@ export default function ShopPage() {
     const profilePromoteAds = approvedAds.filter(isProfilePromoteItem);
     const interleavableAds = approvedAds.filter((ad) => !isProfilePromoteItem(ad));
     const interleavedItems = interleaveShopProductsWithAds(
-      filteredProducts,
+      sortedProducts,
       interleavableAds,
       "googer-marketplace-ad-rotation-v2",
       shopAdShuffleSeed,
       6,
+      shopAdRotation,
     );
 
     return insertProfilePromoteCarouselRows(interleavedItems, profilePromoteAds);
-  }, [activeTab, hiddenProductIds, marketAds, myListingsTab, products, shopAdShuffleSeed]);
+  }, [activeMarketAlgorithm, activeTab, blockedUserIds, hiddenProductIds, hiddenShopAdIds, marketAds, marketSearchQuery, marketSortOption, myListingsTab, productTimeSpentMap, products, searchDraft, selectedFilterCountry, shopAdRotation, shopAdShuffleSeed]);
   const lastClosedProductId = useRef<string | null>(null);
   const productsCacheRef = useRef<Record<string, any[]>>({});
   const productLoadRequestRef = useRef(0);
@@ -1602,6 +2037,24 @@ export default function ShopPage() {
   const [pendingChatAttachments, setPendingChatAttachments] = useState<any[]>([]);
   const [isUploadingChatAttachments, setIsUploadingChatAttachments] = useState(false);
   const chatImageInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    let ignore = false;
+    fetch("https://flagcdn.com/en/codes.json")
+      .then((res) => res.json())
+      .then((data) => {
+        if (ignore) return;
+        const list = Object.entries(data)
+          .filter(([code]) => code.length === 2)
+          .map(([code, name]) => ({ code, name: name as string }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        setShopFilterCountries(list);
+      })
+      .catch((error) => console.error("Error fetching countries:", error));
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   // Cart logic
   const { addToCart, userCountry, savedAddress } = useCart();
@@ -1670,7 +2123,7 @@ export default function ShopPage() {
 
     const loadActiveShopAds = async () => {
       try {
-        const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
+        const token = typeof window !== "undefined" ? (window.sessionStorage.getItem("token") || window.localStorage.getItem("token")) : null;
         const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
         const activeAds: any[] = [];
         let offset = 0;
@@ -1685,10 +2138,11 @@ export default function ShopPage() {
           const data = await response.json();
           if (!response.ok) throw new Error(data?.message || "Failed to load active ads");
 
-          const pageAds = Array.isArray(data?.ads) ? data.ads : [];
+          const rawPageAds = Array.isArray(data?.ads) ? data.ads : [];
+          const pageAds = filterAdsForViewer(rawPageAds, currentUser);
           activeAds.push(...pageAds);
-          hasMore = !!data?.pagination?.hasMore && pageAds.length > 0;
-          offset = Number(data?.pagination?.nextOffset ?? offset + pageAds.length);
+          hasMore = !!data?.pagination?.hasMore && rawPageAds.length > 0;
+          offset = Number(data?.pagination?.nextOffset ?? offset + rawPageAds.length);
         }
 
         const mappedAds = activeAds
@@ -1725,7 +2179,7 @@ export default function ShopPage() {
       window.removeEventListener("googer-ad-history-updated", refreshActiveShopAds);
       window.removeEventListener("focus", refreshActiveShopAds);
     };
-  }, [activeTab, shopAdShuffleSeed, syncAds]);
+  }, [activeTab, currentUser, shopAdShuffleSeed, syncAds]);
 
   // Real-time ad expiry watcher — same engine as home feed
   useEffect(() => {
@@ -2709,26 +3163,40 @@ export default function ShopPage() {
   };
 
   const handlePromoteAgain = (ad: any) => {
-    void promotePhotoVideoAdAgain({
-      ad,
-      router,
-    });
+    const campaignType = String(ad?.campaign_type || ad?.campaignType || ad?.raw?.campaign_type || "").trim().toLowerCase();
+    if (campaignType === "product promote") {
+      void promoteProductAdAgain({ ad, router });
+      return;
+    }
+    void promotePhotoVideoAdAgain({ ad, router });
   };
 
   const handleLogView = async (id: number | string, item?: any) => {
     try {
-      const result = await marketService.logView(id);
+      const viewId = item?.adId || item?.ad_id
+        ? `ad-${String(item.adId || item.ad_id).replace(/^ad-/, "")}`
+        : id;
+      const result = await marketService.logView(viewId);
       const isSponsoredTarget =
         !!item?.is_sponsored ||
         String(item?.id || "").startsWith("ad-") ||
-        String(id).startsWith("ad-");
+        String(viewId).startsWith("ad-");
       if (result?.success) {
         if (isSponsoredTarget) {
+          const nextViewsCount = Number(
+            result.views_count ??
+            result.viewCount ??
+            result.views ??
+            item?.views_count ??
+            item?.viewCount ??
+            0
+          );
+          const nextReach = Number(result.current_reach ?? result.reach ?? 0);
           updateAdState(item || id, {
-            views_count: Number(result.impressions || 0),
-            viewCount: Number(result.impressions || 0),
-            current_reach: Number(result.current_reach ?? result.reach ?? 0),
-            reach: Number(result.current_reach ?? result.reach ?? 0),
+            views_count: nextViewsCount,
+            viewCount: nextViewsCount,
+            current_reach: nextReach,
+            reach: nextReach,
             clicks: Number(result.clicks || result.link_actions || 0),
             link_actions: Number(result.link_actions || result.clicks || 0),
             message_clicks: Number(result.message_clicks || 0),
@@ -2749,6 +3217,37 @@ export default function ShopPage() {
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleLogImpression = async (id: number | string, item?: any) => {
+    try {
+      const impressionId = item?.adId || item?.ad_id
+        ? `ad-${String(item.adId || item.ad_id).replace(/^ad-/, "")}`
+        : id;
+      const result = await marketService.logAdImpression(impressionId);
+      if (!result?.success) return;
+
+      updateAdState(item || id, {
+        impressions: Number(result.impressions ?? item?.impressions ?? item?.impressions_count ?? 0),
+        impressions_count: Number(result.impressions ?? item?.impressions ?? item?.impressions_count ?? 0),
+        current_reach: Number(result.current_reach ?? result.reach ?? item?.current_reach ?? item?.reach ?? 0),
+        reach: Number(result.current_reach ?? result.reach ?? item?.current_reach ?? item?.reach ?? 0),
+      });
+
+      if (result.capped || String(result.status || "").toLowerCase() === "completed") {
+        const rawAdId = String(impressionId).replace(/^ad-/, "");
+        setMarketAds((prev) => prev.filter((ad) => {
+          const feedId = String(ad.adId || ad.ad_id || ad.id || "").replace(/^ad-/, "");
+          return feedId !== rawAdId;
+        }));
+        setProducts((prev) => prev.filter((product) => {
+          const feedId = String(product.adId || product.ad_id || product.id || "").replace(/^ad-/, "");
+          return feedId !== rawAdId;
+        }));
+      }
+    } catch (error) {
+      console.error("Failed to log ad impression:", error);
     }
   };
 
@@ -2780,20 +3279,12 @@ export default function ShopPage() {
 
   // InteractionButton is now outside ShopPage
 
-  const categories = [
-    "Gamings",
-    "Headphones",
-    "Parfums",
-    "Fruits",
-    "Mobiles",
-    "Laptops",
-    "Accessories",
-    "Shoes",
-    "Clothing",
-    "Electronics",
-    "Fashion",
-    "Other",
-  ];
+  useEffect(() => {
+    categoryService.getTree(false).then((tree) => setCategoryTree(tree || [])).catch(() => {});
+    const onUpdate = () => categoryService.getTree(false).then((tree) => setCategoryTree(tree || [])).catch(() => {});
+    window.addEventListener("googer-categories-updated", onUpdate);
+    return () => window.removeEventListener("googer-categories-updated", onUpdate);
+  }, []);
 
   useEffect(() => {
     setMounted(true);
@@ -2828,6 +3319,8 @@ export default function ShopPage() {
     myOrdersTab,
     currentUser?.id,
     selectedCategory,
+    selectedSubCategory,
+    selectedLevel3,
     marketSearchQuery,
     userCountry,
   ]);
@@ -2835,6 +3328,14 @@ export default function ShopPage() {
   useEffect(() => {
     loadOrderBadgeCounts();
   }, [currentUser?.id]);
+
+  // Keep draft in sync when marketSearchQuery is cleared externally
+  useEffect(() => {
+    if (marketSearchQuery === "") {
+      setSearchDraft("");
+      setMarketSortOption("top-sales");
+    }
+  }, [marketSearchQuery]);
 
   useEffect(() => {
     const handleRefresh = (e: any) => {
@@ -3099,6 +3600,8 @@ export default function ShopPage() {
       myOrdersTab,
       currentUserId: currentUser?.id || null,
       selectedCategory,
+      selectedSubCategory,
+      selectedLevel3,
       marketSearchQuery,
       userCountry,
     });
@@ -3128,7 +3631,11 @@ export default function ShopPage() {
         setMarketNextOffset(0);
       }
       if (activeTab === "market") {
-        if (selectedCategory) {
+        if (selectedLevel3) {
+          filters.category = selectedLevel3;
+        } else if (selectedSubCategory) {
+          filters.category = selectedSubCategory;
+        } else if (selectedCategory) {
           filters.category = selectedCategory;
         }
         let seenProductIds: number[] = [];
@@ -3161,7 +3668,7 @@ export default function ShopPage() {
         filters._feedSession = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         marketFeedSessionRef.current = filters._feedSession;
         marketShuffleTokenRef.current = filters._shuffle;
-        setShopAdShuffleSeed(filters._feedSession);
+        setProductShuffleSeed(`${Date.now()}-${Math.random()}`);
         filters.limit = String(MARKET_PAGE_SIZE);
         filters.offset = "0";
         if (seenProductIds.length > 0) {
@@ -3264,7 +3771,9 @@ export default function ShopPage() {
         offset: String(marketNextOffset),
       };
 
-      if (selectedCategory) filters.category = selectedCategory;
+      if (selectedLevel3) filters.category = selectedLevel3;
+      else if (selectedSubCategory) filters.category = selectedSubCategory;
+      else if (selectedCategory) filters.category = selectedCategory;
       if (marketSearchQuery.trim()) filters.search = marketSearchQuery.trim();
       if (marketFeedSessionRef.current) filters._feedSession = marketFeedSessionRef.current;
       if (marketShuffleTokenRef.current) filters._shuffle = marketShuffleTokenRef.current;
@@ -3324,6 +3833,22 @@ export default function ShopPage() {
       setIsLoadingMoreProducts(false);
     }
   };
+
+  useEffect(() => {
+    const sentinel = marketLoadMoreRef.current;
+    if (!sentinel || activeTab !== "market" || !marketHasMore || isLoadingMoreProducts) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        void loadMoreMarketProducts();
+      },
+      { rootMargin: "1200px 0px" },
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [activeTab, isLoadingMoreProducts, marketHasMore, marketNextOffset]);
 
   const loadOrderBadgeCounts = async () => {
     if (!currentUser?.id) {
@@ -3463,7 +3988,7 @@ export default function ShopPage() {
 
       const currentVariant = variantOverride || (variantIndexOverride !== null ? productVariants[variantIndexOverride] : (productVariants.length > 0 ? productVariants[0] : null));
 
-      addToCart(
+      await addToCart(
         productToAdd,
         quantityOverride,
         sizeOverride,
@@ -3552,16 +4077,60 @@ export default function ShopPage() {
   };
 
   const handleNotInterested = (productId: number) => {
-    setHiddenProductIds((prev) => [...prev, productId]);
+    const targetItem = [
+      ...products.filter((product) => matchesAdIdentity(product, productId)),
+      ...marketAds.filter((ad) => matchesAdIdentity(ad, productId)),
+    ][0];
+
+    if (targetItem && (!!targetItem?.is_sponsored || !!targetItem?.campaign_type)) {
+      const interactionId = getAdInteractionId(targetItem);
+      hideFeedItemFor24Hours(currentUser?.id, "ad", interactionId);
+      setHiddenShopAdIds((prev) => {
+        const next = new Set(prev);
+        next.add(interactionId);
+        return next;
+      });
+    } else {
+      setHiddenProductIds((prev) => [...prev, productId]);
+    }
     setOpenMenuProductId(null);
   };
 
-  const handleReportSubmit = (productId: number) => {
-    const finalReason = reportReason === "Other" ? `Other: ${reportDetail}` : reportReason;
-    setNotification({ type: 'success', title: 'Reported', message: `Product ${productId} has been reported for: "${finalReason || "General"}" to admin for review.` });
-    setReportingProduct(null);
-    setReportReason("");
-    setReportDetail("");
+  const handleReportSubmit = async (productId: number) => {
+    if (!reportReason) return;
+    setReportSubmitting(true);
+    setReportError("");
+    try {
+      const finalReason = reportReason === "Other" ? `Other: ${reportDetail}` : reportReason;
+      const cleanId = String(productId).replace(/^ad-/i, "");
+      const _tok = authService.getToken() || "";
+      const resp = await fetch(`/api/market/${cleanId}/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${_tok}` },
+        body: JSON.stringify({ reason: finalReason, custom_reason: reportReason === "Other" ? reportDetail : undefined }),
+      });
+      if (!resp.ok) {
+        const d = await resp.json().catch(() => ({}));
+        throw new Error(d.message || "Failed to submit report.");
+      }
+      setReportSubmitted(true);
+      setTimeout(() => {
+        setReportingProduct(null);
+        setReportReason("");
+        setReportDetail("");
+        setReportSubmitting(false);
+        setReportSubmitted(false);
+        setReportError("");
+      }, 2000);
+    } catch (error: any) {
+      const msg = String(error?.message || "").toLowerCase();
+      if (msg.includes("already reported") || msg.includes("already report")) {
+        setReportError("You have already reported this.");
+      } else {
+        setReportError("Failed to submit. Please try again.");
+      }
+      setReportSubmitting(false);
+    }
     setOpenMenuProductId(null);
   };
 
@@ -3755,110 +4324,480 @@ export default function ShopPage() {
 
   const buyerOrderBadgeTotal = orderBadgeCounts.buyer.total;
   const sellerOrderBadgeTotal = orderBadgeCounts.seller.total;
+  const selectedFilterCountryData = shopFilterCountries.find((country) => country.name === selectedFilterCountry);
+  const hasSearchFilterText = !!(marketSearchQuery.trim() || searchDraft.trim());
+  const hasActiveShopFilters = !!selectedFilterCountry || !!marketSortOption || activeMarketAlgorithm !== "recommended";
+  const visibleFilterCountries = shopFilterCountries.filter((country) =>
+    !countryFilterSearch.trim() ||
+    country.name.toLowerCase().includes(countryFilterSearch.trim().toLowerCase()) ||
+    country.code.toLowerCase().includes(countryFilterSearch.trim().toLowerCase())
+  );
+  const clearShopFilters = () => {
+    setSelectedFilterCountry("");
+    setCountryFilterSearch("");
+    setMarketSortOption("");
+    setActiveMarketAlgorithm("recommended");
+    setIsCountryFilterOpen(false);
+  };
+
+  const renderMarketProductCard = (product: any, index: number, keyPrefix = "market") => {
+    if (product?.type === "profilePromoteCarousel") {
+      return (
+        <ProfilePromoteCarousel
+          key={`${keyPrefix}-${product.id}`}
+          ads={product.ads}
+          className="col-span-2 sm:col-span-2 lg:col-span-4 px-4 py-4 transition-colors sm:px-7"
+          cardsPerView={4}
+          onProductClick={(previewProduct) => {
+            void openProductPromoteSecondView(previewProduct);
+          }}
+          onProfileClick={(profileAd) => {
+            const profileUrl = getProfileShareUrl(profileAd);
+            if (!profileUrl) return;
+            window.open(profileUrl, "_blank", "noopener,noreferrer");
+          }}
+        />
+      );
+    }
+
+    const isSponsoredCard = !!product.is_sponsored;
+    const isProductPromoteCard = isSponsoredCard && isProductPromoteItem(product);
+    const isAdStyleCard = isSponsoredCard && !isProductPromoteCard;
+    const sponsoredActiveLink = isAdStyleCard ? normalizeExternalUrl(product.active_link || "") : "";
+    const sponsoredLinkPreviewType = isAdStyleCard ? getSponsoredLinkPreviewType(sponsoredActiveLink) : null;
+    const key = `${keyPrefix}-${product.id || (product.adId ? `ad-${product.adId}` : "item")}-${index}`;
+
+    if (isSponsoredCard) {
+      return (
+        <Fragment key={key}>
+          <MarketItemWrapper product={product} onView={handleLogView} onImpression={handleLogImpression} activeTab={activeTab}>
+            <PromotedAdCard
+              ad={product}
+              source="shop"
+              isMenuOpen={openMenuProductId === product.id}
+              onToggleMenu={(id) => setOpenMenuProductId(openMenuProductId === id ? null : id)}
+              onCloseMenu={() => setOpenMenuProductId(null)}
+              onProductClick={(p) => {
+                if (isProductPromoteCard) {
+                  void openProductPromoteSecondView(p);
+                }
+              }}
+              onAddToBagClick={(p) => {
+                if (isProductPromoteCard) {
+                  void openProductPromoteSecondView(p);
+                }
+              }}
+              onOpenSecondView={() => {
+                if (isProductPromoteCard) return;
+                const kind = getSponsoredSecondViewKind(product, sponsoredLinkPreviewType);
+                setSharedAdPreviewModal({ ad: product, kind });
+                handleLogView(product.id, product);
+              }}
+              onToggleLike={handleToggleLike}
+              onOpenSheet={(type, targetAd) => openBottomSheet(type, targetAd)}
+              onShare={() => handleShareClick(product)}
+              onReport={() => setReportingProduct(product)}
+              onNotInterested={(id) => handleNotInterested(Number(id))}
+              onPromoteAgain={handlePromoteAgain}
+              onCollectCoin={(event) => handleAdCoinClick(event, product)}
+              onNavigateToProfile={(event) => navigateToProfile(event, product.user_id)}
+              canShowCollectCoin={canShowCollectCoinButton}
+              currentUser={currentUser}
+            />
+          </MarketItemWrapper>
+        </Fragment>
+      );
+    }
+
+    return (
+      <Fragment key={key}>
+        <MarketItemWrapper product={product} onView={handleLogView} activeTab={activeTab}>
+          <SharedProductCard
+            product={product}
+            isAd={isProductPromoteCard}
+            currentUser={currentUser}
+            onProductClick={(p) => {
+              if (isProductPromoteCard) {
+                void openProductPromoteSecondView(p);
+              } else {
+                setSelectedProduct(p);
+                setSelectedVariantIndex(null);
+                setActivePreviewIndex(0);
+                handleLogView(p.id);
+              }
+            }}
+            onAddToBagClick={(p) => {
+              if (isProductPromoteCard) {
+                void openProductPromoteSecondView(p);
+              } else {
+                setSelectedProduct(p);
+                setSelectedVariantIndex(null);
+                setActivePreviewIndex(0);
+                handleLogView(p.id);
+              }
+            }}
+            onToggleLike={handleToggleLike}
+            onOpenSheet={(type, p) => openBottomSheet(type as any, p)}
+            onShare={handleShareClick}
+            onLogView={handleLogView}
+            onReport={(p) => setReportingProduct(p)}
+            onNotInterested={(id) => handleNotInterested(Number(id))}
+            onCollectCoin={(event, p) => handleAdCoinClick(event, p)}
+            canShowCollectCoin={canShowCollectCoinButton}
+            onNavigateToProfile={(event, userId) => navigateToProfile(event, userId)}
+            onEditProduct={handleEditProduct}
+            onDeleteProduct={handleDeleteProduct}
+            onPromoteProduct={handlePromoteProduct}
+            onUpdateOrderStatus={handleUpdateOrderStatus}
+            activeTab={activeTab}
+            myListingsTab={myListingsTab}
+          />
+        </MarketItemWrapper>
+      </Fragment>
+    );
+  };
+
+  const topicSectionAds = activeTab === "market"
+    ? Array.from(
+        [
+          ...products.filter((p) => !!p?.is_sponsored && !hiddenProductIds.includes(p.id) && !hiddenShopAdIds.has(getAdInteractionId(p))),
+          ...marketAds.filter((ad) => !hiddenProductIds.includes(ad.id) && !hiddenShopAdIds.has(getAdInteractionId(ad))),
+        ]
+          .reduce((map, ad) => {
+            const key = getShopAdRotationKey(ad);
+            if (key && !map.has(key)) map.set(key, ad);
+            return map;
+          }, new Map<string, any>())
+          .values(),
+      ).filter((ad) => !isProfilePromoteItem(ad))
+    : [];
+  const marketAlgorithmSections = activeTab === "market"
+    ? MARKET_ALGORITHM_OPTIONS.map((section, index) => {
+      const baseProducts = visibleMarketplaceProducts.filter((product) => !product?.is_sponsored && product?.type !== "profilePromoteCarousel");
+      const ranked = shuffleItemsWithSeed(
+        rankMarketProducts(baseProducts, section.id, marketSearchQuery || searchDraft).slice(0, 10),
+        `${productShuffleSeed}:${section.id}`,
+        (p) => String(p?.id ?? Math.random()),
+      );
+      const padded = ranked.length > 0 && ranked.length < 4
+        ? Array.from({ length: 4 }, (_, i) => ranked[i % ranked.length])
+        : ranked;
+      const withAds = interleaveShopProductsWithAds(
+        padded,
+        topicSectionAds,
+        `googer-topic-ad-rotation-${section.id}`,
+        shopAdShuffleSeed,
+        6,
+        shopAdRotation + index,
+      );
+      return {
+        ...section,
+        products: withAds,
+      };
+    }).filter((section) => section.products.length > 0)
+    : [];
+  const orderedMarketAlgorithmSections = activeTab === "market"
+    ? [
+      ...marketAlgorithmSections.filter((section) => section.id === "recommended"),
+      ...marketAlgorithmSections.filter((section) => section.id !== "recommended"),
+    ]
+    : [];
+  const marketApprovedAds = activeTab === "market"
+    ? Array.from(
+        [
+          ...products.filter((p) => !!p?.is_sponsored && !hiddenProductIds.includes(p.id) && !hiddenShopAdIds.has(getAdInteractionId(p))),
+          ...marketAds.filter((ad) => !hiddenProductIds.includes(ad.id) && !hiddenShopAdIds.has(getAdInteractionId(ad))),
+        ]
+          .reduce((map, ad) => {
+            const key = getShopAdRotationKey(ad);
+            if (key && !map.has(key)) map.set(key, ad);
+            return map;
+          }, new Map<string, any>())
+          .values(),
+      )
+    : [];
+  const profilePromoteAds = marketApprovedAds.filter(isProfilePromoteItem);
+  const remainingMarketplaceProducts = activeTab === "market"
+    ? (() => {
+      const remainingNormalProducts = visibleMarketplaceProducts.filter((product) => (
+        !product?.is_sponsored &&
+        product?.type !== "profilePromoteCarousel"
+      ));
+      const interleavableAds = marketApprovedAds.filter((ad) => !isProfilePromoteItem(ad));
+      const interleavedItems = interleaveShopProductsWithAds(
+        remainingNormalProducts,
+        interleavableAds,
+        "googer-marketplace-ad-rotation-v2",
+        shopAdShuffleSeed,
+        6,
+        shopAdRotation,
+      );
+
+      return insertProfilePromoteCarouselRows(interleavedItems, profilePromoteAds);
+    })()
+    : [];
 
   return (
-    <div className="pb-10 relative min-h-screen">
+    <div className="pb-10 relative min-h-screen w-full overflow-x-hidden">
       {/* Search Portal for Mobile Topbar */}
       {mounted &&
         document.getElementById("shop-search-portal") &&
         createPortal(
-          <div className="w-full relative">
-            <input
-              type="text"
-              placeholder="Product Search"
-              value={activeTab === "market" ? marketSearchQuery : ""}
-              onChange={(e) => {
-                if (activeTab === "market") {
-                  setMarketSearchQuery(e.target.value);
-                }
-              }}
-              disabled={activeTab !== "market"}
-              className="w-full bg-[#1a1a1a] text-white text-xs rounded-full pl-8 pr-3 py-1.5 outline-none focus:ring-1 focus:ring-white/30 border border-white/10 placeholder:text-white"
-            />
-            <div className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm flex items-center">
-              <IonIcon name="search-outline" />
+          <form className="flex w-full items-center gap-2 md:hidden" onSubmit={(e) => { e.preventDefault(); if (activeTab === "market") setMarketSearchQuery(searchDraft); }}>
+            <div className="relative flex-1">
+              <input
+                type="text"
+                placeholder="Search Googer"
+                value={activeTab === "market" ? searchDraft : ""}
+                onChange={(e) => { if (activeTab === "market") setSearchDraft(e.target.value); }}
+                onPaste={(e) => {
+                  if (activeTab !== "market") return;
+                  applyPastedSearch(e);
+                }}
+                disabled={activeTab !== "market"}
+                className="w-full bg-[#111] text-white text-xs rounded-full pl-7 pr-7 py-1.5 outline-none focus:ring-1 focus:ring-white/20 border border-white/8 placeholder:text-white/30"
+              />
+              <button type="submit" disabled={activeTab !== "market"} className="absolute left-0 top-0 bottom-0 pl-2.5 pr-1 flex items-center text-white/30 hover:text-white/60 transition disabled:opacity-30">
+                <IonIcon name="search-outline" className="text-xs" />
+              </button>
+              {searchDraft && activeTab === "market" && (
+                <button type="button" onClick={() => { setSearchDraft(""); setMarketSearchQuery(""); }} className="absolute right-2 top-0 bottom-0 flex items-center text-red-400 hover:text-red-300 transition">
+                  <IonIcon name="close-circle" className="text-sm" />
+                </button>
+              )}
             </div>
-          </div>,
+            <div className="relative">
+              <button
+                type="button"
+              onClick={() => {
+                setIsShopFilterOpen((value) => !value);
+                setIsCountryFilterOpen(false);
+              }}
+                disabled={activeTab !== "market"}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/8 bg-[#111] text-white/45 transition hover:text-white disabled:opacity-30"
+                aria-label="Open product filters"
+              >
+                <IonIcon name="options-outline" className="text-sm" />
+              </button>
+            </div>
+          </form>,
           document.getElementById("shop-search-portal")!,
         )}
 
-      <h1 className="text-3xl font-bold mb-6 text-white hidden md:block">
-        Marketplace
-      </h1>
-
       {/* Header: Tabs + Search (Desktop) */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
         {/* Tabs */}
-        <div className="flex items-center gap-2 w-full md:w-auto relative">
-          <div
-            id="tabs-scroll"
-            className="flex gap-8 border-b border-gray-800 w-full md:w-auto overflow-x-auto scroll-smooth scrollbar-none px-1"
-            style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+        <div
+          className="flex gap-8 border-b border-gray-800 w-full overflow-x-auto scroll-smooth px-1"
+          style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+        >
+          <button
+            onClick={() => setActiveTab("market")}
+            className={`pb-3 transition-colors relative whitespace-nowrap ${activeTab === "market" ? "text-white text-xl font-black" : "text-gray-400 hover:text-gray-300 text-sm font-medium"}`}
           >
-            <button
-              onClick={() => setActiveTab("market")}
-              className={`pb-3 text-sm font-medium transition-colors relative whitespace-nowrap ${activeTab === "market" ? "text-white" : "text-gray-400 hover:text-gray-300"}`}
-            >
-              <div className="flex items-center gap-2">
-                <IonIcon name="storefront-outline" />
-                Market
-              </div>
-              {activeTab === "market" && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>
-              )}
-            </button>
-
-            <button
-              onClick={() => setActiveTab("my-products")}
-              className={`pb-3 text-sm font-medium transition-colors relative whitespace-nowrap ${activeTab === "my-products" ? "text-white" : "text-gray-400 hover:text-gray-300"}`}
-            >
-              <div className="flex items-center gap-2">
-                <IonIcon name="pricetags-outline" />
-                My Listings
-                <OrderBadge count={sellerOrderBadgeTotal} active={activeTab === "my-products"} />
-              </div>
-              {activeTab === "my-products" && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>
-              )}
-            </button>
-
-            <button
-              onClick={() => setActiveTab("orders")}
-              className={`pb-3 text-sm font-medium transition-colors relative whitespace-nowrap ${activeTab === "orders" ? "text-white" : "text-gray-400 hover:text-gray-300"}`}
-            >
-              <div className="flex items-center gap-2">
-                <IonIcon name="cart-outline" />
-                My Orders
-                <OrderBadge count={buyerOrderBadgeTotal} active={activeTab === "orders"} />
-              </div>
-              {activeTab === "orders" && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Search & Filter (Desktop only - mobile uses portal) */}
-        <div className="hidden md:flex items-center gap-4 flex-1 md:max-w-md">
-          <div className="flex-1 relative">
-            <input
-              type="text"
-              placeholder="Product Search"
-              value={activeTab === "market" ? marketSearchQuery : ""}
-              onChange={(e) => {
-                if (activeTab === "market") {
-                  setMarketSearchQuery(e.target.value);
-                }
-              }}
-              disabled={activeTab !== "market"}
-              className="w-full bg-[#1a1a1a] text-white text-sm rounded-lg pl-10 pr-4 py-2.5 outline-none focus:ring-1 focus:ring-white/30 border border-white/10 placeholder:text-white"
-            />
-            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-lg flex items-center">
-              <IonIcon name="search-outline" />
+            <div className="flex items-center gap-2">
+              <IonIcon name="storefront-outline" />
+              Market
             </div>
+            {activeTab === "market" && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab("my-products")}
+            className={`pb-3 text-sm font-medium transition-colors relative whitespace-nowrap ${activeTab === "my-products" ? "text-white" : "text-gray-400 hover:text-gray-300"}`}
+          >
+            <div className="flex items-center gap-2">
+              <IonIcon name="pricetags-outline" />
+              My Listings
+              <OrderBadge count={sellerOrderBadgeTotal} active={activeTab === "my-products"} />
+            </div>
+            {activeTab === "my-products" && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab("orders")}
+            className={`pb-3 text-sm font-medium transition-colors relative whitespace-nowrap ${activeTab === "orders" ? "text-white" : "text-gray-400 hover:text-gray-300"}`}
+          >
+            <div className="flex items-center gap-2">
+              <IonIcon name="cart-outline" />
+              My Orders
+              <OrderBadge count={buyerOrderBadgeTotal} active={activeTab === "orders"} />
+            </div>
+            {activeTab === "orders" && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white shadow-[0_0_10px_rgba(255,255,255,0.3)]"></div>
+            )}
+          </button>
+        </div>
+
+        {/* Search (Desktop only) */}
+        {activeTab === "market" && (
+          <form
+            className="hidden md:flex shrink-0 items-center gap-2"
+            onSubmit={(e) => { e.preventDefault(); setMarketSearchQuery(searchDraft); }}
+          >
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Search Googer"
+                value={searchDraft}
+                onChange={(e) => setSearchDraft(e.target.value)}
+                onPaste={applyPastedSearch}
+                className="w-52 bg-[#111] text-white text-xs rounded-full pl-8 pr-7 py-2 outline-none focus:ring-1 focus:ring-white/20 border border-white/8 placeholder:text-white/30"
+              />
+              <button type="submit" className="absolute left-0 top-0 bottom-0 pl-2.5 pr-1 flex items-center text-white/30 hover:text-white/60 transition">
+                <IonIcon name="search-outline" className="text-sm" />
+              </button>
+              {searchDraft && (
+                <button type="button" onClick={() => { setSearchDraft(""); setMarketSearchQuery(""); }} className="absolute right-2 top-0 bottom-0 flex items-center text-red-400 hover:text-red-300 transition">
+                  <IonIcon name="close-circle" className="text-sm" />
+                </button>
+              )}
+            </div>
+            <div className="relative">
+              <button
+                type="button"
+              onClick={() => {
+                setIsShopFilterOpen((value) => !value);
+                setIsCountryFilterOpen(false);
+              }}
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/8 bg-[#111] text-white/45 transition hover:text-white"
+                aria-label="Open product filters"
+              >
+                <IonIcon name="options-outline" className="text-base" />
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+
+      {isShopFilterOpen && (
+        <div className="fixed inset-0 z-[180] pointer-events-none">
+          <div
+            className="pointer-events-auto absolute right-3 top-[4.25rem] w-[208px] overflow-visible rounded-xl border border-white/10 bg-[#111214] py-1.5 text-white shadow-2xl animate-in zoom-in-95 fade-in duration-150 md:right-6 md:top-[8.45rem]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="absolute -top-1.5 right-5 h-3 w-3 rotate-45 border-l border-t border-white/10 bg-[#111214]" />
+            {hasActiveShopFilters && (
+              <div className="relative z-10 flex items-center justify-between border-b border-white/5 px-3 pb-1.5 pt-0.5">
+                <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">Filters</span>
+                <button
+                  type="button"
+                  onClick={clearShopFilters}
+                  className="rounded-full px-2 py-1 text-[10px] font-bold text-white/60 transition hover:bg-white/5 hover:text-white"
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+            <div className="px-2 py-1.5">
+              <button
+                type="button"
+                onClick={() => setIsCountryFilterOpen((value) => !value)}
+                className="relative z-10 flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[11px] font-semibold transition hover:bg-white/5"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  {selectedFilterCountryData ? (
+                    <img
+                      src={`https://flagcdn.com/24x18/${selectedFilterCountryData.code}.png`}
+                      alt=""
+                      className="h-3.5 w-5 rounded-[2px] object-cover"
+                    />
+                  ) : (
+                    <IonIcon name="earth-outline" className="text-base text-white/55" />
+                  )}
+                  <span className="truncate">{selectedFilterCountry || "Country"}</span>
+                </span>
+                <IonIcon name={isCountryFilterOpen ? "chevron-up" : "chevron-down"} className="text-xs text-white/50" />
+              </button>
+              {selectedFilterCountry && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedFilterCountry("");
+                    setCountryFilterSearch("");
+                  }}
+                  className="mt-1 w-full rounded-md px-2.5 py-1 text-left text-[10px] font-semibold text-white/45 transition hover:bg-white/5 hover:text-white"
+                >
+                  Clear country
+                </button>
+              )}
+
+              {isCountryFilterOpen && (
+                <div className="relative z-10 mt-1.5 max-h-52 overflow-hidden rounded-lg border border-white/10 bg-[#0a0a0a] shadow-xl">
+                  <div className="border-b border-white/5 p-1.5">
+                    <input
+                      type="text"
+                      value={countryFilterSearch}
+                      onChange={(event) => setCountryFilterSearch(event.target.value)}
+                      placeholder="Search country"
+                      className="h-7 w-full rounded-md bg-white/[0.06] px-2.5 text-[10px] font-semibold text-white outline-none placeholder:text-white/35"
+                    />
+                  </div>
+                  <div className="max-h-40 overflow-y-auto py-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedFilterCountry("");
+                        setCountryFilterSearch("");
+                        setIsCountryFilterOpen(false);
+                      }}
+                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] font-medium hover:bg-white/5"
+                    >
+                      <span>All countries</span>
+                      {!selectedFilterCountry && <IonIcon name="checkmark" className="text-lg" />}
+                    </button>
+                    {visibleFilterCountries.map((country) => (
+                      <button
+                        type="button"
+                        key={country.code}
+                        onClick={() => {
+                          setSelectedFilterCountry(country.name);
+                          setCountryFilterSearch("");
+                          setIsCountryFilterOpen(false);
+                        }}
+                        className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[11px] font-medium hover:bg-white/5"
+                      >
+                        <span className="flex min-w-0 items-center gap-2">
+                          <img
+                            src={`https://flagcdn.com/24x18/${country.code}.png`}
+                            alt=""
+                            className="h-3.5 w-5 shrink-0 rounded-[2px] object-cover"
+                          />
+                          <span className="truncate">{country.name}</span>
+                        </span>
+                        {selectedFilterCountry === country.name && <IonIcon name="checkmark" className="text-lg" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {hasSearchFilterText && (
+              <div className="relative z-10 border-t border-white/5 py-1">
+                {SHOP_SORT_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => {
+                      setMarketSortOption(option.id);
+                      setMarketSearchQuery(searchDraft);
+                    }}
+                    className="flex w-full items-center justify-between px-4 py-2 text-left text-[12px] font-medium transition hover:bg-white/5"
+                  >
+                    <span>{option.label}</span>
+                    {marketSortOption === option.id && <IonIcon name="checkmark" className="text-xl" />}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
-      </div>
+      )}
 
       {/* Sub-tabs for My Listings */}
       {activeTab === "my-products" && (
@@ -4013,50 +4952,88 @@ export default function ShopPage() {
 
       {/* Categories - Only visible in Market */}
       {activeTab === "market" && (
-        <div className="mb-8 space-y-4">
-          <div className="flex items-center gap-2 select-none">
+        <div className="mb-8 space-y-2 select-none">
+          {/* Level 1 — Main categories */}
+          <div className="flex gap-2 overflow-x-auto py-1 no-scrollbar" style={{ scrollbarWidth: "none" }}>
             <button
-              className="flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg"
-              onClick={() =>
-                document
-                  .getElementById("category-scroll")
-                  ?.scrollBy({ left: -150, behavior: "smooth" })
-              }
+              onClick={() => { setSelectedCategory(""); setSelectedSubCategory(""); setSelectedLevel3(""); }}
+              className={`px-4 py-2 text-xs font-bold rounded-xl whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedCategory === "" ? "bg-white text-black border-white" : "bg-[#1a1a1a] border-white/5 hover:border-white/20 text-gray-400 hover:text-white"}`}
             >
-              <IonIcon name="chevron-back" className="text-lg" />
+              All
             </button>
-            <div
-              id="category-scroll"
-              className="flex-1 flex gap-2 overflow-x-auto scroll-smooth py-1 no-scrollbar overflow-y-hidden"
-              style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
-            >
+            {categoryTree.map((cat: any, i: number) => (
               <button
-                onClick={() => setSelectedCategory("")}
-                className={`px-4 py-2 text-xs font-bold rounded-xl whitespace-nowrap transition-all border active:scale-95 shadow-sm shrink-0 ${selectedCategory === "" ? "bg-white text-black border-white" : "bg-[#1a1a1a] border-white/5 hover:border-white/20 text-gray-400 hover:text-white"}`}
+                key={i}
+                onClick={() => {
+                  if (selectedCategory === cat.name) {
+                    setSelectedCategory(""); setSelectedSubCategory(""); setSelectedLevel3("");
+                  } else {
+                    setSelectedCategory(cat.name); setSelectedSubCategory(""); setSelectedLevel3("");
+                  }
+                }}
+                className={`px-4 py-2 text-xs font-bold rounded-xl whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedCategory === cat.name ? "bg-white text-black border-white" : "bg-[#1a1a1a] border-white/5 hover:border-white/20 text-gray-400 hover:text-white"}`}
               >
-                All
+                {cat.name}
               </button>
-              {categories.map((cat, i) => (
-                <button
-                  key={i}
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`px-4 py-2 text-xs font-bold rounded-xl whitespace-nowrap transition-all border active:scale-95 shadow-sm shrink-0 ${selectedCategory === cat ? "bg-white text-black border-white" : "bg-[#1a1a1a] border-white/5 hover:border-white/20 text-gray-400 hover:text-white"}`}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
-            <button
-              className="flex-shrink-0 w-8 h-8 flex items-center justify-center text-white bg-gray-800/40 hover:bg-gray-700/60 rounded-full border border-gray-700/50 transition-all active:scale-95 shadow-lg"
-              onClick={() =>
-                document
-                  .getElementById("category-scroll")
-                  ?.scrollBy({ left: 150, behavior: "smooth" })
-              }
-            >
-              <IonIcon name="chevron-forward" className="text-lg" />
-            </button>
+            ))}
           </div>
+
+          {/* Level 2 — Sub categories */}
+          {(() => {
+            const activeCat = categoryTree.find((c: any) => c.name === selectedCategory);
+            if (!activeCat || !activeCat.children?.length) return null;
+            return (
+              <div className="flex gap-2 overflow-x-auto py-1 no-scrollbar" style={{ scrollbarWidth: "none" }}>
+                <button
+                  onClick={() => { setSelectedSubCategory(""); setSelectedLevel3(""); }}
+                  className={`px-3 py-1.5 text-[11px] font-bold rounded-lg whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedSubCategory === "" ? "bg-white/15 text-white border-white/30" : "bg-[#1a1a1a] border-white/5 hover:border-white/15 text-gray-500 hover:text-white"}`}
+                >
+                  All {activeCat.name}
+                </button>
+                {activeCat.children.map((sub: any, i: number) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      if (selectedSubCategory === sub.name) {
+                        setSelectedSubCategory(""); setSelectedLevel3("");
+                      } else {
+                        setSelectedSubCategory(sub.name); setSelectedLevel3("");
+                      }
+                    }}
+                    className={`px-3 py-1.5 text-[11px] font-bold rounded-lg whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedSubCategory === sub.name ? "bg-white/15 text-white border-white/30" : "bg-[#1a1a1a] border-white/5 hover:border-white/15 text-gray-500 hover:text-white"}`}
+                  >
+                    {sub.name}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
+
+          {/* Level 3 — Sub-sub categories */}
+          {(() => {
+            const activeCat = categoryTree.find((c: any) => c.name === selectedCategory);
+            const activeSub = activeCat?.children?.find((s: any) => s.name === selectedSubCategory);
+            if (!activeSub || !activeSub.children?.length) return null;
+            return (
+              <div className="flex gap-2 overflow-x-auto py-1 no-scrollbar" style={{ scrollbarWidth: "none" }}>
+                <button
+                  onClick={() => setSelectedLevel3("")}
+                  className={`px-3 py-1 text-[10px] font-bold rounded-md whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedLevel3 === "" ? "bg-white/10 text-white/80 border-white/20" : "bg-[#1a1a1a] border-white/5 hover:border-white/12 text-gray-600 hover:text-white"}`}
+                >
+                  All {activeSub.name}
+                </button>
+                {activeSub.children.map((lvl3: any, i: number) => (
+                  <button
+                    key={i}
+                    onClick={() => setSelectedLevel3(selectedLevel3 === lvl3.name ? "" : lvl3.name)}
+                    className={`px-3 py-1 text-[10px] font-bold rounded-md whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedLevel3 === lvl3.name ? "bg-white/10 text-white/80 border-white/20" : "bg-[#1a1a1a] border-white/5 hover:border-white/12 text-gray-600 hover:text-white"}`}
+                  >
+                    {lvl3.name}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -4086,11 +5063,113 @@ export default function ShopPage() {
             No items found here
           </p>
         </div>
+      ) : activeTab === "market" ? (
+        <div className="mb-10 space-y-7">
+          {orderedMarketAlgorithmSections.length === 0 && remainingMarketplaceProducts.length === 0 ? (
+            <div className="text-center py-20 text-gray-500 bg-white/[0.02] rounded-[3rem] border border-white/5 border-dashed">
+              <IonIcon name="basket-outline" className="text-4xl mb-3 opacity-20" />
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">
+                No items found here
+              </p>
+            </div>
+          ) : (() => {
+              const rawPool = visibleMarketplaceProducts.filter((p) => !p?.is_sponsored && p?.type !== "profilePromoteCarousel");
+              const pool = shuffleItemsWithSeed(rawPool, productShuffleSeed, (p) => String(p?.id ?? ""));
+              return (
+                <>
+                  {orderedMarketAlgorithmSections.map((section, index) => {
+                    // 12 products cycled from shuffled pool for this section's 3 rows
+                    const sectionProducts = pool.length > 0
+                      ? Array.from({ length: 12 }, (_, i) => pool[(index * 12 + i) % pool.length])
+                      : [];
+                    // Interleave ads every 6 products — same ads pool as topic sections
+                    const interleavedItems = sectionProducts.length > 0
+                      ? interleaveShopProductsWithAds(
+                          sectionProducts,
+                          topicSectionAds,
+                          `googer-normal-row-ad-rotation-${section.id}`,
+                          shopAdShuffleSeed,
+                          6,
+                          shopAdRotation + index,
+                        )
+                      : [];
+                    // Pad to nearest multiple of 4 so every row is always complete
+                    const remainder = interleavedItems.length % 4;
+                    const sectionItems = remainder === 0 || pool.length === 0
+                      ? interleavedItems
+                      : [
+                          ...interleavedItems,
+                          ...Array.from({ length: 4 - remainder }, (_, i) =>
+                            pool[(index * 12 + sectionProducts.length + i) % pool.length]
+                          ),
+                        ];
+                    const sectionItemsWithProfileRows = insertProfilePromoteCarouselRows(sectionItems, profilePromoteAds);
+                    return (
+                    <Fragment key={`market-row-${section.id}`}>
+                      {/* Topic section */}
+                      <section className="space-y-2.5">
+                        <div className="flex items-center justify-between px-1">
+                          <h2 className="text-[11px] md:text-sm font-black uppercase tracking-[0.13em] text-white">
+                            {section.label}
+                          </h2>
+                          {section.products.length > 4 && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => document.getElementById(`market-topic-${section.id}`)?.scrollBy({ left: -520, behavior: "smooth" })}
+                                className="flex h-6 w-6 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white transition-all hover:bg-white hover:text-black active:scale-90"
+                                aria-label={`Previous ${section.label}`}
+                              >
+                                <IonIcon name="chevron-back-outline" className="text-xs" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => document.getElementById(`market-topic-${section.id}`)?.scrollBy({ left: 520, behavior: "smooth" })}
+                                className="flex h-6 w-6 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white transition-all hover:bg-white hover:text-black active:scale-90"
+                                aria-label={`Next ${section.label}`}
+                              >
+                                <IonIcon name="chevron-forward-outline" className="text-xs" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        <div className="relative lg:max-w-[95%]">
+                          <div
+                            id={`market-topic-${section.id}`}
+                            className="flex snap-x snap-mandatory gap-2 overflow-x-auto scroll-smooth pb-1 pr-2 [scrollbar-width:none] [-ms-overflow-style:none]"
+                            style={{ scrollbarWidth: "none" }}
+                          >
+                            {section.products.map((product, productIndex) => (
+                              <div
+                                key={`${section.id}-${product?.id || productIndex}`}
+                                className="min-w-[calc(50%-0.25rem)] snap-start sm:min-w-[calc(50%-0.25rem)] lg:min-w-[calc(25%-0.95rem)]"
+                              >
+                                {renderMarketProductCard(product, productIndex, section.id)}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </section>
+                      {/* Product rows with profile promote-only rows inserted in the shop cadence */}
+                      {sectionItemsWithProfileRows.length > 0 && (
+                        <section className="lg:max-w-[95%]">
+                          <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2 md:gap-4 xl:gap-5">
+                            {sectionItemsWithProfileRows.map((product, productIndex) => renderMarketProductCard(product, productIndex, `market-feed-${section.id}`))}
+                          </div>
+                        </section>
+                      )}
+                    </Fragment>
+                    );
+                  })}
+                </>
+              );
+            })()}
+        </div>
       ) : (activeTab === "orders" || (activeTab === "my-products" && myListingsTab === "all")) ? (
         /* Unified Grouped Layout for both Buyer and Seller Orders */
         <div className="flex flex-col gap-8 mb-20 animate-in fade-in slide-in-from-bottom-4 duration-700">
           {(() => {
-            const filteredProducts = products.filter((p) => !hiddenProductIds.includes(p.id));
+            const filteredProducts = products.filter((p) => !hiddenProductIds.includes(p.id) && (!(p?.is_sponsored || p?.campaign_type) || !hiddenShopAdIds.has(getAdInteractionId(p))));
 
             // Build groups while preserving the order of the products array (which is DESC by created_at)
             const orderGroups: { orderNumber: string, items: any[] }[] = [];
@@ -4830,7 +5909,7 @@ export default function ShopPage() {
             if (isSponsoredCard) {
               return (
                 <Fragment key={`${product.id || (product.adId ? `ad-${product.adId}` : `item`)}-${index}`}>
-                  <MarketItemWrapper product={product} onView={handleLogView} activeTab={activeTab}>
+                  <MarketItemWrapper product={product} onView={handleLogView} onImpression={handleLogImpression} activeTab={activeTab}>
                     <PromotedAdCard
                       ad={product}
                       source="shop"
@@ -4925,6 +6004,7 @@ export default function ShopPage() {
 
       {activeTab === "market" && marketHasMore && (
         <div className="flex w-full justify-center pb-8 pt-2">
+          <div ref={marketLoadMoreRef} className="h-4 w-4 self-center" aria-hidden="true" />
           <button
             type="button"
             onClick={loadMoreMarketProducts}
@@ -4964,37 +6044,6 @@ export default function ShopPage() {
                 className="flex h-10 w-full items-center justify-center rounded-xl text-[11px] font-black uppercase tracking-widest text-white/40 transition hover:text-white/70"
               >
                 Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Notification Portal */}
-      {notification && (
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="bg-[#1a1a1a] border border-white/10 rounded-[2rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 relative">
-            {/* Close (X) button */}
-            <button
-              onClick={() => setNotification(null)}
-              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/40 hover:text-white transition-all active:scale-90 z-10"
-              aria-label="Close"
-            >
-              <IonIcon name="close" className="text-base" />
-            </button>
-            <div className="p-8 text-center space-y-6">
-              <div className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center border-2 ${notification.type === 'success' ? 'bg-green-500/10 border-green-500 text-green-500' : 'bg-red-500/10 border-red-500 text-red-500'}`}>
-                <IonIcon name={notification.type === 'success' ? 'bag-check' : 'alert-circle'} className="text-4xl" />
-              </div>
-              <div className="space-y-2">
-                <h3 className="text-xl font-bold text-white tracking-tight">{notification.title || (notification.type === 'success' ? 'Success' : 'Error')}</h3>
-                <p className="text-sm text-slate-400 font-medium leading-relaxed">{notification.message}</p>
-              </div>
-              <button
-                onClick={() => setNotification(null)}
-                className={`w-full py-4 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] transition-all active:scale-95 shadow-lg ${notification.type === 'success' ? 'bg-green-500 text-black hover:bg-green-400' : 'bg-red-500 text-white hover:bg-red-400'}`}
-              >
-                {notification.type === 'success' ? 'Continue Shopping' : 'Got it'}
               </button>
             </div>
           </div>
@@ -5057,6 +6106,37 @@ export default function ShopPage() {
             setSelectedProduct(null);
           }}
         />
+      )}
+
+      {notification && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-[#1a1a1a] border border-white/10 rounded-[2rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 relative">
+            <button
+              type="button"
+              onClick={() => setNotification(null)}
+              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/40 hover:text-white transition-all active:scale-90 z-10"
+              aria-label="Close"
+            >
+              <IonIcon name="close" className="text-base" />
+            </button>
+            <div className="p-8 text-center space-y-6">
+              <div className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center border-2 ${notification.type === 'success' ? 'bg-green-500/10 border-green-500 text-green-500' : 'bg-red-500/10 border-red-500 text-red-500'}`}>
+                <IonIcon name={notification.type === 'success' ? 'bag-check' : 'alert-circle'} className="text-4xl" />
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-xl font-bold text-white tracking-tight">{notification.title || (notification.type === 'success' ? 'Success' : 'Error')}</h3>
+                <p className="text-sm text-slate-400 font-medium leading-relaxed">{notification.message}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNotification(null)}
+                className={`w-full py-4 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] transition-all active:scale-95 shadow-lg ${notification.type === 'success' ? 'bg-green-500 text-black hover:bg-green-400' : 'bg-red-500 text-white hover:bg-red-400'}`}
+              >
+                {notification.type === 'success' ? 'Continue Shopping' : 'Got it'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {false && selectedProduct && (
@@ -6012,7 +7092,11 @@ export default function ShopPage() {
         onReportComment={async (commentId) => {
           try {
             await marketService.reportComment(Number(commentId));
-          } catch (err) { console.error("Could not report comment."); }
+            addTopbarNotification({ type: "success", title: "Reported", message: "Comment has been reported for review." });
+          } catch (e: any) {
+            const msg = e?.message || "";
+            addTopbarNotification({ type: "info", title: msg.includes("Already") ? "Already Reported" : "Error", message: msg.includes("Already") ? "You have already reported this comment." : "Could not submit report." });
+          }
         }}
         onRefresh={refreshInteractionComments}
         currentUser={currentUser}
@@ -6100,88 +7184,78 @@ export default function ShopPage() {
       {/* Report Modal */}
       {reportingProduct && (
         <div
-          className="fixed inset-0 z-[250] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-300"
-          onClick={() => { setReportingProduct(null); setReportReason(""); setReportDetail(""); }}
+          className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={() => { if (!reportSubmitting) { setReportingProduct(null); setReportReason(""); setReportDetail(""); setReportSubmitted(false); setReportError(""); } }}
         >
           <div
-            className="bg-[#111111] border border-white/10 rounded-[2.5rem] w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300"
+            className="w-full max-w-sm overflow-hidden rounded-2xl border border-white/10 bg-[#211d1a] shadow-[0_30px_90px_rgba(0,0,0,0.48)]"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-6 border-b border-white/5 flex items-center justify-between">
-              <div>
-                <h3 className="text-white font-black text-lg">
-                  Report Listing
-                </h3>
-                <p className="text-[10px] text-yellow-500/60 font-black uppercase tracking-[0.2em] mt-0.5">
-                  Community Safety
-                </p>
+            <div className="border-b border-white/8 px-5 py-4">
+              <div className="flex items-center gap-2">
+                <IonIcon name="alert-circle-outline" className="text-lg text-yellow-500" />
+                <h3 className="text-[13px] font-black uppercase tracking-[0.14em] text-white">Report Post</h3>
               </div>
-              <button
-                onClick={() => { setReportingProduct(null); setReportReason(""); setReportDetail(""); }}
-                className="w-9 h-9 rounded-full bg-white/5 flex items-center justify-center text-white/40 hover:text-white transition-all"
-              >
-                <IonIcon name="close" />
-              </button>
+              <p className="mt-1.5 text-[11px] font-medium text-white/50">
+                Help us understand what&apos;s wrong with this post.
+              </p>
             </div>
 
-            <div className="p-6 space-y-4">
-              <div className="p-4 bg-white/[0.02] border border-white/5 rounded-2xl">
-                <p className="text-[10px] text-white/30 font-bold uppercase mb-2">
-                  Reporting Product
-                </p>
-                <p className="text-sm text-white font-bold truncate">
-                  {reportingProduct.title}
-                </p>
+            {reportSubmitted ? (
+              <div className="flex flex-col items-center gap-3 px-5 py-8">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
+                  <IonIcon name="checkmark-circle" className="text-2xl" />
+                </div>
+                <p className="text-[12px] font-bold text-white/70">Report submitted. Thank you.</p>
               </div>
-
-              <div className="space-y-3">
-                <p className="text-[11px] text-white/40 font-bold px-1">
-                  Why are you reporting this?
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    "Prohibited Item",
-                    "Suspicious Activity",
-                    "Wrong Category",
-                    "Other",
-                  ].map((reason) => (
+            ) : (
+              <div className="px-5 py-4">
+                <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.1em] text-white/40">Select a reason</p>
+                <div className="grid gap-2">
+                  {["Spam or misleading", "Harassment or bullying", "Hate speech or graphic", "Inappropriate content", "Other"].map((reason) => (
                     <button
                       key={reason}
+                      type="button"
                       onClick={() => setReportReason(reason)}
-                      className={`px-4 py-2 border rounded-xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-[0.95] ${reportReason === reason ? "bg-white text-black border-white shadow-xl shadow-white/5" : "bg-white/5 text-white/40 border-white/5 hover:bg-white/10"}`}
+                      className={`flex items-center gap-3 rounded-xl border px-4 py-2.5 text-left text-[11px] font-bold transition-all ${reportReason === reason ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-400" : "border-white/8 bg-white/[0.03] text-white/70 hover:border-white/15 hover:bg-white/[0.06]"}`}
                     >
+                      <div className={`h-3.5 w-3.5 shrink-0 rounded-full border-2 transition-all ${reportReason === reason ? "border-yellow-400 bg-yellow-400" : "border-white/30"}`} />
                       {reason}
                     </button>
                   ))}
                 </div>
 
-                {reportReason === "Other" && (
-                  <div className="animate-in slide-in-from-top-2 duration-300">
-                    <textarea
-                      value={reportDetail}
-                      onChange={(e) => setReportDetail(e.target.value)}
-                      placeholder="Please specify details..."
-                      rows={4}
-                      className="w-full bg-white/[0.03] border border-white/10 rounded-2xl p-4 text-xs text-white placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-all resize-none shadow-inner"
-                    />
-                  </div>
+                <textarea
+                  value={reportDetail}
+                  onChange={(e) => setReportDetail(e.target.value)}
+                  placeholder="Additional details (optional)"
+                  rows={2}
+                  className="mt-3 w-full resize-none rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2.5 text-[11px] font-medium text-white placeholder:text-white/25 outline-none focus:border-white/20 transition-colors"
+                />
+
+                {reportError && (
+                  <p className="mt-3 text-[11px] font-bold text-red-400">{reportError}</p>
                 )}
 
-                <button
-                  onClick={() => handleReportSubmit(reportingProduct.id)}
-                  disabled={!reportReason || (reportReason === "Other" && !reportDetail.trim())}
-                  className={`w-full py-4 rounded-2xl text-[11px] font-black uppercase tracking-[0.2em] transition-all shadow-lg active:scale-95 ${!reportReason || (reportReason === "Other" && !reportDetail.trim()) ? "bg-white/5 text-slate-600 cursor-not-allowed border border-white/5" : "bg-white text-black hover:bg-slate-200 border border-white"}`}
-                >
-                  Done
-                </button>
+                <div className="mt-4 flex items-center justify-end gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => { setReportingProduct(null); setReportReason(""); setReportDetail(""); setReportError(""); }}
+                    className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-white/70 transition hover:bg-white/10"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleReportSubmit(reportingProduct.id)}
+                    disabled={!reportReason || reportSubmitting}
+                    className="rounded-full bg-yellow-500 px-4 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-black transition hover:bg-yellow-400 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {reportSubmitting ? "Submitting..." : "Submit"}
+                  </button>
+                </div>
               </div>
-            </div>
-
-            <div className="p-4 bg-black/40 text-center border-t border-white/5">
-              <p className="text-[9px] text-white/20 font-bold uppercase tracking-widest">
-                Googer Marketplace Safety Team
-              </p>
-            </div>
+            )}
           </div>
         </div>
       )}

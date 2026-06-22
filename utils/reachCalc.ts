@@ -30,7 +30,7 @@ export function calcReach(
     const maxReach = Math.round(budget * Number(tier.max_multiplier)) + maxPromoBonus;
 
     const tierCap = tier.max_reach_multiplier != null
-        ? Math.round(budget * Number(tier.max_reach_multiplier))
+        ? Math.max(1, Math.round(budget * Number(tier.max_reach_multiplier)))
         : null;
 
     // Promo reach cap takes priority over tier cap — never display, send to backend only

@@ -1,20 +1,35 @@
+import { API_URL } from './apiConfig';
+
 const isClient = typeof window !== 'undefined';
-// Automatically detect if we should use the relative /api path (Vercel) or local dev path
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+let activeUserRequest: Promise<any | null> | null = null;
 
 // Safe storage wrapper for Safari/iPhone compatibility
 const storage = {
     get: (key: string) => {
         if (!isClient) return null;
-        try { return localStorage.getItem(key); } catch (e) { return null; }
+        try { return sessionStorage.getItem(key) || localStorage.getItem(key); } catch { return null; }
     },
     set: (key: string, value: string) => {
         if (!isClient) return;
-        try { localStorage.setItem(key, value); } catch (e) { console.warn('Storage blocked'); }
+        let wrote = false;
+        try {
+            sessionStorage.setItem(key, value);
+            wrote = true;
+        } catch {}
+        try {
+            localStorage.setItem(key, value);
+            wrote = true;
+        } catch {}
+        if (!wrote) {
+            console.warn('Storage blocked');
+        }
     },
     remove: (key: string) => {
         if (!isClient) return;
-        try { localStorage.removeItem(key); } catch (e) { }
+        try {
+            sessionStorage.removeItem(key);
+            localStorage.removeItem(key);
+        } catch { }
     }
 };
 
@@ -33,12 +48,53 @@ const safeJson = async (response: Response) => {
     if (contentType && contentType.includes("application/json")) {
         return await response.json();
     }
+    const text = await response.text().catch(() => "");
+    if (!text.trim()) return null;
+    if (!response.ok) {
+        console.error(`Non-JSON response from ${response.url}:`, {
+            status: response.status,
+            contentType,
+            preview: text.substring(0, 200)
+        });
+    }
     return null;
 };
 
 const getStoredToken = () => storage.get('token');
 
-const resolveActiveUserSession = async () => {
+const getCachedUser = () => {
+    const raw = storage.get('user');
+    if (!raw) return null;
+    try {
+        return JSON.parse(raw);
+    } catch {
+        storage.remove('user');
+        return null;
+    }
+};
+
+export const getStoredUserSync = () => getCachedUser();
+
+const clearStoredSession = () => {
+    storage.remove('token');
+    storage.remove('user');
+    emitAuthChanged(null);
+};
+
+const isAuthFailure = (message: string) =>
+    /401|403|invalid authentication token|session expired|authentication required|no token provided|session has been invalidated|user not found/i.test(message);
+
+const buildErrorMessage = (result: any, response: Response) => {
+    const payloadMessage =
+        result?.message ||
+        result?.error ||
+        result?.errors?.[0]?.message ||
+        result?.errors?.[0];
+
+    return payloadMessage || `HTTP ${response.status}`;
+};
+
+const resolveActiveUserSession = async (options?: { silent?: boolean }) => {
     const token = getStoredToken();
     if (!token) {
         storage.remove('user');
@@ -46,32 +102,85 @@ const resolveActiveUserSession = async () => {
         return null;
     }
 
-    const response = await fetch(`${API_URL}/auth/profile`, {
-        method: 'GET',
-        headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-        },
-    });
+    if (activeUserRequest) {
+        return activeUserRequest;
+    }
 
-    const result = await safeJson(response);
-    if (!response.ok) {
-        if (response.status === 401) {
-            storage.remove('token');
-            storage.remove('user');
-            emitAuthChanged(null);
+    activeUserRequest = (async () => {
+        try {
+            const response = await fetch(`${API_URL}/auth/profile`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+            });
+
+            const result = await safeJson(response);
+
+            if (!response.ok) {
+                const errorMsg = buildErrorMessage(result, response);
+                if (response.status === 401 || response.status === 403 || response.status === 404) {
+                    clearStoredSession();
+                }
+                throw new Error(errorMsg);
+            }
+
+            if (!result) {
+                throw new Error(`Invalid response: expected JSON but got ${response.headers.get("content-type")} from ${API_URL}`);
+            }
+
+            const user = result?.user || result?.data || null;
+            if (user) {
+                storage.set('user', JSON.stringify(user));
+            } else {
+                storage.remove('user');
+            }
+            emitAuthChanged(user);
+            return user;
+        } catch (error: any) {
+            const message = String(error?.message || error || "Unknown profile error");
+            const cachedUser = getCachedUser();
+
+            if (cachedUser) {
+                if (!options?.silent) {
+                    console.warn(isAuthFailure(message) ? 'Profile auth fallback to cached user:' : 'Profile fetch fallback to cached user:', {
+                        url: `${API_URL}/auth/profile`,
+                        error: message,
+                        hasToken: !!getStoredToken(),
+                    });
+                }
+                emitAuthChanged(cachedUser);
+                return cachedUser;
+            }
+
+            if (isAuthFailure(message)) {
+                if (!options?.silent) {
+                    console.warn('Profile session reset:', {
+                        url: `${API_URL}/auth/profile`,
+                        error: message,
+                        hasToken: !!getStoredToken(),
+                    });
+                }
+                clearStoredSession();
+                return null;
+            }
+
+            if (!options?.silent) {
+                console.error('Profile fetch error:', {
+                    url: `${API_URL}/auth/profile`,
+                    error: message,
+                    hasToken: !!getStoredToken()
+                });
+            }
+
+            throw error;
+        } finally {
+            activeUserRequest = null;
         }
-        throw new Error(result?.message || 'Failed to fetch profile');
-    }
+    })();
 
-    const user = result?.user || null;
-    if (user) {
-        storage.set('user', JSON.stringify(user));
-    } else {
-        storage.remove('user');
-    }
-    emitAuthChanged(user);
-    return user;
+    return activeUserRequest;
 };
 
 export const authService = {
@@ -146,9 +255,10 @@ export const authService = {
 
     isAuthenticated: () => !!storage.get('token'),
     getToken: () => getStoredToken(),
+    clearSession: () => clearStoredSession(),
     resolveActiveUser: async () => {
         try {
-            return await resolveActiveUserSession();
+            return await resolveActiveUserSession({ silent: true });
         } catch (error: any) {
             throw error;
         }
@@ -156,12 +266,83 @@ export const authService = {
 
     getProfile: async () => {
         try {
-            const user = await resolveActiveUserSession();
+            const user = await resolveActiveUserSession({ silent: true });
             if (!user) throw new Error('No session found');
             return user;
         } catch (error: any) {
             throw error;
         }
+    },
+
+    getSuspension: async () => {
+        const token = storage.get('token');
+        if (!token) throw new Error('No session found');
+        const response = await fetch(`${API_URL}/auth/suspension`, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(result?.message || 'Failed to fetch suspension');
+        return result?.suspension;
+    },
+
+    submitSuspensionAppeal: async (payload: {
+        appeal: string;
+        contactEmail: string;
+        phoneNumber: string;
+        agreementConfirmed: boolean;
+    }) => {
+        const token = storage.get('token');
+        if (!token) throw new Error('No session found');
+        const response = await fetch(`${API_URL}/auth/suspension/appeal`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(result?.message || 'Failed to submit appeal');
+        return result?.suspension;
+    },
+
+    selfDeactivateAccount: async () => {
+        const token = storage.get('token');
+        if (!token) throw new Error('No session found');
+        const response = await fetch(`${API_URL}/auth/self-deactivate`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(result?.message || 'Failed to deactivate account');
+        storage.remove('token');
+        storage.remove('user');
+        emitAuthChanged(null);
+        return result;
+    },
+
+    selfDeleteAccount: async () => {
+        const token = storage.get('token');
+        if (!token) throw new Error('No session found');
+        const response = await fetch(`${API_URL}/auth/self-delete`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(result?.message || 'Failed to delete account');
+        storage.remove('token');
+        storage.remove('user');
+        emitAuthChanged(null);
+        return result;
     },
 
     getUserProfile: async (id: string | number) => {

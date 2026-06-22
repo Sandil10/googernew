@@ -16,6 +16,8 @@ export type AdInteractionButtonProps = {
     onSingleClick?: () => void;
     onLongPress?: () => void;
     iconSize?: string;
+    className?: string;
+    countClassName?: string;
 };
 
 export function AdInteractionButton({
@@ -29,6 +31,8 @@ export function AdInteractionButton({
     onLongPress,
     type,
     iconSize = "text-[13px] md:text-xl",
+    className = "",
+    countClassName = "text-[7px] font-black tracking-tighter md:text-[9px]",
 }: AdInteractionButtonProps) {
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const didLongPressRef = useRef(false);
@@ -83,11 +87,11 @@ export function AdInteractionButton({
             onPointerLeave={handlePointerEnd}
             onClick={handleClick}
             onContextMenu={(event) => event.preventDefault()}
-            className={`${currentColorClass} flex touch-none select-none items-center gap-1 transition-all duration-300 active:scale-75 focus:outline-none focus:ring-0`}
+            className={`${currentColorClass} flex touch-none select-none items-center gap-1 transition-all duration-300 active:scale-75 focus:outline-none focus:ring-0 ${className}`}
             aria-pressed={isLikeButton ? !!isActive : undefined}
         >
             <IonIcon key={iconRenderKey} name={currentIcon} className={`${iconSize} ${currentColorClass} shrink-0`} style={iconColorStyle} />
-            {hasCount && <span className="shrink-0 text-[7px] font-black tracking-tighter md:text-[9px]">{count}</span>}
+            {hasCount && <span className={`shrink-0 ${countClassName}`}>{count}</span>}
         </button>
     );
 }

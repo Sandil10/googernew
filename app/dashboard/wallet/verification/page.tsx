@@ -181,43 +181,71 @@ function FileUploadBox({
     value: UploadFile; onChange: (f: UploadFile) => void; required?: boolean;
 }) {
     const ref = useRef<HTMLInputElement>(null);
+
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const f = e.target.files?.[0];
-        if (f) onChange({ file: f, preview: URL.createObjectURL(f) });
+        if (!f) return;
+        // Revoke previous object URL to avoid memory leaks
+        if (value?.preview && value.preview.startsWith("blob:")) URL.revokeObjectURL(value.preview);
+        const preview = URL.createObjectURL(f);
+        onChange({ file: f, preview });
+        // Reset input so same file can be re-selected
+        e.target.value = "";
     };
+
     return (
-        <button
-            type="button"
-            onClick={() => ref.current?.click()}
-            className={`flex flex-col items-center justify-center gap-2 w-full rounded-xl border px-4 py-5 text-center transition-all shadow-inner ${
-                value
-                    ? "border-emerald-500/30 bg-emerald-500/[0.04] hover:bg-emerald-500/[0.07]"
-                    : "border-gray-700/50 bg-[#030303] hover:bg-[#0b0b0b] hover:border-gray-600"
-            }`}
-        >
-            <input ref={ref} type="file" name={name} accept="image/*,application/pdf" className="hidden" onChange={handleChange} />
-            {value ? (
-                <>
-                    {value.file.type.startsWith("image/") ? (
-                        <img src={value.preview} alt="preview" className="h-16 w-full rounded-lg object-cover" />
-                    ) : (
-                        <div className="flex h-16 w-full items-center justify-center rounded-lg bg-white/5">
-                            <IonIcon name="document-outline" className="text-3xl text-gray-500" />
+        <div className="relative w-full">
+            <input
+                ref={ref}
+                type="file"
+                name={name}
+                accept="image/*,application/pdf"
+                className="hidden"
+                onChange={handleChange}
+            />
+            <button
+                type="button"
+                onClick={() => ref.current?.click()}
+                className={`flex flex-col items-center justify-center gap-2 w-full rounded-xl border px-4 py-5 text-center transition-all shadow-inner ${
+                    value
+                        ? "border-emerald-500/30 bg-emerald-500/[0.04] hover:bg-emerald-500/[0.07]"
+                        : "border-gray-700/50 bg-[#030303] hover:bg-[#0b0b0b] hover:border-gray-600"
+                }`}
+            >
+                {value ? (
+                    <>
+                        {value.file.type.startsWith("image/") ? (
+                            // key forces img to remount when preview URL changes
+                            <img
+                                key={value.preview}
+                                src={value.preview}
+                                alt="preview"
+                                className="h-24 w-full rounded-lg object-cover"
+                                onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = "0.3"; }}
+                            />
+                        ) : (
+                            <div className="flex h-16 w-full items-center justify-center rounded-lg bg-white/5">
+                                <IonIcon name="document-outline" className="text-3xl text-gray-500" />
+                            </div>
+                        )}
+                        <div className="flex items-center gap-1.5">
+                            <IonIcon name="checkmark-circle" className="text-emerald-400 text-sm shrink-0" />
+                            <p className="truncate text-[10px] font-semibold text-emerald-400 max-w-full">{value.file.name}</p>
                         </div>
-                    )}
-                    <p className="truncate text-[10px] font-semibold text-emerald-400 max-w-full px-1">{value.file.name}</p>
-                </>
-            ) : (
-                <>
-                    <IonIcon name="cloud-upload-outline" className="text-2xl text-gray-600" />
-                    <p className="text-xs font-bold text-gray-400">
-                        {label}
-                        {required && <span className="text-red-400 ml-1">*</span>}
-                    </p>
-                    <p className="text-[10px] text-gray-600">{sublabel}</p>
-                </>
-            )}
-        </button>
+                        <p className="text-[9px] text-gray-600">Click to change</p>
+                    </>
+                ) : (
+                    <>
+                        <IonIcon name="cloud-upload-outline" className="text-2xl text-gray-600" />
+                        <p className="text-xs font-bold text-gray-400">
+                            {label}
+                            {required && <span className="text-red-400 ml-1">*</span>}
+                        </p>
+                        <p className="text-[10px] text-gray-600">{sublabel}</p>
+                    </>
+                )}
+            </button>
+        </div>
     );
 }
 

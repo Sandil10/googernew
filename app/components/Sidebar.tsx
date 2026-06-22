@@ -3,10 +3,11 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useEffect } from "react";
-import { authService } from "@/services/authService";
+import { useState, useEffect, useCallback } from "react";
+import { authService, getStoredUserSync } from "@/services/authService";
 import IonIcon from "./IonIcon";
 import { openLoginRequired } from "@/app/lib/loginRequired";
+import { getUserDisplayName } from "@/app/lib/userDisplay";
 
 const menuItems = [
     { name: "Home", icon: "home", href: "/dashboard" },
@@ -24,20 +25,28 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
     const pathname = usePathname();
     const router = useRouter();
     const [showUserMenu, setShowUserMenu] = useState(false);
-    const [user, setUser] = useState<any>(null);
-    const [loading, setLoading] = useState(true);
+    const [user, setUser] = useState<any>(() => getStoredUserSync());
+    const prefetchAdCampaignRoutes = useCallback(() => {
+        router.prefetch("/dashboard/ad-campaign/photo-video");
+        router.prefetch("/dashboard/ad-campaign/product-promote");
+        router.prefetch("/dashboard/ad-campaign/profile-promote");
+    }, [router]);
 
     useEffect(() => {
         const fetchUser = async () => {
             try {
+                const cachedUser = getStoredUserSync();
+                if (cachedUser) {
+                    setUser(cachedUser);
+                }
                 if (authService.isAuthenticated()) {
                     const profile = await authService.getProfile();
                     setUser(profile);
+                } else {
+                    setUser(cachedUser);
                 }
-            } catch (error) {
-                console.error("Error fetching user:", error);
-            } finally {
-                setLoading(false);
+            } catch {
+                setUser(getStoredUserSync());
             }
         };
 
@@ -47,6 +56,11 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
         window.addEventListener('userProfileUpdated', fetchUser);
         return () => window.removeEventListener('userProfileUpdated', fetchUser);
     }, []);
+
+    useEffect(() => {
+        const timer = window.setTimeout(prefetchAdCampaignRoutes, 1200);
+        return () => window.clearTimeout(timer);
+    }, [prefetchAdCampaignRoutes]);
 
     const handleLogout = () => {
         authService.logout();
@@ -147,7 +161,7 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
                                     </div>
                                     <div className="flex-1 min-w-0 mt-2">
                                         <h3 className="font-bold text-white text-sm truncate">
-                                            {user?.full_name || user?.username || "User"}
+                                            {getUserDisplayName(user, "Loading...")}
                                         </h3>
                                         <p className="text-xs text-gray-400 truncate">@{user?.username || "user"}</p>
                                     </div>
@@ -231,7 +245,7 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
                         <>
                             <div className="flex-1 min-w-0 transition-opacity duration-200">
                                 <p className="text-sm font-semibold truncate">
-                                    {user?.full_name || user?.username || "Loading..."}
+                                    {getUserDisplayName(user, "Loading...")}
                                 </p>
                                 <p className="text-xs text-gray-400 truncate">@{user?.username || "user"}</p>
                             </div>

@@ -13,6 +13,8 @@ const LOWERS = 'abcdefghijklmnopqrstuvwxyz';
 const SHARE_CODE_PATTERN = /^[0-9A-Za-z]{8}$/;
 const GOOG_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnopqrstuvwxyz';
 
+const GOOG_HOME_SCORE_SQL = `(COALESCE(gp.likes_count, 0) * 3 + COALESCE(gp.comments_count, 0) * 8 + COALESCE(gp.shares_count, 0) * 15)`;
+
 const hash32 = (input, seed = 0x811c9dc5) => {
     let hash = seed >>> 0;
     const value = String(input || '');
@@ -163,98 +165,116 @@ const ensureGoogShareCodes = async () => {
 const ensureGoogSchema = async () => {
     if (schemaReady) return;
 
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS goog_posts (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            text VARCHAR(75) NOT NULL,
-            text_color VARCHAR(20) DEFAULT '#FFFFFF',
-            share_code VARCHAR(32),
-            likes_count INTEGER DEFAULT 0,
-            comments_count INTEGER DEFAULT 0,
-            views_count INTEGER DEFAULT 0,
-            shares_count INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+    await pool.query(`CREATE TABLE IF NOT EXISTS goog_posts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        text TEXT NOT NULL,
+        text_color VARCHAR(20) DEFAULT '#FFFFFF',
+        share_code VARCHAR(32),
+        likes_count INTEGER DEFAULT 0,
+        comments_count INTEGER DEFAULT 0,
+        views_count INTEGER DEFAULT 0,
+        shares_count INTEGER DEFAULT 0,
+        reports INTEGER DEFAULT 0,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`).catch(() => {});
 
-        CREATE TABLE IF NOT EXISTS goog_likes (
-            id SERIAL PRIMARY KEY,
-            goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (goog_id, user_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS goog_comments (
-            id SERIAL PRIMARY KEY,
-            goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            comment TEXT NOT NULL,
-            parent_id INTEGER REFERENCES goog_comments(id) ON DELETE CASCADE,
-            likes INTEGER DEFAULT 0,
-            dislikes INTEGER DEFAULT 0,
-            reports INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS goog_shares (
-            id SERIAL PRIMARY KEY,
-            goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
-            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            ip_address VARCHAR(255),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS goog_views (
-            id SERIAL PRIMARY KEY,
-            goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
-            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-            ip_address VARCHAR(255),
-            last_viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS goog_subscribes (
-            id SERIAL NOT NULL PRIMARY KEY,
-            goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (goog_id, user_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS goog_share_logs (
-            id SERIAL NOT NULL PRIMARY KEY,
-            goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
-            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            ip_address VARCHAR(255),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (goog_id, user_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS goog_reports (
-            id SERIAL NOT NULL PRIMARY KEY,
-            goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
-            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            reason VARCHAR(50) NOT NULL,
-            custom_reason TEXT,
-            status VARCHAR(20) DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (goog_id, user_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_goog_posts_created_at ON goog_posts(created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_goog_posts_user_id ON goog_posts(user_id);
-        CREATE INDEX IF NOT EXISTS idx_goog_likes_post_user ON goog_likes(goog_id, user_id);
-        CREATE INDEX IF NOT EXISTS idx_goog_comments_post ON goog_comments(goog_id);
-        CREATE INDEX IF NOT EXISTS idx_goog_shares_post ON goog_shares(goog_id);
-        CREATE INDEX IF NOT EXISTS idx_goog_views_post_user ON goog_views(goog_id, user_id);
-        CREATE INDEX IF NOT EXISTS idx_goog_views_post_ip ON goog_views(goog_id, ip_address);
-        CREATE INDEX IF NOT EXISTS idx_goog_subscribes_post_user ON goog_subscribes(goog_id, user_id);
-        CREATE INDEX IF NOT EXISTS idx_goog_reports_post ON goog_reports(goog_id);
-    `);
-
-    // Widen text column so dynamic goog_letter_limit > 75 can be set by admin
     await pool.query(`ALTER TABLE goog_posts ALTER COLUMN text TYPE TEXT`).catch(() => {});
+    await pool.query(`ALTER TABLE goog_posts ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true`).catch(() => {});
+    await pool.query(`ALTER TABLE goog_posts ADD COLUMN IF NOT EXISTS reports INTEGER DEFAULT 0`).catch(() => {});
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS user_subscriptions (
+            id SERIAL PRIMARY KEY,
+            subscriber_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            subscribed_to_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (subscriber_id, subscribed_to_id)
+        )
+    `).catch(() => {});
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS goog_likes (
+        id SERIAL PRIMARY KEY,
+        goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (goog_id, user_id)
+    )`).catch(() => {});
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS goog_comments (
+        id SERIAL PRIMARY KEY,
+        goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        comment TEXT NOT NULL,
+        parent_id INTEGER REFERENCES goog_comments(id) ON DELETE CASCADE,
+        likes INTEGER DEFAULT 0,
+        dislikes INTEGER DEFAULT 0,
+        reports INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`).catch(() => {});
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS goog_shares (
+        id SERIAL PRIMARY KEY,
+        goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        ip_address VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`).catch(() => {});
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS goog_views (
+        id SERIAL PRIMARY KEY,
+        goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        viewer_key TEXT,
+        ip_address VARCHAR(255),
+        last_viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`).catch(() => {});
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS goog_subscribes (
+        id SERIAL NOT NULL PRIMARY KEY,
+        goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (goog_id, user_id)
+    )`).catch(() => {});
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS goog_share_logs (
+        id SERIAL NOT NULL PRIMARY KEY,
+        goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        ip_address VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (goog_id, user_id)
+    )`).catch(() => {});
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS goog_reports (
+        id SERIAL NOT NULL PRIMARY KEY,
+        goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        reason VARCHAR(200) NOT NULL,
+        custom_reason TEXT,
+        status VARCHAR(20) DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (goog_id, user_id)
+    )`).catch(() => {});
+
+    await pool.query(`ALTER TABLE goog_reports ALTER COLUMN reason TYPE VARCHAR(200)`).catch(() => {});
+    await pool.query(`ALTER TABLE goog_views ADD COLUMN IF NOT EXISTS viewer_key TEXT`).catch(() => {});
+
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_goog_posts_created_at ON goog_posts(created_at DESC)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_goog_posts_user_id ON goog_posts(user_id)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_subscriptions_subscriber_id ON user_subscriptions(subscriber_id)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_user_subscriptions_subscribed_to_id ON user_subscriptions(subscribed_to_id)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_goog_likes_post_user ON goog_likes(goog_id, user_id)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_goog_comments_post ON goog_comments(goog_id)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_goog_shares_post ON goog_shares(goog_id)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_goog_views_post_user ON goog_views(goog_id, user_id)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_goog_views_post_viewer_key ON goog_views(goog_id, viewer_key)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_goog_views_post_ip ON goog_views(goog_id, ip_address)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_goog_subscribes_post_user ON goog_subscribes(goog_id, user_id)`).catch(() => {});
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_goog_reports_post ON goog_reports(goog_id)`).catch(() => {});
 
     await ensureGoogShareCodes();
 
@@ -277,6 +297,86 @@ const getOptionalUserId = (req) => {
     }
 };
 
+const getViewerKeyFromRequest = (req) => {
+    const headerValue = String(req.headers['x-googer-viewer-key'] || '').trim();
+    return headerValue.slice(0, 160) || null;
+};
+
+const getGoogHomeScore = (likes, comments, shares) => (
+    (Number(likes || 0) * 3)
+    + (Number(comments || 0) * 8)
+    + (Number(shares || 0) * 15)
+);
+
+const getGoogExpansionStage = (views, likes, comments, shares) => {
+    const viewCount = Number(views || 0);
+    const likeCount = Number(likes || 0);
+    const score = getGoogHomeScore(likes, comments, shares);
+
+    let stage = '200';
+    let cap = 200;
+    let minLikes = 0;
+    let canExpand = true;
+
+    if (viewCount < 200) {
+        stage = '200';
+        cap = 200;
+    } else if (likeCount < 25) {
+        stage = 'followers';
+        cap = 200;
+        minLikes = 25;
+        canExpand = false;
+    } else if (viewCount < 500) {
+        stage = '500';
+        cap = 500;
+        minLikes = 25;
+    } else if (score < 60) {
+        stage = 'followers';
+        cap = 500;
+        minLikes = 50;
+        canExpand = false;
+    } else if (score < 100) {
+        stage = '2000';
+        cap = 2000;
+        minLikes = 50;
+    } else if (score <= 200) {
+        stage = '10000';
+        cap = 10000;
+        minLikes = 200;
+    } else {
+        stage = '100000';
+        cap = 100000;
+        minLikes = 1000;
+    }
+
+    if (viewCount >= 500 && likeCount >= 50 && cap < 2000) {
+        stage = '2000';
+        cap = 2000;
+        minLikes = 50;
+        canExpand = true;
+    }
+    if (viewCount >= 2000 && likeCount >= 200 && cap < 10000) {
+        stage = '10000';
+        cap = 10000;
+        minLikes = 200;
+        canExpand = true;
+    }
+    if (viewCount >= 10000 && likeCount >= 1000 && cap < 100000) {
+        stage = '100000';
+        cap = 100000;
+        minLikes = 1000;
+        canExpand = true;
+    }
+
+    return {
+        stage,
+        cap,
+        minLikes,
+        canExpand,
+        score,
+    };
+};
+
 const toUtcIso = (value) => {
     if (!value) return null;
     const raw = String(value).trim();
@@ -290,6 +390,21 @@ const toUtcIso = (value) => {
 };
 
 const normalizePost = (row) => ({
+    ...(() => {
+        const stage = getGoogExpansionStage(row.views_count, row.likes_count, row.comments_count, row.shares_count);
+        return {
+            home_expansion_stage: stage.stage,
+            homeExpansionStage: stage.stage,
+            home_expansion_cap: stage.cap,
+            homeExpansionCap: stage.cap,
+            home_expansion_score: stage.score,
+            homeExpansionScore: stage.score,
+            home_expansion_min_likes: stage.minLikes,
+            homeExpansionMinLikes: stage.minLikes,
+            home_can_expand: stage.canExpand,
+            homeCanExpand: stage.canExpand,
+        };
+    })(),
     id: Number(row.id),
     share_code: getCanonicalGoogShareCode(row),
     shareCode: getCanonicalGoogShareCode(row),
@@ -310,7 +425,11 @@ const normalizePost = (row) => ({
     user: {
         id: row.user_id,
         username: row.username || '',
-        name: row.full_name || row.username || 'User',
+        name: String(row.user_type || '').toLowerCase().replace(/[\s-]+/g, '_') === 'superadmin' || String(row.user_type || '').toLowerCase().replace(/[\s-]+/g, '_') === 'super_admin'
+            ? 'Googer Support'
+            : String(row.user_type || '').toLowerCase() === 'admin'
+                ? (row.username || row.full_name || 'User')
+                : (row.full_name || row.username || 'User'),
         img: row.profile_picture || '/assets/images/avatars/avatar-default.jpg',
     },
 });
@@ -320,6 +439,7 @@ const selectPostsSql = `
         gp.*,
         u.username,
         u.full_name,
+        u.user_type,
         u.profile_picture,
         CASE WHEN $1::INTEGER IS NULL THEN FALSE
              ELSE EXISTS (
@@ -329,13 +449,52 @@ const selectPostsSql = `
         END AS user_liked
     FROM goog_posts gp
     JOIN users u ON u.id = gp.user_id
+    WHERE gp.is_active = true
+      AND COALESCE(u.is_deactivated, false) = false
+      AND COALESCE(u.status, 'Active') <> 'Deactivated'
 `;
 
 exports.getPosts = async (req, res) => {
     try {
         await ensureGoogSchema();
         const userId = getOptionalUserId(req);
-        const result = await pool.query(`${selectPostsSql} ORDER BY gp.created_at DESC LIMIT 100`, [userId]);
+        const result = await pool.query(
+            `${selectPostsSql}
+              AND (
+                gp.views_count < 200
+                OR (gp.likes_count >= 25 AND gp.views_count < 500)
+                OR ((${GOOG_HOME_SCORE_SQL} >= 60 OR (gp.views_count >= 500 AND gp.likes_count >= 50)) AND gp.views_count < 2000)
+                OR ((${GOOG_HOME_SCORE_SQL} >= 100 OR (gp.views_count >= 2000 AND gp.likes_count >= 200)) AND gp.views_count < 10000)
+                OR ((${GOOG_HOME_SCORE_SQL} > 200 OR (gp.views_count >= 10000 AND gp.likes_count >= 1000)) AND gp.views_count < 100000)
+                OR (
+                    $1::INTEGER IS NOT NULL
+                    AND (
+                        gp.user_id = $1
+                        OR EXISTS (
+                            SELECT 1
+                            FROM user_subscriptions us
+                            WHERE us.subscriber_id = $1
+                              AND us.subscribed_to_id = gp.user_id
+                        )
+                    )
+                )
+              )
+             ORDER BY
+                CASE
+                    WHEN ${GOOG_HOME_SCORE_SQL} > 200 OR gp.likes_count >= 1000 THEN 5
+                    WHEN ${GOOG_HOME_SCORE_SQL} >= 100 OR gp.likes_count >= 200 THEN 4
+                    WHEN ${GOOG_HOME_SCORE_SQL} >= 60 OR gp.likes_count >= 50 THEN 3
+                    WHEN gp.likes_count >= 25 THEN 2
+                    ELSE 1
+                END DESC,
+                ${GOOG_HOME_SCORE_SQL} DESC,
+                gp.likes_count DESC,
+                gp.comments_count DESC,
+                gp.shares_count DESC,
+                gp.created_at DESC
+             LIMIT 100`,
+            [userId]
+        );
         res.status(200).json({ success: true, data: result.rows.map(normalizePost) });
     } catch (error) {
         console.error('Error fetching Goog posts:', error);
@@ -389,7 +548,7 @@ exports.createPost = async (req, res) => {
 
         const created = await pool.query(
             `INSERT INTO goog_posts (user_id, text, text_color, share_code, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC')
+             VALUES ($1, $2, $3, $4, NOW(), NOW())
              RETURNING *`,
             [userId, text, textColor, await pickGoogShareCode(`new:${userId}:${Date.now()}:${Math.random()}`)]
         );
@@ -397,7 +556,7 @@ exports.createPost = async (req, res) => {
             'UPDATE goog_posts SET share_code = $1 WHERE id = $2',
             [await pickGoogShareCode(created.rows[0].id), created.rows[0].id]
         );
-        const result = await pool.query(`${selectPostsSql} WHERE gp.id = $2`, [userId, created.rows[0].id]);
+        const result = await pool.query(`${selectPostsSql} AND gp.id = $2`, [userId, created.rows[0].id]);
         res.status(201).json({ success: true, data: normalizePost(result.rows[0]) });
     } catch (error) {
         console.error('Error creating Goog post:', error);
@@ -418,7 +577,7 @@ exports.updatePost = async (req, res) => {
 
         const updated = await pool.query(
             `UPDATE goog_posts
-             SET text = $1, text_color = $2, updated_at = NOW() AT TIME ZONE 'UTC'
+             SET text = $1, text_color = $2, updated_at = NOW()
              WHERE id = $3 AND user_id = $4
              RETURNING *`,
             [text, textColor, id, userId]
@@ -426,7 +585,7 @@ exports.updatePost = async (req, res) => {
 
         if (!updated.rows.length) return res.status(404).json({ success: false, message: 'Goog post not found' });
 
-        const result = await pool.query(`${selectPostsSql} WHERE gp.id = $2`, [userId, id]);
+        const result = await pool.query(`${selectPostsSql} AND gp.id = $2`, [userId, id]);
         res.status(200).json({ success: true, data: normalizePost(result.rows[0]) });
     } catch (error) {
         console.error('Error updating Goog post:', error);
@@ -550,19 +709,38 @@ exports.logShare = async (req, res) => {
 
 exports.createReport = async (req, res) => {
     try {
-        await ensureGoogSchema();
+        await ensureGoogSchema().catch((e) => { console.error('[createReport] ensureGoogSchema failed:', e.message); });
         const userId = req.user.id;
-        const id = parseInt(req.params.id, 10);
-        const { reason, custom_reason } = req.body;
+        const rawId = req.params.id;
+        const id = parseInt(rawId, 10);
+        const { reason, custom_reason } = req.body || {};
+        console.log('[createReport] userId=%s rawId=%s id=%s reason=%s', userId, rawId, id, reason);
+        if (!id || isNaN(id)) return res.status(400).json({ success: false, message: 'Invalid post ID' });
 
-        if (!reason || !['Spam or misleading', 'Harassment or bullying', 'Hate speech or graphic', 'Inappropriate content'].includes(reason)) {
+        const validReasons = ['Spam or misleading', 'Harassment or bullying', 'Hate speech or graphic', 'Inappropriate content', 'Other'];
+        if (!reason || !validReasons.includes(reason)) {
             return res.status(400).json({ success: false, message: 'Valid reason is required' });
         }
+
+        // Ensure table exists even if ensureGoogSchema failed
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS goog_reports (
+                id SERIAL PRIMARY KEY,
+                goog_id INTEGER NOT NULL REFERENCES goog_posts(id) ON DELETE CASCADE,
+                user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                reason VARCHAR(200) NOT NULL,
+                custom_reason TEXT,
+                status VARCHAR(20) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (goog_id, user_id)
+            )
+        `).catch(() => {});
+        await pool.query(`ALTER TABLE goog_reports ALTER COLUMN reason TYPE VARCHAR(200)`).catch(() => {});
 
         // Check if user already reported this post
         const existingReport = await pool.query('SELECT 1 FROM goog_reports WHERE goog_id = $1 AND user_id = $2', [id, userId]);
         if (existingReport.rows.length) {
-            return res.status(400).json({ success: false, message: 'You have already reported this post' });
+            return res.status(409).json({ success: false, message: 'You have already reported this post' });
         }
 
         await pool.query(
@@ -570,13 +748,12 @@ exports.createReport = async (req, res) => {
             [id, userId, reason, custom_reason || null]
         );
 
-        // Update reports count on post
-        await pool.query('UPDATE goog_posts SET reports = COALESCE(reports, 0) + 1 WHERE id = $1', [id]);
+        await pool.query('UPDATE goog_posts SET reports = COALESCE(reports, 0) + 1 WHERE id = $1', [id]).catch(() => {});
 
         res.status(201).json({ success: true, message: 'Report submitted successfully' });
     } catch (error) {
-        console.error('Error creating Goog report:', error);
-        res.status(500).json({ success: false, message: 'Server error creating Goog report' });
+        console.error('Error creating Goog report:', error.message, error.stack);
+        res.status(500).json({ success: false, message: error.message || 'Server error creating Goog report' });
     }
 };
 
@@ -640,6 +817,24 @@ exports.getComments = async (req, res) => {
     } catch (error) {
         console.error('Error fetching Goog comments:', error);
         res.status(500).json({ success: false, message: 'Server error fetching Goog comments' });
+    }
+};
+
+// Admin-only: toggle is_active on any post (no user_id check)
+exports.adminTogglePost = async (req, res) => {
+    try {
+        await ensureGoogSchema();
+        const id = parseInt(req.params.id, 10);
+        const result = await pool.query(
+            `UPDATE goog_posts SET is_active = NOT is_active, updated_at = NOW()
+             WHERE id = $1 RETURNING id, is_active`,
+            [id]
+        );
+        if (!result.rows.length) return res.status(404).json({ success: false, message: 'Post not found' });
+        res.json({ success: true, id: result.rows[0].id, is_active: result.rows[0].is_active });
+    } catch (error) {
+        console.error('Error toggling Goog post:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
     }
 };
 
@@ -727,34 +922,57 @@ exports.logView = async (req, res) => {
         const id = parseInt(req.params.id, 10);
         const userId = getOptionalUserId(req);
         const ipAddress = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
-        const params = userId ? [id, userId] : [id, ipAddress];
-        const viewCheck = await pool.query(
-            userId
-                ? 'SELECT id, last_viewed_at FROM goog_views WHERE goog_id = $1 AND user_id = $2'
-                : 'SELECT id, last_viewed_at FROM goog_views WHERE goog_id = $1 AND ip_address = $2 AND user_id IS NULL',
-            params
-        );
+        const viewerKey = getViewerKeyFromRequest(req);
+
+        let viewCheck;
+        if (userId) {
+            viewCheck = await pool.query(
+                'SELECT id, last_viewed_at FROM goog_views WHERE goog_id = $1 AND user_id = $2 LIMIT 1',
+                [id, userId]
+            );
+        } else if (viewerKey) {
+            viewCheck = await pool.query(
+                'SELECT id, last_viewed_at FROM goog_views WHERE goog_id = $1 AND viewer_key = $2 AND user_id IS NULL LIMIT 1',
+                [id, viewerKey]
+            );
+        } else {
+            viewCheck = await pool.query(
+                'SELECT id, last_viewed_at FROM goog_views WHERE goog_id = $1 AND ip_address = $2 AND user_id IS NULL LIMIT 1',
+                [id, ipAddress]
+            );
+        }
 
         let shouldIncrement = false;
         if (!viewCheck.rows.length) {
             await pool.query(
-                'INSERT INTO goog_views (goog_id, user_id, ip_address, last_viewed_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)',
-                [id, userId, ipAddress]
+                'INSERT INTO goog_views (goog_id, user_id, viewer_key, ip_address, last_viewed_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)',
+                [id, userId, viewerKey, ipAddress]
             );
             shouldIncrement = true;
         } else {
             const diffHours = (Date.now() - new Date(viewCheck.rows[0].last_viewed_at).getTime()) / (1000 * 60 * 60);
             if (diffHours >= 24) {
-                await pool.query('UPDATE goog_views SET last_viewed_at = CURRENT_TIMESTAMP, ip_address = $1 WHERE id = $2', [ipAddress, viewCheck.rows[0].id]);
+                await pool.query(
+                    'UPDATE goog_views SET last_viewed_at = CURRENT_TIMESTAMP, viewer_key = COALESCE($1, viewer_key), ip_address = $2 WHERE id = $3',
+                    [viewerKey, ipAddress, viewCheck.rows[0].id]
+                );
                 shouldIncrement = true;
             }
         }
 
+        let viewsCount = null;
         if (shouldIncrement) {
-            await pool.query('UPDATE goog_posts SET views_count = COALESCE(views_count, 0) + 1 WHERE id = $1', [id]);
+            const updated = await pool.query(
+                'UPDATE goog_posts SET views_count = COALESCE(views_count, 0) + 1 WHERE id = $1 RETURNING views_count',
+                [id]
+            );
+            viewsCount = Number(updated.rows[0]?.views_count || 0);
+        } else {
+            const current = await pool.query('SELECT views_count FROM goog_posts WHERE id = $1', [id]);
+            viewsCount = Number(current.rows[0]?.views_count || 0);
         }
 
-        res.status(200).json({ success: true, incremented: shouldIncrement });
+        res.status(200).json({ success: true, incremented: shouldIncrement, views_count: viewsCount, views: viewsCount });
     } catch (error) {
         console.error('Error logging Goog view:', error);
         res.status(500).json({ success: false, message: 'Server error logging Goog view' });
@@ -765,7 +983,7 @@ exports.getLikes = async (req, res) => {
     try {
         await ensureGoogSchema();
         const result = await pool.query(
-            `SELECT gl.id, gl.created_at, u.id as user_id, u.username, u.profile_picture
+            `SELECT gl.id, gl.created_at, u.id as user_id, u.username, u.full_name, u.profile_picture
              FROM goog_likes gl
              JOIN users u ON u.id = gl.user_id
              WHERE gl.goog_id = $1
@@ -806,18 +1024,39 @@ exports.getShares = async (req, res) => {
 exports.getViews = async (req, res) => {
     try {
         await ensureGoogSchema();
+        const postId = parseInt(req.params.id, 10);
         const result = await pool.query(
-            `SELECT gv.id, gv.last_viewed_at as created_at, u.id as user_id, u.username, u.profile_picture
+            `SELECT gv.id, gv.last_viewed_at as created_at, u.id as user_id, u.username, u.full_name, u.profile_picture
              FROM goog_views gv
              LEFT JOIN users u ON u.id = gv.user_id
              WHERE gv.goog_id = $1
              ORDER BY gv.last_viewed_at DESC`,
-            [parseInt(req.params.id, 10)]
+            [postId]
         );
         const normalizedViews = result.rows.map(row => ({
             ...row,
             created_at: toUtcIso(row.created_at)
         }));
+
+        const countResult = await pool.query(
+            'SELECT COALESCE(views_count, 0)::int AS views_count, created_at FROM goog_posts WHERE id = $1 LIMIT 1',
+            [postId]
+        );
+        const totalViews = Number(countResult.rows[0]?.views_count || 0);
+        const missingViewRows = Math.max(0, totalViews - normalizedViews.length);
+
+        if (missingViewRows > 0) {
+            normalizedViews.push({
+                id: `legacy-views-${postId}`,
+                user_id: null,
+                username: `${missingViewRows.toLocaleString()} legacy/anonymous view${missingViewRows === 1 ? '' : 's'}`,
+                full_name: `${missingViewRows.toLocaleString()} legacy/anonymous view${missingViewRows === 1 ? '' : 's'}`,
+                profile_picture: null,
+                created_at: toUtcIso(countResult.rows[0]?.created_at),
+                is_aggregate: true,
+                count: missingViewRows,
+            });
+        }
         res.status(200).json({ success: true, data: normalizedViews });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server error fetching Goog views' });
@@ -829,7 +1068,7 @@ exports.getPostById = async (req, res) => {
         await ensureGoogSchema();
         const userId = getOptionalUserId(req);
         const id = parseInt(req.params.id, 10);
-        const result = await pool.query(`${selectPostsSql} WHERE gp.id = $2`, [userId, id]);
+        const result = await pool.query(`${selectPostsSql} AND gp.id = $2`, [userId, id]);
         
         if (!result.rows.length) {
             return res.status(404).json({ success: false, message: 'Goog post not found' });
@@ -847,7 +1086,7 @@ exports.getPostPublic = async (req, res) => {
         await ensureGoogSchema();
         const id = parseInt(req.params.id, 10);
         // Use null for userId in selectPostsSql for public view
-        const result = await pool.query(`${selectPostsSql} WHERE gp.id = $2`, [null, id]);
+        const result = await pool.query(`${selectPostsSql} AND gp.id = $2`, [null, id]);
         
         if (!result.rows.length) {
             return res.status(404).json({ success: false, message: 'Goog post not found' });
@@ -866,7 +1105,7 @@ exports.getUserPosts = async (req, res) => {
         const userId = getOptionalUserId(req);
         const targetUserId = parseInt(req.params.userId, 10);
         const result = await pool.query(
-            `${selectPostsSql} WHERE gp.user_id = $2 ORDER BY gp.created_at DESC`,
+            `${selectPostsSql} AND gp.user_id = $2 ORDER BY gp.created_at DESC`,
             [userId, targetUserId]
         );
         res.status(200).json({ success: true, data: result.rows.map(normalizePost) });
@@ -952,12 +1191,15 @@ exports.getSavedGoogs = async (req, res) => {
         if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
         const { rows } = await pool.query(
-            `SELECT gp.*, u.username, u.full_name, u.profile_picture, sg.saved_at,
+            `SELECT gp.*, u.username, u.full_name, u.user_type, u.profile_picture, sg.saved_at,
                     EXISTS(SELECT 1 FROM goog_likes gl WHERE gl.goog_id = gp.id AND gl.user_id = $1) AS user_liked
              FROM saved_googs sg
              JOIN goog_posts gp ON gp.id = sg.goog_id
              JOIN users u ON u.id = gp.user_id
              WHERE sg.user_id = $1
+              AND COALESCE(gp.is_active, true) = true
+              AND COALESCE(u.is_deactivated, false) = false
+              AND COALESCE(u.status, 'Active') <> 'Deactivated'
              ORDER BY sg.saved_at DESC`,
             [userId]
         );

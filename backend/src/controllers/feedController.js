@@ -6,10 +6,23 @@ const {
 } = require('../utils/adDelivery');
 
 const HOME_AD_RATIO = 4;
+const ANONYMOUS_HOME_FEED_CACHE_TTL_MS = Math.max(
+    0,
+    Number.parseInt(process.env.ANONYMOUS_HOME_FEED_CACHE_TTL_MS || '5000', 10) || 5000
+);
+const ANONYMOUS_HOME_FEED_STALE_TTL_MS = Math.max(
+    0,
+    Number.parseInt(process.env.ANONYMOUS_HOME_FEED_STALE_TTL_MS || '15000', 10) || 15000
+);
 let feedAdEngagementReady = false;
+let feedAdEngagementPromise = null;
+const anonymousHomeFeedCache = new Map();
+const anonymousHomeFeedRefreshes = new Map();
 
 const ensureFeedAdEngagementSchema = async () => {
     if (feedAdEngagementReady) return;
+    if (feedAdEngagementPromise) return feedAdEngagementPromise;
+    feedAdEngagementPromise = (async () => {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS ad_likes (
             id SERIAL PRIMARY KEY,
@@ -28,6 +41,16 @@ const ensureFeedAdEngagementSchema = async () => {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(ad_id, user_id)
         );
+
+        CREATE TABLE IF NOT EXISTS ad_views (
+            id SERIAL PRIMARY KEY,
+            ad_id VARCHAR(80) NOT NULL REFERENCES ads(ad_id) ON DELETE CASCADE,
+            user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+            viewer_key TEXT,
+            ip_address TEXT,
+            view_count INTEGER NOT NULL DEFAULT 1,
+            last_viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     `);
     await pool.query(`
         ALTER TABLE ads
@@ -37,7 +60,13 @@ const ensureFeedAdEngagementSchema = async () => {
         ADD COLUMN IF NOT EXISTS max_reach_cap INTEGER,
         ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
     `);
-    feedAdEngagementReady = true;
+        feedAdEngagementReady = true;
+    })();
+    try {
+        await feedAdEngagementPromise;
+    } finally {
+        feedAdEngagementPromise = null;
+    }
 };
 
 const getOptionalUserId = (req) => {
@@ -168,6 +197,56 @@ const buildShortShareCode = (type, target, length = 8) => {
     return codeChars.join('');
 };
 
+const readDurationMs = (startNs) => Number(process.hrtime.bigint() - startNs) / 1e6;
+const shouldLogHomeFeedTiming = () => /^(1|true|yes|on)$/i.test(String(process.env.HOME_FEED_TIMING_LOG || '').trim());
+const getAnonymousHomeFeedCacheKey = (req, limit, offset) => {
+    const queryKeys = Object.keys(req.query || {}).filter((key) => !['limit', 'offset'].includes(key));
+    if (queryKeys.length > 0) return null;
+    return `anon:${limit}:${offset}`;
+};
+
+const getCachedAnonymousHomeFeed = (cacheKey) => {
+    if (!cacheKey || (ANONYMOUS_HOME_FEED_CACHE_TTL_MS <= 0 && ANONYMOUS_HOME_FEED_STALE_TTL_MS <= 0)) return null;
+    const cached = anonymousHomeFeedCache.get(cacheKey);
+    if (!cached) return null;
+    if (cached.staleAt <= Date.now()) {
+        anonymousHomeFeedCache.delete(cacheKey);
+        return null;
+    }
+    return {
+        payload: cached.payload,
+        isFresh: cached.expiresAt > Date.now(),
+        isStale: cached.expiresAt <= Date.now() && cached.staleAt > Date.now(),
+    };
+};
+
+const setCachedAnonymousHomeFeed = (cacheKey, payload) => {
+    if (!cacheKey || (ANONYMOUS_HOME_FEED_CACHE_TTL_MS <= 0 && ANONYMOUS_HOME_FEED_STALE_TTL_MS <= 0)) return;
+    const now = Date.now();
+    anonymousHomeFeedCache.set(cacheKey, {
+        payload,
+        expiresAt: now + ANONYMOUS_HOME_FEED_CACHE_TTL_MS,
+        staleAt: now + Math.max(ANONYMOUS_HOME_FEED_CACHE_TTL_MS, ANONYMOUS_HOME_FEED_STALE_TTL_MS),
+    });
+
+    if (anonymousHomeFeedCache.size <= 100) return;
+    for (const [key, value] of anonymousHomeFeedCache.entries()) {
+        if (value.staleAt <= now) anonymousHomeFeedCache.delete(key);
+    }
+};
+
+const getAnonymousHomeFeedRefresh = (cacheKey) => anonymousHomeFeedRefreshes.get(cacheKey) || null;
+const setAnonymousHomeFeedRefresh = (cacheKey, promise) => {
+    if (!cacheKey || !promise) return promise;
+    anonymousHomeFeedRefreshes.set(cacheKey, promise);
+    promise.finally(() => {
+        if (anonymousHomeFeedRefreshes.get(cacheKey) === promise) {
+            anonymousHomeFeedRefreshes.delete(cacheKey);
+        }
+    });
+    return promise;
+};
+
 const toUtcIso = (value) => {
     if (!value) return null;
     const raw = String(value).trim();
@@ -199,7 +278,11 @@ const normalizePost = (row) => ({
     user: {
         id: row.user_id,
         username: row.username || '',
-        name: row.full_name || row.username || 'User',
+        name: String(row.user_type || '').toLowerCase().replace(/[\s-]+/g, '_') === 'superadmin' || String(row.user_type || '').toLowerCase().replace(/[\s-]+/g, '_') === 'super_admin'
+            ? 'Googer Support'
+            : String(row.user_type || '').toLowerCase() === 'admin'
+                ? (row.username || row.full_name || 'User')
+                : (row.full_name || row.username || 'User'),
         img: stripDataUrl(row.profile_picture) || '/assets/images/avatars/avatar-default.jpg',
     },
 });
@@ -255,8 +338,10 @@ const mapActiveAdToHomeAd = (row) => {
         commentCount: Number(row.comments_count || 0),
         shares_count: Number(row.shares_count || 0),
         shareCount: Number(row.shares_count || 0),
-        views_count: Number(row.impressions || 0),
-        viewCount: Number(row.impressions || 0),
+        views_count: Number(row.views_count || 0),
+        viewCount: Number(row.views_count || 0),
+        impressions: Number(row.impressions || 0),
+        impressions_count: Number(row.impressions || 0),
         createdAt: toUtcIso(row.active_start_time || row.started_at || row.created_at),
         created_at: toUtcIso(row.active_start_time || row.started_at || row.created_at),
         activeStartTime: toUtcIso(row.active_start_time || row.started_at),
@@ -357,7 +442,9 @@ const hydrateProductPromoteAds = async (ads) => {
          FROM market m
          INNER JOIN users u ON u.id = m.user_id
          WHERE (m.id = ANY($1::int[]) OR m.product_code = ANY($2::text[]))
-           AND m.status IN ('approved', 'active')`,
+           AND m.status IN ('approved', 'active')
+           AND COALESCE(u.is_deactivated, false) = false
+           AND COALESCE(u.status, 'Active') <> 'Deactivated'`,
         [linkedIds.length ? linkedIds : [0], linkedCodes.length ? linkedCodes : ['']]
     );
 
@@ -421,66 +508,121 @@ const hydrateProductPromoteAds = async (ads) => {
     }).filter(Boolean);
 };
 
-exports.getHomeFeed = async (req, res) => {
-    try {
-        const userId = getOptionalUserId(req);
-        const limitRaw = Number.parseInt(req.query.limit, 10);
-        const offsetRaw = Number.parseInt(req.query.offset, 10);
-        const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 20;
-        const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
-        await ensureFeedAdEngagementSchema();
+const buildHomeFeedPayload = async ({ req, userId, isAnonymousRequest, limit, offset, timings, requestStartedAt }) => {
+    const mark = (label, startedAt) => {
+        timings[label] = Number(readDurationMs(startedAt).toFixed(2));
+    };
+    const baseAdSlots = Math.ceil(limit / HOME_AD_RATIO) + 1;
+    const adFetchLimit = isAnonymousRequest
+        ? Math.min(Math.max(baseAdSlots * 4, 24), 48)
+        : Math.min(Math.max(limit * 3, 40), 120);
+    const schemaStartedAt = process.hrtime.bigint();
+    await ensureFeedAdEngagementSchema();
+    mark('schemaMs', schemaStartedAt);
 
-        const [postResult, adResult] = await Promise.all([
-            pool.query(
-                `SELECT gp.id, gp.user_id, gp.text, gp.text_color, gp.likes_count, gp.comments_count,
-                        gp.views_count, gp.shares_count, gp.created_at, gp.updated_at,
-                        u.username, u.full_name, u.profile_picture,
-                        CASE WHEN $1::INTEGER IS NULL THEN FALSE
-                             ELSE EXISTS (
-                                SELECT 1 FROM goog_likes gl
-                                WHERE gl.goog_id = gp.id AND gl.user_id = $1
-                             )
-                        END AS user_liked
-                 FROM goog_posts gp
-                 JOIN users u ON u.id = gp.user_id
-                 ORDER BY gp.created_at DESC
-                 LIMIT $2 OFFSET $3`,
-                [userId, limit + 1, offset]
-            ),
-            pool.query(
-                `SELECT a.ad_id, a.user_id, a.owner_user_id, a.owner_username, a.campaign_type,
-                        a.title, a.description, a.media_preview, a.media_gallery, a.media_type,
-                        a.edit_draft, a.gender_target, a.age_min, a.age_max,
-                        a.impressions, a.clicks, a.current_reach, a.max_reach_cap,
-                        a.likes_count, a.comments_count, a.shares_count,
-                        a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.active_start_time, a.created_at,
-                        u.username AS owner_username_joined, u.profile_picture,
-                        CASE WHEN $1::int IS NULL THEN FALSE
-                             ELSE EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1)
-                        END AS user_liked,
-                        CASE WHEN $1::int IS NULL THEN FALSE
-                             ELSE EXISTS(SELECT 1 FROM ad_like_coin_rewards acr WHERE acr.ad_id = a.ad_id AND acr.user_id = $1)
-                        END AS ad_coin_collected
-                 FROM ads a
-                 LEFT JOIN users u ON u.id = a.user_id
-                 WHERE a.status = 'Active'
-                   AND (a.max_reach_cap IS NULL OR COALESCE(a.current_reach, 0) < a.max_reach_cap)
-                 ORDER BY a.created_at DESC`,
-                [userId]
-            ),
-        ]);
+    const postsQuery = isAnonymousRequest
+        ? `SELECT gp.id, gp.user_id, gp.text, gp.text_color, gp.likes_count, gp.comments_count,
+                gp.views_count, gp.shares_count, gp.created_at, gp.updated_at,
+                u.username, u.full_name, u.user_type, u.profile_picture,
+                FALSE AS user_liked
+         FROM goog_posts gp
+         JOIN users u ON u.id = gp.user_id
+         WHERE COALESCE(gp.is_active, true) = true
+           AND COALESCE(u.is_deactivated, false) = false
+           AND COALESCE(u.status, 'Active') <> 'Deactivated'
+         ORDER BY gp.created_at DESC
+         LIMIT $1 OFFSET $2`
+        : `SELECT gp.id, gp.user_id, gp.text, gp.text_color, gp.likes_count, gp.comments_count,
+                gp.views_count, gp.shares_count, gp.created_at, gp.updated_at,
+                u.username, u.full_name, u.user_type, u.profile_picture,
+                EXISTS (
+                    SELECT 1 FROM goog_likes gl
+                    WHERE gl.goog_id = gp.id AND gl.user_id = $1
+                ) AS user_liked
+         FROM goog_posts gp
+         JOIN users u ON u.id = gp.user_id
+         WHERE COALESCE(gp.is_active, true) = true
+           AND COALESCE(u.is_deactivated, false) = false
+           AND COALESCE(u.status, 'Active') <> 'Deactivated'
+         ORDER BY gp.created_at DESC
+         LIMIT $2 OFFSET $3`;
+    const postsParams = isAnonymousRequest ? [limit + 1, offset] : [userId, limit + 1, offset];
 
-        const postRows = postResult.rows || [];
-        const posts = postRows.slice(0, limit).map(normalizePost);
+    const adsQuery = isAnonymousRequest
+        ? `SELECT a.ad_id, a.user_id, a.owner_user_id, a.owner_username, a.campaign_type,
+                a.title, a.description, a.media_preview, a.media_gallery, a.media_type,
+                a.edit_draft, a.gender_target, a.age_min, a.age_max,
+                a.impressions, a.clicks, a.current_reach, a.max_reach_cap,
+                a.likes_count, a.comments_count, a.shares_count,
+                a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.active_start_time, a.created_at,
+                a.linked_product_id, a.linked_product_share_code,
+                u.username AS owner_username_joined, u.profile_picture,
+                FALSE AS user_liked,
+                FALSE AS ad_coin_collected
+         FROM ads a
+         JOIN users u ON u.id = a.user_id
+         WHERE a.status = 'Active'
+           AND COALESCE(u.is_deactivated, false) = false
+           AND COALESCE(u.status, 'Active') <> 'Deactivated'
+           AND (a.max_reach_cap IS NULL OR COALESCE(a.impressions, 0) < a.max_reach_cap)
+         ORDER BY COALESCE(a.active_start_time, a.created_at) DESC
+         LIMIT $1`
+        : `SELECT a.ad_id, a.user_id, a.owner_user_id, a.owner_username, a.campaign_type,
+                a.title, a.description, a.media_preview, a.media_gallery, a.media_type,
+                a.edit_draft, a.gender_target, a.age_min, a.age_max,
+                a.impressions, a.clicks, a.current_reach, a.max_reach_cap,
+                a.likes_count, a.comments_count, a.shares_count,
+                a.budget, a.remaining_budget, a.duration_days, a.status, a.started_at, a.active_start_time, a.created_at,
+                a.linked_product_id, a.linked_product_share_code,
+                u.username AS owner_username_joined, u.profile_picture,
+                EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1) AS user_liked,
+                EXISTS(SELECT 1 FROM ad_like_coin_rewards acr WHERE acr.ad_id = a.ad_id AND acr.user_id = $1) AS ad_coin_collected
+         FROM ads a
+         JOIN users u ON u.id = a.user_id
+         WHERE a.status = 'Active'
+           AND COALESCE(u.is_deactivated, false) = false
+           AND COALESCE(u.status, 'Active') <> 'Deactivated'
+           AND (a.max_reach_cap IS NULL OR COALESCE(a.impressions, 0) < a.max_reach_cap)
+         ORDER BY COALESCE(a.active_start_time, a.created_at) DESC
+         LIMIT $2`;
+    const adsParams = isAnonymousRequest ? [adFetchLimit] : [userId, adFetchLimit];
+
+    const queriesStartedAt = process.hrtime.bigint();
+    const [postResult, adResult] = await Promise.all([
+        pool.query(postsQuery, postsParams),
+        pool.query(adsQuery, adsParams),
+    ]);
+    mark('queriesMs', queriesStartedAt);
+
+    const normalizePostsStartedAt = process.hrtime.bigint();
+    const postRows = postResult.rows || [];
+    const posts = postRows.slice(0, limit).map(normalizePost);
+    mark('normalizePostsMs', normalizePostsStartedAt);
+
+    let matchedAdRows = adResult.rows || [];
+    if (!isAnonymousRequest) {
+        const viewerProfileStartedAt = process.hrtime.bigint();
         const viewerProfile = await loadViewerAdProfile(pool, userId, req);
-        const matchedAdRows = viewerProfile?.isAnonymous
-            ? (adResult.rows || [])
-            : filterDeliverableAds(adResult.rows || [], viewerProfile);
-        const ads = await hydrateProductPromoteAds(matchedAdRows.map(mapActiveAdToHomeAd));
+        mark('viewerProfileMs', viewerProfileStartedAt);
 
-        res.status(200).json({
+        const filterAdsStartedAt = process.hrtime.bigint();
+        matchedAdRows = filterDeliverableAds(matchedAdRows, viewerProfile);
+        mark('filterAdsMs', filterAdsStartedAt);
+    }
+
+    const hydrateAdsStartedAt = process.hrtime.bigint();
+    const ads = await hydrateProductPromoteAds(matchedAdRows.map(mapActiveAdToHomeAd));
+    mark('hydrateAdsMs', hydrateAdsStartedAt);
+
+    const interleaveStartedAt = process.hrtime.bigint();
+    const items = interleaveHomeFeed(posts, ads, offset);
+    mark('interleaveMs', interleaveStartedAt);
+    mark('totalMs', requestStartedAt);
+
+    return {
+        payload: {
             success: true,
-            items: interleaveHomeFeed(posts, ads, offset),
+            items,
             posts,
             ads,
             pagination: {
@@ -489,9 +631,90 @@ exports.getHomeFeed = async (req, res) => {
                 nextOffset: offset + posts.length,
                 hasMore: postRows.length > limit,
             },
-        });
+        },
+        adFetchLimit,
+        postsReturned: posts.length,
+        adsReturned: ads.length,
+    };
+};
+
+exports.getHomeFeed = async (req, res) => {
+    const requestStartedAt = process.hrtime.bigint();
+    const timings = {};
+    try {
+        const userId = getOptionalUserId(req);
+        const isAnonymousRequest = !userId;
+        const limitRaw = Number.parseInt(req.query.limit, 10);
+        const offsetRaw = Number.parseInt(req.query.offset, 10);
+        const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 20;
+        const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0;
+        const cacheKey = isAnonymousRequest ? getAnonymousHomeFeedCacheKey(req, limit, offset) : null;
+
+        if (cacheKey) {
+            const cachedEntry = getCachedAnonymousHomeFeed(cacheKey);
+            if (cachedEntry?.isFresh) {
+                res.setHeader('X-Home-Feed-Cache', 'HIT');
+                return res.status(200).json(cachedEntry.payload);
+            }
+
+            const inFlightRefresh = getAnonymousHomeFeedRefresh(cacheKey);
+            if (inFlightRefresh) {
+                const payload = await inFlightRefresh;
+                res.setHeader('X-Home-Feed-Cache', 'WAIT');
+                return res.status(200).json(payload);
+            }
+
+            if (cachedEntry?.isStale) {
+                const refreshPromise = setAnonymousHomeFeedRefresh(
+                    cacheKey,
+                    buildHomeFeedPayload({ req, userId, isAnonymousRequest, limit, offset, timings: {}, requestStartedAt: process.hrtime.bigint() })
+                        .then(({ payload }) => {
+                            setCachedAnonymousHomeFeed(cacheKey, payload);
+                            return payload;
+                        })
+                        .catch((error) => {
+                            console.error('Error refreshing stale home feed cache:', error);
+                            throw error;
+                        })
+                );
+                void refreshPromise.catch(() => {});
+                res.setHeader('X-Home-Feed-Cache', 'STALE');
+                return res.status(200).json(cachedEntry.payload);
+            }
+        }
+
+        const builder = buildHomeFeedPayload({ req, userId, isAnonymousRequest, limit, offset, timings, requestStartedAt });
+        const result = cacheKey
+            ? await setAnonymousHomeFeedRefresh(
+                cacheKey,
+                builder.then((built) => {
+                    setCachedAnonymousHomeFeed(cacheKey, built.payload);
+                    return built.payload;
+                })
+            ).then((payload) => ({ payload }))
+            : await builder;
+
+        if (cacheKey) {
+            res.setHeader('X-Home-Feed-Cache', 'MISS');
+            return res.status(200).json(result.payload);
+        }
+
+        if (shouldLogHomeFeedTiming()) {
+            console.info('[home-feed-timing]', {
+                userId: userId || null,
+                isAnonymousRequest,
+                limit,
+                offset,
+                adFetchLimit: result.adFetchLimit,
+                postsReturned: result.postsReturned,
+                adsReturned: result.adsReturned,
+                timings,
+            });
+        }
+
+        return res.status(200).json(result.payload);
     } catch (error) {
         console.error('Error fetching home feed:', error);
-        res.status(500).json({ success: false, message: 'Server error fetching home feed' });
+        return res.status(500).json({ success: false, message: 'Server error fetching home feed' });
     }
 };

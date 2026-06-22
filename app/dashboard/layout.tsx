@@ -3,20 +3,21 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import Topbar from "@/app/components/Topbar";
 import IonIcon from "@/app/components/IonIcon";
 import AddProductModal from "@/app/components/AddProductModal";
 import ProductPlansModal from "@/app/components/ProductPlansModal";
 import CartSidebar from "@/app/components/CartSidebar";
 import LoginModal from "@/app/components/auth/LoginModal";
-import GlobalIncomingCallOverlay from "@/app/components/chat/GlobalIncomingCallOverlay";
+import { SubscriptionExpiryWarning } from "@/app/components/subscriptions/SubscriptionExpiryWarning";
 import { useCart } from "@/app/context/CartContext";
 import { googService } from "@/services/googService";
-import { authService } from "@/services/authService";
+import { authService, getStoredUserSync } from "@/services/authService";
 import { subscriptionService } from "@/services/subscriptionService";
 import { useSubscriptionFeatures } from "@/app/lib/subscriptionFeatures";
 import { LOGIN_REQUIRED_EVENT, OPEN_LOGIN_MODAL_EVENT } from "@/app/lib/loginRequired";
+import { addTopbarNotification } from "@/app/lib/topbarNotifications";
 
 // Mobile Bottom Nav Items
 const menuItems = [
@@ -40,8 +41,6 @@ export default function DashboardLayout({
     const [googText, setGoogText] = useState("");
     const [googTextColor, setGoogTextColor] = useState("#FFFFFF");
     const [editingGoogPost, setEditingGoogPost] = useState<any | null>(null);
-    const [showPostSuccessToast, setShowPostSuccessToast] = useState(false);
-    const [postErrorToast, setPostErrorToast] = useState<string | null>(null);
     const [showProductPlansModal, setShowProductPlansModal] = useState(false);
     const [showGoogPlansModal, setShowGoogPlansModal] = useState(false);
     const features = useSubscriptionFeatures();
@@ -50,8 +49,25 @@ export default function DashboardLayout({
     const [editingProduct, setEditingProduct] = useState<any>(null);
     const [loginRequiredPrompt, setLoginRequiredPrompt] = useState<{ title: string; message: string; redirectTo: string } | null>(null);
     const [showLoginModal, setShowLoginModal] = useState(false);
-    const { setIsCartOpen, cartCount, isGoogerPaymentCartLocked } = useCart();
+    const { setIsCartOpen, isCartOpen, cartCount, isGoogerPaymentCartLocked } = useCart();
     const isCartLocked = isGoogerPaymentCartLocked;
+    const isSuspendedWalletPath = (path: string | null) => path === "/dashboard/wallet/my-wallet";
+    const prefetchAdCampaignRoutes = useCallback(() => {
+        router.prefetch("/dashboard/ad-campaign/photo-video");
+        router.prefetch("/dashboard/ad-campaign/product-promote");
+        router.prefetch("/dashboard/ad-campaign/profile-promote");
+        router.prefetch("/dashboard/ad-campaign/upload-content");
+        router.prefetch("/dashboard/ad-campaign/flash-content");
+    }, [router]);
+    const shouldRedirectSuspendedUser = useCallback((user: any) => {
+        if (!user?.is_deactivated) return false;
+        // Self-deactivated users are logged out, not redirected to /suspended
+        if (user?.suspension_reason_category === "Self Deactivated" || user?.deactivation_reason === "Self Deactivated") {
+            authService.logout();
+            return false;
+        }
+        return !(user?.suspended_wallet_access && isSuspendedWalletPath(pathname));
+    }, [pathname]);
     const googLetterLimit = features.goog_letter_limit ?? 75;
     const googTextColors = useMemo(() => {
         const count = Math.max(1, features.write_goog_color_limit ?? 10);
@@ -144,6 +160,11 @@ export default function DashboardLayout({
     }, []);
 
     useEffect(() => {
+        const timer = window.setTimeout(prefetchAdCampaignRoutes, 1000);
+        return () => window.clearTimeout(timer);
+    }, [prefetchAdCampaignRoutes]);
+
+    useEffect(() => {
         const handleOpenCreateMenu = () => {
             if (!authService.isAuthenticated()) {
                 setLoginRequiredPrompt({
@@ -186,12 +207,46 @@ export default function DashboardLayout({
     useEffect(() => {
         if (typeof window === "undefined") return;
         try {
-            const storedUser = JSON.parse(localStorage.getItem("user") || "{}");
+            const storedUser = JSON.parse((sessionStorage.getItem("user") || localStorage.getItem("user")) || "{}");
             setCurrentUser(storedUser?.id ? storedUser : null);
+            if (shouldRedirectSuspendedUser(storedUser)) router.replace("/suspended");
         } catch {
             setCurrentUser(null);
         }
-    }, []);
+        if (authService.isAuthenticated()) {
+            authService.getProfile()
+                .then((profile) => {
+                    setCurrentUser(profile);
+                    if (shouldRedirectSuspendedUser(profile)) router.replace("/suspended");
+                })
+                .catch(() => {});
+        }
+    }, [router, shouldRedirectSuspendedUser]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+
+        const handleAuthChanged = (event: Event) => {
+            const user = (event as CustomEvent)?.detail?.user ?? null;
+            if (user) {
+                setCurrentUser(user);
+                return;
+            }
+            if (authService.isAuthenticated()) {
+                setCurrentUser(getStoredUserSync());
+                return;
+            }
+            setCurrentUser(null);
+            router.replace("/");
+        };
+
+        window.addEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+        return () => window.removeEventListener("googer-auth-changed", handleAuthChanged as EventListener);
+    }, [router]);
+
+    useEffect(() => {
+        if (shouldRedirectSuspendedUser(currentUser)) router.replace("/suspended");
+    }, [currentUser, router, shouldRedirectSuspendedUser]);
 
 
     useEffect(() => {
@@ -239,19 +294,19 @@ export default function DashboardLayout({
         window.dispatchEvent(new CustomEvent('open-create-action-menu'));
     };
 
-    const handleCreateAction = async (action: "googer" | "ad" | "product") => {
+    const handleCreateAction = async (action: "googer" | "ad" | "product" | "upload-content") => {
         if (!requireAuth("Please log in to create Googs, ads, or products.")) {
             setIsCreateActionMenuOpen(false);
             return;
         }
         setIsCreateActionMenuOpen(false);
 
-        if (action === "ad") {
+        if (action === "ad" || action === "upload-content") {
             // Clear all ad campaign drafts so the new ad form starts empty
-            ["photo-and-video", "product-promote", "profile-promote"].forEach((type) => {
+            ["photo-and-video", "product-promote", "profile-promote", "upload-content", "vault-content", "flash-content"].forEach((type) => {
                 window.localStorage.removeItem(`googer-ad-draft-${type}`);
             });
-            router.push("/dashboard/ad-campaign/photo-video");
+            router.push(action === "upload-content" ? "/dashboard/ad-campaign/upload-content" : "/dashboard/ad-campaign/photo-video");
             return;
         }
 
@@ -307,13 +362,20 @@ export default function DashboardLayout({
             window.localStorage.setItem("googer-pending-write-post", JSON.stringify(normalizedPost));
             window.dispatchEvent(new CustomEvent(editingGoogPost ? "googer-write-updated" : "googer-write-created", { detail: normalizedPost }));
             closeWriteGoogModal();
-            setShowPostSuccessToast(true);
-            window.setTimeout(() => setShowPostSuccessToast(false), 2200);
+            addTopbarNotification({
+                id: `${editingGoogPost?.id ? "goog-updated" : "goog-created"}-${normalizedPost?.id || Date.now()}`,
+                type: "success",
+                title: editingGoogPost?.id ? "Goog Updated" : "Goog Posted",
+                message: editingGoogPost?.id ? "Your Goog post was updated." : "Your Goog post was created.",
+            });
             router.push("/dashboard");
         } catch (error: any) {
             const msg = error?.message || "Failed to save Goog post.";
-            setPostErrorToast(msg);
-            window.setTimeout(() => setPostErrorToast(null), 4000);
+            addTopbarNotification({
+                type: "error",
+                title: "Goog Failed",
+                message: msg,
+            });
         }
     };
 
@@ -321,7 +383,20 @@ export default function DashboardLayout({
         <div className={`flex flex-col bg-[#1c1917] text-white font-sans ${isAdCampaignRoute ? "min-h-screen overflow-visible" : "h-screen overflow-hidden"}`}>
             {/* Topbar (Unified) */}
             <Topbar />
-            <GlobalIncomingCallOverlay />
+
+            {/* Mobile Cart Floating Button — above bottom nav */}
+            <button
+                className="md:hidden fixed bottom-[4.5rem] right-4 z-[60] w-11 h-11 rounded-full bg-white/10 border border-white/15 backdrop-blur-md flex items-center justify-center text-white shadow-xl active:scale-95 transition-all"
+                onClick={() => { if (!isCartLocked) setIsCartOpen(!isCartOpen); }}
+                suppressHydrationWarning={true}
+            >
+                <IonIcon name={isCartOpen ? "cart" : "cart-outline"} className="text-lg" />
+                {cartCount > 0 && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 text-white text-[8px] font-black rounded-full flex items-center justify-center border border-zinc-900">
+                        {cartCount}
+                    </span>
+                )}
+            </button>
 
             {/* Mobile Bottom Nav */}
             <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-zinc-900 border-t border-zinc-800 flex items-center justify-around z-50 px-2 transition-all duration-300">
@@ -345,6 +420,7 @@ export default function DashboardLayout({
                 {!isAdCampaignRoute ? (
                     <button
                         onClick={toggleCreateActionMenu}
+                        onTouchStart={prefetchAdCampaignRoutes}
                         className="flex flex-col items-center justify-center group"
                         suppressHydrationWarning={true}
                     >
@@ -362,26 +438,6 @@ export default function DashboardLayout({
                     const isProtectedItem = item.name === "Wallet" || item.name === "Chats";
                     return (
                         <div key={item.name} className="relative flex flex-col items-center">
-                            {/* Floating Cart Icon above Chat only on mobile */}
-                            {item.name === "Chats" && pathname === "/dashboard/shop" && (
-                                <button
-                                    onClick={() => {
-                                        if (isCartLocked) {
-                                            return;
-                                        }
-                                        setIsCartOpen(true);
-                                    }}
-                                    className={`absolute -top-14 w-12 h-12 bg-white text-black rounded-full flex items-center justify-center shadow-2xl border border-white/10 active:scale-95 transition-all z-[60] ${isCartLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                    suppressHydrationWarning={true}
-                                >
-                                    <IonIcon name="cart" className="text-xl" />
-                                    {cartCount > 0 && (
-                                        <div className="absolute -top-1 -right-1 w-5 h-5 bg-blue-600 rounded-full border-2 border-zinc-900 flex items-center justify-center">
-                                            <span className="text-[10px] font-black text-white">{cartCount}</span>
-                                        </div>
-                                    )}
-                                </button>
-                            )}
                             <button
                                 type="button"
                                 onClick={() => {
@@ -399,11 +455,12 @@ export default function DashboardLayout({
                         </div>
                     );
                 })}
+
             </div>
 
             {isCreateActionMenuOpen && !isAdCampaignRoute && (
                 <div className="pointer-events-none fixed inset-x-0 bottom-24 z-[90] flex justify-center px-3 md:bottom-auto md:top-24 md:px-4">
-                    <div className="pointer-events-auto grid w-full max-w-[470px] grid-cols-3 items-stretch gap-1.5 rounded-[1.4rem] border border-white/10 bg-[linear-gradient(180deg,rgba(29,29,31,0.98),rgba(16,16,18,0.94))] p-1.5 shadow-[0_30px_90px_rgba(0,0,0,0.45)] backdrop-blur-2xl origin-bottom animate-[googerActionBarSheet_240ms_ease-out] md:rounded-[1.7rem] md:origin-top md:animate-[googerActionBarDrop_220ms_ease-out]">
+                    <div className="pointer-events-auto grid w-full max-w-[620px] grid-cols-2 items-stretch gap-1.5 rounded-[1.4rem] border border-white/10 bg-[linear-gradient(180deg,rgba(29,29,31,0.98),rgba(16,16,18,0.94))] p-1.5 shadow-[0_30px_90px_rgba(0,0,0,0.45)] backdrop-blur-2xl origin-bottom animate-[googerActionBarSheet_240ms_ease-out] md:grid-cols-4 md:rounded-[1.7rem] md:origin-top md:animate-[googerActionBarDrop_220ms_ease-out]">
                         <button
                             type="button"
                             onClick={() => handleCreateAction("googer")}
@@ -415,11 +472,14 @@ export default function DashboardLayout({
                                 <span className="absolute left-[18px] top-[9px] h-4 w-[2px] origin-bottom -rotate-[28deg] rounded-full bg-white/90 shadow-[0_0_10px_rgba(255,255,255,0.18)] animate-[googerWrite_1.15s_ease-in-out_infinite]" />
                                 <IonIcon name="create-outline" className="text-[18px] opacity-85" />
                             </span>
-                            <span className="text-[9px] font-black uppercase tracking-[0.14em] text-white/90 sm:text-[10px] sm:tracking-[0.16em]">Write a Goog</span>
+                            <span className="text-[9px] font-black uppercase tracking-[0.14em] text-white/90 sm:text-[10px] sm:tracking-[0.16em]">New Goog</span>
                         </button>
                         <button
                             type="button"
                             onClick={() => handleCreateAction("ad")}
+                            onMouseEnter={prefetchAdCampaignRoutes}
+                            onFocus={prefetchAdCampaignRoutes}
+                            onTouchStart={prefetchAdCampaignRoutes}
                             className="group flex min-h-[78px] flex-col items-center justify-center gap-1 rounded-[1rem] border border-transparent bg-white/[0.03] px-2 py-2 text-center text-white transition-all duration-300 hover:border-rose-300/30 hover:bg-rose-400/12 md:min-h-[74px] md:rounded-[1.15rem] md:px-2.5"
                         >
                             <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/8 text-white shadow-inner transition-colors duration-300 group-hover:bg-rose-400/18 group-hover:text-rose-100">
@@ -437,15 +497,28 @@ export default function DashboardLayout({
                             </span>
                             <span className="text-[9px] font-black uppercase tracking-[0.14em] text-white/90 sm:text-[10px] sm:tracking-[0.16em]">Add Product</span>
                         </button>
+                        <button
+                            type="button"
+                            onClick={() => handleCreateAction("upload-content")}
+                            onMouseEnter={prefetchAdCampaignRoutes}
+                            onFocus={prefetchAdCampaignRoutes}
+                            onTouchStart={prefetchAdCampaignRoutes}
+                            className="group flex min-h-[78px] flex-col items-center justify-center gap-1 rounded-[1rem] border border-transparent bg-white/[0.03] px-2 py-2 text-center text-white transition-all duration-300 hover:border-cyan-300/30 hover:bg-cyan-400/12 md:min-h-[74px] md:rounded-[1.15rem] md:px-2.5"
+                        >
+                            <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/8 text-white shadow-inner transition-colors duration-300 group-hover:bg-cyan-400/18 group-hover:text-cyan-100">
+                                <IonIcon name="cloud-upload-outline" className="text-[18px]" />
+                            </span>
+                            <span className="text-[9px] font-black uppercase tracking-[0.14em] text-white/90 sm:text-[10px] sm:tracking-[0.16em]">Upload Content</span>
+                        </button>
                     </div>
                 </div>
             )}
 
             {/* Main Content Area */}
             <main
-                className={`flex-1 bg-[#1c1917] transition-all duration-300 ${isAdCampaignRoute ? "overflow-visible pb-10 pt-[3.8rem]" : "overflow-y-auto pb-20 pt-16 md:pb-8 md:pt-20"}`}
+                className={`flex-1 bg-[#1c1917] transition-all duration-300 ${isAdCampaignRoute ? "overflow-visible pb-10 pt-[3.8rem]" : "overflow-y-auto pb-20 pt-20 md:pb-8 md:pt-24"}`}
             >
-                <div className={`mx-auto max-w-[1200px] px-3 sm:px-4 md:px-8 ${isAdCampaignRoute ? "py-2 sm:py-3" : "py-5 sm:py-6"}`}>
+                <div className={`mx-auto w-full max-w-[1400px] px-2 sm:px-4 md:px-6 lg:px-8 xl:px-10 ${isAdCampaignRoute ? "py-2 sm:py-3" : "py-4 sm:py-5 md:py-6"}`}>
                     {children}
                 </div>
             </main>
@@ -501,11 +574,15 @@ export default function DashboardLayout({
                                         }
                                         setGoogText(val);
                                     }}
-                                    placeholder="What's happening?"
+                                    placeholder="Write a Goog"
                                     autoFocus
                                     rows={3}
                                     className="flex-1 resize-none bg-transparent text-base font-medium leading-relaxed outline-none placeholder:text-white/30 whitespace-pre-wrap break-words"
-                                    style={{ color: googTextColor }}
+                                    style={{
+                                        color: googTextColor,
+                                        caretColor: googTextColor,
+                                        WebkitTextFillColor: googTextColor,
+                                    }}
                                 />
                             </div>
 
@@ -613,6 +690,7 @@ export default function DashboardLayout({
             )}
 
             <CartSidebar />
+            <SubscriptionExpiryWarning userId={currentUser?.id || currentUser?.user_id} />
 
             {showProductPlansModal && (
                 <ProductPlansModal
@@ -628,18 +706,6 @@ export default function DashboardLayout({
                     subtitle="Subscribe to post more Googs"
                     limitMessage="If you have reached your Goog posting limit, please subscribe to a higher plan below."
                 />
-            )}
-
-            {showPostSuccessToast && (
-                <div className="fixed bottom-24 left-1/2 z-[200] -translate-x-1/2 rounded-full border border-[#00D4AA]/30 bg-[#151416] px-5 py-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)]">
-                    <span className="text-[13px] font-semibold text-[#00D4AA]">Goog posted!</span>
-                </div>
-            )}
-
-            {postErrorToast && (
-                <div className="fixed bottom-24 left-1/2 z-[200] -translate-x-1/2 max-w-[90vw] rounded-full border border-red-500/30 bg-[#151416] px-5 py-2.5 shadow-[0_8px_32px_rgba(0,0,0,0.45)]">
-                    <span className="text-[13px] font-semibold text-red-400">{postErrorToast}</span>
-                </div>
             )}
 
             {loginRequiredPrompt && (
@@ -680,7 +746,7 @@ export default function DashboardLayout({
                     onSuccess={() => {
                         setShowLoginModal(false);
                         try {
-                            const storedUser = JSON.parse(localStorage.getItem("user") || "{}");
+                            const storedUser = JSON.parse((sessionStorage.getItem("user") || localStorage.getItem("user")) || "{}");
                             setCurrentUser(storedUser?.id ? storedUser : null);
                         } catch {
                             setCurrentUser(null);

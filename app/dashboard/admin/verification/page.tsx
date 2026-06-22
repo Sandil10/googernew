@@ -25,19 +25,50 @@ function DetailRow({ label, value }: { label: string; value?: string | null }) {
     );
 }
 
+const IMAGE_EXTENSIONS = /\.(jpg|jpeg|jfif|pjpeg|pjp|png|webp|gif|avif)$/i;
+
+function resolveDocumentUrl(rawUrl: string | null) {
+    const value = String(rawUrl || "").trim();
+    if (!value) return "";
+    if (/^(https?:|data:|blob:)/i.test(value)) return value;
+    const normalized = value.replace(/\\/g, "/");
+    if (normalized.startsWith("/uploads/")) return normalized;
+    if (normalized.startsWith("uploads/")) return `/${normalized}`;
+    const uploadIndex = normalized.toLowerCase().lastIndexOf("/uploads/");
+    if (uploadIndex >= 0) return normalized.slice(uploadIndex);
+    return `/uploads/${normalized.replace(/^\/+/, "")}`;
+}
+
 function DocImage({ url, label }: { url: string | null; label: string }) {
-    if (!url) return null;
-    const isImg = /\.(jpg|jpeg|png|webp|gif)$/i.test(url);
+    const resolvedUrl = resolveDocumentUrl(url);
+    const [failed, setFailed] = useState(false);
+    useEffect(() => {
+        setFailed(false);
+    }, [resolvedUrl]);
+    if (!resolvedUrl) return null;
+    const isImg = IMAGE_EXTENSIONS.test(resolvedUrl.split("?")[0]);
     return (
         <div>
             <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mb-1.5">{label}</p>
-            {isImg ? (
-                <img src={url.startsWith("/uploads") ? url : `/uploads/${url}`} alt={label} className="w-full rounded-xl object-cover max-h-44 border border-gray-700/50" />
-            ) : (
-                <a href={url} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-[#030303] border border-gray-700/50 rounded-xl px-4 py-3 text-white text-xs font-bold hover:bg-[#0b0b0b] transition shadow-inner">
-                    <IonIcon name="document-outline" className="text-base text-gray-400" />
-                    View Document
+            {isImg && !failed ? (
+                <a href={resolvedUrl} target="_blank" rel="noreferrer" className="block">
+                    <img
+                        src={resolvedUrl}
+                        alt={label}
+                        onError={() => setFailed(true)}
+                        className="w-full rounded-xl object-cover max-h-44 border border-gray-700/50 bg-[#050505]"
+                    />
                 </a>
+            ) : (
+                <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-gray-700/50 bg-[#050505] px-4 py-8 text-center">
+                    <IonIcon name={failed ? "image-outline" : "document-outline"} className="text-3xl text-gray-300" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                        {failed ? "Image unavailable" : "Document file"}
+                    </span>
+                    <a href={resolvedUrl} target="_blank" rel="noreferrer" className="text-xs font-semibold text-blue-400 hover:text-blue-300">
+                        Open directly
+                    </a>
+                </div>
             )}
         </div>
     );

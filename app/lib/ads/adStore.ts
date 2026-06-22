@@ -14,6 +14,9 @@ export interface AdLiveState {
     ad_like_locked?: boolean;
     views_count?: number;
     viewCount?: number;
+    impressions?: number;
+    impressions_count?: number;
+    impressionsCount?: number;
     comments_count?: number;
     commentCount?: number;
     shares_count?: number;
@@ -87,6 +90,9 @@ export const useAdStore = create<AdStore>((set, get) => ({
                 ...(next.shareCount !== undefined && next.shares_count === undefined ? { shares_count: next.shareCount } : {}),
                 ...(next.views_count !== undefined && next.viewCount === undefined ? { viewCount: next.views_count } : {}),
                 ...(next.viewCount !== undefined && next.views_count === undefined ? { views_count: next.viewCount } : {}),
+                ...(next.impressions !== undefined && next.impressions_count === undefined ? { impressions_count: next.impressions, impressionsCount: next.impressions } : {}),
+                ...(next.impressions_count !== undefined && next.impressions === undefined ? { impressions: next.impressions_count, impressionsCount: next.impressions_count } : {}),
+                ...(next.impressionsCount !== undefined && next.impressions === undefined ? { impressions: next.impressionsCount, impressions_count: next.impressionsCount } : {}),
                 ...(next.current_reach !== undefined && next.reach === undefined ? { reach: next.current_reach } : {}),
                 ...(next.reach !== undefined && next.current_reach === undefined ? { current_reach: next.reach } : {}),
                 ...(next.clicks !== undefined && next.link_actions === undefined ? { link_actions: next.clicks } : {}),
@@ -146,6 +152,12 @@ export const useAdStore = create<AdStore>((set, get) => ({
                 const nextViewsCount = numberOrUndefined(ad.views_count ?? ad.viewCount);
                 if (nextViewsCount !== current.views_count) incoming.views_count = nextViewsCount;
                 if (incoming.views_count !== undefined) incoming.viewCount = incoming.views_count;
+                const nextImpressions = numberOrUndefined(ad.impressions ?? ad.impressions_count ?? ad.impressionsCount);
+                if (nextImpressions !== current.impressions) incoming.impressions = nextImpressions;
+                if (incoming.impressions !== undefined) {
+                    incoming.impressions_count = incoming.impressions;
+                    incoming.impressionsCount = incoming.impressions;
+                }
                 const nextCommentsCount = numberOrUndefined(ad.comments_count ?? ad.commentCount);
                 if (nextCommentsCount !== current.comments_count) incoming.comments_count = nextCommentsCount;
                 if (incoming.comments_count !== undefined) incoming.commentCount = incoming.comments_count;

@@ -5,7 +5,8 @@ import { useState, memo, useEffect, useMemo } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import SubscribeButton from "@/app/components/SubscribeButton";
 import { RelativeTime } from "@/app/components/RelativeTime";
-import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
+import { getItemProfilePicture, getItemUsername, getItemUserId } from "@/app/lib/userDisplay";
+import { UserVerifiedBadge } from "@/app/components/VerifiedBadge";
 import {
   AVATAR_IMAGE_SIZES,
   FEED_IMAGE_BLUR_DATA_URL,
@@ -16,6 +17,7 @@ import {
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
 import { AdInteractionButton } from "@/app/components/ads/AdInteractionButton";
+import { logSponsoredAdClick } from "@/app/lib/ads/adClickTracking";
 
 export const COLORS = [
   { name: "None", hex: "transparent" },
@@ -50,6 +52,7 @@ export interface SharedProductCardProps {
   onEditProduct?: (product: any) => void;
   onDeleteProduct?: (product: any) => void;
   onPromoteProduct?: (product: any) => void;
+  promoteProductLabel?: string;
   onUpdateOrderStatus?: (id: any, status: string) => void;
   activeTab?: string;
   myListingsTab?: string;
@@ -75,6 +78,7 @@ export const SharedProductCard = memo(({
   onEditProduct,
   onDeleteProduct,
   onPromoteProduct,
+  promoteProductLabel,
   onUpdateOrderStatus,
   activeTab = "market",
   myListingsTab = "active",
@@ -119,6 +123,7 @@ export const SharedProductCard = memo(({
 
   const sellerName = getItemUsername(product, "Seller");
   const sellerImage = getItemProfilePicture(product);
+  const sellerId = getItemUserId(product);
 
   const primaryImage =
     product.image_url ||
@@ -136,8 +141,14 @@ export const SharedProductCard = memo(({
     onProductClick?.(mergedForCallback);
   };
 
+  const trackProductPromoteClick = () => {
+    if (!isAd) return;
+    logSponsoredAdClick(mergedForCallback, "visit");
+  };
+
   const handleProfileClick = (e: React.MouseEvent) => {
     e.stopPropagation();
+    trackProductPromoteClick();
     onNavigateToProfile?.(e, product.user_id);
   };
 
@@ -214,11 +225,11 @@ export const SharedProductCard = memo(({
       )}
 
       <div
-        className="group relative flex min-w-0 cursor-pointer flex-col rounded-[1.5rem] border border-white/5 bg-[#1a1a1a] pb-4 transition-all hover:border-white/20 hover:shadow-2xl md:rounded-[2.5rem] md:pb-8"
+        className="group relative flex min-w-0 cursor-pointer flex-col rounded-[1.5rem] border border-white/5 bg-[#1a1a1a] pb-2 transition-all hover:border-white/20 hover:shadow-2xl md:rounded-[2.5rem] md:pb-4"
         onClick={handleCardClick}
       >
         {/* Header Section */}
-        <div className="flex items-center justify-between gap-1 p-2 md:p-4 md:px-5">
+        <div className="flex items-center justify-between gap-1 p-1.5 md:p-3 md:px-4">
           <div className="group/profile flex min-w-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
             <div
               onClick={handleProfileClick}
@@ -243,16 +254,18 @@ export const SharedProductCard = memo(({
             <div className="flex flex-col min-w-0">
               <span
                 onClick={handleProfileClick}
-                className="text-[7px] md:text-[10px] text-white font-black normal-case tracking-tight truncate leading-none group-hover/profile:text-blue-400 transition-colors cursor-pointer"
+                className="flex items-center gap-1 text-[7px] md:text-[10px] text-white font-black normal-case tracking-tight truncate leading-none group-hover/profile:text-blue-400 transition-colors cursor-pointer"
               >
                 {sellerName}
+                {sellerId && <UserVerifiedBadge userId={sellerId} size={12} />}
               </span>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="text-[5px] md:text-[7px] text-slate-500 font-bold tracking-widest">
                   <RelativeTime timestamp={displayTimestamp} />
                 </span>
                 {isAd && (
-                  <span className="text-[6px] md:text-[8px] font-bold text-white px-1">
+                  <span className="flex items-center gap-0.5 text-[6px] md:text-[8px] font-bold text-emerald-400 px-1">
+                    <IonIcon name="megaphone-outline" className="text-[8px] md:text-[10px]" />
                     Ad
                   </span>
                 )}
@@ -262,16 +275,22 @@ export const SharedProductCard = memo(({
 
           <div className="flex items-center gap-1">
             {currentUser?.id !== product.user_id && (
-              <SubscribeButton userId={product.user_id} initialIsSubscribed={false} size="small" />
+              <SubscribeButton
+                userId={product.user_id}
+                initialIsSubscribed={false}
+                size="small"
+                onBeforeSubscribeClick={trackProductPromoteClick}
+              />
             )}
             <div className="relative">
               <button
                 onClick={handleMenuToggle}
-                className="w-5 h-5 md:w-8 md:h-8 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center transition-all active:scale-75"
+                className="light-theme-option-dots w-5 h-5 md:w-8 md:h-8 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center transition-all active:scale-75"
+                aria-label="Open product options"
               >
                 <div className="flex flex-col gap-0.5">
-                  <div className="w-1 h-1 bg-white rounded-full"></div>
-                  <div className="w-1 h-1 bg-white rounded-full"></div>
+                  <div data-dot className="w-1 h-1 rounded-full" style={{ backgroundColor: "var(--theme-dot)" }}></div>
+                  <div data-dot className="w-1 h-1 rounded-full" style={{ backgroundColor: "var(--theme-dot)" }}></div>
                 </div>
               </button>
               {openMenu && (
@@ -281,20 +300,20 @@ export const SharedProductCard = memo(({
                 >
                   {onShare && (
                     <button
-                      onClick={() => { onShare(mergedForCallback); setOpenMenu(false); }}
+                      onClick={() => { trackProductPromoteClick(); onShare(mergedForCallback); setOpenMenu(false); }}
                       className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors"
                     >
                       <IonIcon name="share-social-outline" className="text-blue-400 text-lg" />
                       Share Link
                     </button>
                   )}
-                  {onPromoteProduct && currentUser?.id === product.user_id && !isAd && (
+                  {onPromoteProduct && product.status !== "reviewing" && (
                     <button
                       onClick={() => { onPromoteProduct(product); setOpenMenu(false); }}
                       className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
                     >
                       <IonIcon name="megaphone-outline" className="text-emerald-400 text-lg" />
-                      Promote
+                      {promoteProductLabel || (isAd ? "Promote Again" : "Promote")}
                     </button>
                   )}
                   {onEditProduct && currentUser?.id === product.user_id && (
@@ -340,7 +359,7 @@ export const SharedProductCard = memo(({
         </div>
 
         {/* Image Section */}
-        <div className="relative mx-2 rounded-[1.2rem] md:rounded-[2rem] overflow-hidden mb-3 bg-black border border-white/5 shadow-inner aspect-square">
+        <div className="relative mx-2 rounded-[1.2rem] md:rounded-[2rem] overflow-hidden mb-1.5 bg-black border border-white/5 shadow-inner aspect-square">
           {img ? (
             <Image
               src={img}
@@ -402,32 +421,30 @@ export const SharedProductCard = memo(({
         </div>
 
         {/* Content Section */}
-        <div className="px-3 md:px-6 pb-2">
-          <div className="mb-2 flex items-start justify-between gap-2">
-            <h3 className="min-w-0 flex-1 overflow-hidden text-white text-[9px] md:text-[12px] font-black uppercase tracking-tight group-hover:text-amber-400 transition-colors [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] break-words">
+        <div className="px-2.5 md:px-5 pb-1.5">
+          <div className="mb-1 flex items-start gap-1 flex-wrap">
+            <h3 className="text-white text-[9px] md:text-[12px] font-black uppercase tracking-tight group-hover:text-amber-400 transition-colors break-words leading-tight">
               {product.title}
             </h3>
+            {uniqueVariantColors.length > 0 && (
+              <div className="flex items-center gap-0.5 flex-wrap mt-0.5">
+                {uniqueVariantColors.map((colorName: any, idx) => {
+                  const colorInfo = COLORS.find((c) => c.name === colorName);
+                  if (!colorInfo) return null;
+                  return (
+                    <div
+                      key={idx}
+                      className="w-2 h-2 rounded-full border border-white/20 shadow-sm shrink-0"
+                      style={{ backgroundColor: colorInfo.hex }}
+                      title={colorName}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
 
-          {/* Color variants loop */}
-          {uniqueVariantColors.length > 0 && (
-            <div className="flex flex-wrap gap-1 mb-2">
-              {uniqueVariantColors.map((colorName: any, idx) => {
-                const colorInfo = COLORS.find((c) => c.name === colorName);
-                if (!colorInfo) return null;
-                return (
-                  <div
-                    key={idx}
-                    className="w-2.5 h-2.5 rounded-full border border-white/20 shadow-sm"
-                    style={{ backgroundColor: colorInfo.hex }}
-                    title={colorName}
-                  />
-                );
-              })}
-            </div>
-          )}
-
-          <div className="flex flex-col mb-3">
+          <div className="flex flex-col mb-0.5">
             <div className="flex items-center justify-between gap-2 mr-[-8px]">
               <div className="flex items-baseline gap-1">
                 <span className="text-xs font-black text-white/40">R</span>
@@ -440,6 +457,7 @@ export const SharedProductCard = memo(({
                   onClick={(e) => {
                     e.stopPropagation();
                     if (onAddToBagClick) {
+                      trackProductPromoteClick();
                       onAddToBagClick(mergedForCallback);
                     } else {
                       handleCardClick(e);
@@ -454,7 +472,7 @@ export const SharedProductCard = memo(({
           </div>
 
           {/* Interaction Bar */}
-          <div className="border-t border-white/5 pt-1.5 md:pt-2 flex flex-col gap-2">
+          <div className="border-t border-white/5 pt-0.5 flex flex-col gap-1">
             <div className="flex items-center justify-between w-full px-0.5">
               {canUseProductActions && (
                 <>
@@ -496,7 +514,14 @@ export const SharedProductCard = memo(({
                     count={displayViewsCount}
                     color="text-white"
                     activeColor="text-white"
-                    onSingleClick={() => onLogView?.(isAd ? mergedForCallback : mergedForCallback.id)}
+                    onSingleClick={() => {
+                      if (isAd) {
+                        onLogView?.(mergedForCallback);
+                        onOpenSheet?.("views", mergedForCallback);
+                        return;
+                      }
+                      onLogView?.(mergedForCallback.id);
+                    }}
                     onLongPress={() => onOpenSheet?.("views", mergedForCallback)}
                   />
                   <AdInteractionButton
@@ -522,7 +547,10 @@ export const SharedProductCard = memo(({
                     })()}
                     color="text-white"
                     activeColor="text-white"
-                    onSingleClick={() => onShare?.(mergedForCallback)}
+                    onSingleClick={() => {
+                      trackProductPromoteClick();
+                      onShare?.(mergedForCallback);
+                    }}
                     onLongPress={() => onOpenSheet?.("shares", mergedForCallback)}
                     iconSize="text-sm md:text-base opacity-90"
                   />
@@ -557,7 +585,7 @@ export const SharedProductCard = memo(({
                 ) : null}
               </div>
             )}
-            
+
             {activeTab === "orders" && product.status === "delivered" && onUpdateOrderStatus && (
               <div className="flex justify-end mt-1">
                 <button

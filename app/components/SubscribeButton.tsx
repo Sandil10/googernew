@@ -10,6 +10,7 @@ interface SubscribeButtonProps {
   userId?: number | string | null;
   initialIsSubscribed?: boolean;
   size?: "small" | "default";
+  onBeforeSubscribeClick?: () => void;
 }
 
 export default function SubscribeButton({
@@ -18,7 +19,8 @@ export default function SubscribeButton({
   authorName,
   userId,
   initialIsSubscribed = false,
-  size = "default"
+  size = "default",
+  onBeforeSubscribeClick,
 }: SubscribeButtonProps) {
   const [subscribedIds, setSubscribedIds] = useState<Set<string>>(new Set());
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -34,7 +36,7 @@ export default function SubscribeButton({
 
     const init = async () => {
       try {
-        const user = JSON.parse(localStorage.getItem("user") || "{}");
+        const user = JSON.parse((sessionStorage.getItem("user") || localStorage.getItem("user")) || "{}");
         const userId = user?.id ? String(user.id) : null;
         setCurrentUserId(userId);
 
@@ -96,6 +98,7 @@ export default function SubscribeButton({
   const handleSubscribe = async (event: React.MouseEvent) => {
     event.stopPropagation();
     if (!sellerId || pendingId === sellerId) return;
+    onBeforeSubscribeClick?.();
 
     try {
       setPendingId(sellerId);
@@ -141,10 +144,9 @@ export default function SubscribeButton({
     <button
       type="button"
       onClick={handleSubscribe}
-      className="flex-shrink-0 rounded-full bg-white px-1.5 py-0.5 text-[6px] font-black uppercase text-black shadow-lg transition-all hover:bg-slate-200 active:scale-95 md:px-4 md:py-1.5 md:text-[9px]"
+      className="light-theme-action-border flex-shrink-0 rounded-full border border-white/10 bg-white px-2.5 py-0.5 text-[7px] font-black uppercase text-black shadow-lg transition-all hover:bg-slate-200 active:scale-95 md:px-3 md:py-1 md:text-[8px]"
     >
-      <span className="md:hidden">Sub</span>
-      <span className="hidden md:inline">Subscribe</span>
+      Subscribe
     </button>
   );
 }

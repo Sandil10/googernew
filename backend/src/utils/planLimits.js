@@ -1,4 +1,5 @@
 const pool = require('../config/database');
+const { getGraceDurationSeconds } = require('./subscriptionRenewal');
 
 // Converts admin-panel expiry fields (ads_expiry_value + ads_expiry_unit) to fractional days.
 // Falls back to legacy ads_expiry_days if present.
@@ -41,14 +42,15 @@ const isPlan03Slug = (slug = '') => {
 const getUserPlanLimits = async (userId) => {
     try {
         // Active paid subscription?
+        const graceSeconds = getGraceDurationSeconds();
         const paidRes = await pool.query(
             `SELECT sp.slug, sp.googs_limit, sp.verified_tick, sp.extra
              FROM user_plan_subscriptions ups
              JOIN subscription_plans sp ON sp.id = ups.plan_id
              WHERE ups.user_id = $1 AND ups.status = 'active'
-               AND (ups.expires_at IS NULL OR ups.expires_at > NOW())
+               AND (ups.expires_at IS NULL OR ups.expires_at + (($2::text || ' seconds')::interval) > NOW())
              ORDER BY ups.started_at DESC LIMIT 1`,
-            [userId]
+            [userId, graceSeconds]
         );
 
         if (paidRes.rows.length > 0) {
@@ -149,15 +151,16 @@ const getUserSubscriptionFeatures = async (userId) => {
 
     try {
         if (userId) {
+            const graceSeconds = getGraceDurationSeconds();
             const paidRes = await pool.query(
                 `SELECT sp.slug, sp.googs_limit, sp.verified_tick, sp.extra,
                         sp.badge_color
                  FROM user_plan_subscriptions ups
                  JOIN subscription_plans sp ON sp.id = ups.plan_id
                  WHERE ups.user_id = $1 AND ups.status = 'active'
-                   AND (ups.expires_at IS NULL OR ups.expires_at > NOW())
+                   AND (ups.expires_at IS NULL OR ups.expires_at + (($2::text || ' seconds')::interval) > NOW())
                  ORDER BY ups.started_at DESC LIMIT 1`,
-                [userId]
+                [userId, graceSeconds]
             );
             if (paidRes.rows.length > 0) {
                 plan = paidRes.rows[0];

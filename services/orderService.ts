@@ -1,9 +1,8 @@
 
-const isClient = typeof window !== 'undefined';
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+import { API_URL } from './apiConfig';
 
 const getAuthHeaders = () => {
-    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+    const token = typeof window !== 'undefined' ? (window.sessionStorage.getItem('token') || window.localStorage.getItem('token')) : null;
     return {
         'Content-Type': 'application/json',
         'Authorization': token ? `Bearer ${token}` : ''

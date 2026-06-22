@@ -1,101 +1,161 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import IonIcon from "@/app/components/IonIcon";
+import { BadgeSvg } from "@/app/components/VerifiedBadge";
 import { authService } from "@/services/authService";
 import { getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
 import { subscriptionService, SubscriptionPlan, UserSubscription } from "@/services/subscriptionService";
 import { clearFeaturesCache, refreshSubscriptionFeatures } from "@/app/lib/subscriptionFeatures";
 
 // Derives human-readable feature bullets purely from DB fields — nothing hardcoded.
-function derivePlanFeatures(plan: SubscriptionPlan): string[] {
+function isChatFeatureLabel(label: string): boolean {
+    const normalized = label.toLowerCase();
+    return normalized.includes("chat")
+        || normalized.includes("message")
+        || normalized.includes("text messaging")
+        || normalized.includes("colored text")
+        || normalized.includes("text color")
+        || normalized.includes("voice note")
+        || normalized.includes("voice to text")
+        || normalized.includes("text to voice")
+        || normalized.includes("voice call")
+        || normalized.includes("video call")
+        || normalized.includes("sticker")
+        || normalized.includes("auto delete")
+        || normalized.includes("history kept")
+        || normalized.includes("lifetime history");
+}
+
+function normalizeChatFeatureLabel(label: string): string | null {
+    const cleaned = label
+        .replace(/^chat\s*features?\s*:?\s*/i, "")
+        .replace(/^chat\s*:?\s*/i, "")
+        .trim();
+    const normalized = cleaned.toLowerCase();
+    if (!cleaned || normalized === "features" || normalized.includes("auto delete") || normalized.includes("history kept") || normalized.includes("lifetime history")) {
+        return null;
+    }
+
+    if (normalized.includes("voice note") && normalized.includes("text")) return "Voice notes to text";
+    if (normalized.includes("voice to text")) return "Voice to text";
+    if (normalized.includes("text to voice")) return "Text to voice";
+    if (normalized.includes("text messaging") && normalized.includes("color")) return "Text messaging colors";
+    if (normalized.includes("colored text") || normalized.includes("text color")) return "Colored text";
+    if (normalized.includes("text messaging") || normalized.includes("message")) return "Text messages";
+    if (normalized.includes("voice call")) return "Voice calls";
+    if (normalized.includes("video call")) return cleaned;
+    if (normalized.includes("sticker")) return "Stickers";
+    return cleaned;
+}
+
+function getContentExpiryLabel(extra: Record<string, any>): string {
+    const labels = extra.labels || {};
+    const unit = String(extra.content_expiry_unit || "unlimited");
+    if (unit === "unlimited") return `${labels.content_expiry || "Upload Content Expiry"}: Lifetime`;
+    const value = Math.max(1, Number(extra.content_expiry_value || 1));
+    return `${labels.content_expiry || "Upload Content Expiry"}: ${value} ${unit}`;
+}
+
+function derivePlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; chat: string[]; content: string[] } {
     const e = plan.extra || {};
-    const items: string[] = [];
+    const regular: string[] = (plan.features || []).filter((label) => !isChatFeatureLabel(String(label)));
+    const chat: string[] = (plan.features || [])
+        .filter((label) => isChatFeatureLabel(String(label)))
+        .map((label) => normalizeChatFeatureLabel(String(label)))
+        .filter((label): label is string => !!label);
+    const content: string[] = [];
+    const contentLabels = e.labels || {};
+    const isBasicPlan = plan.slug === "basic" || Number(plan.price) === 0;
 
     // Googs
     const writeLimit = e.write_goog_limit != null ? Number(e.write_goog_limit) : null;
     if (writeLimit != null && writeLimit > 0)
-        items.push(`Write up to ${writeLimit.toLocaleString()} Googs`);
+        regular.push(`Write up to ${writeLimit.toLocaleString()} Googs`);
 
     const letterLimit = e.goog_letter_limit != null ? Number(e.goog_letter_limit) : null;
     if (letterLimit != null && letterLimit > 0)
-        items.push(`${letterLimit} characters per Goog`);
+        regular.push(`${letterLimit} characters per Goog`);
 
     const saveLimit = plan.googs_limit != null ? Number(plan.googs_limit) : null;
     if (saveLimit != null && saveLimit > 0 && saveLimit < 999999)
-        items.push(`Save up to ${saveLimit.toLocaleString()} Googs`);
+        regular.push(`Save up to ${saveLimit.toLocaleString()} Googs`);
 
     // Shop / Ads
     const productLimit = e.product_upload_limit != null ? Number(e.product_upload_limit) : null;
     if (productLimit != null && productLimit > 0)
-        items.push(`Upload up to ${productLimit} products`);
+        regular.push(`Upload up to ${productLimit} products`);
+
+    const dailyUploadLimit = Number(e.content_daily_upload_limit ?? (isBasicPlan ? 1 : 3));
+    if (Number.isFinite(dailyUploadLimit) && dailyUploadLimit > 0)
+        content.push(`${contentLabels.content_daily_upload_limit || "Daily Uploads"}: ${dailyUploadLimit}`);
+
+    const videoLimitMinutes = Number(e.content_video_limit_minutes ?? (isBasicPlan ? 1 : 5));
+    if (Number.isFinite(videoLimitMinutes) && videoLimitMinutes > 0)
+        content.push(`${contentLabels.content_video_limit_minutes || "Video Limit"}: ${videoLimitMinutes} minute${videoLimitMinutes === 1 ? "" : "s"}`);
+
+    content.push(getContentExpiryLabel(e));
 
     const videoAds = e.ad_videos != null ? Number(e.ad_videos) : null;
     if (videoAds != null && videoAds > 0)
-        items.push(`${videoAds} video ads`);
+        regular.push(`${videoAds} video ads`);
 
     const photoAds = e.ad_photos != null ? Number(e.ad_photos) : null;
     if (photoAds != null && photoAds > 0)
-        items.push(`${photoAds} photo ads`);
+        regular.push(`${photoAds} photo ads`);
 
     // Ad expiry
     if (e.ads_expiry_value != null && Number(e.ads_expiry_value) > 0) {
         const unit = String(e.ads_expiry_unit || "days");
-        items.push(`Ads live for ${e.ads_expiry_value} ${unit}`);
+        regular.push(`Ads live for ${e.ads_expiry_value} ${unit}`);
     } else if (e.ads_expiry_days != null && Number(e.ads_expiry_days) > 0) {
-        items.push(`Ads live for ${e.ads_expiry_days} days`);
+        regular.push(`Ads live for ${e.ads_expiry_days} days`);
     }
 
     // Messaging
     const tmStr = String(e.text_messaging ?? "");
     const hasTextMsg = e.text_messaging !== false && e.text_messaging != null && e.text_messaging !== 0;
-    if (hasTextMsg) items.push("Text messaging");
+    if (hasTextMsg) chat.push("Text messages");
 
     const hasColors = e.chat_text_colors === true || tmStr.includes("colors");
-    if (hasColors) items.push("Colored text in chat");
+    if (hasColors) chat.push("Text messaging colors");
 
     const hasStickers = e.chat_stickers === true || tmStr.includes("stickers");
-    if (hasStickers) items.push("Chat sticker pack");
+    if (hasStickers) chat.push("Stickers");
 
     // Voice / Video
     const hasVoice = e.voice_calls === true || (e.voice_calls !== false && e.voice_calls != null);
-    if (hasVoice) items.push("Voice calls");
+    if (hasVoice) chat.push("Voice calls");
 
     if (e.video_calls === true) {
         const quality = String(e.video_call_quality || "").trim();
         if (quality) {
             const labels = quality.split(",").map((q: string) => q.trim()).filter(Boolean).join(" & ");
-            items.push(`Video calls (${labels})`);
+            chat.push(`Video calls (${labels})`);
         } else {
-            items.push("Video calls");
+            chat.push("Video calls");
         }
     }
 
     // Voice notes
     if (e.voice_notes_to_text || e.voice_to_text || e.speech_to_text || e.microphone)
-        items.push("Voice to text");
+        chat.push("Voice to text");
     if (e.text_to_voice_note || e.text_to_voice || e.tts || e.speech)
-        items.push("Text to voice");
-
-    // Chat auto-delete
-    const autoDeleteUnit = String(e.chat_auto_delete_unit || "").toLowerCase();
-    const autoDeleteValue = e.chat_auto_delete_value ?? e.chat_auto_delete_days;
-    if (autoDeleteUnit === "lifetime" || e.chat_auto_delete_lifetime) {
-        items.push("Chat history kept lifetime");
-    } else if (autoDeleteValue != null && Number(autoDeleteValue) > 0) {
-        items.push(`Chat history kept ${autoDeleteValue} ${autoDeleteUnit || "days"}`);
-    } else if (e.chat_auto_delete_24h) {
-        items.push("Chat history kept 1 day");
-    }
+        chat.push("Text to voice");
 
     // Profile promo
     if (e.free_profile_ad_promo || e.free_promo)
-        items.push("Free profile ad promotion");
+        regular.push("Free profile ad promotion");
 
     // Verified badge
-    if (plan.verified_tick) items.push("Verified badge");
+    if (plan.verified_tick) regular.push("Verified badge");
 
-    return items;
+    return {
+        regular: regular.filter((label, index, list) => list.indexOf(label) === index),
+        chat: chat.filter((label, index, list) => list.indexOf(label) === index),
+        content: content.filter((label, index, list) => list.indexOf(label) === index),
+    };
 }
 
 const BADGE_TEXT: Record<string, string> = {
@@ -105,6 +165,23 @@ const BADGE_TEXT: Record<string, string> = {
     green:  "text-emerald-400",
     purple: "text-purple-400",
     red:    "text-red-400",
+    black:  "text-zinc-300",
+};
+
+const BADGE_THEME: Record<string, string> = {
+    silver: "#d4d4d8",
+    blue:   "#60a5fa",
+    gold:   "#fbbf24",
+    green:  "#34d399",
+    purple: "#c084fc",
+    red:    "#f87171",
+    black:  "#3d3d3d",
+};
+
+const getPlanBadgeColor = (plan: SubscriptionPlan) => String(plan.extra?.badge_custom_color || plan.badge_color || "silver").trim();
+const getPlanBadgeHex = (plan: SubscriptionPlan) => {
+    const color = getPlanBadgeColor(plan);
+    return BADGE_THEME[color] || color || BADGE_THEME.silver;
 };
 
 const ACCENT_BAR: Record<string, string> = {
@@ -140,6 +217,8 @@ export default function ProductPlansModal({
     const [message, setMessage]       = useState<string | null>(null);
     const [success, setSuccess]       = useState<string | null>(null);
     const [cancelling, setCancelling] = useState(false);
+    const [openChatFeatures, setOpenChatFeatures] = useState<Record<number, boolean>>({});
+    const [openContentFeatures, setOpenContentFeatures] = useState<Record<number, boolean>>({});
 
     useEffect(() => {
         (async () => {
@@ -187,7 +266,8 @@ export default function ProductPlansModal({
         if (balance < price) { setInsufficient(true); return; }
         setPaying(true);
         try {
-            const result = await subscriptionService.subscribe(selectedPlan.id);
+            const isSwitchingPlan = !!(activeSub && activeSub.status === "active" && activeSub.plan_id !== selectedPlan.id);
+            const result = await subscriptionService.subscribe(selectedPlan.id, { switchPlan: isSwitchingPlan });
             if ("error" in result) {
                 if (result.code === 402) setInsufficient(true);
                 else { setMessage(result.error); setSheetOpen(false); }
@@ -208,13 +288,13 @@ export default function ProductPlansModal({
 
     const handleCancel = async () => {
         if (!activeSub) return;
-        if (!confirm("Cancel your active subscription?")) return;
+        if (!confirm("Cancel auto-renew for your active subscription?")) return;
         setCancelling(true);
         try {
-            const ok = await subscriptionService.cancelMySubscription();
-            if (ok) {
-                setActiveSub(null);
-                setSuccess("Subscription cancelled.");
+            const updated = await subscriptionService.setAutoRenew(false);
+            if (updated) {
+                setActiveSub({ ...updated, auto_renew: false });
+                setSuccess("Auto-renew turned off.");
                 clearFeaturesCache();
                 void refreshSubscriptionFeatures();
                 window.dispatchEvent(new Event("subscription:changed"));
@@ -280,7 +360,12 @@ export default function ProductPlansModal({
                             const isSelected      = selectedId === plan.id;
                             const isActiveOnThis  = !!(activeSub && activeSub.plan_id === plan.id && activeSub.status === "active");
                             const badgeTextCls    = BADGE_TEXT[plan.badge_color] || "text-zinc-300";
+                            const badgeHex        = getPlanBadgeHex(plan);
+                            const badgeTickColor  = String(plan.extra?.badge_tick_color || "").trim() || undefined;
                             const accentBarCls    = ACCENT_BAR[plan.accent_color] || "bg-zinc-400";
+                            const featureGroups = derivePlanFeatureGroups(plan);
+                            const isChatOpen = openChatFeatures[plan.id] ?? false;
+                            const isContentOpen = openContentFeatures[plan.id] ?? false;
                             return (
                                 <button
                                     key={plan.id}
@@ -298,9 +383,9 @@ export default function ProductPlansModal({
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center gap-2 flex-wrap">
                                                 <div className="flex items-center gap-1.5">
-                                                    <h3 className="text-sm font-bold text-white">{plan.name}</h3>
+                                                    <h3 className="text-sm font-bold" style={{ color: badgeHex }}>{plan.name}</h3>
                                                     {plan.verified_tick && (
-                                                        <IonIcon name="checkmark-circle" className={`text-xs ${badgeTextCls}`} />
+                                                        <BadgeSvg color={badgeHex} tickColor={badgeTickColor} size={12} />
                                                     )}
                                                 </div>
                                                 <span className="text-xs text-white/60">
@@ -309,13 +394,81 @@ export default function ProductPlansModal({
                                                 </span>
                                             </div>
                                             <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
-                                                {derivePlanFeatures(plan).map((f, i) => (
+                                                {featureGroups.regular.map((f, i) => (
                                                     <span key={i} className="inline-flex items-center gap-1 text-[10px] text-white/55">
                                                         <IonIcon name="checkmark-outline" className={`${badgeTextCls} shrink-0 text-[10px]`} />
                                                         {f}
                                                     </span>
                                                 ))}
                                             </div>
+                                            {(featureGroups.chat.length > 0 || featureGroups.content.length > 0) && (
+                                                <div className="mt-2 flex flex-wrap gap-2">
+                                                    {featureGroups.content.length > 0 && (
+                                                        <span
+                                                            role="button"
+                                                            tabIndex={0}
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setOpenContentFeatures((prev) => ({ ...prev, [plan.id]: !isContentOpen }));
+                                                            }}
+                                                            onKeyDown={(e) => {
+                                                                if (e.key === "Enter" || e.key === " ") {
+                                                                    e.preventDefault();
+                                                                    e.stopPropagation();
+                                                                    setOpenContentFeatures((prev) => ({ ...prev, [plan.id]: !isContentOpen }));
+                                                                }
+                                                            }}
+                                                            className="inline-flex h-7 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3 text-[10px] font-bold text-white/70 transition hover:bg-white/[0.06]"
+                                                        >
+                                                            <IonIcon name="cloud-upload-outline" className={`${badgeTextCls} text-xs`} />
+                                                            Content Upload
+                                                            <IonIcon name={isContentOpen ? "chevron-up-outline" : "chevron-down-outline"} className="text-[11px] text-white/45" />
+                                                        </span>
+                                                    )}
+                                                    {featureGroups.chat.length > 0 && (
+                                                    <span
+                                                        role="button"
+                                                        tabIndex={0}
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setOpenChatFeatures((prev) => ({ ...prev, [plan.id]: !isChatOpen }));
+                                                        }}
+                                                        onKeyDown={(e) => {
+                                                            if (e.key === "Enter" || e.key === " ") {
+                                                                e.preventDefault();
+                                                                e.stopPropagation();
+                                                                setOpenChatFeatures((prev) => ({ ...prev, [plan.id]: !isChatOpen }));
+                                                            }
+                                                        }}
+                                                        className="inline-flex h-7 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3 text-[10px] font-bold text-white/70 transition hover:bg-white/[0.06]"
+                                                    >
+                                                        <IonIcon name="chatbubbles-outline" className={`${badgeTextCls} text-xs`} />
+                                                        Chat features
+                                                        <IonIcon name={isChatOpen ? "chevron-up-outline" : "chevron-down-outline"} className="text-[11px] text-white/45" />
+                                                    </span>
+                                                    )}
+                                                    {isContentOpen && (
+                                                        <div className="basis-full mt-1.5 flex flex-wrap gap-x-3 gap-y-1 pl-1">
+                                                            {featureGroups.content.map((f, i) => (
+                                                                <span key={i} className="inline-flex items-center gap-1 text-[10px] text-white/55">
+                                                                    <IonIcon name="checkmark-outline" className={`${badgeTextCls} shrink-0 text-[10px]`} />
+                                                                    {f}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                    {isChatOpen && (
+                                                        <div className="basis-full mt-1.5 flex flex-wrap gap-x-3 gap-y-1 pl-1">
+                                                            {featureGroups.chat.map((f, i) => (
+                                                                <span key={i} className="inline-flex items-center gap-1 text-[10px] text-white/55">
+                                                                    <IonIcon name="checkmark-outline" className={`${badgeTextCls} shrink-0 text-[10px]`} />
+                                                                    {f}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
                                         </div>
                                         <div className="shrink-0 flex flex-col items-end gap-1.5 pt-0.5">
                                             {isActiveOnThis ? (
@@ -348,7 +501,7 @@ export default function ProductPlansModal({
                             {isSelectedActive ? (
                                 <button onClick={handleCancel} disabled={cancelling}
                                     className="bg-red-500 hover:bg-red-400 text-white font-bold text-sm px-10 py-2.5 rounded-full transition disabled:opacity-50">
-                                    {cancelling ? "Cancelling..." : "Cancel Subscription"}
+                                    {cancelling ? "Updating..." : "Cancel Subscription"}
                                 </button>
                             ) : (
                                 <button onClick={openSheet} disabled={!selectedPlan}
@@ -358,7 +511,7 @@ export default function ProductPlansModal({
                             )}
                             {activeSub && !isSelectedActive && (
                                 <p className="text-[10px] text-amber-300/80 text-center">
-                                    Switching will cancel your current {activeSub.plan_name} plan.
+                                    Switching will replace your current {activeSub.plan_name} plan.
                                 </p>
                             )}
                         </div>
@@ -394,14 +547,14 @@ export default function ProductPlansModal({
                         {insufficient && (
                             <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
                                 Insufficient balance. You need R {shortfall.toFixed(2)} more.{" "}
-                                <a href="/dashboard/wallet/topup" className="underline text-red-400">Top up</a>
+                                <Link href="/dashboard/wallet/my-wallet" className="underline text-red-400">Top up</Link>
                             </div>
                         )}
                         <div className="flex gap-3">
                             <button onClick={() => !paying && setSheetOpen(false)}
                                 className="flex-1 py-2.5 rounded-full border border-white/15 text-white/70 text-sm font-semibold hover:bg-white/5 transition disabled:opacity-50"
                                 disabled={paying}>
-                                Cancel
+                                Close
                             </button>
                             <button onClick={handlePay} disabled={paying}
                                 className="flex-1 py-2.5 rounded-full bg-red-500 hover:bg-red-400 text-white text-sm font-bold transition disabled:opacity-50">

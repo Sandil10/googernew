@@ -19,7 +19,7 @@ interface InteractionBottomSheetProps {
     onDeleteComment?: (commentId: string | number) => void;
     onLikeComment?: (commentId: string | number) => void;
     onDislikeComment?: (commentId: string | number) => void;
-    onReportComment?: (commentId: string | number) => void;
+    onReportComment?: (commentId: string | number, reason: string) => void;
     onRefresh?: () => void | Promise<void>;
     onAction?: (action: string) => void;
     currentUser?: any;
@@ -220,6 +220,7 @@ export default function InteractionBottomSheet({
 
     const handleUserClick = (userId: any, e: React.MouseEvent) => {
         e.stopPropagation();
+        if (!userId || String(userId).startsWith("legacy-views-")) return;
         onClose();
         router.push(`/dashboard/profile?id=${userId}`);
     };
@@ -522,12 +523,12 @@ export default function InteractionBottomSheet({
                                             <div
                                                 key={item.id || idx}
                                                 onClick={(e) => handleUserClick(item.user_id || item.id, e)}
-                                                className="flex items-center gap-3 p-3 bg-white/[0.025] hover:bg-white/[0.05] rounded-2xl border border-white/5 cursor-pointer transition-all active:scale-[0.98] animate-in slide-in-from-bottom-2 duration-300"
+                                                className={`flex items-center gap-3 p-3 bg-white/[0.025] rounded-2xl border border-white/5 transition-all animate-in slide-in-from-bottom-2 duration-300 ${item.is_aggregate ? "cursor-default" : "cursor-pointer hover:bg-white/[0.05] active:scale-[0.98]"}`}
                                                 style={{ animationDelay: `${idx * 50}ms` }}
                                             >
                                                 <div className="w-9 h-9 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center overflow-hidden shrink-0 relative">
                                                     {item.profile_picture ? (
-                                                        <Image src={item.profile_picture} alt={item.username || "User"} fill className="object-cover" />
+                                                        <Image src={item.profile_picture} alt={item.full_name || item.username || "User"} fill className="object-cover" />
                                                     ) : (
                                                         <IonIcon name="person" className="text-blue-400 text-sm" />
                                                     )}
@@ -535,7 +536,7 @@ export default function InteractionBottomSheet({
                                                 <div className="flex-1 min-w-0">
                                                     <div className="flex items-center gap-2">
                                                         <span className="text-[11px] font-black text-white uppercase tracking-tight truncate">
-                                                            {item.username || "Anonymous"}
+                                                            {item.full_name || item.username || "Anonymous"}
                                                         </span>
                                                         <span className="text-[8px] text-slate-600 font-bold uppercase tracking-widest ml-auto shrink-0">
                                                             <RelativeTime timestamp={item.created_at} />
@@ -674,10 +675,9 @@ export default function InteractionBottomSheet({
                                 <button 
                                     disabled={!reportReason}
                                     onClick={() => {
-                                        onReportComment?.(reportCommentId);
+                                        onReportComment?.(reportCommentId, reportReason);
                                         setReportCommentId(null);
                                         setReportReason("");
-                                        alert("Thank you! Comment reported for internal review.");
                                     }}
                                     className="flex-1 py-3.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-30 disabled:cursor-not-allowed rounded-xl text-black font-black text-[10px] uppercase tracking-widest transition-colors shadow-lg shadow-amber-500/20"
                                 >

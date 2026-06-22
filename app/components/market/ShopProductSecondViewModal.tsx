@@ -10,6 +10,7 @@ import { useRelativeTime } from "@/app/lib/relativeTime";
 import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
+import { logSponsoredAdClick } from "@/app/lib/ads/adClickTracking";
 
 type SheetType = "likes" | "comments" | "shares" | "views";
 
@@ -258,6 +259,10 @@ export function ShopProductSecondViewModal({
     (product?.isProductPromoteSecondView || String(product?.campaign_type || product?.campaignType || "").toLowerCase() === "product promote") &&
     !!(product?.adId || product?.ad_id);
   const showAdCoinButton = isProductPromoteSecondView && !!canShowCollectCoin?.(displayProduct);
+  const trackProductPromoteClick = () => {
+    if (!isProductPromoteSecondView) return;
+    logSponsoredAdClick(displayProduct, "visit");
+  };
   const activeSelections = Array.isArray(activeVariant?.selections) ? activeVariant.selections : [];
   const sizeOptions = safeParse(product.sizes);
   const sizeList = activeSelections.map((selection: any) => selection.value).filter(Boolean).length
@@ -287,6 +292,7 @@ export function ShopProductSecondViewModal({
       return;
     }
     if (onAddToBag) {
+      trackProductPromoteClick();
       await onAddToBag(product, quantity, activeVariant, selectedSize, selectedShippingCountry, selectedVariantIndex);
       return;
     }
@@ -300,16 +306,20 @@ export function ShopProductSecondViewModal({
         onClick={onClose}
       >
         <div
-          className="bg-[#121212] border border-white/10 rounded-[1.2rem] md:rounded-3xl w-full max-w-[900px] shadow-2xl overflow-hidden flex flex-col md:flex-row h-full md:h-auto max-h-[92vh] md:max-h-[90vh] animate-in zoom-in-95 duration-300"
+          className="bg-[#121212] border border-white/10 rounded-[1.2rem] md:rounded-3xl w-full max-w-[900px] shadow-2xl overflow-hidden flex flex-col md:flex-row h-[95dvh] md:h-auto md:max-h-[90vh] animate-in zoom-in-95 duration-300"
           onClick={(event) => event.stopPropagation()}
         >
-          <div className="w-full md:w-[45%] relative flex flex-col shrink-0 p-2 md:p-3">
-            <div className="relative flex-1 min-h-[160px] md:min-h-[350px] rounded-[1.2rem] md:rounded-[2rem] overflow-hidden border border-white/10 bg-[#0a0a0a] flex flex-col">
-              <div className="relative w-full h-14 bg-black flex-shrink-0 rounded-t-[1.2rem] md:rounded-t-[2rem] border-b border-white/5 flex items-center justify-between px-5 z-[70] pointer-events-none">
+          {/* Image panel — compact on mobile, 45% width on desktop */}
+          <div className="w-full md:w-[45%] relative flex flex-col shrink-0 p-1.5 md:p-3 h-[42%] md:h-auto">
+            <div className="relative w-full h-full rounded-[1rem] md:rounded-[2rem] border border-white/10 bg-[#0a0a0a] flex flex-col overflow-visible">
+              <div className="relative w-full h-14 bg-black flex-shrink-0 rounded-t-[1rem] md:rounded-t-[2rem] border-b border-white/5 flex items-center justify-between gap-2 px-3 md:px-5 z-[70] pointer-events-none">
                 <button
                   type="button"
                   className="flex items-center gap-2.5 pointer-events-auto group/profile cursor-pointer"
-                  onClick={(event) => onNavigateToProfile?.(event, product)}
+                  onClick={(event) => {
+                    trackProductPromoteClick();
+                    onNavigateToProfile?.(event, product);
+                  }}
                 >
                   <div className="w-8 h-8 rounded-full bg-slate-800 border border-white/10 overflow-hidden relative shadow-lg group-hover/profile:border-blue-400/60 transition-all">
                     {sellerImage ? (
@@ -330,11 +340,14 @@ export function ShopProductSecondViewModal({
                   </div>
                 </button>
 
-                <div className="flex items-center gap-3 pointer-events-auto">
+                  <div className="flex shrink-0 items-center gap-1.5 md:gap-3 pointer-events-auto">
                   {showSubscribeForProduct?.(product) && (
                     <button
                       type="button"
-                      onClick={(event) => onSubscribeSeller?.(event, product)}
+                      onClick={(event) => {
+                        trackProductPromoteClick();
+                        onSubscribeSeller?.(event, product);
+                      }}
                       className="rounded-full bg-white px-4 py-1.5 text-[9px] font-black uppercase tracking-widest text-black shadow-xl transition-all hover:bg-slate-100 active:scale-95"
                     >
                       {justSubscribedSellerId === String(sellerId) ? "Subscribed" : "Subscribe"}
@@ -388,11 +401,11 @@ export function ShopProductSecondViewModal({
                     </button>
                     {isMenuOpen && (
                       <div className="absolute top-full right-0 mt-2 w-56 bg-[#1a1a1a] border border-white/10 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] py-2 z-[80] overflow-hidden animate-in zoom-in-95 fade-in duration-200" onClick={(event) => event.stopPropagation()}>
-                        <button type="button" onClick={() => { onShare?.(product, "resell"); setIsMenuOpen(false); }} className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors">
+                        <button type="button" onClick={() => { trackProductPromoteClick(); onShare?.(product, "resell"); setIsMenuOpen(false); }} className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors">
                           <IonIcon name="cash-outline" className="text-amber-500 text-lg" />
                           Resell Commission Link
                         </button>
-                        <button type="button" onClick={() => { onShare?.(product, "share"); setIsMenuOpen(false); }} className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5">
+                        <button type="button" onClick={() => { trackProductPromoteClick(); onShare?.(product, "share"); setIsMenuOpen(false); }} className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5">
                           <IonIcon name="share-social-outline" className="text-blue-400 text-lg" />
                           Share Link
                         </button>
@@ -440,7 +453,8 @@ export function ShopProductSecondViewModal({
               </div>
 
               <div
-                className="relative flex-1 w-full bg-[#0a0a0a] group cursor-zoom-in flex items-center justify-center"
+                className="relative w-full bg-[#0a0a0a] group cursor-zoom-in flex items-center justify-center overflow-hidden rounded-b-[1rem] md:rounded-b-[2rem]"
+                style={{ flex: "1 1 0", minHeight: 0 }}
                 onClick={(event) => {
                   event.stopPropagation();
                   setIsFullscreenPreviewOpen(true);
@@ -450,7 +464,7 @@ export function ShopProductSecondViewModal({
                   src={normalizeImageSrc(currentImg)}
                   alt={product.title || "Product"}
                   fill
-                  className="object-cover transition-all duration-500 group-hover:opacity-80 rounded-b-[1.2rem] md:rounded-[2rem]"
+                  className="object-contain transition-all duration-500 group-hover:opacity-80"
                   unoptimized
                 />
                 <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10 pointer-events-none">
@@ -459,42 +473,30 @@ export function ShopProductSecondViewModal({
                   </div>
                 </div>
 
+                {/* Vertical interaction sidebar — inside image, right edge */}
                 {activeTab === "market" && (
                   <div
-                    className="absolute top-1/2 -translate-y-1/2 right-4 z-[60]"
-                    onClick={(event) => event.stopPropagation()}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onPointerUp={(event) => event.stopPropagation()}
+                    className="absolute right-1.5 top-1/2 z-[60] flex max-w-[34px] -translate-y-1/2 flex-col items-center md:right-2 md:max-w-[46px]"
+                    onClick={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onPointerUp={(e) => e.stopPropagation()}
                   >
-                    <div className="bg-black/20 backdrop-blur-xl border border-white/10 rounded-full py-4.5 px-2 flex flex-col items-center gap-4.5 shadow-2xl w-11">
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onToggleLike?.(displayProduct);
-                        }}
-                        className="group flex flex-col items-center gap-1.5 transition-all active:scale-95"
-                      >
-                        <div className={`flex h-8 w-8 items-center justify-center rounded-full transition-all ${displayProduct.user_liked ? "bg-red-500/15" : "bg-white/5 group-hover:bg-white/10"}`}>
-                          <svg viewBox="0 0 24 24" className={`h-5 w-5 transition-colors ${displayProduct.user_liked ? "fill-red-500 text-red-500" : "fill-transparent text-white"}`} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78Z" />
-                          </svg>
-                        </div>
-                        {!!displayProduct.likes_count && (
-                          <span className={`text-[10px] font-black uppercase tracking-widest transition-colors ${displayProduct.user_liked ? "text-red-500" : "text-white"}`}>
-                            {displayProduct.likes_count > 999 ? "999+" : displayProduct.likes_count}
-                          </span>
-                        )}
+                    <div className="flex flex-col items-center gap-1 rounded-full border border-white/10 bg-black/55 px-1 py-1 shadow-xl backdrop-blur-xl md:gap-1.5 md:py-1.5">
+                      <button type="button" onClick={(e) => { e.stopPropagation(); onToggleLike?.(displayProduct); }} className="flex flex-col items-center gap-0 active:scale-95 transition-all">
+                        <svg viewBox="0 0 24 24" className={`h-6 w-6 rounded-full bg-white/5 p-1.5 transition-colors md:h-8 md:w-8 md:p-2 ${displayProduct.user_liked ? "fill-red-500 text-red-500" : "fill-transparent text-white"}`} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78Z" />
+                        </svg>
+                        {!!displayProduct.likes_count && <span className={`text-[7px] font-black leading-none md:text-[10px] ${displayProduct.user_liked ? "text-red-500" : "text-white"}`}>{displayProduct.likes_count > 999 ? "999+" : displayProduct.likes_count}</span>}
                       </button>
-                      <InteractionButton type="views" icon="eye-outline" activeIcon="eye" count={displayProduct.views_count} color="text-white" activeColor="text-white" onSingleClick={() => { onLogView?.(displayProduct.id); onOpenSheet?.("views", displayProduct); }} onLongPress={() => onOpenSheet?.("views", displayProduct)} orientation="vertical" iconSize="text-base md:text-xl" />
-                      <InteractionButton type="comments" icon="chatbubble" activeIcon="chatbubble" count={displayProduct.comments_count} color="text-white" activeColor="text-white" onSingleClick={() => onOpenSheet?.("comments", displayProduct)} onLongPress={() => onOpenSheet?.("comments", displayProduct)} orientation="vertical" iconSize="text-base md:text-xl" />
-                      <InteractionButton type="shares" icon="share-social" activeIcon="share-social" count={displayProduct.shares_count || 0} color="text-white" activeColor="text-white" onSingleClick={() => onShare?.(displayProduct)} onLongPress={() => onOpenSheet?.("shares", displayProduct)} orientation="vertical" iconSize="text-sm md:text-lg opacity-90" />
+                      <InteractionButton type="views" icon="eye-outline" activeIcon="eye" count={displayProduct.views_count} color="text-white" activeColor="text-white" onSingleClick={() => { onLogView?.(displayProduct.id); onOpenSheet?.("views", displayProduct); }} onLongPress={() => onOpenSheet?.("views", displayProduct)} orientation="vertical" iconSize="text-[13px] md:text-[10px]" buttonSize="h-6 w-6 md:h-8 md:w-8" countSize="text-[7px] md:text-[10px]" />
+                      <InteractionButton type="comments" icon="chatbubble" activeIcon="chatbubble" count={displayProduct.comments_count} color="text-white" activeColor="text-white" onSingleClick={() => onOpenSheet?.("comments", displayProduct)} onLongPress={() => onOpenSheet?.("comments", displayProduct)} orientation="vertical" iconSize="text-[13px] md:text-[10px]" buttonSize="h-6 w-6 md:h-8 md:w-8" countSize="text-[7px] md:text-[10px]" />
+                      <InteractionButton type="shares" icon="share-social" activeIcon="share-social" count={displayProduct.shares_count || 0} color="text-white" activeColor="text-white" onSingleClick={() => { trackProductPromoteClick(); onShare?.(displayProduct); }} onLongPress={() => onOpenSheet?.("shares", displayProduct)} orientation="vertical" iconSize="text-[13px] md:text-[10px]" buttonSize="h-6 w-6 md:h-8 md:w-8" countSize="text-[7px] md:text-[10px]" />
                     </div>
                   </div>
                 )}
 
                 {commissionInfo?.discount && parseFloat(commissionInfo.discount) > 0 && (
-                  <div className="absolute bottom-4 right-4 z-20">
+                  <div className="absolute bottom-4 right-16 z-20">
                     <div className="px-3 py-1 bg-green-500/10 backdrop-blur-md border border-green-500/20 rounded-lg shadow-xl shadow-green-500/10">
                       <span className="text-[10px] md:text-sm font-black text-green-500 tracking-tighter">+{commissionInfo.discount}%</span>
                     </div>
@@ -503,7 +505,8 @@ export function ShopProductSecondViewModal({
               </div>
             </div>
 
-            <div className="p-3 md:p-4 bg-transparent rounded-b-[1.2rem] md:rounded-b-[2rem] border-t border-white/5 overflow-x-auto no-scrollbar flex gap-2">
+
+            <div className="hidden md:flex p-1.5 md:p-4 bg-transparent rounded-b-[2rem] border-t border-white/5 overflow-x-auto no-scrollbar gap-2">
               {uniqueImages.map((img, idx) => (
                 <div
                   key={`${img}-${idx}`}
@@ -512,7 +515,7 @@ export function ShopProductSecondViewModal({
                     const variantIdx = productVariants.findIndex((variant: any) => (variant.image_url || variant.url || variant.image) === img);
                     setSelectedVariantIndex(variantIdx !== -1 ? variantIdx : null);
                   }}
-                  className={`relative w-12 h-12 md:w-16 md:h-16 rounded-lg md:rounded-xl overflow-hidden cursor-pointer border-2 transition-all shrink-0 ${activePreviewIndex === idx ? "border-white scale-105 shadow-lg shadow-black/40" : "border-transparent opacity-50 hover:opacity-100"}`}
+                  className={`relative w-9 h-9 md:w-16 md:h-16 rounded-md md:rounded-xl overflow-hidden cursor-pointer border-2 transition-all shrink-0 ${activePreviewIndex === idx ? "border-white scale-105 shadow-lg shadow-black/40" : "border-transparent opacity-50 hover:opacity-100"}`}
                 >
                   <Image src={normalizeImageSrc(img)} alt="Thumb" fill className="object-cover" unoptimized />
                 </div>
@@ -520,9 +523,10 @@ export function ShopProductSecondViewModal({
             </div>
           </div>
 
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-8 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-              <div className="space-y-0 px-4 md:px-7 py-2 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          {/* Details panel — remaining 58% on mobile, flex-1 on desktop */}
+          <div className="flex-1 flex flex-col overflow-hidden h-[58%] md:h-auto">
+            <div className="flex-1 overflow-y-auto p-3 md:p-8 space-y-3 md:space-y-8 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+              <div className="space-y-0 px-1 md:px-7 py-1 md:py-2 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 {isReviewMode && (
                   <div className="mb-4 flex items-center justify-between">
                     <h2 className="text-xl font-black text-white uppercase tracking-tight">Product Review</h2>
@@ -544,12 +548,12 @@ export function ShopProductSecondViewModal({
                   </div>
                 )}
 
-                <div className="mb-3">
-                  <h2 className="overflow-hidden text-[24px] md:text-[28px] font-black text-white tracking-tight leading-tight mb-1.5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] break-words">
+                <div className="mb-2">
+                  <h2 className="overflow-hidden text-[17px] md:text-[28px] font-black text-white tracking-tight leading-tight mb-1 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] md:[-webkit-line-clamp:3] break-words">
                     {product.title}
                   </h2>
                   <div className="flex flex-wrap items-center gap-y-1">
-                    <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">{product.category || "General"}</span>
+                    <span className="text-[9px] md:text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">{product.category || "General"}</span>
                   </div>
                 </div>
 
@@ -566,7 +570,7 @@ export function ShopProductSecondViewModal({
 
                 {product.description && (
                   <div className="mb-5 px-1 w-full overflow-hidden">
-                    <p className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2.5 md:py-3 text-xs text-white whitespace-pre-wrap break-words max-h-[180px] overflow-y-auto overflow-x-hidden custom-scrollbar leading-relaxed">
+                    <p className="w-full bg-slate-800/50 border border-white/10 rounded-xl px-3 py-2 md:py-3 text-[11px] md:text-xs text-white whitespace-pre-wrap break-words max-h-[80px] md:max-h-[180px] overflow-y-auto overflow-x-hidden custom-scrollbar leading-relaxed">
                       {renderDescription(product.description, router)}
                     </p>
                   </div>
@@ -584,7 +588,7 @@ export function ShopProductSecondViewModal({
                           const hasPromo = price < mainPrice;
                           return (
                             <>
-                              <span className="text-[26px] md:text-[30px] font-black text-white tracking-tighter leading-none">{price.toFixed(2)}</span>
+                              <span className="text-[20px] md:text-[30px] font-black text-white tracking-tighter leading-none">{price.toFixed(2)}</span>
                               {hasPromo && <span className="text-[10px] font-black text-red-500 line-through tracking-widest mt-0.5 ml-0.5 opacity-80">R {mainPrice.toFixed(2)}</span>}
                             </>
                           );
@@ -646,6 +650,28 @@ export function ShopProductSecondViewModal({
 
                 <div className="mb-2" />
                 <div className="space-y-1">
+                  {productVariants.length > 0 && (
+                    <div className="flex items-center justify-between py-3 px-1 border-t border-white/5">
+                      <span className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-500">AVAILABLE COLORS</span>
+                      <div className="relative min-w-[110px] max-w-[200px] md:max-w-[260px] w-auto flex-1 md:flex-none">
+                        <button type="button" onClick={() => { setIsColorDropdownOpen(!isColorDropdownOpen); if (!isColorDropdownOpen) setIsSizeDropdownOpen(false); }} className="w-full bg-white text-black border border-white/20 rounded-full px-3 py-1.5 md:py-2 flex items-center justify-between shadow-lg hover:bg-slate-100 active:scale-95 group transition-all">
+                          <span className="text-[9px] md:text-[10px] font-medium uppercase tracking-[0.1em] truncate relative top-[0.5px] pl-1">{selectedVariantIndex !== null ? productVariants[selectedVariantIndex]?.color || "Standard" : "Colors"}</span>
+                          <div className={`flex items-center justify-center transition-transform duration-300 ${isColorDropdownOpen ? "rotate-180" : ""}`}><IonIcon name="chevron-down" className="text-black text-[9px]" /></div>
+                        </button>
+                        {isColorDropdownOpen && (
+                          <div className="absolute top-full mt-2.5 right-0 w-full min-w-[140px] bg-[#1A1A1A] border border-white/10 rounded-xl p-1.5 shadow-2xl z-[200] animate-in slide-in-from-top-2 fade-in duration-300 backdrop-blur-xl">
+                            {productVariants.map((variant: any, idx: number) => (
+                              <button key={idx} type="button" onClick={() => { setSelectedVariantIndex(idx); setSelectedSize(null); setSizeError(false); setQuantity(1); setIsColorDropdownOpen(false); }} className={`w-full py-3 px-5 rounded-xl text-[10px] font-medium uppercase tracking-wider text-left transition-all flex items-center justify-between ${selectedVariantIndex === idx ? "bg-white text-black" : "text-white/80 hover:bg-white/10 hover:text-white"}`}>
+                                <span>{variant.color || variant.description || `Style ${idx + 1}`}</span>
+                                {selectedVariantIndex === idx && <IonIcon name="checkmark" className="text-black text-xs" />}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {(() => {
                     if (!sizeList.length) return null;
                     const activeSelection = activeSelections.find((s: any) => s.value === selectedSize);
@@ -653,9 +679,9 @@ export function ShopProductSecondViewModal({
                     return (
                       <div className="flex items-center justify-between py-3 px-1 border-t border-white/5">
                         <span className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-500">SIZES</span>
-                        <div className="relative min-w-[150px] max-w-[260px] w-auto flex-1 md:flex-none">
-                          <button type="button" onClick={() => { setIsSizeDropdownOpen(!isSizeDropdownOpen); if (!isSizeDropdownOpen) setIsColorDropdownOpen(false); }} className={`w-full bg-white text-black border rounded-full px-4 py-2 flex items-center justify-between shadow-lg hover:bg-slate-100 active:scale-95 group transition-all ${sizeError ? "border-red-500 ring-2 ring-red-500/40" : "border-white/20"}`}>
-                            <span className="text-[10px] font-medium uppercase tracking-[0.1em] truncate relative top-[0.5px] pl-1">{selectedSize ? selectedSizeDisplay : "Sizes"}</span>
+                        <div className="relative min-w-[110px] max-w-[200px] md:max-w-[260px] w-auto flex-1 md:flex-none">
+                          <button type="button" onClick={() => { setIsSizeDropdownOpen(!isSizeDropdownOpen); if (!isSizeDropdownOpen) setIsColorDropdownOpen(false); }} className={`w-full bg-white text-black border rounded-full px-3 py-1.5 md:py-2 flex items-center justify-between shadow-lg hover:bg-slate-100 active:scale-95 group transition-all ${sizeError ? "border-red-500 ring-2 ring-red-500/40" : "border-white/20"}`}>
+                            <span className="text-[9px] md:text-[10px] font-medium uppercase tracking-[0.1em] truncate relative top-[0.5px] pl-1">{selectedSize ? selectedSizeDisplay : "Sizes"}</span>
                             <div className={`flex items-center justify-center transition-transform duration-300 ${isSizeDropdownOpen ? "rotate-180" : ""}`}><IonIcon name="chevron-down" className="text-black text-[9px]" /></div>
                           </button>
                           {isSizeDropdownOpen && (
@@ -677,28 +703,6 @@ export function ShopProductSecondViewModal({
                       </div>
                     );
                   })()}
-
-                  {productVariants.length > 0 && (
-                    <div className="flex items-center justify-between py-3 px-1 border-t border-white/5">
-                      <span className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-500">AVAILABLE COLORS</span>
-                      <div className="relative min-w-[150px] max-w-[260px] w-auto flex-1 md:flex-none">
-                        <button type="button" onClick={() => { setIsColorDropdownOpen(!isColorDropdownOpen); if (!isColorDropdownOpen) setIsSizeDropdownOpen(false); }} className="w-full bg-white text-black border border-white/20 rounded-full px-4 py-2 flex items-center justify-between shadow-lg hover:bg-slate-100 active:scale-95 group transition-all">
-                          <span className="text-[10px] font-medium uppercase tracking-[0.1em] truncate relative top-[0.5px] pl-1">{selectedVariantIndex !== null ? productVariants[selectedVariantIndex]?.color || "Standard" : "Colors"}</span>
-                          <div className={`flex items-center justify-center transition-transform duration-300 ${isColorDropdownOpen ? "rotate-180" : ""}`}><IonIcon name="chevron-down" className="text-black text-[9px]" /></div>
-                        </button>
-                        {isColorDropdownOpen && (
-                          <div className="absolute top-full mt-2.5 right-0 w-full min-w-[140px] bg-[#1A1A1A] border border-white/10 rounded-xl p-1.5 shadow-2xl z-[200] animate-in slide-in-from-top-2 fade-in duration-300 backdrop-blur-xl">
-                            {productVariants.map((variant: any, idx: number) => (
-                              <button key={idx} type="button" onClick={() => { setSelectedVariantIndex(idx); setSelectedSize(null); setSizeError(false); setQuantity(1); setIsColorDropdownOpen(false); }} className={`w-full py-3 px-5 rounded-xl text-[10px] font-medium uppercase tracking-wider text-left transition-all flex items-center justify-between ${selectedVariantIndex === idx ? "bg-white text-black" : "text-white/80 hover:bg-white/10 hover:text-white"}`}>
-                                <span>{variant.color || variant.description || `Style ${idx + 1}`}</span>
-                                {selectedVariantIndex === idx && <IonIcon name="checkmark" className="text-black text-xs" />}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
 
                   {(() => {
                     const standardized = parseShippingData(product);
@@ -745,7 +749,7 @@ export function ShopProductSecondViewModal({
               </div>
             </div>
 
-            <div className="p-3 md:px-7 md:py-4 border-t border-white/5 bg-transparent mt-auto flex items-center justify-between">
+            <div className="px-3 py-2 md:px-7 md:py-4 border-t border-white/5 bg-transparent mt-auto flex items-center justify-between">
               {activeTab === "my-products" && myListingsTab === "all" && product.status ? (
                 <div className="flex-1 flex gap-3">
                   {product.status === "pending" && (

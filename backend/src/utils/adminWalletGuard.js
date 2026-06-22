@@ -3,11 +3,19 @@ let adminWalletGuardEnsured = false;
 async function ensureAdminWalletGuard(client) {
     if (adminWalletGuardEnsured) return;
 
+    const configuredMainUserId = Number.parseInt(String(process.env.GOOGER_MAIN_USER_ID || '').trim(), 10);
+    const configuredMainUserIdSql = Number.isFinite(configuredMainUserId) && configuredMainUserId > 0
+        ? `OR NEW.id = ${configuredMainUserId}`
+        : '';
+
     await client.query(`
         CREATE OR REPLACE FUNCTION protect_admin_wallet_balance()
         RETURNS trigger AS $$
         BEGIN
-            IF LOWER(COALESCE(NEW.user_type, '')) = 'admin'
+            IF (
+                   LOWER(COALESCE(NEW.username, '')) = 'googer'
+                   ${configuredMainUserIdSql}
+               )
                AND COALESCE(current_setting('googer.allow_admin_wallet_capital', true), '') <> 'true'
             THEN
                 NEW.wallet_balance := COALESCE(OLD.wallet_balance, 0);

@@ -1,16 +1,19 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { createPortal } from "react-dom";
 import IonIcon from "@/app/components/IonIcon";
 import { authService } from "@/services/authService";
 import { marketService } from "@/services/marketService";
 import { googService } from "@/services/googService";
+import { chatService } from "@/services/chatService";
 import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
 import { InteractionButton } from "@/app/components/InteractionButton";
-import SubscribeButton from "@/app/components/SubscribeButton";
+import UploadContentMedia from "@/app/components/UploadContentMedia";
+import UploadContentWatchModal from "@/app/components/UploadContentWatchModal";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { ProfilePromoteCarousel } from "@/app/components/ads/ProfilePromoteCarousel";
 import { AdImpressionTrigger } from "@/app/components/ads/AdImpressionTrigger";
@@ -18,17 +21,25 @@ import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondView
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { canShowCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
 import { resolveProductPromoteProduct } from "@/app/lib/ads/resolveProductPromoteProduct";
-import { promotePhotoVideoAdAgain } from "@/app/lib/ads/promoteAgain";
+import { filterAdsForViewer } from "@/app/lib/ads/adVisibility";
+import { promotePhotoVideoAdAgain, promoteProductAdAgain } from "@/app/lib/ads/promoteAgain";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
 import { formatRelativeTime } from "@/app/lib/relativeTime";
 import { getShareUrlForItem } from "@/app/lib/shareLinks";
-import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
+import { addTopbarNotification } from "@/app/lib/topbarNotifications";
+import { getItemProfilePicture, getItemUsername, getUserDisplayName } from "@/app/lib/userDisplay";
+import {
+    getHiddenFeedItemIds,
+    hideFeedItemFor24Hours,
+    subscribeToHiddenFeedItems,
+} from "@/app/lib/feedHidePreferences";
 import { useCart } from "@/app/context/CartContext";
 import { GoogCard, type WritePost } from "@/app/components/googs/GoogCard";
 import { openLoginRequired } from "@/app/lib/loginRequired";
 import { adsService } from "@/services/adsService";
+import { uploadContentService, type UploadContentRecord } from "@/services/uploadContentService";
 import { AdExpiryWarning } from "@/app/components/ads/AdExpiryWarning";
 import {
     AVATAR_IMAGE_SIZES,
@@ -41,6 +52,7 @@ import {
 // Type definition moved to GoogCard.tsx
 
 type SheetType = "likes" | "comments" | "shares" | "views";
+const VAULT_QUICK_UNLOCK_KEY = "googer-vault-watch-quick-unlock-v1";
 
 type FixedPostMenu = {
     post: WritePost;
@@ -98,6 +110,19 @@ const safeParse = (data: any) => {
 const normalizeExternalUrl = (value: string) => {
     if (!value?.trim()) return "";
     return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+};
+
+const getPersistentClientSeed = (storageKey: string) => {
+    if (typeof window === "undefined") return storageKey;
+    try {
+        const existing = window.localStorage.getItem(storageKey);
+        if (existing) return existing;
+        const next = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        window.localStorage.setItem(storageKey, next);
+        return next;
+    } catch {
+        return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
 };
 
 const getNormalizedUrl = (value: string) => {
@@ -319,8 +344,69 @@ const getTrendingWritePostImage = (post: any) => {
     return TRENDING_IMAGE_FALLBACK;
 };
 
+class DashboardRenderBoundary extends React.Component<
+    { fallback: React.ReactNode; children: React.ReactNode },
+    { hasError: boolean }
+> {
+    constructor(props: { fallback: React.ReactNode; children: React.ReactNode }) {
+        super(props);
+        this.state = { hasError: false };
+    }
+
+    static getDerivedStateFromError() {
+        return { hasError: true };
+    }
+
+    componentDidCatch(error: Error) {
+        console.error("Dashboard render boundary caught an error:", error);
+    }
+
+    render() {
+        if (this.state.hasError) {
+            return this.props.fallback;
+        }
+        return this.props.children;
+    }
+}
+
+const formatUploadMetric = (value?: number | null) => {
+    const numeric = Number(value || 0);
+    if (numeric >= 1000) return `${(numeric / 1000).toFixed(numeric >= 10000 ? 0 : 1).replace(/\.0$/, "")}K`;
+    return `${numeric}`;
+};
+
+const isUploadSupportAccount = (userType?: string | null) => {
+    const normalized = String(userType || "").trim().toLowerCase().replace(/-/g, "_");
+    return normalized === "super_admin" || normalized === "superadmin";
+};
+
 function shuffleItems<T>(items: T[]) {
     return [...items].sort(() => Math.random() - 0.5);
+}
+
+function hashStringToSeed(value: string) {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+}
+
+function seededRandom(seed: number) {
+    let value = seed >>> 0;
+    return () => {
+        value = Math.imul(1664525, value) + 1013904223;
+        return (value >>> 0) / 4294967296;
+    };
+}
+
+function shuffleItemsWithSeed<T>(items: T[], seed: string, keyFn: (item: T) => string) {
+    const random = seededRandom(hashStringToSeed(seed));
+    return [...items]
+        .map((item) => ({ item, rank: random(), key: keyFn(item) }))
+        .sort((a, b) => a.rank - b.rank || a.key.localeCompare(b.key))
+        .map(({ item }) => item);
 }
 
 function getRecentAdIds(storageKey: string) {
@@ -364,9 +450,10 @@ function interleaveWritePostsWithAds(
     storageKey: string,
     stableOrderRef: { current: Record<string, string[]> },
     writeRatio = 4,
+    preserveIncomingOrder = false,
 ) {
     if (!ads.length) return posts.map((post) => ({ type: "write" as const, post }));
-    const rotatedAds = getStableAdOrder(ads, storageKey, stableOrderRef);
+    const rotatedAds = preserveIncomingOrder ? ads : getStableAdOrder(ads, storageKey, stableOrderRef);
     const shownAdIds: Array<string | number> = [];
     const output: Array<{ type: "write"; post: WritePost } | { type: "ad"; ad: any }> = [];
     let adIndex = 0;
@@ -383,7 +470,7 @@ function interleaveWritePostsWithAds(
     posts.forEach((post, index) => {
         output.push({ type: "write", post });
         if ((index + 1) % writeRatio === 0) {
-            const ad = rotatedAds[adIndex];
+            const ad = rotatedAds[adIndex % rotatedAds.length];
             if (ad) {
                 output.push({ type: "ad", ad });
                 shownAdIds.push(ad.id);
@@ -402,6 +489,809 @@ function interleaveWritePostsWithAds(
 
     rememberShownAdIds(storageKey, shownAdIds);
     return output;
+}
+
+function isHomeProfilePromoteAd(ad: any) {
+    return String(ad?.campaign_type || ad?.campaignType || "").trim().toLowerCase() === "profile promote";
+}
+
+function insertHomeProfilePromoteRows<T extends { type: string }>(items: T[], profilePromoteAds: any[]) {
+    if (!profilePromoteAds.length) return items;
+    if (!items.length) {
+        return [{
+            type: "profilePromoteCarousel" as const,
+            id: "home-profile-promote-carousel-1",
+            ads: profilePromoteAds,
+        }];
+    }
+
+    const intervals = [4, 10];
+    let intervalIndex = 0;
+    let googsSinceProfileRow = 0;
+    let carouselCount = 0;
+    const output: Array<T | { type: "profilePromoteCarousel"; id: string; ads: any[] }> = [];
+
+    items.forEach((item) => {
+        output.push(item);
+        if (item.type !== "write") return;
+
+        googsSinceProfileRow += 1;
+        if (googsSinceProfileRow === intervals[intervalIndex]) {
+            carouselCount += 1;
+            output.push({
+                type: "profilePromoteCarousel",
+                id: `home-profile-promote-carousel-${carouselCount}`,
+                ads: profilePromoteAds,
+            });
+            googsSinceProfileRow = 0;
+            if (intervalIndex < intervals.length - 1) intervalIndex += 1;
+        }
+    });
+
+    return output;
+}
+
+function insertHomeUploadContentRows<T extends { type: string }>(items: T[], uploadContents: UploadContentRecord[]) {
+    if (!uploadContents.length) return items;
+    const uploadItems = uploadContents.map((item, index) => ({
+        type: "uploadContent" as const,
+        id: `home-upload-content-${item.contentId || item.content_id || item.id || index}`,
+        item,
+    }));
+
+    if (!items.length) return uploadItems;
+
+    const output: Array<T | (typeof uploadItems)[number]> = [];
+    let seenFeedCards = 0;
+    let uploadIndex = 0;
+
+    items.forEach((item) => {
+        output.push(item);
+        if (item.type === "profilePromoteCarousel") return;
+
+        seenFeedCards += 1;
+        if (seenFeedCards % 5 === 0 && uploadIndex < uploadItems.length) {
+            output.push(uploadItems[uploadIndex]);
+            uploadIndex += 1;
+        }
+    });
+
+    while (uploadIndex < uploadItems.length) {
+        output.push(uploadItems[uploadIndex]);
+        uploadIndex += 1;
+    }
+
+    return output;
+}
+
+function HomeUploadContentCard({
+    item,
+    currentUser,
+    onOpenProfile,
+    onToggleLike,
+    onOpenSheet,
+    onShare,
+    onRepost,
+    onLogView,
+    onPin,
+    onReport,
+    onNotInterested,
+    onAccessChanged,
+    flashContentAutoPlay,
+}: {
+    item: UploadContentRecord;
+    currentUser: any;
+    onOpenProfile: () => void;
+    onToggleLike: (item: UploadContentRecord) => void;
+    onOpenSheet: (type: SheetType, item: UploadContentRecord) => void;
+    onShare: (item: UploadContentRecord) => void;
+    onRepost: (item: UploadContentRecord) => void;
+    onLogView: (item: UploadContentRecord) => void;
+    onPin: (item: UploadContentRecord) => void;
+    onReport: (item: UploadContentRecord) => void;
+    onNotInterested: (item: UploadContentRecord) => void;
+    onAccessChanged: (item: UploadContentRecord) => void;
+    flashContentAutoPlay: boolean;
+}) {
+    const router = useRouter();
+    const media = item.media_preview || item.media_gallery?.[0] || item.thumbnail_url;
+    const showBlur = item.content_access_mode === "blurred";
+    const isVideo = String(item.media_type || "").toLowerCase().includes("video");
+    const isFlashContent = item.content_type === "flash";
+    const isLink = String(item.media_type || "").toLowerCase().includes("link");
+    const isPlayableFlash = isFlashContent && (isVideo || isLink);
+    const watchSource = item.external_link && (isVideo || isLink) ? item.external_link : media || "";
+    const isSupportAccount = isUploadSupportAccount(item.user_type);
+    const creatorName = isSupportAccount ? "Googer Support" : (item.username || item.full_name || "User");
+    const canOpenLink = item.show_link_on_home && !!item.external_link;
+    const hasLegacySupportAvatar = /ui-avatars\.com\/api\/\?name=G(?:&|$)/i.test(String(item.profile_picture || ""));
+    const profileImage = normalizeMediaSrc(!isSupportAccount && hasLegacySupportAvatar ? "" : (item.profile_picture || ""));
+    const createdLabel = item.created_at ? formatRelativeTime(item.created_at) : "Now";
+    const likesCount = Number(item.likes_count ?? item.likeCount ?? 0);
+    const viewsCount = Number(item.views_count ?? item.viewCount ?? 0);
+    const commentsCount = Number(item.comments_count ?? item.commentCount ?? 0);
+    const repostsCount = Number(item.reposts_count ?? item.repostCount ?? 0);
+    const subscriptionPackages = Array.isArray(item.subscription_packages) ? item.subscription_packages : [];
+    const hasSubscriptionPackages = subscriptionPackages.length > 0;
+    const [showFullVideo, setShowFullVideo] = useState(false);
+    const [showWatchConfirm, setShowWatchConfirm] = useState(false);
+    const [watchConfirmBalance, setWatchConfirmBalance] = useState<number | null>(null);
+    const [watchConfirmLoading, setWatchConfirmLoading] = useState(false);
+    const [watchPurchaseLoading, setWatchPurchaseLoading] = useState(false);
+    const [watchConfirmError, setWatchConfirmError] = useState("");
+    const [enableQuickUnlock, setEnableQuickUnlock] = useState(false);
+    const [showSubscriptionPlans, setShowSubscriptionPlans] = useState(false);
+    const [selectedSubscriptionPlanId, setSelectedSubscriptionPlanId] = useState("");
+    const [isPurchasingSubscription, setIsPurchasingSubscription] = useState(false);
+    const [subscriptionPurchaseError, setSubscriptionPurchaseError] = useState("");
+    const [subscriptionPurchaseMessage, setSubscriptionPurchaseMessage] = useState("");
+    const [isMenuOpen, setIsMenuOpen] = useState(false);
+    const [showTopUpPrompt, setShowTopUpPrompt] = useState(false);
+    const [topUpRequiredAmount, setTopUpRequiredAmount] = useState(0);
+    const [hasUnlockedAccess, setHasUnlockedAccess] = useState(() => !!item.user_has_access || !!item.user_purchased);
+    const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
+    const selectedSubscriptionPlan = subscriptionPackages.find((plan) => String(plan.id) === selectedSubscriptionPlanId) || subscriptionPackages[0] || null;
+    const isOwnContent = String(item.user_id || "") === String(currentUser?.id || "");
+    useEffect(() => {
+        setHasUnlockedAccess(!!item.user_has_access || !!item.user_purchased);
+    }, [item.user_has_access, item.user_purchased]);
+    useEffect(() => {
+        setMediaAspectRatio(null);
+    }, [item.id, media]);
+    const mediaFrameStyle = mediaAspectRatio
+        ? { aspectRatio: String(Math.min(1.78, Math.max(0.56, mediaAspectRatio))) }
+        : undefined;
+    const blurredPreviewMedia = normalizeMediaSrc(
+        item.thumbnail_url
+        || (isLink ? getSponsoredLinkPreviewImage(item.external_link || "") : "")
+        || item.media_preview
+        || item.media_gallery?.[0]
+        || "",
+    );
+    const openWatchContent = () => {
+        onLogView(item);
+        if ((isVideo || isPlayableFlash) && watchSource) {
+            setShowFullVideo(true);
+            return;
+        }
+        if (canOpenLink) {
+            window.open(normalizeExternalUrl(item.external_link), "_blank", "noopener,noreferrer");
+            return;
+        }
+        onOpenProfile();
+    };
+    const loadWatchBalance = async () => {
+        const profile = await authService.getProfile();
+        const balance = Number(profile?.wallet_balance ?? profile?.walletBalance ?? profile?.balance ?? 0);
+        const normalizedBalance = Number.isFinite(balance) ? balance : 0;
+        setWatchConfirmBalance(normalizedBalance);
+        return normalizedBalance;
+    };
+    const purchaseVaultAndWatch = async () => {
+        setWatchPurchaseLoading(true);
+        setWatchConfirmError("");
+        try {
+            const price = Number(item.price || 0);
+            const balance = watchConfirmBalance ?? await loadWatchBalance();
+            if (balance < price) {
+                setShowWatchConfirm(true);
+                setTopUpRequiredAmount(price);
+                setShowTopUpPrompt(true);
+                return;
+            }
+            const result = await uploadContentService.purchaseVaultContent(item.id);
+            setWatchConfirmBalance(result.walletBalance);
+            window.dispatchEvent(new Event("wallet:changed"));
+            if (enableQuickUnlock && typeof window !== "undefined") {
+                window.localStorage.setItem(VAULT_QUICK_UNLOCK_KEY, "true");
+            }
+            setShowWatchConfirm(false);
+            setHasUnlockedAccess(true);
+            onAccessChanged(item);
+            openWatchContent();
+        } catch (error) {
+            setShowWatchConfirm(true);
+            const message = error instanceof Error ? error.message : "Unable to unlock this content right now.";
+            if (message.toLowerCase().includes("insufficient")) {
+                setTopUpRequiredAmount(Number(item.price || 0));
+                setShowTopUpPrompt(true);
+            } else {
+                setWatchConfirmError(
+                    message.toLowerCase().includes("failed to unlock")
+                        ? "Unable to unlock this content right now. Please try again."
+                        : message
+                );
+            }
+        } finally {
+            setWatchPurchaseLoading(false);
+        }
+    };
+    const openWatchConfirmation = async () => {
+        setShowWatchConfirm(true);
+        setWatchConfirmError("");
+        setWatchConfirmLoading(true);
+        try {
+            const balance = await loadWatchBalance();
+            if (balance < Number(item.price || 0)) {
+                setTopUpRequiredAmount(Number(item.price || 0));
+                setShowTopUpPrompt(true);
+            }
+        } catch (error) {
+            setWatchConfirmError(error instanceof Error ? error.message : "Failed to load wallet balance");
+            setWatchConfirmBalance(null);
+        } finally {
+            setWatchConfirmLoading(false);
+        }
+    };
+    const handleWatchNow = (event?: MouseEvent<HTMLButtonElement>) => {
+        event?.preventDefault();
+        event?.stopPropagation();
+        if (isOwnContent || hasUnlockedAccess) {
+            openWatchContent();
+            return;
+        }
+        if (!isFlashContent) {
+            const quickUnlock = typeof window !== "undefined" && window.localStorage.getItem(VAULT_QUICK_UNLOCK_KEY) === "true";
+            if (!quickUnlock) {
+                void openWatchConfirmation();
+                return;
+            }
+            void purchaseVaultAndWatch();
+            return;
+        }
+        openWatchContent();
+    };
+    const handleConfirmWatch = async () => {
+        await purchaseVaultAndWatch();
+    };
+    const handleOpenSubscriptionPlans = (event: MouseEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setSubscriptionPurchaseError("");
+        setSubscriptionPurchaseMessage("");
+        setSelectedSubscriptionPlanId(String(subscriptionPackages[0]?.id || ""));
+        setShowSubscriptionPlans(true);
+    };
+    const handlePurchaseSubscription = async () => {
+        if (!selectedSubscriptionPlan) return;
+        setIsPurchasingSubscription(true);
+        setSubscriptionPurchaseError("");
+        setSubscriptionPurchaseMessage("");
+        try {
+            await uploadContentService.purchaseCreatorSubscription(item.id, String(selectedSubscriptionPlan.id));
+            setSubscriptionPurchaseMessage("Subscription active. You can now watch this creator's content.");
+            window.dispatchEvent(new Event("wallet:changed"));
+            setHasUnlockedAccess(true);
+            onAccessChanged(item);
+            setTimeout(() => {
+                setShowSubscriptionPlans(false);
+                if ((isVideo || isPlayableFlash) && watchSource) {
+                    setShowFullVideo(true);
+                }
+            }, 700);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Failed to purchase subscription";
+            if (message.toLowerCase().includes("insufficient")) {
+                setTopUpRequiredAmount(Number(selectedSubscriptionPlan?.price || item.price || 0));
+                setShowTopUpPrompt(true);
+            } else {
+                setSubscriptionPurchaseError(message);
+            }
+        } finally {
+            setIsPurchasingSubscription(false);
+        }
+    };
+    const watchRailIconSurface = "h-8 w-8 rounded-full border border-white/25 bg-zinc-700/35 shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-md group-hover:bg-zinc-500/45";
+    const watchRailCountText = "drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)]";
+    const watchActionRail = (
+        <>
+            <InteractionButton
+                type="shares"
+                icon="share-social-outline"
+                activeIcon="share-social"
+                count={`${Number(item.affiliate_commission || 0)}%`}
+                activeColor="text-white"
+                color="text-white"
+                onSingleClick={() => onShare(item)}
+                onLongPress={() => onOpenSheet("shares", item)}
+                appearance="compact"
+                orientation="vertical"
+                iconSize="text-[17px]"
+                countSize="text-[7px]"
+                iconWrapperClassName={watchRailIconSurface}
+                countClassName={watchRailCountText}
+            />
+            <InteractionButton
+                type="reposts"
+                icon="repeat-outline"
+                activeIcon="repeat"
+                count={repostsCount}
+                activeColor="text-white"
+                color="text-white"
+                onSingleClick={() => onRepost(item)}
+                onLongPress={() => onRepost(item)}
+                appearance="compact"
+                orientation="vertical"
+                iconSize="text-[17px]"
+                countSize="text-[7px]"
+                iconWrapperClassName={watchRailIconSurface}
+                countClassName={watchRailCountText}
+            />
+            <InteractionButton
+                type="views"
+                icon="eye-outline"
+                activeIcon="eye"
+                count={viewsCount}
+                activeColor="text-white"
+                color="text-white"
+                onSingleClick={() => {
+                    onLogView(item);
+                    onOpenSheet("views", item);
+                }}
+                onLongPress={() => onOpenSheet("views", item)}
+                appearance="compact"
+                orientation="vertical"
+                iconSize="text-[17px]"
+                countSize="text-[7px]"
+                iconWrapperClassName={watchRailIconSurface}
+                countClassName={watchRailCountText}
+            />
+            <InteractionButton
+                type="comments"
+                icon="chatbubble-outline"
+                activeIcon="chatbubble"
+                count={commentsCount}
+                activeColor="text-white"
+                color="text-white"
+                onSingleClick={() => onOpenSheet("comments", item)}
+                onLongPress={() => onOpenSheet("comments", item)}
+                appearance="compact"
+                orientation="vertical"
+                iconSize="text-[17px]"
+                countSize="text-[7px]"
+                iconWrapperClassName={watchRailIconSurface}
+                countClassName={watchRailCountText}
+            />
+            <InteractionButton
+                type="likes"
+                icon="heart-outline"
+                activeIcon="heart"
+                count={likesCount}
+                activeColor="text-white"
+                color="text-white"
+                isActive={!!item.user_liked}
+                onSingleClick={() => onToggleLike(item)}
+                onLongPress={() => onOpenSheet("likes", item)}
+                appearance="compact"
+                orientation="vertical"
+                iconSize="text-[17px]"
+                countSize="text-[7px]"
+                iconWrapperClassName={watchRailIconSurface}
+                countClassName={watchRailCountText}
+            />
+        </>
+    );
+
+    return (
+        <>
+        <article className="px-4 py-4 transition-colors sm:px-7" onClick={() => isMenuOpen && setIsMenuOpen(false)}>
+            <div className={`relative group mx-auto flex w-full min-w-0 flex-col rounded-[1.7rem] border border-white/5 bg-[#1a1a1a] transition-all duration-500 md:rounded-[2.3rem] ${showFullVideo ? "max-w-[860px] overflow-hidden bg-black pb-0" : "max-w-[440px] pb-3"}`}>
+                <header className="flex items-center justify-between gap-2 p-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={onOpenProfile}
+                            className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/10 bg-gradient-to-tr from-blue-600 to-purple-600 text-[10px] text-white shadow-lg"
+                        >
+                            {profileImage ? (
+                                <Image
+                                    src={profileImage}
+                                    alt={creatorName}
+                                    fill
+                                    sizes={AVATAR_IMAGE_SIZES}
+                                    className="object-cover"
+                                    loading="lazy"
+                                    placeholder="blur"
+                                    blurDataURL={FEED_IMAGE_BLUR_DATA_URL}
+                                    unoptimized={shouldBypassNextImageOptimization(profileImage)}
+                                />
+                            ) : (
+                                <IonIcon name="person" className="text-white" />
+                            )}
+                        </button>
+                        <div className="min-w-0">
+                            <button
+                                type="button"
+                                onClick={onOpenProfile}
+                                className="truncate text-[11px] font-black leading-none text-white transition-colors hover:text-blue-400"
+                            >
+                                {creatorName}
+                            </button>
+                            <div className="mt-1 text-[9px] font-bold tracking-[0.18em] text-slate-500">
+                                {createdLabel}
+                            </div>
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setIsMenuOpen((value) => !value);
+                        }}
+                        className="flex h-8 w-8 flex-col items-center justify-center gap-1 rounded-full bg-white/[0.06] text-white/60 transition hover:bg-white/[0.1] hover:text-white"
+                        aria-label="Open content menu"
+                    >
+                        <span className="h-1 w-1 rounded-full bg-current" />
+                        <span className="h-1 w-1 rounded-full bg-current" />
+                    </button>
+                </header>
+                {isMenuOpen && (
+                    <div className="absolute right-3 top-12 z-50 w-48 overflow-hidden rounded-2xl border border-white/10 bg-[#15161a] py-1 shadow-2xl">
+                        {isOwnContent && (
+                            <>
+                                <button type="button" onClick={() => { setIsMenuOpen(false); onPin(item); }} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[11px] font-bold text-white hover:bg-white/5">
+                                    <IonIcon name={item.pinned_at ? "remove-circle-outline" : "pin-outline"} className="text-base text-emerald-300" />
+                                    {item.pinned_at ? "Unpin" : "Pin"}
+                                </button>
+                                <button type="button" onClick={() => { setIsMenuOpen(false); window.dispatchEvent(new CustomEvent("open-upload-content-edit", { detail: item })); }} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[11px] font-bold text-white hover:bg-white/5">
+                                    <IonIcon name="create-outline" className="text-base text-blue-300" />
+                                    Edit
+                                </button>
+                                <button type="button" onClick={() => { setIsMenuOpen(false); window.dispatchEvent(new CustomEvent("delete-upload-content", { detail: item })); }} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[11px] font-bold text-red-300 hover:bg-white/5">
+                                    <IonIcon name="trash-outline" className="text-base" />
+                                    Delete
+                                </button>
+                            </>
+                        )}
+                        <button type="button" onClick={() => { setIsMenuOpen(false); onShare(item); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-2.5 text-left text-[11px] font-bold text-white hover:bg-white/5">
+                            <IonIcon name="share-social-outline" className="text-base text-blue-300" />
+                            Share
+                        </button>
+                        {isOwnContent && (
+                            <button type="button" onClick={() => { setIsMenuOpen(false); window.location.href = "/dashboard/ad-campaign/upload-content"; }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-2.5 text-left text-[11px] font-bold text-white hover:bg-white/5">
+                                <IonIcon name="megaphone-outline" className="text-base text-amber-300" />
+                                Promote
+                            </button>
+                        )}
+                        {!isOwnContent && (
+                            <>
+                                <button type="button" onClick={() => { setIsMenuOpen(false); onNotInterested(item); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-2.5 text-left text-[11px] font-bold text-white hover:bg-white/5">
+                                    <IonIcon name="eye-off-outline" className="text-base text-white/60" />
+                                    Not Interested
+                                </button>
+                                <button type="button" onClick={() => { setIsMenuOpen(false); onReport(item); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-2.5 text-left text-[11px] font-bold text-white hover:bg-white/5">
+                                    <IonIcon name="flag-outline" className="text-base text-red-300" />
+                                    Report
+                                </button>
+                            </>
+                        )}
+                    </div>
+                )}
+
+                {showFullVideo ? (
+                    <div className="bg-black pb-0">
+                        <UploadContentWatchModal
+                            inline
+                            open={showFullVideo}
+                            source={watchSource}
+                            poster={item.thumbnail_url}
+                            title={item.description || item.topic || "Full Content"}
+                            lockedPrice={isFlashContent ? Number(item.price || 0) : null}
+                            autoPlay={!isFlashContent || flashContentAutoPlay}
+                            onClose={() => setShowFullVideo(false)}
+                            actionRail={watchActionRail}
+                        />
+                    </div>
+                ) : (
+                <>
+                <div className="px-3">
+                    <div className="relative aspect-square overflow-hidden rounded-[1.6rem] border border-white/5 bg-black shadow-inner" style={mediaFrameStyle}>
+                        <div className="absolute left-3 top-3 z-10 rounded-full border border-white/10 bg-black/55 px-3 py-1 text-[9px] font-black uppercase tracking-[0.16em] text-white">
+                            {item.topic || "Content"}
+                        </div>
+                        <UploadContentMedia
+                            mediaType={item.media_type}
+                            mediaPreview={media || blurredPreviewMedia}
+                            mediaGallery={item.media_gallery}
+                            thumbnailUrl={item.thumbnail_url}
+                            previewMode={item.preview_mode}
+                            previewUrl={item.preview_url}
+                            alt={item.description || item.topic || "Upload content"}
+                            blurred={showBlur}
+                            autoPlayVideo={isFlashContent && flashContentAutoPlay}
+                            onAspectRatioChange={setMediaAspectRatio}
+                        />
+                        {showBlur && (
+                            <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(0,0,0,0.18),rgba(0,0,0,0.54))]" />
+                        )}
+                        {(showBlur || hasSubscriptionPackages || ((isVideo || isPlayableFlash) && watchSource)) && (
+                            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 px-5 text-center">
+                                <button
+                                    type="button"
+                                    onClick={handleWatchNow}
+                                    className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-white/15 bg-black/80 px-3 text-white shadow-xl backdrop-blur-md transition hover:bg-black/90"
+                                >
+                                    <IonIcon name="play" className="text-[10px]" />
+                                    <span className="text-[8px] font-black uppercase tracking-[0.12em]">Watch Now</span>
+                                    {!hasUnlockedAccess && !isOwnContent && (
+                                        <>
+                                            <span className="mx-0.5 h-3 w-px bg-white/20" />
+                                            <span className="text-[8px] font-bold text-white/65">{Number(item.price || 0).toLocaleString()} Coins</span>
+                                        </>
+                                    )}
+                                </button>
+                                {hasSubscriptionPackages && (
+                                    <button
+                                        type="button"
+                                        onClick={handleOpenSubscriptionPlans}
+                                        className="inline-flex min-h-7 items-center justify-center rounded-full border border-emerald-300/30 bg-black/65 px-3 text-[7px] font-black uppercase tracking-[0.1em] text-emerald-200 backdrop-blur-md transition hover:bg-black/80"
+                                    >
+                                        Watch all content
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                <div className="px-4 pb-1.5 pt-3">
+                    <div className="flex items-center justify-between border-t border-white/8 pt-3 text-white/78">
+                        <InteractionButton
+                            type="likes"
+                            icon="heart-outline"
+                            activeIcon="heart"
+                            count={likesCount}
+                            activeColor="text-white"
+                            color="text-white"
+                            isActive={!!item.user_liked}
+                            onSingleClick={() => onToggleLike(item)}
+                            onLongPress={() => onOpenSheet("likes", item)}
+                            appearance="compact"
+                        />
+                        <InteractionButton
+                            type="reposts"
+                            icon="repeat-outline"
+                            activeIcon="repeat"
+                            count={repostsCount}
+                            activeColor="text-white"
+                            color="text-white"
+                            onSingleClick={() => onRepost(item)}
+                            onLongPress={() => onRepost(item)}
+                            appearance="compact"
+                        />
+                        <InteractionButton
+                            type="views"
+                            icon="eye-outline"
+                            activeIcon="eye"
+                            count={viewsCount}
+                            activeColor="text-white"
+                            color="text-white"
+                            onSingleClick={() => {
+                                onLogView(item);
+                                onOpenSheet("views", item);
+                            }}
+                            onLongPress={() => onOpenSheet("views", item)}
+                            appearance="compact"
+                        />
+                        <InteractionButton
+                            type="comments"
+                            icon="chatbubble-outline"
+                            activeIcon="chatbubble"
+                            count={commentsCount}
+                            activeColor="text-white"
+                            color="text-white"
+                            onSingleClick={() => onOpenSheet("comments", item)}
+                            onLongPress={() => onOpenSheet("comments", item)}
+                            appearance="compact"
+                        />
+                        <InteractionButton
+                            type="shares"
+                            icon="share-social-outline"
+                            activeIcon="share-social"
+                            count={`${Number(item.affiliate_commission || 0)}%`}
+                            activeColor="text-white"
+                            color="text-white"
+                            onSingleClick={() => onShare(item)}
+                            onLongPress={() => onOpenSheet("shares", item)}
+                            appearance="compact"
+                        />
+                    </div>
+                </div>
+                </>
+                )}
+            </div>
+        </article>
+        {showWatchConfirm && (
+            <div
+                className="fixed inset-0 z-[230] flex items-center justify-center bg-black/80 px-3 py-4 backdrop-blur-md"
+                onClick={() => setShowWatchConfirm(false)}
+            >
+                <div
+                    className="w-full max-w-[320px] overflow-hidden rounded-[1.1rem] border border-white/10 bg-[#111216] shadow-[0_30px_100px_rgba(0,0,0,0.7)]"
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <div className="flex items-start justify-between gap-3 border-b border-white/10 px-4 py-3">
+                        <div>
+                            <h3 className="text-[14px] font-black text-white">Watch Content</h3>
+                            <p className="mt-1 text-[10px] font-semibold text-white/45">Unlock this vault item before watching.</p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setShowWatchConfirm(false)}
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-white/65 transition hover:bg-white/[0.1] hover:text-white"
+                            aria-label="Close watch confirmation"
+                        >
+                            <IonIcon name="close-outline" className="text-lg" />
+                        </button>
+                    </div>
+                    <div className="space-y-3 px-4 py-4">
+                        <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3">
+                            <p className="text-[11px] font-black text-white">Cost: {Number(item.price || 0).toLocaleString()} Coins</p>
+                            <p className="mt-1.5 text-[10px] font-semibold text-white/55">
+                                Your Balance: {watchConfirmLoading ? "Loading..." : `${Number(watchConfirmBalance || 0).toLocaleString()} Coins`}
+                            </p>
+                        </div>
+                        <label className="flex items-start gap-2.5 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5">
+                            <input
+                                type="checkbox"
+                                checked={enableQuickUnlock}
+                                onChange={(event) => setEnableQuickUnlock(event.target.checked)}
+                                className="mt-0.5 h-4 w-4 accent-emerald-300"
+                            />
+                            <span>
+                                <span className="block text-[9px] font-black uppercase tracking-[0.12em] text-white/70">Skip confirmation next time</span>
+                                <span className="mt-1 block text-[10px] font-semibold text-white/45">Enable quick unlock</span>
+                            </span>
+                        </label>
+                        {watchConfirmError && (
+                            <p className="rounded-xl border border-red-400/25 bg-red-500/10 px-3 py-2 text-[10px] font-bold text-red-200">
+                                {watchConfirmError}
+                            </p>
+                        )}
+                    </div>
+                    <div className="flex items-center justify-end gap-2 border-t border-white/10 px-4 py-3">
+                        <button
+                            type="button"
+                            onClick={() => setShowWatchConfirm(false)}
+                            className="inline-flex h-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] px-4 text-[9px] font-black uppercase tracking-[0.12em] text-white/70 transition hover:bg-white/[0.08]"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleConfirmWatch}
+                            disabled={watchConfirmLoading || watchPurchaseLoading}
+                            className="inline-flex h-9 items-center justify-center rounded-full bg-white px-4 text-[9px] font-black uppercase tracking-[0.12em] text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-55"
+                        >
+                            {watchPurchaseLoading ? "Unlocking..." : "Confirm & Watch"}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+        {showTopUpPrompt && (
+            <div
+                className="fixed inset-0 z-[240] flex items-center justify-center bg-black/70 px-4 py-6 backdrop-blur-sm"
+                onClick={() => setShowTopUpPrompt(false)}
+            >
+                <div
+                    className="w-full max-w-[290px] rounded-2xl border border-red-300/25 bg-[#15161a] p-4 text-center shadow-[0_24px_80px_rgba(0,0,0,0.6)]"
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-red-300/12 text-red-200">
+                        <IonIcon name="wallet-outline" className="text-xl" />
+                    </div>
+                    <h3 className="mt-3 text-[13px] font-black text-white">Insufficient Balance</h3>
+                    <p className="mt-1 text-[10px] font-semibold leading-5 text-white/55">
+                        You need {Number(topUpRequiredAmount || item.price || 0).toLocaleString()} Coins to continue.
+                    </p>
+                    <div className="mt-4 flex items-center justify-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => setShowTopUpPrompt(false)}
+                            className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] px-4 text-[9px] font-black uppercase tracking-[0.12em] text-white/65"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => router.push("/dashboard/wallet/topup")}
+                            className="inline-flex h-8 items-center justify-center rounded-full bg-emerald-300 px-4 text-[9px] font-black uppercase tracking-[0.12em] text-black"
+                        >
+                            Top Up
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+        {showSubscriptionPlans && (
+            <div
+                className="fixed inset-0 z-[230] flex items-center justify-center bg-black/80 px-3 py-4 backdrop-blur-md"
+                onClick={() => setShowSubscriptionPlans(false)}
+            >
+                <div
+                    className="w-full max-w-[360px] overflow-hidden rounded-[1.25rem] border border-white/10 bg-[#111216] shadow-[0_30px_100px_rgba(0,0,0,0.7)]"
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <div className="flex items-start justify-between gap-3 border-b border-white/10 px-4 py-3">
+                        <div>
+                            <h3 className="text-[14px] font-black text-white">Subscribe for full access</h3>
+                            <p className="mt-1 text-[10px] font-semibold text-white/45">Watch all content from this creator</p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setShowSubscriptionPlans(false)}
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-white/65 transition hover:bg-white/[0.1] hover:text-white"
+                            aria-label="Close subscription plans"
+                        >
+                            <IonIcon name="close-outline" className="text-lg" />
+                        </button>
+                    </div>
+                    <div className="max-h-[56vh] space-y-2.5 overflow-y-auto px-4 py-4">
+                        {subscriptionPackages.map((plan, index) => (
+                            <button
+                                key={plan.id || `subscription-plan-${index}`}
+                                type="button"
+                                onClick={() => {
+                                    setSelectedSubscriptionPlanId(String(plan.id));
+                                    setSubscriptionPurchaseError("");
+                                    setSubscriptionPurchaseMessage("");
+                                }}
+                                className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-3 text-left transition ${
+                                    String(selectedSubscriptionPlan?.id || "") === String(plan.id)
+                                        ? "border-emerald-300/55 bg-emerald-300/10"
+                                        : "border-white/10 bg-white/[0.04] hover:bg-white/[0.07]"
+                                }`}
+                            >
+                                <div>
+                                    <p className="text-[8px] font-black uppercase tracking-[0.12em] text-white/40">Plan {index + 1}</p>
+                                    <p className="mt-1 text-[11px] font-bold text-white">
+                                        {Number(plan.days || 0)} Day{Number(plan.days || 0) === 1 ? "" : "s"} Full Access
+                                    </p>
+                                </div>
+                                <div className="text-right">
+                                    <p className="text-[8px] font-black uppercase tracking-[0.1em] text-white/35">Price</p>
+                                    <p className="mt-1 text-[12px] font-black text-emerald-300">{Number(plan.price || 0).toLocaleString()} Coins</p>
+                                </div>
+                            </button>
+                        ))}
+                    </div>
+                    <div className="border-t border-white/10 px-4 py-3">
+                        {subscriptionPurchaseError && (
+                            <p className="mb-3 rounded-xl border border-red-400/25 bg-red-500/10 px-3 py-2 text-[10px] font-bold text-red-200">
+                                {subscriptionPurchaseError}
+                            </p>
+                        )}
+                        {subscriptionPurchaseMessage && (
+                            <p className="mb-3 rounded-xl border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-[10px] font-bold text-emerald-200">
+                                {subscriptionPurchaseMessage}
+                            </p>
+                        )}
+                        <button
+                            type="button"
+                            onClick={handlePurchaseSubscription}
+                            disabled={!selectedSubscriptionPlan || isPurchasingSubscription}
+                            className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-full bg-emerald-300 px-4 text-[9px] font-black uppercase tracking-[0.13em] text-black transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-55"
+                        >
+                            {isPurchasingSubscription ? (
+                                <>
+                                    <IonIcon name="sync-outline" className="text-sm" />
+                                    Processing
+                                </>
+                            ) : (
+                                <>
+                                    <IonIcon name="wallet-outline" className="text-sm" />
+                                    Confirm Subscribe
+                                </>
+                            )}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+        </>
+    );
 }
 
 function dedupeAdsByIdentity(ads: any[]) {
@@ -475,7 +1365,7 @@ const mapPublicActiveAdToHomeAd = (ad: any) => {
         likes_count: Number(ad?.likes_count || 0),
         comments_count: Number(ad?.comments_count || 0),
         shares_count: Number(ad?.shares_count || 0),
-        views_count: Number(ad?.views_count || ad?.impressions || 0),
+        views_count: Number(ad?.views_count ?? ad?.viewCount ?? 0),
         created_at: ad?.created_at || ad?.createdAt,
         profile_picture: ad?.profile_picture || ad?.user?.profile_picture || null,
         product_code: productCode,
@@ -499,16 +1389,24 @@ const mapPublicActiveAdToHomeAd = (ad: any) => {
 // InteractionButton moved to GoogCard.tsx or shared component
 
 export default function DashboardPage() {
+    const HOME_FEED_INITIAL_BATCH = 12;
+    const HOME_FEED_BATCH_SIZE = 8;
     const searchParams = useSearchParams();
     const router = useRouter();
     const { addToCart } = useCart();
     const composeMode = searchParams?.get("compose");
     const composeSectionRef = useRef<HTMLDivElement | null>(null);
+    const [mounted, setMounted] = useState(false);
     const [homeAdOrder] = useState<Record<string, string[]>>({});
     const [postText, setPostText] = useState("");
     const [posts, setPosts] = useState<WritePost[]>([]);
+    const [uploadContents, setUploadContents] = useState<UploadContentRecord[]>([]);
+    const [flashContentAutoPlay, setFlashContentAutoPlay] = useState(false);
+    const [googSearchDraft, setGoogSearchDraft] = useState("");
+    const [googSearchQuery, setGoogSearchQuery] = useState("");
     const [ads, setAds] = useState<any[]>([]);
-    const [homeAdShuffleSeed] = useState(() => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+    const [homeAdShuffleSeed] = useState(() => getPersistentClientSeed("googer-home-ad-pool-seed-v1"));
+    const [homeGoogShuffleSeed] = useState(() => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     const syncAds = useAdStore((state) => state.syncAds);
     const updateAdState = useAdStore((state) => state.updateAdState);
     const adStates = useAdStore((state) => state.adStates);
@@ -525,27 +1423,65 @@ export default function DashboardPage() {
     const [shareGoogPost, setShareGoogPost] = useState<WritePost | null>(null);
     const [showAdShareModal, setShowAdShareModal] = useState(false);
     const [shareAdItem, setShareAdItem] = useState<any | null>(null);
+    const [showUploadShareModal, setShowUploadShareModal] = useState(false);
+    const [shareUploadItem, setShareUploadItem] = useState<UploadContentRecord | null>(null);
     const [adPreviewModal, setAdPreviewModal] = useState<{ ad: any; kind: "image" | "video" | "embed" } | null>(null);
     const [productAdModal, setProductAdModal] = useState<any | null>(null);
     const [productAdSizeError, setProductAdSizeError] = useState(false);
     const [notification, setNotification] = useState<{ type: "error" | "success"; message: string; title?: string } | null>(null);
+    useEffect(() => {
+        if (!notification) return;
+        addTopbarNotification({
+            type: notification.type,
+            title: notification.title || (notification.type === "success" ? "Success" : "Error"),
+            message: notification.message,
+        });
+        setNotification(null);
+    }, [notification]);
     const [isAdSheetOpen, setIsAdSheetOpen] = useState(false);
     const [adSheetType, setAdSheetType] = useState<SheetType>("comments");
     const [interactionAd, setInteractionAd] = useState<any | null>(null);
     const [adSheetData, setAdSheetData] = useState<any[]>([]);
     const [isAdSheetLoading, setIsAdSheetLoading] = useState(false);
+    const [isUploadSheetOpen, setIsUploadSheetOpen] = useState(false);
+    const [uploadSheetType, setUploadSheetType] = useState<SheetType>("comments");
+    const [interactionUpload, setInteractionUpload] = useState<UploadContentRecord | null>(null);
+    const [uploadSheetData, setUploadSheetData] = useState<any[]>([]);
+    const [isUploadSheetLoading, setIsUploadSheetLoading] = useState(false);
     const [isPostSheetOpen, setIsPostSheetOpen] = useState(false);
     const [postSheetType, setPostSheetType] = useState<SheetType>("comments");
     const [interactionPost, setInteractionPost] = useState<WritePost | null>(null);
     const [postSheetData, setPostSheetData] = useState<any[]>([]);
     const [currentUser, setCurrentUser] = useState<any>(null);
+    const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
+    const [hiddenHomeAdIds, setHiddenHomeAdIds] = useState<Set<string>>(new Set());
+    const [hiddenHomeGoogIds, setHiddenHomeGoogIds] = useState<Set<string>>(new Set());
+    const [hiddenHomeUploadIds, setHiddenHomeUploadIds] = useState<Set<string>>(new Set());
     const [reportTargetPost, setReportTargetPost] = useState<WritePost | null>(null);
     const [reportReason, setReportReason] = useState("");
     const [reportCustomReason, setReportCustomReason] = useState("");
     const [reportSubmitting, setReportSubmitting] = useState(false);
     const [reportSubmitted, setReportSubmitted] = useState(false);
+    const [reportError, setReportError] = useState("");
+    const [reportTargetUpload, setReportTargetUpload] = useState<UploadContentRecord | null>(null);
+    const [uploadReportReason, setUploadReportReason] = useState("");
+    const [uploadReportCustomReason, setUploadReportCustomReason] = useState("");
+    const [uploadReportSubmitting, setUploadReportSubmitting] = useState(false);
+    const [uploadReportSubmitted, setUploadReportSubmitted] = useState(false);
+    const [uploadReportError, setUploadReportError] = useState("");
     const [showAdExpiryPopup, setShowAdExpiryPopup] = useState(false);
+    const [visibleHomeFeedCount, setVisibleHomeFeedCount] = useState(HOME_FEED_INITIAL_BATCH);
+    const homeFeedLoadMoreRef = useRef<HTMLDivElement | null>(null);
     const prevActivePhotoVideoIds = useRef<Set<string>>(new Set());
+    const postsSignatureRef = useRef<string>("");
+    const [homeAdRotation, setHomeAdRotation] = useState(() => {
+        if (typeof window === "undefined") return 0;
+        try {
+            return Number.parseInt(window.localStorage.getItem("googer-home-ad-rotation-v1") || "0", 10) || 0;
+        } catch {
+            return 0;
+        }
+    });
 
     const syncAdOwnerProfile = (ad: any, user: any) => {
         if (!ad || !user?.id) return ad;
@@ -558,6 +1494,50 @@ export default function DashboardPage() {
         };
     };
 
+    useEffect(() => {
+        setMounted(true);
+    }, []);
+
+    useEffect(() => {
+        if (!currentUser?.id) {
+            setBlockedUserIds(new Set());
+            return;
+        }
+        let cancelled = false;
+        const loadBlockedUsers = async () => {
+            try {
+                const blockedUsers = await chatService.getBlockedUsers();
+                if (cancelled) return;
+                setBlockedUserIds(new Set((blockedUsers || []).map((entry: any) => String(entry.id))));
+            } catch {
+                if (!cancelled) setBlockedUserIds(new Set());
+            }
+        };
+        void loadBlockedUsers();
+        const handleBlockedUsersUpdated = () => { void loadBlockedUsers(); };
+        window.addEventListener("googer-blocked-users-updated", handleBlockedUsersUpdated);
+        return () => {
+            cancelled = true;
+            window.removeEventListener("googer-blocked-users-updated", handleBlockedUsersUpdated);
+        };
+    }, [currentUser?.id]);
+
+    useEffect(() => {
+        if (!currentUser?.id) {
+            setHiddenHomeAdIds(new Set());
+            setHiddenHomeGoogIds(new Set());
+            setHiddenHomeUploadIds(new Set());
+            return;
+        }
+        const syncHiddenFeedItems = () => {
+            setHiddenHomeAdIds(getHiddenFeedItemIds(currentUser.id, "ad"));
+            setHiddenHomeGoogIds(getHiddenFeedItemIds(currentUser.id, "goog"));
+            setHiddenHomeUploadIds(getHiddenFeedItemIds(currentUser.id, "uploadContent"));
+        };
+        syncHiddenFeedItems();
+        return subscribeToHiddenFeedItems(syncHiddenFeedItems);
+    }, [currentUser?.id]);
+
     const syncWritePostProfile = (post: WritePost, user: any): WritePost => {
         if (!post || !user?.id) return post;
         if (String(post.user.id) !== String(user.id)) return post;
@@ -567,24 +1547,47 @@ export default function DashboardPage() {
             user: {
                 ...post.user,
                 username: user.username || post.user.username,
-                name: user.full_name || user.username || post.user.name,
+                name: getUserDisplayName({ ...post.user, ...user }, post.user.name || "User"),
                 img: user.profile_picture || post.user.img,
             },
         };
     };
+    const normalizeWritePost = useCallback((post: WritePost): WritePost => ({
+        ...post,
+        user: {
+            ...post.user,
+            name: getUserDisplayName(post.user, post.user?.name || "User"),
+        },
+    }), []);
+    const getBlockedOwnerId = useCallback((item: any) => String(
+        item?.user_id ||
+        item?.owner_user_id ||
+        item?.owner_id ||
+        item?.seller_id ||
+        item?.user?.id ||
+        item?.raw?.user_id ||
+        item?.raw?.owner_user_id ||
+        item?.raw?.owner_id ||
+        "",
+    ), []);
+    const isBlockedOwnerItem = useCallback((item: any) => {
+        const ownerId = getBlockedOwnerId(item);
+        return !!ownerId && blockedUserIds.has(ownerId);
+    }, [blockedUserIds, getBlockedOwnerId]);
     const getHomeLiveAd = useCallback((ad: any) => {
         if (!ad) return ad;
         const liveState = adStates[getAdInteractionId(ad)] || {};
-        const raw = {
-            ...(ad.raw || ad),
-            user_liked: liveState.user_liked ?? ad.user_liked ?? ad.liked,
-            likes_count: liveState.likes_count ?? ad.likes_count ?? ad.likeCount,
-            ad_coin_collected: liveState.ad_coin_collected ?? ad.ad_coin_collected ?? ad.coinCollected,
-            ad_like_locked: liveState.ad_like_locked ?? ad.ad_like_locked,
-            views_count: liveState.views_count ?? ad.views_count ?? ad.viewCount,
-            comments_count: liveState.comments_count ?? ad.comments_count ?? ad.commentCount,
-            shares_count: liveState.shares_count ?? ad.shares_count ?? ad.shareCount,
-        };
+    const raw = {
+        ...(ad.raw || ad),
+        user_liked: liveState.user_liked ?? ad.user_liked ?? ad.liked,
+        likes_count: liveState.likes_count ?? ad.likes_count ?? ad.likeCount,
+        ad_coin_collected: liveState.ad_coin_collected ?? ad.ad_coin_collected ?? ad.coinCollected,
+        ad_like_locked: liveState.ad_like_locked ?? ad.ad_like_locked,
+        views_count: liveState.views_count ?? ad.views_count ?? ad.viewCount,
+        impressions: liveState.impressions ?? ad.impressions ?? ad.impressions_count ?? 0,
+        comments_count: liveState.comments_count ?? ad.comments_count ?? ad.commentCount,
+        shares_count: liveState.shares_count ?? ad.shares_count ?? ad.shareCount,
+    };
         const normalized = normalizeAdData(raw);
 
         return {
@@ -604,32 +1607,60 @@ export default function DashboardPage() {
         return sourceAd ? getHomeLiveAd(sourceAd) : null;
     }, [ads, getHomeLiveAd]);
     const handlePromoteAgain = useCallback((ad: any) => {
-        void promotePhotoVideoAdAgain({
-            ad,
-            router,
-        });
+        const campaignType = String(ad?.campaign_type || ad?.campaignType || ad?.raw?.campaign_type || "").trim().toLowerCase();
+        if (campaignType === "product promote") {
+            void promoteProductAdAgain({ ad, router });
+            return;
+        }
+        void promotePhotoVideoAdAgain({ ad, router });
     }, [router]);
     const liveHomeAds = useMemo(
-        () => dedupeAdsByIdentity(ads.map((ad) => getHomeLiveAd(ad))),
-        [ads, getHomeLiveAd],
-    );
-    const homeProfilePromoteAds = useMemo(
-        () => liveHomeAds.filter((ad) => ad.campaign_type === "Profile Promote"),
-        [liveHomeAds],
+        () => dedupeAdsByIdentity(
+            ads
+                .filter((ad) => !hiddenHomeAdIds.has(getAdInteractionId(ad)))
+                .filter((ad) => !isBlockedOwnerItem(ad))
+                .map((ad) => getHomeLiveAd(ad)),
+        ),
+        [ads, getHomeLiveAd, hiddenHomeAdIds, isBlockedOwnerItem],
     );
     const homeFeedItems = useMemo(() => {
         const sourceAds = liveHomeAds.length > 0 ? liveHomeAds : dedupeAdsByIdentity(ads);
-        const profilePromoteAds = sourceAds.filter((ad) => ad.campaign_type === "Profile Promote");
-        const nonProfilePromoteAds = sourceAds.filter((ad) => ad.campaign_type !== "Profile Promote");
-        const mixedItems = interleaveWritePostsWithAds(posts, nonProfilePromoteAds, "googer-home-ad-rotation-v1", { current: homeAdOrder }, 4);
-        if (!profilePromoteAds.length) return mixedItems;
-        const insertIndex = Math.min(4, mixedItems.length);
-        return [
-            ...mixedItems.slice(0, insertIndex),
-            { type: "profilePromoteCarousel" as const, ads: profilePromoteAds },
-            ...mixedItems.slice(insertIndex),
-        ];
-    }, [ads, homeAdOrder, liveHomeAds, posts]);
+        const normalizedSearch = googSearchQuery.trim().toLowerCase();
+        const profilePromoteAds = normalizedSearch ? [] : sourceAds.filter(isHomeProfilePromoteAd);
+        const nonProfilePromoteAds = normalizedSearch ? [] : sourceAds.filter((ad) => !isHomeProfilePromoteAd(ad));
+        const rotation = nonProfilePromoteAds.length > 0
+            ? homeAdRotation % nonProfilePromoteAds.length
+            : 0;
+        const rotatedAds = nonProfilePromoteAds.length > 1
+            ? [
+                ...nonProfilePromoteAds.slice(rotation % nonProfilePromoteAds.length),
+                ...nonProfilePromoteAds.slice(0, rotation % nonProfilePromoteAds.length),
+            ]
+            : nonProfilePromoteAds;
+        const searchablePosts = normalizedSearch
+            ? posts.filter((post) => {
+                if (hiddenHomeGoogIds.has(String(post.id))) return false;
+                if (isBlockedOwnerItem(post)) return false;
+                const text = String(post.text || "").toLowerCase();
+                const name = String(post.user?.name || "").toLowerCase();
+                const username = String((post.user as any)?.username || "").toLowerCase();
+                return text.includes(normalizedSearch) || name.includes(normalizedSearch) || username.includes(normalizedSearch);
+            })
+            : posts.filter((post) => !hiddenHomeGoogIds.has(String(post.id)) && !isBlockedOwnerItem(post));
+        const validPosts = shuffleItemsWithSeed(
+            searchablePosts.filter((p) => p.id && !isNaN(Number(p.id))),
+            homeGoogShuffleSeed,
+            (post) => String(post.id),
+        );
+        const visibleUploadContents = uploadContents.filter((item) => !hiddenHomeUploadIds.has(String(item.id)) && !isBlockedOwnerItem(item));
+        const mixedItems = interleaveWritePostsWithAds(validPosts, rotatedAds, "googer-home-ad-rotation-v1", { current: homeAdOrder }, 4, true);
+        const withUploads = normalizedSearch ? mixedItems : insertHomeUploadContentRows(mixedItems, visibleUploadContents);
+        return insertHomeProfilePromoteRows(withUploads, profilePromoteAds);
+    }, [ads, googSearchQuery, hiddenHomeGoogIds, hiddenHomeUploadIds, homeAdOrder, homeAdRotation, homeGoogShuffleSeed, isBlockedOwnerItem, liveHomeAds, posts, uploadContents]);
+    const visibleHomeFeedItems = useMemo(
+        () => homeFeedItems.slice(0, visibleHomeFeedCount),
+        [homeFeedItems, visibleHomeFeedCount],
+    );
     const trendingPosts = useMemo<TrendingPost[]>(() => {
         const adTrends = liveHomeAds.slice(0, 5).map((ad) => {
             const activeLink = normalizeExternalUrl(ad.active_link || "");
@@ -639,7 +1670,7 @@ export default function DashboardPage() {
                 title: String(ad.title || "Sponsored highlight").slice(0, 64),
                 description: String(ad.description || ad.category || "Popular sponsored post").slice(0, 110),
                 image: getAdPreviewImage(ad, previewType),
-                views: Number(ad.views_count || ad.impressions || 0),
+                views: Number(ad.views_count ?? ad.viewCount ?? 0),
                 likes: Number(ad.likes_count || 0),
                 source: "ad" as const,
                 payload: ad,
@@ -649,7 +1680,7 @@ export default function DashboardPage() {
         const writeTrends = posts.slice(0, Math.max(0, 6 - adTrends.length)).map((post) => ({
             id: `write-${post.id}`,
             title: post.text.length > 48 ? `${post.text.slice(0, 48)}...` : post.text,
-            description: `By ${post.user.name}`,
+            description: `By ${getUserDisplayName(post.user, "User")}`,
             image: getTrendingWritePostImage(post),
             views: post.views || 0,
             likes: post.likes,
@@ -666,16 +1697,85 @@ export default function DashboardPage() {
     }, [composeMode]);
 
     useEffect(() => {
+        setVisibleHomeFeedCount((current) => {
+            if (googSearchQuery.trim()) return homeFeedItems.length;
+            return Math.min(
+                homeFeedItems.length,
+                current > HOME_FEED_INITIAL_BATCH ? current : HOME_FEED_INITIAL_BATCH,
+            );
+        });
+    }, [googSearchQuery, homeFeedItems.length]);
+
+    useEffect(() => {
+        const sentinel = homeFeedLoadMoreRef.current;
+        if (!sentinel || visibleHomeFeedCount >= homeFeedItems.length || googSearchQuery.trim()) return;
+
+        const observer = new IntersectionObserver(
+            ([entry]) => {
+                if (!entry.isIntersecting) return;
+                setVisibleHomeFeedCount((current) => Math.min(homeFeedItems.length, current + HOME_FEED_BATCH_SIZE));
+            },
+            { rootMargin: "900px 0px" },
+        );
+
+        observer.observe(sentinel);
+        return () => observer.disconnect();
+    }, [googSearchQuery, homeFeedItems.length, visibleHomeFeedCount]);
+
+    useEffect(() => {
         let mounted = true;
+        if (typeof window !== "undefined") {
+            try {
+                const nextRotation = homeAdRotation + 1;
+                window.localStorage.setItem("googer-home-ad-rotation-v1", String(nextRotation));
+                setHomeAdRotation(nextRotation);
+            } catch {}
+        }
         const getPublicActiveAds = async () => {
-            const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
-            const response = await fetch(`/api/ads/active-public?shuffle=${encodeURIComponent(homeAdShuffleSeed)}`, {
-                cache: "no-store",
-                headers: token ? { Authorization: `Bearer ${token}` } : {},
-            });
-            const data = await response.json();
-            if (!response.ok) throw new Error(data?.message || "Failed to fetch active ads");
-            return (Array.isArray(data?.ads) ? data.ads : []).map(mapPublicActiveAdToHomeAd).filter(isHomeSponsoredAd);
+        const getApiUrl = () => {
+            const isClient = typeof window !== 'undefined';
+            if (!isClient) return '/api';
+            const hostname = window.location.hostname;
+            if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                return 'http://localhost:5000';
+            }
+            return '/api';
+        };
+            const API_URL = getApiUrl();
+            const token = typeof window !== "undefined" ? (window.sessionStorage.getItem("token") || window.localStorage.getItem("token")) : null;
+            const activeAds: any[] = [];
+            let offset = 0;
+            const limit = 50;
+            let hasMore = true;
+
+            while (hasMore && mounted) {
+                const response = await fetch(`${API_URL}/ads/active-public?limit=${limit}&offset=${offset}&shuffle=${encodeURIComponent(homeAdShuffleSeed)}`, {
+                    cache: "no-store",
+                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                });
+                const contentType = response.headers.get("content-type") || "";
+                if (!contentType.includes("application/json")) {
+                    const text = await response.text();
+                    console.error("Non-JSON response from ads endpoint:", {
+                        status: response.status,
+                        contentType,
+                        url: `${API_URL}/ads/active-public`,
+                        preview: text.substring(0, 200)
+                    });
+                    throw new Error(`API returned ${contentType} instead of JSON. Is the backend running at ${API_URL}?`);
+                }
+                const data = await response.json().catch(() => null);
+                if (!data) throw new Error("Failed to parse ads response");
+                if (!response.ok) throw new Error(data?.message || "Failed to fetch active ads");
+
+                const rawPageAds = Array.isArray(data?.ads) ? data.ads : [];
+                const pageAds = filterAdsForViewer(rawPageAds, currentUser);
+                activeAds.push(...pageAds);
+                hasMore = !!data?.pagination?.hasMore && rawPageAds.length > 0;
+                offset = Number(data?.pagination?.nextOffset ?? offset + rawPageAds.length);
+            }
+
+            return activeAds.map(mapPublicActiveAdToHomeAd).filter(isHomeSponsoredAd);
         };
         const loadAds = async () => {
             let publicItems: any[] = [];
@@ -707,7 +1807,49 @@ export default function DashboardPage() {
             window.removeEventListener("googer-ad-history-updated", refreshAds);
             window.removeEventListener("focus", refreshAds);
         };
-    }, [homeAdShuffleSeed, syncAds]);
+    }, [currentUser, homeAdShuffleSeed, syncAds]);
+
+    useEffect(() => {
+        let mounted = true;
+        const loadUploadContents = async () => {
+            try {
+                const result = await uploadContentService.getPublicApproved();
+                if (!mounted) return;
+                setUploadContents(result.contents || []);
+            } catch (error) {
+                console.error("Failed to load upload contents:", error);
+                if (mounted) setUploadContents([]);
+            }
+        };
+
+        void loadUploadContents();
+        window.addEventListener("focus", loadUploadContents);
+
+        return () => {
+            mounted = false;
+            window.removeEventListener("focus", loadUploadContents);
+        };
+    }, []);
+
+    useEffect(() => {
+        let mounted = true;
+        const loadUploadControlSettings = async () => {
+            try {
+                const settings = await adsService.getUploadControlSettingsPublic();
+                if (mounted) setFlashContentAutoPlay(Boolean(settings?.flash_auto_play));
+            } catch {
+                if (mounted) setFlashContentAutoPlay(false);
+            }
+        };
+
+        void loadUploadControlSettings();
+        window.addEventListener("focus", loadUploadControlSettings);
+
+        return () => {
+            mounted = false;
+            window.removeEventListener("focus", loadUploadControlSettings);
+        };
+    }, []);
 
     // Force periodic re-render so time labels (New → 2h → 3h ...) update in real-time
     useEffect(() => {
@@ -783,7 +1925,21 @@ export default function DashboardPage() {
             try {
                 const data = await googService.getPosts();
                 if (mounted) {
-                    setPosts(data);
+                    const nextPosts = Array.isArray(data) ? data.map(normalizeWritePost) : [];
+                    const nextSignature = JSON.stringify(
+                        nextPosts.map((post: any) => [
+                            post.id,
+                            post.updated_at || post.created_at || "",
+                            post.likes,
+                            post.comments,
+                            post.views,
+                            post.shares,
+                        ]),
+                    );
+                    if (postsSignatureRef.current !== nextSignature) {
+                        postsSignatureRef.current = nextSignature;
+                        setPosts(nextPosts);
+                    }
                     setIsLoadingFeed(false);
                 }
             } catch (error) {
@@ -799,13 +1955,20 @@ export default function DashboardPage() {
             mounted = false;
             window.clearInterval(interval);
         };
-    }, []);
+    }, [normalizeWritePost]);
 
     useEffect(() => {
-        const handleSubscriptionUpdate = () => {
-            setAds(currentAds => [...currentAds]);
-            setPosts(currentPosts => [...currentPosts]);
-        };
+        if (!isLoadingFeed) return;
+        const timeoutId = window.setTimeout(() => {
+            setIsLoadingFeed(false);
+            console.warn("Home feed loading timed out. Rendering available content without the loading spinner.");
+        }, 8000);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [isLoadingFeed]);
+
+    useEffect(() => {
+        const handleSubscriptionUpdate = () => {};
 
         window.addEventListener("googer-subscription-updated", handleSubscriptionUpdate);
         return () => window.removeEventListener("googer-subscription-updated", handleSubscriptionUpdate);
@@ -814,7 +1977,7 @@ export default function DashboardPage() {
     useEffect(() => {
         if (typeof window === "undefined") return;
         try {
-            const storedUser = JSON.parse(window.localStorage.getItem("user") || "{}");
+            const storedUser = JSON.parse((window.sessionStorage.getItem("user") || window.localStorage.getItem("user")) || "{}");
             const user = storedUser?.id ? storedUser : null;
             setCurrentUser(user);
             setViewerContext(user);
@@ -872,7 +2035,7 @@ export default function DashboardPage() {
                         ? {
                             ...post,
                             liked: serverLiked,
-                            likes: Math.max(0, post.likes + (serverLiked === willBeLiked ? 0 : serverLiked ? 1 : -1)),
+                            likes: Math.max(0, post.likes + (serverLiked === post.liked ? 0 : serverLiked ? 1 : -1)),
                         }
                         : post,
                 ),
@@ -882,7 +2045,7 @@ export default function DashboardPage() {
             setPosts((currentPosts) =>
                 currentPosts.map((post) =>
                     post.id === postId
-                        ? { ...post, liked: wasLiked, likes: Math.max(0, post.likes + (wasLiked ? 1 : -1)) }
+                        ? { ...post, liked: wasLiked, likes: Math.max(0, post.likes + (wasLiked === post.liked ? 0 : wasLiked ? 1 : -1)) }
                         : post,
                 ),
             );
@@ -890,14 +2053,12 @@ export default function DashboardPage() {
     };
 
     const viewWritePost = async (postId: number) => {
-        if (!authService.isAuthenticated() || !currentUser?.id) {
-            return;
-        }
         try {
             const result = await googService.logView(postId);
-            if (result?.incremented === true) {
+            const nextViews = Number(result?.views_count ?? result?.views ?? NaN);
+            if (Number.isFinite(nextViews) || result?.incremented === true) {
                 setPosts((currentPosts) =>
-                    currentPosts.map((post) => post.id === postId ? { ...post, views: (post.views || 0) + 1 } : post),
+                    currentPosts.map((post) => post.id === postId ? { ...post, views: Number.isFinite(nextViews) ? nextViews : (post.views || 0) + 1 } : post),
                 );
             }
         } catch (error) {
@@ -916,6 +2077,223 @@ export default function DashboardPage() {
             setShowGoogShareModal(true);
         }
     };
+
+    const updateUploadFeedItem = useCallback((contentId: string | number, updater: (item: UploadContentRecord) => UploadContentRecord) => {
+        const normalizedId = String(contentId);
+        setUploadContents((currentItems) =>
+            currentItems.map((entry) =>
+                String(entry.id) === normalizedId || String(entry.content_id || entry.contentId || "") === normalizedId
+                    ? updater(entry)
+                    : entry
+            )
+        );
+    }, []);
+
+    const openUploadSheet = useCallback(async (type: SheetType, uploadItem: UploadContentRecord) => {
+        setUploadSheetType(type);
+        setInteractionUpload(uploadItem);
+        setIsUploadSheetOpen(true);
+        setUploadSheetData([]);
+        setIsUploadSheetLoading(true);
+
+        try {
+            let data: any[] = [];
+            if (type === "comments") {
+                data = await uploadContentService.getComments(uploadItem.id);
+            } else if (type === "likes") {
+                data = await uploadContentService.getLikes(uploadItem.id);
+            } else if (type === "shares") {
+                data = await uploadContentService.getShares(uploadItem.id);
+            } else if (type === "views") {
+                data = await uploadContentService.getViews(uploadItem.id);
+            }
+            setUploadSheetData(data || []);
+        } catch (error) {
+            console.error("Failed to open upload content interaction sheet:", error);
+        } finally {
+            setIsUploadSheetLoading(false);
+        }
+    }, []);
+
+    const handleUploadLike = useCallback(async (uploadItem: UploadContentRecord) => {
+        if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to like upload content." });
+            return;
+        }
+
+        const wasLiked = !!uploadItem.user_liked;
+        const optimisticLiked = !wasLiked;
+        updateUploadFeedItem(uploadItem.id, (entry) => ({
+            ...entry,
+            user_liked: optimisticLiked,
+            likes_count: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (optimisticLiked ? 1 : -1)),
+            likeCount: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (optimisticLiked ? 1 : -1)),
+        }));
+        if (interactionUpload?.id === uploadItem.id) {
+            setInteractionUpload((current) => current ? {
+                ...current,
+                user_liked: optimisticLiked,
+                likes_count: Math.max(0, Number(current.likes_count ?? current.likeCount ?? 0) + (optimisticLiked ? 1 : -1)),
+                likeCount: Math.max(0, Number(current.likes_count ?? current.likeCount ?? 0) + (optimisticLiked ? 1 : -1)),
+            } : current);
+        }
+
+        try {
+            const result = await uploadContentService.toggleLike(uploadItem.id);
+            updateUploadFeedItem(uploadItem.id, (entry) => ({
+                ...entry,
+                user_liked: !!result.liked,
+                likes_count: Number(result.likes_count || 0),
+                likeCount: Number(result.likes_count || 0),
+            }));
+            if (interactionUpload?.id === uploadItem.id) {
+                setInteractionUpload((current) => current ? {
+                    ...current,
+                    user_liked: !!result.liked,
+                    likes_count: Number(result.likes_count || 0),
+                    likeCount: Number(result.likes_count || 0),
+                } : current);
+            }
+            if (isUploadSheetOpen && uploadSheetType === "likes" && interactionUpload?.id === uploadItem.id) {
+                setUploadSheetData(await uploadContentService.getLikes(uploadItem.id));
+            }
+        } catch (error) {
+            console.error("Failed to toggle upload content like:", error);
+            updateUploadFeedItem(uploadItem.id, (entry) => ({
+                ...entry,
+                user_liked: wasLiked,
+                likes_count: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (wasLiked ? 1 : -1)),
+                likeCount: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (wasLiked ? 1 : -1)),
+            }));
+        }
+    }, [currentUser?.id, interactionUpload, isUploadSheetOpen, updateUploadFeedItem, uploadSheetType]);
+
+    const handleUploadShare = useCallback(async (uploadItem: UploadContentRecord) => {
+        setShareUploadItem(uploadItem);
+        setShowUploadShareModal(true);
+        try {
+            const result = await uploadContentService.logShare(uploadItem.id);
+            updateUploadFeedItem(uploadItem.id, (entry) => ({
+                ...entry,
+                shares_count: Number(result.shares_count || 0),
+                shareCount: Number(result.shares_count || 0),
+            }));
+            if (interactionUpload?.id === uploadItem.id) {
+                setInteractionUpload((current) => current ? {
+                    ...current,
+                    shares_count: Number(result.shares_count || 0),
+                    shareCount: Number(result.shares_count || 0),
+                } : current);
+            }
+        } catch (error) {
+            console.error("Failed to share upload content:", error);
+        }
+    }, [interactionUpload, updateUploadFeedItem]);
+
+    const handleUploadPin = useCallback(async (uploadItem: UploadContentRecord) => {
+        if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to pin content." });
+            return;
+        }
+        try {
+            const updated = await uploadContentService.togglePin(uploadItem.id);
+            updateUploadFeedItem(uploadItem.id, () => updated);
+            addTopbarNotification({
+                type: "success",
+                title: updated.pinned_at ? "Pinned" : "Unpinned",
+                message: updated.pinned_at ? "Content pinned on your profile." : "Content removed from pinned area.",
+            });
+        } catch (error) {
+            addTopbarNotification({
+                type: "error",
+                title: "Error",
+                message: error instanceof Error ? error.message : "Could not update pin.",
+            });
+        }
+    }, [currentUser?.id, updateUploadFeedItem]);
+
+    const handleUploadRepost = useCallback(async (uploadItem: UploadContentRecord) => {
+        if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to repost content." });
+            return;
+        }
+        if (String(uploadItem.user_id || "") === String(currentUser.id || "")) {
+            addTopbarNotification({ type: "info", title: "Own Content", message: "You cannot repost your own content." });
+            return;
+        }
+        try {
+            const result = await uploadContentService.repostContent(uploadItem.id);
+            updateUploadFeedItem(uploadItem.id, (entry) => ({
+                ...entry,
+                reposts_count: Number(result.reposts_count || 0),
+                repostCount: Number(result.reposts_count || 0),
+            }));
+            addTopbarNotification({
+                type: result.alreadyReposted ? "info" : "success",
+                title: result.alreadyReposted ? "Already Reposted" : "Reposted",
+                message: result.alreadyReposted ? "You already reposted this content." : "Content reposted successfully.",
+            });
+        } catch (error) {
+            addTopbarNotification({
+                type: "error",
+                title: "Error",
+                message: error instanceof Error ? error.message : "Could not repost content.",
+            });
+        }
+    }, [currentUser?.id, updateUploadFeedItem]);
+
+    const handleUploadNotInterested = useCallback((uploadItem: UploadContentRecord) => {
+        hideFeedItemFor24Hours(currentUser?.id, "uploadContent", uploadItem.id);
+        setHiddenHomeUploadIds((previous) => new Set(previous).add(String(uploadItem.id)));
+        addTopbarNotification({ type: "success", title: "Hidden", message: "This content will be hidden for 24 hours." });
+    }, [currentUser?.id]);
+
+    const openUploadReportModal = useCallback((uploadItem: UploadContentRecord) => {
+        if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to report content." });
+            return;
+        }
+        setReportTargetUpload(uploadItem);
+        setUploadReportReason("");
+        setUploadReportCustomReason("");
+        setUploadReportSubmitted(false);
+        setUploadReportError("");
+    }, [currentUser?.id]);
+
+    const submitUploadReport = useCallback(async () => {
+        if (!reportTargetUpload || !uploadReportReason) return;
+        setUploadReportSubmitting(true);
+        setUploadReportError("");
+        try {
+            await uploadContentService.reportContent(reportTargetUpload.id, uploadReportReason, uploadReportCustomReason.trim() || undefined);
+            setUploadReportSubmitted(true);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Failed to submit report.";
+            setUploadReportError(message.toLowerCase().includes("already reported") ? "You have already reported this." : message);
+        } finally {
+            setUploadReportSubmitting(false);
+        }
+    }, [reportTargetUpload, uploadReportCustomReason, uploadReportReason]);
+
+    const handleUploadView = useCallback(async (uploadItem: UploadContentRecord) => {
+        try {
+            const result = await uploadContentService.logView(uploadItem.id);
+            updateUploadFeedItem(uploadItem.id, (entry) => ({
+                ...entry,
+                views_count: Number(result.views_count || 0),
+                viewCount: Number(result.views_count || 0),
+            }));
+            if (interactionUpload?.id === uploadItem.id) {
+                setInteractionUpload((current) => current ? {
+                    ...current,
+                    views_count: Number(result.views_count || 0),
+                    viewCount: Number(result.views_count || 0),
+                } : current);
+            }
+        } catch (error) {
+            console.error("Failed to log upload content view:", error);
+        }
+    }, [interactionUpload, updateUploadFeedItem]);
 
     const openWritePostSheet = async (type: SheetType, post: WritePost) => {
         setPostSheetType(type);
@@ -1034,21 +2412,56 @@ export default function DashboardPage() {
         setReportReason("");
         setReportCustomReason("");
         setReportSubmitted(false);
+        setReportError("");
         setOpenPostMenu(null);
     };
 
     const submitReport = async () => {
         if (!reportTargetPost || !reportReason) return;
         setReportSubmitting(true);
+        setReportError("");
         try {
-            await googService.createReport(reportTargetPost.id, reportReason, reportCustomReason.trim() || undefined);
+            const _token = authService.getToken() || "";
+            const rawIdStr = String(reportTargetPost.id ?? "");
+            const cleanIdStr = rawIdStr.replace(/^ad-/i, "");
+            const isAd = !!(reportTargetPost as any).is_sponsored || /^ad-/i.test(rawIdStr);
+            const campaignType = String((reportTargetPost as any).campaign_type || (reportTargetPost as any).campaignType || "").toLowerCase();
+            const isProductPromote = !!(reportTargetPost as any).isProductPromoteSecondView
+                || campaignType.includes("product promote")
+                || campaignType.includes("product");
+            if (isAd || !cleanIdStr || isNaN(Number(cleanIdStr))) {
+                // Use adId field first (the real DB id), then fall back to cleanIdStr
+                const adIdStr = String((reportTargetPost as any).adId || (reportTargetPost as any).ad_id || cleanIdStr || "").replace(/^ad-/i, "");
+                if (!adIdStr) throw new Error("Failed to submit report.");
+                // Product promote → market product endpoint; photo/video → ads endpoint
+                const reportEndpoint = isProductPromote
+                    ? `/api/market/${adIdStr}/report`
+                    : `/api/ads/${adIdStr}/report`;
+                const resp = await fetch(reportEndpoint, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${_token}` },
+                    body: JSON.stringify({ reason: reportReason, custom_reason: reportCustomReason.trim() || undefined }),
+                });
+                if (!resp.ok) {
+                    const d = await resp.json().catch(() => ({}));
+                    throw new Error(d.message || "Failed to submit report.");
+                }
+            } else {
+                await googService.createReport(Number(cleanIdStr), reportReason, reportCustomReason.trim() || undefined);
+            }
             setReportSubmitted(true);
             setTimeout(() => {
                 setReportTargetPost(null);
                 setReportSubmitted(false);
+                setReportError("");
             }, 2200);
-        } catch (error) {
-            console.error("Failed to report post:", error);
+        } catch (error: any) {
+            const msg = error?.message || "";
+            if (msg.toLowerCase().includes("already reported")) {
+                setReportError("You have already reported this.");
+            } else {
+                setReportError("Failed to submit. Please try again.");
+            }
         } finally {
             setReportSubmitting(false);
         }
@@ -1070,16 +2483,18 @@ export default function DashboardPage() {
     useEffect(() => {
         const handleCreatedGoog = (event: Event) => {
             const detail = (event as CustomEvent<WritePost>).detail;
-            if (!detail?.text) return;
-            const newPost = { ...detail, views: detail.views || 0, createdAt: detail.createdAt || new Date().toISOString() };
-            setPosts((currentPosts) => currentPosts.some((post) => post.id === detail.id) ? currentPosts : [newPost, ...currentPosts]);
+            if (!detail?.text || !detail?.id || isNaN(Number(detail.id))) return;
+            const newPost = { ...detail, id: Number(detail.id), views: detail.views || 0, createdAt: detail.createdAt || new Date().toISOString() };
+            setPosts((currentPosts) => currentPosts.some((post) => post.id === newPost.id) ? currentPosts : [newPost, ...currentPosts]);
         };
 
         try {
             const pending = JSON.parse(window.localStorage.getItem("googer-pending-write-post") || "null");
-            if (pending?.text) {
-                const pendingPost = { ...pending, views: pending.views || 0, createdAt: pending.createdAt || new Date().toISOString() };
-                setPosts((currentPosts) => currentPosts.some((post) => post.id === pending.id) ? currentPosts : [pendingPost, ...currentPosts]);
+            if (pending?.text && pending?.id && !isNaN(Number(pending.id))) {
+                const pendingPost = { ...pending, id: Number(pending.id), views: pending.views || 0, createdAt: pending.createdAt || new Date().toISOString() };
+                setPosts((currentPosts) => currentPosts.some((post) => post.id === pendingPost.id) ? currentPosts : [pendingPost, ...currentPosts]);
+                window.localStorage.removeItem("googer-pending-write-post");
+            } else if (pending?.text) {
                 window.localStorage.removeItem("googer-pending-write-post");
             }
         } catch { }
@@ -1220,19 +2635,48 @@ export default function DashboardPage() {
     };
 
     const viewFeedItem = async (item: any) => {
-        const result = await marketService.logView(item.id);
+        const viewId = item?.adId || item?.ad_id
+            ? `ad-${String(item.adId || item.ad_id).replace(/^ad-/, "")}`
+            : item.id;
+        const result = await marketService.logView(viewId);
         if (!result?.success) return;
+        const nextViewsCount = Number(
+            result.views_count ??
+            result.viewCount ??
+            result.views ??
+            item?.views_count ??
+            item?.viewCount ??
+            0,
+        );
+        const nextReach = Number(result.current_reach ?? result.reach ?? 0);
         updateAdState(item, {
-            views_count: Number(result.impressions || 0),
-            viewCount: Number(result.impressions || 0),
-            current_reach: Number(result.current_reach ?? result.reach ?? 0),
-            reach: Number(result.current_reach ?? result.reach ?? 0),
+            views_count: nextViewsCount,
+            viewCount: nextViewsCount,
+            current_reach: nextReach,
+            reach: nextReach,
             clicks: Number(result.clicks || result.link_actions || 0),
             link_actions: Number(result.link_actions || result.clicks || 0),
             message_clicks: Number(result.message_clicks || 0),
             visit_clicks: Number(result.visit_clicks || 0),
             call_clicks: Number(result.call_clicks || 0),
         });
+    };
+
+    const impressionFeedItem = async (item: any) => {
+        const impressionId = item?.adId || item?.ad_id
+            ? `ad-${String(item.adId || item.ad_id).replace(/^ad-/, "")}`
+            : item.id;
+        const result = await marketService.logAdImpression(impressionId);
+        if (!result?.success) return;
+        updateAdState(item, {
+            impressions: Number(result.impressions ?? item?.impressions ?? item?.impressions_count ?? 0),
+            impressions_count: Number(result.impressions ?? item?.impressions ?? item?.impressions_count ?? 0),
+            current_reach: Number(result.current_reach ?? result.reach ?? item?.current_reach ?? item?.reach ?? 0),
+            reach: Number(result.current_reach ?? result.reach ?? item?.current_reach ?? item?.reach ?? 0),
+        });
+        if (result.capped || String(result.status || "").toLowerCase() === "completed") {
+            hideAdFromHome(String(impressionId).replace(/^ad-/, ""));
+        }
     };
 
     const getSponsoredCollectionId = (ad: any) => {
@@ -1352,10 +2796,19 @@ export default function DashboardPage() {
     };
 
     const hideAdFromHome = (adId: string | number) => {
-        setAds((currentAds) => currentAds.filter((currentAd) => String(currentAd.id) !== String(adId)));
+        const interactionId = getAdInteractionId(adId);
+        hideFeedItemFor24Hours(currentUser?.id, "ad", interactionId);
+        setAds((currentAds) => currentAds.filter((currentAd) => getAdInteractionId(currentAd) !== interactionId));
         setOpenMenuAdId(null);
         setAdPreviewModal(null);
         setProductAdModal(null);
+    };
+
+    const hideGoogFromHome = (post: WritePost) => {
+        if (!post?.id) return;
+        hideFeedItemFor24Hours(currentUser?.id, "goog", post.id);
+        setPosts((currentPosts) => currentPosts.filter((currentPost) => String(currentPost.id) !== String(post.id)));
+        setOpenPostMenu(null);
     };
 
     const openProductAdInShopSecondView = async (product: any) => {
@@ -1443,8 +2896,52 @@ export default function DashboardPage() {
     };
 
     return (
-        <main className="-mx-3 -my-5 min-h-[calc(100vh-7rem)] bg-[#1c1917] px-3 py-0 text-white sm:-mx-4 md:-mx-8 md:-my-6 md:px-6 lg:min-h-[calc(100vh-5rem)]">
-            <div className="mx-auto grid min-h-0 w-full max-w-[1120px] gap-5 py-3 lg:grid-cols-[minmax(0,700px)_380px] lg:items-start">
+        <>
+        {mounted &&
+            document.getElementById("shop-search-portal") &&
+            createPortal(
+                <form
+                    className="flex w-full items-center"
+                    onSubmit={(event) => {
+                        event.preventDefault();
+                        setGoogSearchQuery(googSearchDraft.trim());
+                    }}
+                >
+                    <div className="relative w-full">
+                        <input
+                            type="text"
+                            value={googSearchDraft}
+                            onChange={(event) => setGoogSearchDraft(event.target.value)}
+                            placeholder="Search Googs"
+                            className="h-7 w-full rounded-full border border-white/10 bg-[#111] pl-8 pr-8 text-xs font-bold text-white outline-none transition placeholder:text-white/30 focus:border-white/25 focus:bg-[#151515]"
+                        />
+                        <button
+                            type="submit"
+                            className="absolute left-0 top-0 flex h-7 items-center pl-3 pr-1 text-white/35 transition hover:text-white/70"
+                            aria-label="Search Googs"
+                        >
+                            <IonIcon name="search-outline" className="text-xs" />
+                        </button>
+                        {(googSearchDraft || googSearchQuery) && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setGoogSearchDraft("");
+                                    setGoogSearchQuery("");
+                                }}
+                                className="absolute right-0 top-0 flex h-7 items-center pl-1 pr-3 text-white/35 transition hover:text-white/70"
+                                aria-label="Clear Googs search"
+                            >
+                                <IonIcon name="close-circle" className="text-sm" />
+                            </button>
+                        )}
+                    </div>
+                </form>,
+                document.getElementById("shop-search-portal")!,
+            )}
+
+        <main className="-mx-2 min-h-[calc(100vh-7rem)] bg-[#1c1917] px-2 py-0 text-white sm:-mx-4 sm:px-4 md:-mx-6 md:px-6 lg:min-h-[calc(100vh-5rem)] overflow-x-hidden">
+            <div className="mx-auto grid min-h-0 w-full max-w-[1400px] gap-6 py-3 md:gap-7 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start xl:grid-cols-[minmax(0,700px)_380px] xl:gap-8">
                 <section ref={composeSectionRef} className="hidden" aria-hidden="true">
                     <textarea value={postText} onChange={(event) => setPostText(event.target.value)} />
                     <button type="button" onClick={publishWritePost}>Post</button>
@@ -1457,92 +2954,148 @@ export default function DashboardPage() {
                                 <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-white"></div>
                             </div>
                         ) : null}
-                        {homeFeedItems.map((item) => {
-                            if (item.type === "write") {
-                                const post = item.post;
-                                return (
-                                    <GoogCard
-                                        key={`write-${post.id}`}
-                                        post={post}
-                                        onNavigateToProfile={navigateToPostProfile}
-                                        onToggleLike={toggleWriteLike}
-                                        onOpenSheet={openWritePostSheet}
-                                        onViewPost={viewWritePost}
-                                        onSharePost={shareWritePost}
-                                        onToggleMenu={togglePostOptionsMenu}
-                                    />
-                                );
+                        <DashboardRenderBoundary
+                            fallback={
+                                <div className="px-4 py-8 text-center sm:px-7">
+                                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-6 text-sm font-semibold text-white/55">
+                                        The home feed hit a rendering error. Refresh the page and try again.
+                                    </div>
+                                </div>
                             }
-
-                            if (item.type === "profilePromoteCarousel") {
-                                return (
-                                    <ProfilePromoteCarousel
-                                        key="profile-promote-carousel"
-                                        ads={item.ads}
-                                        cardsPerView={2}
-                                        onProductClick={openProductAdInShopSecondView}
-                                        onProfileClick={(clickedAd) => {
-                                            if (clickedAd.user_id) {
-                                                router.push(`/dashboard/profile?id=${clickedAd.user_id}`);
-                                                return;
-                                            }
-                                            router.push(`/dashboard/profile?user=${encodeURIComponent(getItemUsername(clickedAd, "Advertiser"))}`);
-                                        }}
-                                    />
-                                );
-                            }                            const ad = item.ad;
-                            const activeLink = normalizeExternalUrl(ad.active_link || "");
-                            const previewType = getSponsoredLinkPreviewType(activeLink);
-
-                            return (
-                                <AdImpressionTrigger
-                                    key={String(ad.id)}
-                                    adId={String(ad.id)}
-                                    onImpression={() => void viewFeedItem(ad)}
-                                >
-                                    <article className="px-4 py-4 transition-colors sm:px-7">
-                                        <div className="mx-auto w-full max-w-[360px]">
-                                            <PromotedAdCard
-                                                ad={ad}
-                                                isMenuOpen={openMenuAdId === ad.id}
-                                                onToggleMenu={(adId) => setOpenMenuAdId(openMenuAdId === adId ? null : adId)}
-                                                onCloseMenu={() => setOpenMenuAdId(null)}
-                                                onOpenSecondView={() => openAdInShop(ad, previewType)}
-                                                onProductClick={openProductAdInShopSecondView}
-                                                onAddToBagClick={openProductAdAddToBag}
-                                                onToggleLike={toggleFeedLike}
-                                                onOpenSheet={openMarketAdSheet}
-                                                onShare={shareFeedItem}
-                                                onLogView={() => void viewFeedItem(ad)}
-                                                onReport={(targetAd) => {
-                                                    setReportTargetPost({
-                                                        ...targetAd,
-                                                        id: targetAd.id,
-                                                        text: targetAd.title || targetAd.description || "",
-                                                        user: { id: targetAd.user_id, name: getItemUsername(targetAd, "Sponsored"), img: getItemProfilePicture(targetAd) || "" },
-                                                        liked: false,
-                                                        likes: targetAd.likes_count || 0,
-                                                        comments: targetAd.comments_count || 0,
-                                                        views: targetAd.views_count || 0,
-                                                        reposts: 0,
-                                                        shares: targetAd.shares_count || 0,
-                                                    } as WritePost);
-                                                    setReportReason("");
-                                                    setReportCustomReason("");
-                                                    setReportSubmitted(false);
-                                                }}
-                                                onNotInterested={hideAdFromHome}
-                                                onPromoteAgain={handlePromoteAgain}
-                                                onCollectCoin={handleAdCoinClick}
-                                                onNavigateToProfile={navigateToAdProfile}
-                                                canShowCollectCoin={canShowAdCollectCoin}
-                                                currentUser={currentUser}
+                        >
+                            <>
+                                {visibleHomeFeedItems.map((item, feedIndex) => {
+                                    if (item.type === "write") {
+                                        const post = item.post;
+                                        return (
+                                            <GoogCard
+                                                key={`write-${post.id}`}
+                                                post={post}
+                                                onNavigateToProfile={navigateToPostProfile}
+                                                onToggleLike={toggleWriteLike}
+                                                onOpenSheet={openWritePostSheet}
+                                                onViewPost={viewWritePost}
+                                                onSharePost={shareWritePost}
+                                                onToggleMenu={togglePostOptionsMenu}
                                             />
-                                        </div>
-                                    </article>
-                                </AdImpressionTrigger>
-                            );
-                        })}
+                                        );
+                                    }
+
+                                    if (item.type === "uploadContent") {
+                                        const uploadItem = item.item;
+                                        return (
+                                            <HomeUploadContentCard
+                                                key={item.id}
+                                                item={uploadItem}
+                                                currentUser={currentUser}
+                                                onToggleLike={handleUploadLike}
+                                                onOpenSheet={openUploadSheet}
+                                                onShare={handleUploadShare}
+                                                onRepost={handleUploadRepost}
+                                                onLogView={handleUploadView}
+                                                onPin={handleUploadPin}
+                                                onReport={openUploadReportModal}
+                                                onNotInterested={handleUploadNotInterested}
+                                                onAccessChanged={(changedItem) => {
+                                                    updateUploadFeedItem(changedItem.id, (entry) => ({
+                                                        ...entry,
+                                                        user_purchased: true,
+                                                        user_has_access: true,
+                                                    }));
+                                                }}
+                                                flashContentAutoPlay={flashContentAutoPlay}
+                                                onOpenProfile={() => {
+                                                    if (uploadItem.user_id) {
+                                                        router.push(`/dashboard/profile?id=${uploadItem.user_id}`);
+                                                        return;
+                                                    }
+                                                    if (uploadItem.username) {
+                                                        router.push(`/dashboard/profile?user=${encodeURIComponent(uploadItem.username)}`);
+                                                    }
+                                                }}
+                                            />
+                                        );
+                                    }
+
+                                    if (item.type === "profilePromoteCarousel") {
+                                        return (
+                                            <ProfilePromoteCarousel
+                                                key={item.id}
+                                                ads={item.ads}
+                                                cardsPerView={2}
+                                                onProductClick={openProductAdInShopSecondView}
+                                                onProfileClick={(clickedAd) => {
+                                                    if (clickedAd.user_id) {
+                                                        router.push(`/dashboard/profile?id=${clickedAd.user_id}`);
+                                                        return;
+                                                    }
+                                                    router.push(`/dashboard/profile?user=${encodeURIComponent(getItemUsername(clickedAd, "Advertiser"))}`);
+                                                }}
+                                            />
+                                        );
+                                    }
+
+                                    const ad = item.ad;
+                                    const activeLink = normalizeExternalUrl(ad.active_link || "");
+                                    const previewType = getSponsoredLinkPreviewType(activeLink);
+
+                                    return (
+                                        <AdImpressionTrigger
+                                            key={`${String(ad.id)}-${feedIndex}`}
+                                            adId={String(ad.id)}
+                                            onImpression={() => {
+                                                void impressionFeedItem(ad);
+                                                void viewFeedItem(ad);
+                                            }}
+                                        >
+                                            <article className="px-4 py-4 transition-colors sm:px-7">
+                                                <div className="mx-auto w-full max-w-[360px]">
+                                                    <PromotedAdCard
+                                                        ad={ad}
+                                                        isMenuOpen={openMenuAdId === ad.id}
+                                                        onToggleMenu={(adId) => setOpenMenuAdId(openMenuAdId === adId ? null : adId)}
+                                                        onCloseMenu={() => setOpenMenuAdId(null)}
+                                                        onOpenSecondView={() => openAdInShop(ad, previewType)}
+                                                        onProductClick={openProductAdInShopSecondView}
+                                                        onAddToBagClick={openProductAdAddToBag}
+                                                        onToggleLike={toggleFeedLike}
+                                                        onOpenSheet={openMarketAdSheet}
+                                                        onShare={shareFeedItem}
+                                                        onLogView={() => void viewFeedItem(ad)}
+                                                        onReport={(targetAd) => {
+                                                            setReportTargetPost({
+                                                                ...targetAd,
+                                                                id: targetAd.id,
+                                                                text: targetAd.title || targetAd.description || "",
+                                                                user: { id: targetAd.user_id, name: getItemUsername(targetAd, "Sponsored"), img: getItemProfilePicture(targetAd) || "" },
+                                                                liked: false,
+                                                                likes: targetAd.likes_count || 0,
+                                                                comments: targetAd.comments_count || 0,
+                                                                views: targetAd.views_count || 0,
+                                                                reposts: 0,
+                                                                shares: targetAd.shares_count || 0,
+                                                            } as WritePost);
+                                                            setReportReason("");
+                                                            setReportCustomReason("");
+                                                            setReportSubmitted(false);
+                                                        }}
+                                                        onNotInterested={hideAdFromHome}
+                                                        onPromoteAgain={handlePromoteAgain}
+                                                        onCollectCoin={handleAdCoinClick}
+                                                        onNavigateToProfile={navigateToAdProfile}
+                                                        canShowCollectCoin={canShowAdCollectCoin}
+                                                        currentUser={currentUser}
+                                                    />
+                                                </div>
+                                            </article>
+                                        </AdImpressionTrigger>
+                                    );
+                                })}
+                                {visibleHomeFeedCount < homeFeedItems.length && !googSearchQuery.trim() && (
+                                    <div ref={homeFeedLoadMoreRef} className="h-16 w-full" aria-hidden="true" />
+                                )}
+                            </>
+                        </DashboardRenderBoundary>
                     </div>
                 </section>
 
@@ -1559,34 +3112,42 @@ export default function DashboardPage() {
                                 </span>
                             </div>
 
-                            <div className="grid gap-3">
-                                {trendingPosts.map((post) => (
-                                    <button
-                                        key={post.id}
-                                        type="button"
-                                        onClick={() => openTrendingPostDetails(post)}
-                                        className="group grid grid-cols-[74px_minmax(0,1fr)] gap-3 rounded-xl border border-white/8 bg-white/[0.035] p-2.5 text-left shadow-[0_8px_24px_rgba(0,0,0,0.12)] transition duration-200 hover:-translate-y-0.5 hover:border-white/16 hover:bg-white/[0.055] hover:shadow-[0_16px_34px_rgba(0,0,0,0.22)]"
-                                    >
-                                        <div className="relative h-[74px] overflow-hidden rounded-lg bg-black/30">
-                                            <TrendingPostThumb src={post.image} alt={post.title} />
-                                        </div>
-                                        <div className="min-w-0 py-0.5">
-                                            <h3 className="line-clamp-2 text-[12px] font-black leading-4 text-white">{post.title}</h3>
-                                            <p className="mt-1 line-clamp-2 text-[10px] font-medium leading-4 text-white/42">{post.description}</p>
-                                            <div className="mt-2 flex items-center gap-3 text-[10px] font-bold text-white/48">
-                                                <span className="inline-flex items-center gap-1">
-                                                    <IonIcon name="eye-outline" className="text-[13px]" />
-                                                    {post.views}
-                                                </span>
-                                                <span className="inline-flex items-center gap-1">
-                                                    <IonIcon name="heart-outline" className="text-[13px]" />
-                                                    {post.likes}
-                                                </span>
+                            <DashboardRenderBoundary
+                                fallback={
+                                    <div className="rounded-xl border border-white/8 bg-white/[0.03] px-4 py-5 text-sm font-semibold text-white/45">
+                                        Trending posts could not be rendered right now.
+                                    </div>
+                                }
+                            >
+                                <div className="grid gap-3">
+                                    {trendingPosts.map((post) => (
+                                        <button
+                                            key={post.id}
+                                            type="button"
+                                            onClick={() => openTrendingPostDetails(post)}
+                                            className="group grid grid-cols-[74px_minmax(0,1fr)] gap-3 rounded-xl border border-white/8 bg-white/[0.035] p-2.5 text-left shadow-[0_8px_24px_rgba(0,0,0,0.12)] transition duration-200 hover:-translate-y-0.5 hover:border-white/16 hover:bg-white/[0.055] hover:shadow-[0_16px_34px_rgba(0,0,0,0.22)]"
+                                        >
+                                            <div className="relative h-[74px] overflow-hidden rounded-lg bg-black/30">
+                                                <TrendingPostThumb src={post.image} alt={post.title} />
                                             </div>
-                                        </div>
-                                    </button>
-                                ))}
-                            </div>
+                                            <div className="min-w-0 py-0.5">
+                                                <h3 className="line-clamp-2 text-[12px] font-black leading-4 text-white">{post.title}</h3>
+                                                <p className="mt-1 line-clamp-2 text-[10px] font-medium leading-4 text-white/42">{post.description}</p>
+                                                <div className="mt-2 flex items-center gap-3 text-[10px] font-bold text-white/48">
+                                                    <span className="inline-flex items-center gap-1">
+                                                        <IonIcon name="eye-outline" className="text-[13px]" />
+                                                        {post.views}
+                                                    </span>
+                                                    <span className="inline-flex items-center gap-1">
+                                                        <IonIcon name="heart-outline" className="text-[13px]" />
+                                                        {post.likes}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </DashboardRenderBoundary>
                         </div>
                     </div>
                 </aside>
@@ -1602,33 +3163,37 @@ export default function DashboardPage() {
                         style={{ top: openPostMenu.top, left: openPostMenu.left }}
                         onClick={(event) => event.stopPropagation()}
                     >
-                        <button
-                            type="button"
-                            onClick={() => setOpenPostMenu(null)}
-                            className="flex w-full items-center gap-3 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"
-                        >
-                            <IonIcon name="eye-off-outline" className="text-lg text-slate-500" />
-                            Not Interested
-                        </button>
+                        {!isOwnWritePost(openPostMenu.post) && (
+                            <button
+                                type="button"
+                                onClick={() => hideGoogFromHome(openPostMenu.post)}
+                                className="flex w-full items-center gap-3 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"
+                            >
+                                <IonIcon name="eye-off-outline" className="text-lg text-slate-500" />
+                                Not Interested
+                            </button>
+                        )}
                         <button
                             type="button"
                             onClick={() => {
                                 shareWritePost(openPostMenu.post.id);
                                 setOpenPostMenu(null);
                             }}
-                            className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"
+                            className={`flex w-full items-center gap-3 ${!isOwnWritePost(openPostMenu.post) ? "border-t border-white/5" : ""} px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5`}
                         >
                             <IonIcon name="share-social-outline" className="text-lg text-blue-400" />
                             Share
                         </button>
-                        <button
-                            type="button"
-                            onClick={() => openReportModal(openPostMenu.post)}
-                            className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"
-                        >
-                            <IonIcon name="alert-circle-outline" className="text-lg text-yellow-500" />
-                            Report
-                        </button>
+                        {!isOwnWritePost(openPostMenu.post) && (
+                            <button
+                                type="button"
+                                onClick={() => openReportModal(openPostMenu.post)}
+                                className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"
+                            >
+                                <IonIcon name="alert-circle-outline" className="text-lg text-yellow-500" />
+                                Report
+                            </button>
+                        )}
                         {isOwnWritePost(openPostMenu.post) && (
                             <>
                                 <button
@@ -1788,41 +3353,12 @@ export default function DashboardPage() {
                 </div>
             )}
 
-            {notification && (
-                <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-300">
-                    <div className="bg-[#1a1a1a] border border-white/10 rounded-[2rem] w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 relative">
-                        <button
-                            onClick={() => setNotification(null)}
-                            className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/40 hover:text-white transition-all active:scale-90 z-10"
-                            aria-label="Close"
-                        >
-                            <IonIcon name="close" className="text-base" />
-                        </button>
-                        <div className="p-8 text-center space-y-6">
-                            <div className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center border-2 ${notification.type === "success" ? "bg-green-500/10 border-green-500 text-green-500" : "bg-red-500/10 border-red-500 text-red-500"}`}>
-                                <IonIcon name={notification.type === "success" ? "bag-check" : "alert-circle"} className="text-4xl" />
-                            </div>
-                            <div className="space-y-2">
-                                <h3 className="text-xl font-bold text-white tracking-tight">{notification.title || (notification.type === "success" ? "Success" : "Error")}</h3>
-                                <p className="text-sm text-slate-400 font-medium leading-relaxed">{notification.message}</p>
-                            </div>
-                            <button
-                                onClick={() => setNotification(null)}
-                                className={`w-full py-4 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] transition-all active:scale-95 shadow-lg ${notification.type === "success" ? "bg-green-500 text-black hover:bg-green-400" : "bg-red-500 text-white hover:bg-red-400"}`}
-                            >
-                                {notification.type === "success" ? "Continue Shopping" : "Got it"}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             <ShareModal
                 isOpen={showGoogShareModal}
                 onClose={() => setShowGoogShareModal(false)}
                 title={shareGoogPost?.text || "Goog post"}
                 url={shareGoogPost ? getShareUrlForItem(shareGoogPost, "goog") : ""}
-                description={shareGoogPost?.user?.name ? `Goog by ${shareGoogPost.user.name}` : "Goog post"}
+                description={shareGoogPost?.user ? `Goog by ${getUserDisplayName(shareGoogPost.user, "User")}` : "Goog post"}
                 product={shareGoogPost ? { ...shareGoogPost, id: `goog-${shareGoogPost.id}` } : null}
                 initialView="share"
                 onCopyLink={handleGoogCopyLink}
@@ -1837,6 +3373,21 @@ export default function DashboardPage() {
                 product={shareAdItem ? { ...shareAdItem, is_sponsored: true } : null}
                 initialView="share"
                 onCopyLink={handleAdCopyLink}
+            />
+
+            <ShareModal
+                isOpen={showUploadShareModal}
+                onClose={() => setShowUploadShareModal(false)}
+                title={shareUploadItem?.topic || "Upload content"}
+                url={shareUploadItem ? `${typeof window !== "undefined" ? window.location.origin : ""}/dashboard/profile?id=${shareUploadItem.user_id}` : ""}
+                description={shareUploadItem?.description || "Upload content"}
+                product={shareUploadItem ? {
+                    ...shareUploadItem,
+                    id: `upload-${shareUploadItem.id}`,
+                    title: shareUploadItem.topic || "Upload content",
+                    image_url: shareUploadItem.media_preview || shareUploadItem.thumbnail_url || shareUploadItem.media_gallery?.[0] || "",
+                } : null}
+                initialView="share"
             />
 
             <InteractionBottomSheet
@@ -1860,6 +3411,15 @@ export default function DashboardPage() {
                         );
                     } catch (error) {
                         console.error("Failed to delete Goog comment:", error);
+                    }
+                }}
+                onReportComment={async (commentId) => {
+                    try {
+                        await googService.reportComment(Number(commentId));
+                        addTopbarNotification({ type: "success", title: "Reported", message: "Comment has been reported for review." });
+                    } catch (e: any) {
+                        const msg = e?.message || "";
+                        addTopbarNotification({ type: "info", title: msg.includes("Already") ? "Already Reported" : "Error", message: msg.includes("Already") ? "You have already reported this comment." : "Could not submit report." });
                     }
                 }}
                 onRefresh={refreshWritePostSheet}
@@ -1916,8 +3476,10 @@ export default function DashboardPage() {
                 onReportComment={async (commentId) => {
                     try {
                         await marketService.reportComment(Number(commentId));
-                    } catch (error) {
-                        console.error("Failed to report ad comment:", error);
+                        addTopbarNotification({ type: "success", title: "Reported", message: "Comment has been reported for review." });
+                    } catch (e: any) {
+                        const msg = e?.message || "";
+                        addTopbarNotification({ type: "info", title: msg.includes("Already") ? "Already Reported" : "Error", message: msg.includes("Already") ? "You have already reported this comment." : "Could not submit report." });
                     }
                 }}
                 onRefresh={refreshAdSheet}
@@ -1928,6 +3490,116 @@ export default function DashboardPage() {
                 }}
                 currentUser={currentUser}
                 isLoading={isAdSheetLoading}
+            />
+
+            <InteractionBottomSheet
+                isOpen={isUploadSheetOpen}
+                onClose={() => {
+                    setIsUploadSheetOpen(false);
+                    setInteractionUpload(null);
+                }}
+                type={uploadSheetType}
+                product={interactionUpload ? {
+                    ...interactionUpload,
+                    id: `upload-${interactionUpload.id}`,
+                    title: interactionUpload.topic || "Upload content",
+                    image_url: interactionUpload.media_preview || interactionUpload.thumbnail_url || interactionUpload.media_gallery?.[0] || "",
+                } : null}
+                data={uploadSheetData}
+                onTabChange={(type) => {
+                    if (interactionUpload) void openUploadSheet(type, interactionUpload);
+                }}
+                onAddComment={async (comment, parentId) => {
+                    if (!interactionUpload || !comment.trim()) return;
+                    if (!authService.isAuthenticated() || !currentUser?.id) {
+                        openLoginRequired({ message: "Please log in to comment on upload content." });
+                        return;
+                    }
+                    try {
+                        const commentData = await uploadContentService.addComment(interactionUpload.id, comment.trim(), parentId);
+                        setUploadSheetData((current) => [...current, {
+                            ...commentData,
+                            username: currentUser?.username || commentData?.username || "You",
+                            profile_picture: currentUser?.profile_picture ?? commentData?.profile_picture,
+                        }]);
+                        updateUploadFeedItem(interactionUpload.id, (entry) => ({
+                            ...entry,
+                            comments_count: Number(entry.comments_count ?? entry.commentCount ?? 0) + 1,
+                            commentCount: Number(entry.comments_count ?? entry.commentCount ?? 0) + 1,
+                        }));
+                        setInteractionUpload((current) => current ? {
+                            ...current,
+                            comments_count: Number(current.comments_count ?? current.commentCount ?? 0) + 1,
+                            commentCount: Number(current.comments_count ?? current.commentCount ?? 0) + 1,
+                        } : current);
+                    } catch (error) {
+                        console.error("Failed to add upload content comment:", error);
+                    }
+                }}
+                onDeleteComment={async (commentId) => {
+                    if (!interactionUpload) return;
+                    try {
+                        const result = await uploadContentService.deleteComment(commentId);
+                        const deletedCount = Math.max(1, Number(result?.deletedCount || 1));
+                        setUploadSheetData((current) => current.filter((comment) => comment.id !== commentId && comment.parent_id !== commentId));
+                        updateUploadFeedItem(interactionUpload.id, (entry) => ({
+                            ...entry,
+                            comments_count: Math.max(0, Number(entry.comments_count ?? entry.commentCount ?? 0) - deletedCount),
+                            commentCount: Math.max(0, Number(entry.comments_count ?? entry.commentCount ?? 0) - deletedCount),
+                        }));
+                        setInteractionUpload((current) => current ? {
+                            ...current,
+                            comments_count: Math.max(0, Number(current.comments_count ?? current.commentCount ?? 0) - deletedCount),
+                            commentCount: Math.max(0, Number(current.comments_count ?? current.commentCount ?? 0) - deletedCount),
+                        } : current);
+                    } catch (error) {
+                        console.error("Failed to delete upload content comment:", error);
+                    }
+                }}
+                onLikeComment={async (commentId) => {
+                    try {
+                        await uploadContentService.likeComment(Number(commentId));
+                        if (interactionUpload) setUploadSheetData(await uploadContentService.getComments(interactionUpload.id));
+                    } catch (error) {
+                        console.error("Failed to like upload content comment:", error);
+                    }
+                }}
+                onDislikeComment={async (commentId) => {
+                    try {
+                        await uploadContentService.dislikeComment(Number(commentId));
+                        if (interactionUpload) setUploadSheetData(await uploadContentService.getComments(interactionUpload.id));
+                    } catch (error) {
+                        console.error("Failed to dislike upload content comment:", error);
+                    }
+                }}
+                onReportComment={async (commentId) => {
+                    try {
+                        await uploadContentService.reportComment(Number(commentId));
+                        addTopbarNotification({ type: "success", title: "Reported", message: "Comment has been reported for review." });
+                    } catch (e: any) {
+                        const msg = e?.message || "";
+                        addTopbarNotification({ type: "info", title: msg.includes("Already") ? "Already Reported" : "Error", message: msg.includes("Already") ? "You have already reported this comment." : "Could not submit report." });
+                    }
+                }}
+                onRefresh={async () => {
+                    if (!interactionUpload) return;
+                    if (uploadSheetType === "comments") {
+                        setUploadSheetData(await uploadContentService.getComments(interactionUpload.id));
+                    } else if (uploadSheetType === "likes") {
+                        setUploadSheetData(await uploadContentService.getLikes(interactionUpload.id));
+                    } else if (uploadSheetType === "shares") {
+                        setUploadSheetData(await uploadContentService.getShares(interactionUpload.id));
+                    } else if (uploadSheetType === "views") {
+                        setUploadSheetData(await uploadContentService.getViews(interactionUpload.id));
+                    }
+                }}
+                onAction={(action) => {
+                    if (!interactionUpload) return;
+                    if (action === "star") void handleUploadLike(interactionUpload);
+                    if (action === "share" || action === "forward" || action === "upload") void handleUploadShare(interactionUpload);
+                }}
+                currentUser={currentUser}
+                isLoading={isUploadSheetLoading}
             />
 
             {pendingAdCoinAd && (
@@ -2021,6 +3693,86 @@ export default function DashboardPage() {
                 </div>
             )}
 
+            {reportTargetUpload && (
+                <div
+                    className="fixed inset-0 z-[147] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm"
+                    onClick={() => !uploadReportSubmitting && setReportTargetUpload(null)}
+                >
+                    <div
+                        className="w-full max-w-[340px] overflow-hidden rounded-2xl border border-white/10 bg-[#15161a] shadow-[0_30px_90px_rgba(0,0,0,0.48)]"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="border-b border-white/8 px-4 py-3">
+                            <div className="flex items-center gap-2">
+                                <IonIcon name="flag-outline" className="text-base text-red-300" />
+                                <h3 className="text-[12px] font-black text-white">Why are you reporting this?</h3>
+                            </div>
+                        </div>
+
+                        {uploadReportSubmitted ? (
+                            <div className="flex flex-col items-center gap-3 px-5 py-8 text-center">
+                                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-300">
+                                    <IonIcon name="checkmark-circle" className="text-2xl" />
+                                </div>
+                                <div>
+                                    <p className="text-[12px] font-black text-white">Report submitted successfully</p>
+                                    <p className="mt-1 text-[11px] font-semibold text-white/50">We&apos;ll review this content shortly.</p>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="px-4 py-4">
+                                <div className="grid gap-2">
+                                    {["Copyright Violation", "Spam / Scam Content", "Inappropriate Content", "Fake or Fraud Content", "Misleading or Not as Described", "Other"].map((reason) => (
+                                        <button
+                                            key={reason}
+                                            type="button"
+                                            onClick={() => setUploadReportReason(reason)}
+                                            className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-[11px] font-bold transition-all ${
+                                                uploadReportReason === reason
+                                                    ? "border-red-300/45 bg-red-300/10 text-red-100"
+                                                    : "border-white/8 bg-white/[0.03] text-white/70 hover:border-white/15 hover:bg-white/[0.06]"
+                                            }`}
+                                        >
+                                            <span className={`h-3.5 w-3.5 shrink-0 rounded-full border-2 transition-all ${uploadReportReason === reason ? "border-red-300 bg-red-300" : "border-white/30"}`} />
+                                            {reason}
+                                        </button>
+                                    ))}
+                                </div>
+                                {uploadReportReason === "Other" && (
+                                    <textarea
+                                        value={uploadReportCustomReason}
+                                        onChange={(event) => setUploadReportCustomReason(event.target.value)}
+                                        placeholder="Add details"
+                                        rows={2}
+                                        className="mt-3 w-full resize-none rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2.5 text-[11px] font-medium text-white placeholder:text-white/25 outline-none transition-colors focus:border-white/20"
+                                    />
+                                )}
+                                {uploadReportError && (
+                                    <p className="mt-3 text-[11px] font-bold text-red-300">{uploadReportError}</p>
+                                )}
+                                <div className="mt-4 flex items-center justify-end gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setReportTargetUpload(null)}
+                                        className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-white/70 transition hover:bg-white/10"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={submitUploadReport}
+                                        disabled={!uploadReportReason || uploadReportSubmitting}
+                                        className="rounded-full bg-red-300 px-4 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-black transition hover:bg-red-200 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                                    >
+                                        {uploadReportSubmitting ? "Submitting..." : "Submit"}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
             {reportTargetPost && (
                 <div
                     className="fixed inset-0 z-[147] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
@@ -2075,6 +3827,10 @@ export default function DashboardPage() {
                                     className="mt-3 w-full resize-none rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2.5 text-[11px] font-medium text-white placeholder:text-white/25 outline-none focus:border-white/20 transition-colors"
                                 />
 
+                                {reportError && (
+                                    <p className="mt-3 text-[11px] font-bold text-red-400">{reportError}</p>
+                                )}
+
                                 <div className="mt-4 flex items-center justify-end gap-2.5">
                                     <button
                                         type="button"
@@ -2099,5 +3855,6 @@ export default function DashboardPage() {
             )}
 
         </main>
+        </>
     );
 }

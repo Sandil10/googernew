@@ -3,13 +3,24 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import IonIcon from '@/app/components/IonIcon';
+import OrderChatPopup from '@/app/components/wallet/OrderChatPopup';
 import { authService } from '@/services/authService';
 
 type Step = 'select' | 'buy' | 'topup';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
+const getApiUrl = () => {
+    const isClient = typeof window !== 'undefined';
+    if (!isClient) return '/api';
+    const hostname = window.location.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+        return 'http://localhost:5000';
+    }
+    return '/api';
+};
+const API_URL = getApiUrl();
 const PAYREXX_BASE = 'https://raw.githubusercontent.com/payrexx/payment-logos/main/assets/card-icons';
 const CLEARBIT_BASE = 'https://logo.clearbit.com';
+const ASSIGN_KEY = 'googer_topup_assignments';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type FieldDef = {
@@ -18,6 +29,7 @@ type FieldDef = {
 };
 type AdminMethod = { id: number; name: string; icon: string; fields: FieldDef[] };
 type CatalogEntry = { id: string; name: string; svgFile?: string; clearbitDomain?: string };
+type TopupAssignment = number | { methodId: number; fields?: Record<string, string> };
 type SavedPayment = {
     id: string;
     catalogId: string;
@@ -39,7 +51,7 @@ type SavedPayment = {
     userId?: number;
     username?: string;
     profilePicture?: string;
-    adStatus?: 'active' | 'locked';
+    adStatus?: 'active' | 'locked' | 'inactive';
     isOwn?: boolean;
 };
 type TransactionFilter = 'all' | 'pending' | 'completed' | 'cancelled';
@@ -60,7 +72,51 @@ type P2PTransaction = {
     buyer_username?: string;
     seller_username?: string;
     reservesBalance?: boolean;
+    buyer_report_reason?: string | null;
+    buyer_reported_at?: string | null;
+    seller_report_reason?: string | null;
+    seller_reported_at?: string | null;
 };
+
+const BUYER_REPORT_REASONS  = ['Payment still pending', 'Payment Not Received', 'Seller Not Responding', 'Other'];
+const SELLER_REPORT_REASONS = ['User Not Responding', 'Payment still pending', 'Payment Not Received', 'Fake Receipt Uploaded', 'Buyer Marked as Paid Without Paying', 'Other'];
+const DEFAULT_BUY_POPUP_DESCRIPTION = [
+    '1. Enter the amount you want to buy.',
+    '2. Click Make Payment.',
+    '3. Enter the Transaction ID or upload the payment slip.',
+    '4. Click Submit to confirm your payment.',
+].join('\n');
+
+function getSavedAssignmentFields(methodId?: number): Record<string, string> {
+    if (!methodId || typeof window === 'undefined') return {};
+    try {
+        const assignments = JSON.parse(localStorage.getItem(ASSIGN_KEY) || '{}') as Record<string, TopupAssignment>;
+        const match = Object.values(assignments).find(assignment =>
+            typeof assignment === 'number' ? assignment === methodId : assignment?.methodId === methodId
+        );
+        return typeof match === 'number' ? {} : (match?.fields || {});
+    } catch {
+        return {};
+    }
+}
+
+function GuideNote({ guide, description }: { guide: string; description?: string }) {
+    const customDescription = description?.trim();
+    return (
+        <div className="bg-[#0a0a0a] border border-gray-800/50 rounded-xl px-4 py-3 space-y-2">
+            {customDescription && (
+                <div>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-gray-600 mb-1">Description</p>
+                    <p className="text-[11px] text-gray-300 leading-relaxed whitespace-pre-line">{customDescription}</p>
+                </div>
+            )}
+            <div className={customDescription ? 'border-t border-gray-800/60 pt-2' : ''}>
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-600 mb-1">Guide Note</p>
+                <p className="text-[10px] text-gray-400 leading-relaxed whitespace-pre-line">{guide}</p>
+            </div>
+        </div>
+    );
+}
 
 // ─── Full 42-method catalog ───────────────────────────────────────────────────
 const PAYMENT_CATALOG: Record<string, CatalogEntry[]> = {
@@ -155,13 +211,23 @@ function PaymentLogo({ name, svgFile, clearbitDomain }: { name: string; svgFile?
     );
 }
 
-const getToken = () => typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+const getToken = () => typeof window !== 'undefined' ? (sessionStorage.getItem('token') || localStorage.getItem('token')) : null;
 const fileToDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
 });
+// Resolve a proof image path — backend stores relative paths like /uploads/… for local
+// and full https:// URLs for Cloudinary. Prefix the backend base when it's a relative path.
+const resolveProofUrl = (p?: string | null): string => {
+    if (!p) return '';
+    if (p.startsWith('http://') || p.startsWith('https://') || p.startsWith('data:')) return p;
+    // Derive backend base from API_URL (strip trailing /api)
+    const base = API_URL.replace(/\/api\/?$/, '').replace(/\/$/, '');
+    const path = p.startsWith('/') ? p : `/${p}`;
+    return `${base}${path}`;
+};
 const authFetch = (url: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
     const token = getToken();
@@ -201,8 +267,8 @@ const getReleaseCountdown = (tx: P2PTransaction, payment: SavedPayment, nowMs: n
 };
 
 // ─── BuyScreen ────────────────────────────────────────────────────────────────
-function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: { onBack: () => void; walletBalance: number; onGoRequest: () => void; onGoTopup: () => void; onGoSell: () => void }) {
-    const router = useRouter();
+function BuyScreen({ onBack, walletBalance: initialWalletBalance, onGoRequest, onGoTopup, onGoSell }: { onBack: () => void; walletBalance: number; onGoRequest: () => void; onGoTopup: () => void; onGoSell: () => void }) {
+    const [walletBalance, setWalletBalance]   = useState<number>(initialWalletBalance);
     const [payments, setPayments]             = useState<SavedPayment[]>([]);
     const [loadingAds, setLoadingAds]         = useState(true);
     const [currentUserId, setCurrentUserId]   = useState<number | null>(null);
@@ -236,6 +302,8 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
 
     // Buyer's pending detail/proof popup
     const [buyerViewPopup, setBuyerViewPopup] = useState<{ tx: P2PTransaction; payment: SavedPayment } | null>(null);
+    // Completed transaction view popup (buyer & seller)
+    const [completedViewPopup, setCompletedViewPopup] = useState<{ tx: P2PTransaction; payment: SavedPayment } | null>(null);
     const [buyBlockedPopup, setBuyBlockedPopup] = useState(false);
     const [buyBlockedTx, setBuyBlockedTx]       = useState<P2PTransaction | null>(null);
     const [cancellingBlockedTx, setCancellingBlockedTx] = useState(false);
@@ -243,11 +311,18 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
     const [viewScreenshot, setViewScreenshot] = useState<File | null>(null);
     const [viewSubmitting, setViewSubmitting] = useState(false);
     const [viewError, setViewError]           = useState<string | null>(null);
+    const [reportTarget, setReportTarget] = useState<{ tx: P2PTransaction; payment: SavedPayment } | null>(null);
+    const [reportReason, setReportReason] = useState(BUYER_REPORT_REASONS[0]);
+    const [reportCustomReason, setReportCustomReason] = useState('');
+    const [reportSubmitting, setReportSubmitting] = useState(false);
+    const [reportError, setReportError] = useState<string | null>(null);
 
     const pendingBuyLockRef = useRef<Promise<unknown> | null>(null);
     const activeBuyLockAdIdRef = useRef<string | null>(null);
     const transactionFilterRef = useRef<TransactionFilter>('all');
     const buyLockHeartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const buyScreenshotRef = useRef<File | null>(null);
+    const viewScreenshotRef = useRef<File | null>(null);
     const [nowMs, setNowMs] = useState(() => Date.now());
 
     useEffect(() => {
@@ -260,10 +335,93 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
     const setAdLockStatus = (adId: string, locked: boolean) => {
         setPayments(prev => prev.map(payment =>
             payment.id === String(adId)
-                ? { ...payment, adStatus: locked ? 'locked' : 'active' }
+                ? { ...payment, adStatus: locked ? 'locked' : (payment.adStatus === 'inactive' ? 'inactive' : 'active') }
                 : payment
         ));
     };
+
+    const getTxRole = (tx: P2PTransaction) => String(tx.buyer_id) === String(currentUserId) ? 'buyer' : 'seller';
+    const getOwnReportReason = (tx: P2PTransaction) => getTxRole(tx) === 'buyer' ? tx.buyer_report_reason : tx.seller_report_reason;
+    const getReportBadges = (tx: P2PTransaction) => [
+        tx.buyer_report_reason ? { label: 'REPORTED BY BUYER', reason: tx.buyer_report_reason } : null,
+        tx.seller_report_reason ? { label: 'REPORTED BY SELLER', reason: tx.seller_report_reason } : null,
+    ].filter(Boolean) as { label: string; reason: string }[];
+    const applyReportedTransaction = (tx: P2PTransaction) => {
+        setTransactions(prev => prev.map(item => String(item.id) === String(tx.id) ? { ...item, ...tx } : item));
+        setBuyerViewPopup(prev => prev && String(prev.tx.id) === String(tx.id) ? { ...prev, tx: { ...prev.tx, ...tx } } : prev);
+        setCompletedViewPopup(prev => prev && String(prev.tx.id) === String(tx.id) ? { ...prev, tx: { ...prev.tx, ...tx } } : prev);
+        setConfirmTransaction(prev => prev && String(prev.tx.id) === String(tx.id) ? { ...prev, tx: { ...prev.tx, ...tx } } : prev);
+    };
+    const openReportPopup = (tx: P2PTransaction, payment: SavedPayment) => {
+        const role = getTxRole(tx);
+        const reasons = role === 'buyer' ? BUYER_REPORT_REASONS : SELLER_REPORT_REASONS;
+        setReportTarget({ tx, payment });
+        setReportReason(reasons[0]);
+        setReportCustomReason('');
+        setReportError(null);
+    };
+    const submitReport = async () => {
+        if (!reportTarget) return;
+        const reason = reportReason === 'Other' ? reportCustomReason.trim() : reportReason;
+        if (!reason) { setReportError('Report reason is required.'); return; }
+        setReportSubmitting(true);
+        setReportError(null);
+        try {
+            const res = await authFetch(`${API_URL}/p2p-ads/transactions/${reportTarget.tx.id}/report`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) { setReportError(data.message || 'Failed to submit report.'); return; }
+            applyReportedTransaction(data.transaction);
+            setReportTarget(null);
+        } catch {
+            setReportError('Network error. Please try again.');
+        } finally {
+            setReportSubmitting(false);
+        }
+    };
+    const renderReportPanel = (tx: P2PTransaction, payment: SavedPayment) => {
+        const ownReport = getOwnReportReason(tx);
+        const badges = getReportBadges(tx);
+        return (
+            <div className="space-y-2">
+                {badges.map(badge => (
+                    <div key={badge.label} className="bg-red-500/[0.06] border border-red-500/20 rounded-xl px-4 py-3">
+                        <p className="text-[9px] font-black text-red-400 uppercase tracking-widest">{badge.label}</p>
+                        <p className="text-[10px] text-red-200 font-semibold mt-1 break-words">{badge.reason}</p>
+                    </div>
+                ))}
+                {ownReport ? null : (
+                    <button
+                        type="button"
+                        onClick={() => openReportPopup(tx, payment)}
+                        className="w-full py-2.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 font-black rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95"
+                    >
+                        Report
+                    </button>
+                )}
+            </div>
+        );
+    };
+
+    const renderCardReportBadges = (tx: P2PTransaction) => (
+        <>
+            {tx.seller_report_reason && (
+                <div className="bg-red-500/[0.06] border border-red-500/20 rounded-lg px-2.5 py-1.5 text-right">
+                    <p className="text-[8px] font-black text-red-400 uppercase tracking-widest">Reported by Seller</p>
+                    <p className="text-[9px] text-red-300 font-semibold mt-0.5 break-words leading-tight">{tx.seller_report_reason}</p>
+                </div>
+            )}
+            {tx.buyer_report_reason && (
+                <div className="bg-red-500/[0.06] border border-red-500/20 rounded-lg px-2.5 py-1.5 text-right">
+                    <p className="text-[8px] font-black text-red-400 uppercase tracking-widest">Reported by Buyer</p>
+                    <p className="text-[9px] text-red-300 font-semibold mt-0.5 break-words leading-tight">{tx.buyer_report_reason}</p>
+                </div>
+            )}
+        </>
+    );
 
     const stopBuyLockHeartbeat = () => {
         if (buyLockHeartbeatRef.current) {
@@ -296,6 +454,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
         const target = buyPopupAd;
         if (target && pendingDetailsTx) {
             handleCancelPendingTransaction(pendingDetailsTx, target);
+            buyScreenshotRef.current = null;
             setBuyPopupAd(null); setBuyStep('amount'); setBuyAmount(''); setBuyScreenshot(null); setBuyTxId(''); setBuyError(null); setBuySuccess(false); setPendingDetailsTx(null);
             return;
         }
@@ -337,6 +496,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                 refresh();
             }
         }
+        buyScreenshotRef.current = null;
         setBuyPopupAd(null); setBuyStep('amount'); setBuyAmount(''); setBuyScreenshot(null); setBuyTxId(''); setBuyError(null); setBuySuccess(false); setPendingDetailsTx(null);
     };
 
@@ -362,6 +522,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
             t => String(t.status).toLowerCase() === 'pending' && !t.tx_id && String(t.seller_id) === String(ad.userId)
         );
         if (isSellerLocked) { setBuyBlockedPopup(true); return; }
+        buyScreenshotRef.current = null;
         setBuyPopupAd(ad); setBuyStep('amount'); setBuyAmount(''); setBuyScreenshot(null); setBuyTxId(''); setBuyError(null); setBuySuccess(false);
         setPendingDetailsTx(null);
         activeBuyLockAdIdRef.current = null;
@@ -470,13 +631,14 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
 
     const handleBuySubmit = async () => {
         setBuyError(null);
-        if (!buyScreenshot && !buyTxId.trim()) { setBuyError('Please upload a payment screenshot or enter a Transaction ID.'); return; }
+        const selectedScreenshot = buyScreenshotRef.current || buyScreenshot;
+        if (!selectedScreenshot && !buyTxId.trim()) { setBuyError('Please upload a payment screenshot or enter a Transaction ID.'); return; }
         if (!pendingDetailsTx) { setBuyError('Open this request from Pending before submitting details.'); return; }
         try {
             await Promise.resolve(pendingBuyLockRef.current).catch(() => {});
             const submitForm = new FormData();
             if (buyTxId.trim()) submitForm.append('tx_id', buyTxId.trim());
-            if (buyScreenshot) submitForm.append('screenshot', buyScreenshot);
+            if (selectedScreenshot) submitForm.append('screenshot', selectedScreenshot);
             const res = await fetch(`${API_URL}/p2p-ads/transactions/${pendingDetailsTx.id}/submit-details`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${getToken()}` },
@@ -496,7 +658,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                     receive_amount: buyReceiveAmount,
                     tx_id: buyTxId.trim(),
                     screenshot_data: data.transaction?.screenshot_data || null,
-                    screenshot_name: buyScreenshot?.name || null,
+                    screenshot_name: selectedScreenshot?.name || null,
                     status: 'pending',
                     reservesBalance: true,
                     created_at: new Date().toISOString(),
@@ -511,6 +673,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
             setBuyPopupAd(null);
             setBuyStep('amount');
             setBuyAmount('');
+            buyScreenshotRef.current = null;
             setBuyScreenshot(null);
             setBuyTxId('');
             setPendingDetailsTx(null);
@@ -540,6 +703,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
     const [releaseUnit, setReleaseUnit]           = useState<'h' | 'min' | 's'>('h');
     const [adDescription, setAdDescription]      = useState('');
     const [formError, setFormError]               = useState<string | null>(null);
+    const [chatPopup, setChatPopup]               = useState<{ userId: string; name: string; roleLabel: string; orderLabel?: string } | null>(null);
     const isCrypto = formCategory === 'Crypto';
     const isBank = formCategory === 'Bank';
 
@@ -593,12 +757,23 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
         userId: Number(row.user_id),
         username: row.username,
         profilePicture: row.profile_picture,
-        adStatus: row.is_locked ? 'locked' : 'active',
+        adStatus: row.is_inactive ? 'inactive' : (row.is_locked ? 'locked' : 'active'),
         isOwn: row.is_own === true || row.is_own === 'true',
     });
 
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const eventSourceRef = useRef<EventSource | null>(null);
+
+    const fetchWalletBalance = () => {
+        authFetch(`${API_URL}/auth/profile`)
+            .then(r => r.json())
+            .then(data => {
+                const profile = data.user || data;
+                const bal = parseFloat(profile?.wallet_balance ?? profile?.walletBalance ?? '0') || 0;
+                if (!isNaN(bal)) setWalletBalance(bal);
+            })
+            .catch(() => {});
+    };
 
     const fetchAds = (silent = false) => {
         if (!silent) setLoadingAds(true);
@@ -637,10 +812,12 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
     useEffect(() => {
         fetchAds();
         fetchTransactions('all');
+        fetchWalletBalance();
         pollRef.current = setInterval(() => {
             fetchAds(true);
             fetchTransactions(transactionFilterRef.current);
         }, 1000);
+        const walletPollRef = setInterval(fetchWalletBalance, 5000);
 
         const token = getToken();
         if (token && typeof EventSource !== 'undefined') {
@@ -692,6 +869,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
 
         return () => {
             if (pollRef.current) clearInterval(pollRef.current);
+            clearInterval(walletPollRef);
             stopBuyLockHeartbeat();
             eventSourceRef.current?.close();
         };
@@ -742,6 +920,30 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
         return () => clearInterval(poll);
     }, [buyerViewPopup?.tx.id]);
 
+    // Full-screen image zoom viewer
+    const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
+    const [zoomScale, setZoomScale] = useState(1);
+    const openZoom = (url: string) => { setZoomImageUrl(url); setZoomScale(1); };
+    const closeZoom = () => { setZoomImageUrl(null); setZoomScale(1); };
+
+    // Completed view popup: refresh once when opened to get latest screenshot_data
+    useEffect(() => {
+        if (!completedViewPopup || String(completedViewPopup.tx.id).startsWith('local-')) return;
+        const txId = completedViewPopup.tx.id;
+        authFetch(`${API_URL}/p2p-ads/transactions/${txId}`)
+            .then(r => r.json())
+            .then(data => {
+                const live: P2PTransaction = data.transaction || data;
+                if (!live?.id) return;
+                setCompletedViewPopup(prev =>
+                    prev && String(prev.tx.id) === String(txId)
+                        ? { ...prev, tx: { ...prev.tx, ...live } }
+                        : prev
+                );
+            })
+            .catch(() => {});
+    }, [completedViewPopup?.tx.id]);
+
     const findAdmin = (entry: CatalogEntry): AdminMethod | undefined =>
         adminMethods.find(a =>
             a.icon === entry.id ||
@@ -774,6 +976,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
         } else {
             const defaults: Record<string, string> = {};
             (admin?.fields || []).forEach(f => { defaults[f.key] = f.defaultValue ?? ''; });
+            Object.assign(defaults, getSavedAssignmentFields(admin?.id));
             setAdminFieldVals(defaults);
             setLkrRate('330');
             setCryptoCurrency(cat === 'Crypto' ? 'USD' : 'LKR');
@@ -884,14 +1087,62 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
         if (!acc[adId]) acc[adId] = tx;
         return acc;
     }, {});
-    const latestTransactionByAdId = { ...serverTransactionByAdId };
+    const latestTransactionByAdId: Record<string, P2PTransaction> = { ...serverTransactionByAdId };
     Object.entries(localTransactionsByAdId).forEach(([adId, localTx]) => {
         const serverTx = serverTransactionByAdId[adId];
         const localTime = new Date(localTx.created_at || 0).getTime();
         const serverTime = new Date(serverTx?.completed_at || serverTx?.created_at || 0).getTime();
         if (!serverTx || localTime >= serverTime) latestTransactionByAdId[adId] = localTx;
     });
+    // Build synthetic per-transaction entries so every order gets its own card.
+    const buildSyntheticPayments = (filterStatus: string): SavedPayment[] => {
+        if (currentUserId === null) return [];
+        const txsSorted = [...transactions]
+            .filter(tx =>
+                String(tx.status).toLowerCase() === filterStatus &&
+                (String(tx.buyer_id) === String(currentUserId) || String(tx.seller_id) === String(currentUserId))
+            )
+            .sort((a, b) =>
+                new Date(b.completed_at || b.created_at || 0).getTime() -
+                new Date(a.completed_at || a.created_at || 0).getTime()
+            );
+        const result: SavedPayment[] = [];
+        txsSorted.forEach(tx => {
+            const synKey = `__ctxid_${tx.id}`;
+            latestTransactionByAdId[synKey] = tx;
+            const realPayment = payments.find(p => String(p.id) === String(tx.ad_id));
+            result.push(realPayment
+                ? { ...realPayment, id: synKey }
+                : {
+                    id: synKey,
+                    catalogId: '',
+                    name: tx.ad_name || `Ad #${tx.ad_id}`,
+                    category: (tx as any).category || 'Other',
+                    adminFields: [],
+                    email: '',
+                    lkrRate: '0',
+                    cryptoCurrency: (tx as any).crypto_currency as SavedPayment['cryptoCurrency'],
+                    minAmount: '0',
+                    maxAmount: '0',
+                    releaseValue: '',
+                    releaseUnit: 'h' as const,
+                    savedAt: tx.created_at || '',
+                    isOwn: String(tx.seller_id) === String(currentUserId),
+                    userId: Number(tx.seller_id),
+                    username: String(tx.seller_id) === String(currentUserId)
+                        ? tx.buyer_username
+                        : tx.seller_username,
+                    adStatus: 'active',
+                } as SavedPayment
+            );
+        });
+        return result;
+    };
+    const pendingSyntheticPayments = transactionFilter === 'pending' ? buildSyntheticPayments('pending') : [];
+    const completedSyntheticPayments = transactionFilter === 'completed' ? buildSyntheticPayments('completed') : [];
+    const cancelledSyntheticPayments = transactionFilter === 'cancelled' ? buildSyntheticPayments('cancelled') : [];
     const adsAfterCcyCountryFilter = payments.filter(p => {
+        if (transactionFilter === 'all' && !p.isOwn && p.adStatus === 'inactive') return false;
         if (currencyFilter !== 'all') {
             const cur = p.cryptoCurrency || (p.category === 'Crypto' ? 'USDT' : 'LKR');
             if (cur !== currencyFilter) return false;
@@ -908,14 +1159,12 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
             const status = String(latestTransactionByAdId[payment.id]?.status || '').toLowerCase();
             return status === transactionFilter;
         });
-        // Pending tab: one buyer card + one seller card at most
-        if (transactionFilter === 'pending') {
-            const buyerCard = matched.find(p => !p.isOwn);
-            const sellerCard = matched.find(p => p.isOwn);
-            return [buyerCard, sellerCard].filter(Boolean) as typeof matched;
-        }
-        // Cancel tab: show only the single most-recent cancelled card
-        if (transactionFilter === 'cancelled') return matched.slice(0, 1);
+        // Pending tab: each pending tx gets its own synthetic card, newest first
+        if (transactionFilter === 'pending') return pendingSyntheticPayments;
+        // Cancel tab: each cancelled tx gets its own synthetic card, newest first
+        if (transactionFilter === 'cancelled') return cancelledSyntheticPayments;
+        // Completed tab: each completed tx gets its own synthetic card, newest first
+        if (transactionFilter === 'completed') return completedSyntheticPayments;
         return matched;
     })();
 
@@ -960,6 +1209,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
         setBuyStep('details');
         setBuyAmount(String(tx.amount || ''));
         setBuyTxId(tx.tx_id || '');
+        buyScreenshotRef.current = null;
         setBuyScreenshot(null);
         setBuyError(null);
         setBuySuccess(false);
@@ -968,19 +1218,21 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
     const openBuyerViewPopup = (tx: P2PTransaction, payment: SavedPayment) => {
         setBuyerViewPopup({ tx, payment });
         setViewTxId(String(tx.tx_id || ''));
+        viewScreenshotRef.current = null;
         setViewScreenshot(null);
         setViewError(null);
     };
 
     const handleBuyerSubmitProof = async () => {
         if (!buyerViewPopup) return;
-        if (!viewTxId.trim() && !viewScreenshot) { setViewError('Please enter a Transaction ID or upload a payment screenshot.'); return; }
+        const selectedScreenshot = viewScreenshotRef.current || viewScreenshot;
+        if (!viewTxId.trim() && !selectedScreenshot) { setViewError('Please enter a Transaction ID or upload a payment screenshot.'); return; }
         setViewSubmitting(true);
         setViewError(null);
         try {
             const formData = new FormData();
             if (viewTxId.trim()) formData.append('tx_id', viewTxId.trim());
-            if (viewScreenshot) formData.append('screenshot', viewScreenshot);
+            if (selectedScreenshot) formData.append('screenshot', selectedScreenshot);
             const res = await authFetch(`${API_URL}/p2p-ads/transactions/${buyerViewPopup.tx.id}/submit-details`, {
                 method: 'POST',
                 body: formData,
@@ -988,13 +1240,21 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
             const data = await res.json();
             if (!res.ok) { setViewError(data.message || 'Failed to submit.'); return; }
             // Switch popup to view-only with submitted data immediately
+            // Use '__submitted__' sentinel when only a screenshot was uploaded (tx_id empty)
+            // so the popup correctly shows the submitted view (truthy check on tx_id)
+            const submittedTxId = data.transaction?.tx_id || viewTxId.trim() || '__submitted__';
             setBuyerViewPopup(prev => prev ? {
                 ...prev,
-                tx: { ...prev.tx, tx_id: viewTxId.trim(), screenshot_data: data.transaction?.screenshot_data || prev.tx.screenshot_data, screenshot_name: viewScreenshot?.name || prev.tx.screenshot_name },
+                tx: { ...prev.tx, tx_id: submittedTxId, screenshot_data: data.transaction?.screenshot_data || prev.tx.screenshot_data, screenshot_name: selectedScreenshot?.name || prev.tx.screenshot_name },
             } : null);
+            setConfirmTransaction(prev => prev && String(prev.tx.id) === String(buyerViewPopup.tx.id) ? {
+                ...prev,
+                tx: { ...prev.tx, ...data.transaction, tx_id: submittedTxId, screenshot_name: selectedScreenshot?.name || data.transaction?.screenshot_name || prev.tx.screenshot_name },
+            } : prev);
             // Refresh all transactions so seller's polling picks up the new data immediately
             fetchTransactions('all');
             fetchTransactions(transactionFilter);
+            fetchWalletBalance();
         } catch {
             setViewError('Network error. Please try again.');
         } finally {
@@ -1041,40 +1301,33 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                 <div className="flex items-center gap-1.5 flex-wrap">
                     <button
                         disabled
-                        className="flex items-center gap-1.5 font-black rounded-xl px-4 py-2 text-[11px] uppercase tracking-widest shadow-md bg-emerald-500 text-black"
+                        className="flex items-center gap-1.5 font-black rounded-lg px-3 py-1.5 text-[9px] uppercase tracking-widest shadow-md bg-emerald-500 text-black"
                     >
-                        <IonIcon name="cart-outline" className="text-sm" />
+                        <IonIcon name="cash-outline" className="text-xs" />
                         Buy Coins
                     </button>
                     <button
                         onClick={onGoSell}
-                        className="flex items-center gap-1.5 font-bold rounded-xl px-3 py-2 text-[10px] uppercase tracking-widest transition-all bg-white/[0.06] hover:bg-white/[0.1] text-gray-300 hover:text-white"
+                        className="flex items-center gap-1.5 font-bold rounded-lg px-3 py-1.5 text-[9px] uppercase tracking-widest transition-all bg-white/[0.06] hover:bg-white/[0.1] text-gray-300 hover:text-white"
                     >
-                        <IonIcon name="pricetag-outline" className="text-sm" />
-                        Sell Coin
+                        <IonIcon name="cash-outline" className="text-xs" />
+                        Sell Coins
                     </button>
                     <button
                         onClick={onGoRequest}
-                        className="flex items-center gap-1.5 font-bold rounded-xl px-3 py-2 text-[10px] uppercase tracking-widest transition-all bg-white/[0.06] hover:bg-white/[0.1] text-gray-300 hover:text-white"
+                        className="flex items-center gap-1.5 font-bold rounded-lg px-3 py-1.5 text-[9px] uppercase tracking-widest transition-all bg-white/[0.06] hover:bg-white/[0.1] text-gray-300 hover:text-white"
                     >
-                        <IonIcon name="paper-plane-outline" className="text-sm" />
+                        <IonIcon name="paper-plane-outline" className="text-xs" />
                         Request
-                    </button>
-                    <button
-                        onClick={onGoTopup}
-                        className="flex items-center gap-1.5 font-bold rounded-xl px-3 py-2 text-[10px] uppercase tracking-widest transition-all bg-white/[0.06] hover:bg-white/[0.1] text-gray-300 hover:text-white"
-                    >
-                        <IonIcon name="add-circle-outline" className="text-sm" />
-                        Top Up
                     </button>
                 </div>
                 <button
                     onClick={() => {
                         if (hasApproval === false) setShowNoApproval(true); else setShowCatalog(true);
                     }}
-                    className="flex items-center gap-1.5 font-bold rounded-xl px-4 py-2 text-[11px] uppercase tracking-widest transition-all shadow-md bg-white text-black hover:bg-gray-100 active:scale-95"
+                    className="flex items-center gap-1.5 font-bold rounded-lg px-3 py-1.5 text-[9px] uppercase tracking-widest transition-all shadow-md bg-white text-black hover:bg-gray-100 active:scale-95"
                 >
-                    <IonIcon name="add-outline" className="text-sm" />
+                    <IonIcon name="add-outline" className="text-xs" />
                     Post Ad
                 </button>
             </div>
@@ -1264,8 +1517,15 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                 onClick={() => {
                                     if (isOwn && transactionFilter === 'pending' && tx && txStatus === 'pending') setConfirmTransaction({ tx, payment: p });
                                     else if (!isOwn && transactionFilter === 'pending' && tx && txStatus === 'pending') openBuyerViewPopup(tx, p);
+                                    else if (transactionFilter === 'completed' && tx && txStatus === 'completed') setCompletedViewPopup({ tx, payment: p });
                                 }}
-                                className={`bg-[#0d0d0d] border border-gray-800/70 rounded-2xl overflow-hidden transition-colors ${transactionFilter === 'pending' && tx && txStatus === 'pending' ? 'cursor-pointer hover:border-amber-500/40' : ''}`}
+                                className={`bg-[#0d0d0d] border border-gray-800/70 rounded-2xl overflow-hidden transition-colors ${
+                                    transactionFilter === 'pending' && tx && txStatus === 'pending'
+                                        ? 'cursor-pointer hover:border-amber-500/40'
+                                        : transactionFilter === 'completed' && tx && txStatus === 'completed'
+                                            ? 'cursor-pointer hover:border-emerald-500/40'
+                                            : ''
+                                }`}
                             >
                                 {/* Top section */}
                                 <div className="px-4 pt-4 pb-3">
@@ -1287,7 +1547,15 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                             if (!chatPartnerId) return null;
                                             return (
                                                 <button
-                                                    onClick={(e) => { e.stopPropagation(); router.push(`/dashboard/chats?user=${encodeURIComponent(String(chatPartnerId))}`); }}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setChatPopup({
+                                                            userId: String(chatPartnerId),
+                                                            name: chatPartnerName,
+                                                            roleLabel: isOwn ? 'Buyer Chat' : 'Seller Chat',
+                                                            orderLabel: `Order #${getOrderId(tx)} · ${p.name}`,
+                                                        });
+                                                    }}
                                                     title={isOwn ? `Chat with buyer ${chatPartnerName}` : `Chat with seller ${chatPartnerName}`}
                                                     className="ml-auto inline-flex items-center gap-1.5 max-w-[150px] min-w-0 h-7 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 px-2 text-emerald-400 transition-all active:scale-95"
                                                 >
@@ -1317,6 +1585,9 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                                     {'  '}
                                                     <span className="text-gray-300 font-semibold">R {displayAvailableRupee.toLocaleString()}</span>
                                                 </p>
+                                                {isOwn && p.adStatus === 'inactive' && (
+                                                    <p className="text-[9px] text-red-400 font-bold">Inactive · wallet below balance</p>
+                                                )}
                                                 {(transactionFilter === 'pending' || transactionFilter === 'completed') && tx && (() => {
                                                     const ts = transactionFilter === 'completed'
                                                         ? (tx.completed_at || tx.created_at)
@@ -1394,6 +1665,47 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                                             View
                                                         </button>
                                                     </div>
+                                                    {renderCardReportBadges(tx)}
+                                                    {!getOwnReportReason(tx) && (
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); openReportPopup(tx, p); }}
+                                                            className="flex items-center gap-1 px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 font-black rounded-lg text-[9px] uppercase tracking-widest transition-all active:scale-95"
+                                                        >
+                                                            <IonIcon name="flag-outline" className="text-[9px]" />
+                                                            Report
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            ) : isOwn && transactionFilter === 'completed' && tx && txStatus === 'completed' ? (
+                                                <div className="flex flex-col items-end gap-1">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                                                            <IonIcon name="checkmark-circle-outline" className="text-emerald-400 text-[10px]" />
+                                                            <span className="text-[9px] font-black text-emerald-400 uppercase tracking-wider">Completed</span>
+                                                        </div>
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); setCompletedViewPopup({ tx, payment: p }); }}
+                                                            className="flex items-center gap-1 px-3 py-1.5 bg-white/[0.07] hover:bg-white/[0.12] text-gray-300 hover:text-white font-black rounded-xl text-[10px] transition-all active:scale-95"
+                                                        >
+                                                            <IonIcon name="eye-outline" className="text-xs" />
+                                                            View
+                                                        </button>
+                                                    </div>
+                                                    {renderCardReportBadges(tx)}
+                                                    {!getOwnReportReason(tx) && (
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); openReportPopup(tx, p); }}
+                                                            className="flex items-center gap-1 px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 font-black rounded-lg text-[9px] uppercase tracking-widest transition-all active:scale-95"
+                                                        >
+                                                            <IonIcon name="flag-outline" className="text-[9px]" />
+                                                            Report
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            ) : isOwn && transactionFilter === 'cancelled' ? (
+                                                <div className="flex items-center gap-1 px-2.5 py-1 bg-red-500/10 border border-red-500/20 rounded-lg">
+                                                    <IonIcon name="close-circle-outline" className="text-red-400 text-[10px]" />
+                                                    <span className="text-[9px] font-black text-red-400 uppercase tracking-wider">Cancelled</span>
                                                 </div>
                                             ) : isOwn ? (
                                                 <div className="flex flex-col items-end gap-1">
@@ -1433,12 +1745,46 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                                                 Cancel
                                                             </button>
                                                         )}
+                                                        {renderCardReportBadges(tx)}
+                                                        {!getOwnReportReason(tx) && (
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); openReportPopup(tx, p); }}
+                                                                className="flex items-center gap-1 px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 font-black rounded-lg text-[9px] uppercase tracking-widest transition-all active:scale-95"
+                                                            >
+                                                                <IonIcon name="flag-outline" className="text-[9px]" />
+                                                                Report
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                ) : transactionFilter === 'completed' && tx && txStatus === 'completed' ? (
+                                                    <div className="flex flex-col items-end gap-1.5">
+                                                        <div className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                                                            <IonIcon name="checkmark-circle-outline" className="text-emerald-400 text-[10px]" />
+                                                            <span className="text-[9px] font-black text-emerald-400 uppercase tracking-wider">Completed</span>
+                                                        </div>
+                                                        {renderCardReportBadges(tx)}
+                                                        {!getOwnReportReason(tx) && (
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); openReportPopup(tx, p); }}
+                                                                className="flex items-center gap-1 px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 font-black rounded-lg text-[9px] uppercase tracking-widest transition-all active:scale-95"
+                                                            >
+                                                                <IonIcon name="flag-outline" className="text-[9px]" />
+                                                                Report
+                                                            </button>
+                                                        )}
                                                     </div>
                                                 ) : transactionFilter === 'cancelled' ? (
                                                     <div className="flex items-center gap-1 px-2.5 py-1 bg-red-500/10 border border-red-500/20 rounded-lg">
                                                         <IonIcon name="close-circle-outline" className="text-red-400 text-[10px]" />
                                                         <span className="text-[9px] font-black text-red-400 uppercase tracking-wider">Cancelled</span>
                                                     </div>
+                                                ) : p.adStatus === 'inactive' ? (
+                                                    <button
+                                                        disabled
+                                                        className="px-6 py-2 bg-red-500/10 text-red-500 font-black rounded-xl text-xs tracking-wide cursor-not-allowed border border-red-500/10"
+                                                    >
+                                                        Inactive
+                                                    </button>
                                                 ) : isSellerLocked ? (
                                                     <button
                                                         disabled
@@ -1498,7 +1844,9 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
             )}
 
             {/* ── Buyer Pending Detail / Proof Submission Popup ── */}
-            {buyerViewPopup && (
+            {buyerViewPopup && (() => {
+                const buyerHasProof = !!(buyerViewPopup.tx.tx_id || buyerViewPopup.tx.screenshot_data || buyerViewPopup.tx.screenshot_name);
+                return (
                 <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
                     <div className="absolute inset-0 bg-black/80" onClick={() => setBuyerViewPopup(null)} />
                     <div className="relative w-full sm:max-w-md bg-[#0c0c0f] border border-gray-800 rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
@@ -1512,7 +1860,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                     <h2 className="text-xs font-bold text-white">{buyerViewPopup.payment.name}</h2>
                                     <div className="flex items-center gap-1.5 mt-0.5">
                                         <span className="text-[8px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-black uppercase tracking-wider">Pending</span>
-                                        {buyerViewPopup.tx.tx_id && <span className="text-[8px] text-gray-500">· Submitted</span>}
+                                        {buyerHasProof && <span className="text-[8px] text-gray-500">· Submitted</span>}
                                     </div>
                                 </div>
                             </div>
@@ -1559,8 +1907,9 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                             )}
 
                             {/* If already submitted — view only */}
-                            {buyerViewPopup.tx.tx_id ? (
+                            {buyerHasProof ? (
                                 <>
+                                    {buyerViewPopup.tx.tx_id && buyerViewPopup.tx.tx_id !== '__submitted__' && (
                                     <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3">
                                         <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest mb-1">Transaction ID</p>
                                         <div className="flex items-center gap-2">
@@ -1570,10 +1919,21 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                             </button>
                                         </div>
                                     </div>
+                                    )}
                                     <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3">
                                         <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest mb-2">Payment Proof</p>
                                         {buyerViewPopup.tx.screenshot_data ? (
-                                            <img src={buyerViewPopup.tx.screenshot_data} alt="proof" className="w-full max-h-60 object-contain rounded-lg border border-gray-800 bg-black" />
+                                            <button type="button" onClick={() => openZoom(resolveProofUrl(buyerViewPopup.tx.screenshot_data))} className="relative block w-full">
+                                                <img src={resolveProofUrl(buyerViewPopup.tx.screenshot_data)} alt="proof" className="w-full max-h-60 object-contain rounded-lg border border-gray-800 bg-black" />
+                                                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                                    <div className="flex flex-col items-center gap-1">
+                                                        <div className="w-11 h-11 rounded-full bg-black/60 border border-white/25 flex items-center justify-center shadow-xl">
+                                                            <IonIcon name="search-outline" className="text-white text-2xl" />
+                                                        </div>
+                                                        <span className="text-[8px] font-black text-white uppercase tracking-widest bg-black/50 px-2 py-0.5 rounded-full">Zoom</span>
+                                                    </div>
+                                                </div>
+                                            </button>
                                         ) : (
                                             <p className="text-[10px] text-gray-600">{buyerViewPopup.tx.screenshot_name || 'No image available'}</p>
                                         )}
@@ -1600,7 +1960,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                             ) : (
                                                 <><IonIcon name="cloud-upload-outline" className="text-gray-600 text-2xl" /><span className="text-[10px] text-gray-500 font-semibold">Tap to upload screenshot</span></>
                                             )}
-                                            <input type="file" accept="image/*" className="hidden" onChange={e => { setViewScreenshot(e.target.files?.[0] || null); setViewError(null); }} />
+                                            <input type="file" accept="image/*" className="hidden" onChange={e => { const file = e.target.files?.[0] || null; viewScreenshotRef.current = file; setViewScreenshot(file); setViewError(null); }} />
                                         </label>
                                     </div>
                                     {viewError && (
@@ -1611,10 +1971,11 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                     )}
                                 </>
                             )}
+                            {renderReportPanel(buyerViewPopup.tx, buyerViewPopup.payment)}
                         </div>
 
                         {/* Footer */}
-                        {!buyerViewPopup.tx.tx_id && (
+                        {!buyerHasProof && (
                             <div className="px-5 pb-5 pt-3 border-t border-gray-800 shrink-0 flex gap-2">
                                 <button onClick={() => setBuyerViewPopup(null)} className="flex-1 py-2.5 bg-zinc-800/80 hover:bg-zinc-800 text-white font-bold rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95">
                                     Close
@@ -1626,7 +1987,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                 </button>
                             </div>
                         )}
-                        {buyerViewPopup.tx.tx_id && (
+                        {buyerHasProof && (
                             <div className="px-5 pb-5 pt-3 border-t border-gray-800 shrink-0">
                                 <button onClick={() => setBuyerViewPopup(null)} className="w-full py-2.5 bg-zinc-800/80 hover:bg-zinc-800 text-white font-bold rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95">
                                     Close
@@ -1635,17 +1996,144 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                         )}
                     </div>
                 </div>
+                );
+            })()}
+
+            {/* ── Completed Transaction View Popup (buyer & seller) ── */}
+            {completedViewPopup && (
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                    <div className="absolute inset-0 bg-black/80" onClick={() => setCompletedViewPopup(null)} />
+                    <div className="relative w-full sm:max-w-md bg-[#0c0c0f] border border-gray-800 rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800 shrink-0">
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center p-1 overflow-hidden shrink-0">
+                                    <PaymentLogo name={completedViewPopup.payment.name} svgFile={completedViewPopup.payment.svgFile} clearbitDomain={completedViewPopup.payment.clearbitDomain} />
+                                </div>
+                                <div>
+                                    <h2 className="text-xs font-bold text-white">{completedViewPopup.payment.name}</h2>
+                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                        <span className="text-[8px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-black uppercase tracking-wider">Completed</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <button onClick={() => setCompletedViewPopup(null)} className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/[0.06] text-gray-400 hover:text-white">
+                                <IonIcon name="close-outline" className="text-base" />
+                            </button>
+                        </div>
+
+                        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
+                            {/* Amount summary */}
+                            <div className="grid grid-cols-2 gap-2">
+                                <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3">
+                                    <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest mb-1">Amount</p>
+                                    <p className="text-sm font-black text-white">
+                                        {Number(completedViewPopup.tx.amount || 0).toLocaleString()}
+                                        <span className="text-xs text-gray-500 ml-1">{completedViewPopup.payment.cryptoCurrency || (completedViewPopup.payment.category === 'Crypto' ? 'USDT' : 'LKR')}</span>
+                                    </p>
+                                </div>
+                                <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3">
+                                    <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest mb-1">Received</p>
+                                    <p className="text-sm font-black text-emerald-400">R {Number(completedViewPopup.tx.receive_amount || 0).toLocaleString()}</p>
+                                </div>
+                            </div>
+
+                            {/* Order ID & completion time */}
+                            <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3 space-y-2">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[9px] text-gray-600 uppercase tracking-wider font-bold">Order ID</span>
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-[10px] font-bold text-gray-300 font-mono">{getOrderId(completedViewPopup.tx)}</span>
+                                        <button type="button" onClick={() => copyText(getOrderId(completedViewPopup.tx))} className="text-gray-600 hover:text-emerald-400 transition-colors">
+                                            <IonIcon name="copy-outline" className="text-[11px]" />
+                                        </button>
+                                    </div>
+                                </div>
+                                {(completedViewPopup.tx.completed_at || completedViewPopup.tx.created_at) && (
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[9px] text-gray-600 uppercase tracking-wider font-bold">Confirmed</span>
+                                        <span className="text-[10px] font-bold text-gray-300">
+                                            {new Date(completedViewPopup.tx.completed_at || completedViewPopup.tx.created_at || '').toLocaleString('en-GB', { timeZone: 'Asia/Colombo', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Transaction ID */}
+                            {completedViewPopup.tx.tx_id && (
+                                <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3">
+                                    <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest mb-1">Transaction ID</p>
+                                    <div className="flex items-center gap-2">
+                                        <p className="text-xs font-bold text-white break-all flex-1">{completedViewPopup.tx.tx_id}</p>
+                                        <button onClick={() => navigator.clipboard.writeText(completedViewPopup.tx.tx_id || '')} className="shrink-0 text-gray-600 hover:text-emerald-400">
+                                            <IonIcon name="copy-outline" className="text-[13px]" />
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Payment proof image */}
+                            {(completedViewPopup.tx.screenshot_data || completedViewPopup.tx.screenshot_name) && (
+                                <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3">
+                                    <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest mb-2">Payment Proof</p>
+                                    {completedViewPopup.tx.screenshot_data ? (
+                                        <button type="button" onClick={() => openZoom(resolveProofUrl(completedViewPopup.tx.screenshot_data))} className="relative block w-full">
+                                            <img
+                                                src={resolveProofUrl(completedViewPopup.tx.screenshot_data)}
+                                                alt={completedViewPopup.tx.screenshot_name || 'Payment screenshot'}
+                                                className="w-full max-h-72 object-contain rounded-lg border border-gray-800 bg-black"
+                                            />
+                                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                                <div className="flex flex-col items-center gap-1">
+                                                    <div className="w-11 h-11 rounded-full bg-black/60 border border-white/25 flex items-center justify-center shadow-xl">
+                                                        <IonIcon name="search-outline" className="text-white text-2xl" />
+                                                    </div>
+                                                    <span className="text-[8px] font-black text-white uppercase tracking-widest bg-black/50 px-2 py-0.5 rounded-full">Zoom</span>
+                                                </div>
+                                            </div>
+                                        </button>
+                                    ) : (
+                                        <p className="text-[10px] text-gray-600">{completedViewPopup.tx.screenshot_name}</p>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Completion confirmation banner */}
+                            <div className="flex items-center gap-2 bg-emerald-500/[0.06] border border-emerald-500/20 rounded-xl px-4 py-3">
+                                <IonIcon name="checkmark-circle-outline" className="text-emerald-400 text-sm shrink-0" />
+                                <p className="text-[10px] text-emerald-400 font-semibold">Transaction confirmed · Coins released to buyer</p>
+                            </div>
+                            {renderReportPanel(completedViewPopup.tx, completedViewPopup.payment)}
+                        </div>
+
+                        <div className="px-5 pb-5 pt-3 border-t border-gray-800 shrink-0">
+                            <button onClick={() => setCompletedViewPopup(null)} className="w-full py-2.5 bg-zinc-800/80 hover:bg-zinc-800 text-white font-bold rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {/* ── Buy Popup Step 1: Amount ── */}
-            {confirmTransaction && (
+            {confirmTransaction && (() => {
+                const hasProof = !!(confirmTransaction.tx.tx_id || confirmTransaction.tx.screenshot_data || confirmTransaction.tx.screenshot_name);
+                return (
                 <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
                     <div className="absolute inset-0 bg-black/80" onClick={() => setConfirmTransaction(null)} />
                     <div className="relative w-full sm:max-w-md bg-[#0c0c0f] border border-gray-800 rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
                         <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800 shrink-0">
-                            <div>
-                                <h2 className="text-xs font-bold text-white">Review Payment Request</h2>
-                                <p className="text-[9px] text-gray-500">{confirmTransaction.payment.name} · Pending</p>
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center p-1 overflow-hidden shrink-0">
+                                    <PaymentLogo name={confirmTransaction.payment.name} svgFile={confirmTransaction.payment.svgFile} clearbitDomain={confirmTransaction.payment.clearbitDomain} />
+                                </div>
+                                <div>
+                                    <h2 className="text-xs font-bold text-white">{confirmTransaction.payment.name}</h2>
+                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                        <span className="text-[8px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-black uppercase tracking-wider">Pending</span>
+                                        {hasProof && <span className="text-[8px] text-gray-500">· Submitted</span>}
+                                    </div>
+                                </div>
                             </div>
                             <button onClick={() => setConfirmTransaction(null)} className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/[0.06] text-gray-400 hover:text-white">
                                 <IonIcon name="close-outline" className="text-base" />
@@ -1662,31 +2150,62 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                     <p className="text-sm font-black text-emerald-400">{confirmTransaction.tx.receive_amount || '0.00'}</p>
                                 </div>
                             </div>
-                            <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3">
-                                <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest mb-1">Transaction ID</p>
-                                <p className="text-xs font-bold text-white break-all">{confirmTransaction.tx.tx_id || '-'}</p>
-                            </div>
-                            <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3">
-                                <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest mb-2">Submitted Document</p>
-                                {confirmTransaction.tx.screenshot_data ? (
-                                    <img src={confirmTransaction.tx.screenshot_data} alt={confirmTransaction.tx.screenshot_name || 'Payment screenshot'} className="w-full max-h-80 object-contain rounded-lg border border-gray-800 bg-black" />
-                                ) : (
-                                    <div className="border border-dashed border-gray-800 rounded-lg py-8 text-center">
-                                        <IonIcon name="image-outline" className="text-gray-700 text-2xl" />
-                                        <p className="text-[10px] text-gray-600 font-bold mt-2">{confirmTransaction.tx.screenshot_name || 'No image preview available'}</p>
+                            {hasProof ? (
+                                <>
+                                    {confirmTransaction.tx.tx_id && (
+                                        <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3">
+                                            <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest mb-1">Transaction ID</p>
+                                            <div className="flex items-center gap-2">
+                                                <p className="text-xs font-bold text-white break-all flex-1">{confirmTransaction.tx.tx_id}</p>
+                                                <button onClick={() => navigator.clipboard.writeText(confirmTransaction.tx.tx_id || '')} className="shrink-0 text-gray-600 hover:text-emerald-400">
+                                                    <IonIcon name="copy-outline" className="text-[13px]" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {(confirmTransaction.tx.screenshot_data || confirmTransaction.tx.screenshot_name) && (
+                                        <div className="bg-[#090909] border border-gray-800/70 rounded-xl px-4 py-3">
+                                            <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest mb-2">Payment Proof</p>
+                                            {confirmTransaction.tx.screenshot_data ? (
+                                                <button type="button" onClick={() => openZoom(resolveProofUrl(confirmTransaction.tx.screenshot_data))} className="relative block w-full">
+                                                    <img src={resolveProofUrl(confirmTransaction.tx.screenshot_data)} alt={confirmTransaction.tx.screenshot_name || 'Payment screenshot'} className="w-full max-h-80 object-contain rounded-lg border border-gray-800 bg-black" />
+                                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                                        <div className="flex flex-col items-center gap-1">
+                                                            <div className="w-11 h-11 rounded-full bg-black/60 border border-white/25 flex items-center justify-center shadow-xl">
+                                                                <IonIcon name="search-outline" className="text-white text-2xl" />
+                                                            </div>
+                                                            <span className="text-[8px] font-black text-white uppercase tracking-widest bg-black/50 px-2 py-0.5 rounded-full">Zoom</span>
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                            ) : (
+                                                <p className="text-[10px] text-gray-600">{confirmTransaction.tx.screenshot_name}</p>
+                                            )}
+                                        </div>
+                                    )}
+                                    <div className="flex items-center gap-2 bg-amber-500/[0.06] border border-amber-500/20 rounded-xl px-4 py-3">
+                                        <IonIcon name="time-outline" className="text-amber-400 text-sm shrink-0" />
+                                        <p className="text-[10px] text-amber-400 font-semibold">Submitted · Ready for your confirmation</p>
                                     </div>
-                                )}
-                            </div>
+                                </>
+                            ) : (
+                                <div className="flex items-center gap-2 bg-amber-500/[0.06] border border-amber-500/20 rounded-xl px-4 py-3">
+                                    <IonIcon name="time-outline" className="text-amber-400 text-sm shrink-0" />
+                                    <p className="text-[10px] text-amber-400 font-semibold">Waiting for buyer to submit transaction details.</p>
+                                </div>
+                            )}
+                            {renderReportPanel(confirmTransaction.tx, confirmTransaction.payment)}
                         </div>
                         <div className="px-5 pb-5 pt-3 border-t border-gray-800 shrink-0 flex gap-2">
                             <button onClick={() => setConfirmTransaction(null)} className="flex-1 py-2.5 bg-zinc-800/80 hover:bg-zinc-800 text-white font-bold rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95">Close</button>
-                            <button onClick={handleConfirmPendingTransaction} disabled={confirmingTransaction} className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 text-black font-black rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95">
+                            <button onClick={handleConfirmPendingTransaction} disabled={confirmingTransaction || !hasProof} className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed text-black font-black rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95">
                                 {confirmingTransaction ? 'Confirming' : 'Confirm'}
                             </button>
                         </div>
                     </div>
                 </div>
-            )}
+                );
+            })()}
 
             {buyPopupAd && buyStep === 'amount' && (
                 <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
@@ -1753,15 +2272,10 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                     <p className="text-[10px] font-bold text-red-400">{buyError}</p>
                                 </div>
                             )}
-                            {buyPopupAd.description && (
-                                <div className="bg-[#0a0a0a] border border-gray-800/50 rounded-xl px-4 py-3">
-                                    <p className="text-[9px] font-black uppercase tracking-widest text-gray-600 mb-1">Description</p>
-                                    <p className="text-[11px] text-gray-300 leading-relaxed">{buyPopupAd.description}</p>
-                                </div>
-                            )}
+                            <GuideNote guide={DEFAULT_BUY_POPUP_DESCRIPTION} description={buyPopupAd.description} />
                             <div className="flex gap-2 pt-1">
                                 <button onClick={closeBuyPopup} className="flex-1 py-2.5 bg-zinc-800/80 hover:bg-zinc-800 text-white font-bold rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95">Cancel</button>
-                                <button onClick={handleBuyNow} className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95 shadow-lg shadow-emerald-500/20">Buy Now</button>
+                                <button onClick={handleBuyNow} className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black font-black rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95 shadow-lg shadow-emerald-500/20">Make Payment</button>
                             </div>
                         </div>
                     </div>
@@ -1798,6 +2312,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                         ) : (
                             <>
                                 <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
+                                    <GuideNote guide={DEFAULT_BUY_POPUP_DESCRIPTION} description={buyPopupAd.description} />
                                     {buyPopupAd.adminFields.length > 0 && (
                                         <div className="bg-[#0a0a0a] border border-gray-800/50 rounded-xl px-4 py-3 space-y-2.5">
                                             <p className="text-[9px] font-black uppercase tracking-widest text-gray-600 mb-2">Send Payment To</p>
@@ -1829,7 +2344,7 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                                             ) : (
                                                 <><IonIcon name="cloud-upload-outline" className="text-gray-600 text-2xl" /><span className="text-[10px] text-gray-500 font-semibold">Tap to upload screenshot</span></>
                                             )}
-                                            <input type="file" accept="image/*" className="hidden" onChange={e => { setBuyScreenshot(e.target.files?.[0] || null); setBuyError(null); }} />
+                                            <input type="file" accept="image/*" className="hidden" onChange={e => { const file = e.target.files?.[0] || null; buyScreenshotRef.current = file; setBuyScreenshot(file); setBuyError(null); }} />
                                         </label>
                                     </div>
                                     <div>
@@ -1926,6 +2441,163 @@ function BuyScreen({ onBack, walletBalance, onGoRequest, onGoTopup, onGoSell }: 
                     </div>
                 </div>
             )}
+
+            {/* ── Full-Screen Image Zoom Viewer ── */}
+            {zoomImageUrl && (
+                <div
+                    className="theme-preserve-dark proof-zoom-overlay fixed inset-0 z-[100] flex items-center justify-center bg-black/95"
+                    onClick={closeZoom}
+                >
+                    {/* Controls bar */}
+                    <div
+                        className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-black/60 border border-white/10 rounded-2xl px-3 py-2 backdrop-blur-md z-10"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            onClick={() => setZoomScale(s => Math.max(0.5, parseFloat((s - 0.25).toFixed(2))))}
+                            className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/[0.08] hover:bg-white/[0.15] text-white transition-all active:scale-90"
+                            title="Zoom out"
+                        >
+                            <IonIcon name="remove-outline" className="text-base" />
+                        </button>
+                        <span className="text-[11px] font-black text-white min-w-[42px] text-center select-none">
+                            {Math.round(zoomScale * 100)}%
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => setZoomScale(s => Math.min(5, parseFloat((s + 0.25).toFixed(2))))}
+                            className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/[0.08] hover:bg-white/[0.15] text-white transition-all active:scale-90"
+                            title="Zoom in"
+                        >
+                            <IonIcon name="add-outline" className="text-base" />
+                        </button>
+                        <div className="w-px h-5 bg-white/10 mx-1" />
+                        <button
+                            type="button"
+                            onClick={() => setZoomScale(1)}
+                            className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/[0.08] hover:bg-white/[0.15] text-white transition-all active:scale-90"
+                            title="Reset zoom"
+                        >
+                            <IonIcon name="scan-outline" className="text-base" />
+                        </button>
+                        <div className="w-px h-5 bg-white/10 mx-1" />
+                        <button
+                            type="button"
+                            onClick={closeZoom}
+                            className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/[0.08] hover:bg-red-500/30 text-gray-400 hover:text-white transition-all active:scale-90"
+                            title="Close"
+                        >
+                            <IonIcon name="close-outline" className="text-base" />
+                        </button>
+                    </div>
+
+                    {/* Scrollable image container */}
+                    <div
+                        className="w-full h-full overflow-auto flex items-center justify-center p-16"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <img
+                            src={zoomImageUrl}
+                            alt="Proof zoom"
+                            style={{ transform: `scale(${zoomScale})`, transformOrigin: 'center center', transition: 'transform 0.15s ease' }}
+                            className="proof-zoom-image max-w-full max-h-full object-contain rounded-lg select-none"
+                            draggable={false}
+                        />
+                    </div>
+
+                    {/* Tap outside hint */}
+                    <p className="absolute bottom-5 left-1/2 -translate-x-1/2 text-[9px] text-white/20 font-bold uppercase tracking-widest pointer-events-none select-none">
+                        Tap outside to close
+                    </p>
+                </div>
+            )}
+
+            {/* ── Report Popup ── */}
+            {chatPopup && (
+                <OrderChatPopup
+                    participantId={chatPopup.userId}
+                    participantName={chatPopup.name}
+                    roleLabel={chatPopup.roleLabel}
+                    orderLabel={chatPopup.orderLabel}
+                    onClose={() => setChatPopup(null)}
+                />
+            )}
+
+            {reportTarget && (() => {
+                const txRole  = getTxRole(reportTarget.tx);
+                const reasons = txRole === 'buyer' ? BUYER_REPORT_REASONS : SELLER_REPORT_REASONS;
+                return (
+                <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4">
+                    <div className="absolute inset-0 bg-black/80" onClick={() => setReportTarget(null)} />
+                    <div className="relative w-full sm:max-w-sm bg-[#0c0c0f] border border-gray-800 rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[85vh]">
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800 shrink-0">
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-7 h-7 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center shrink-0">
+                                    <IonIcon name="flag-outline" className="text-red-400 text-sm" />
+                                </div>
+                                <div>
+                                    <h2 className="text-xs font-bold text-white">Report Transaction</h2>
+                                    <p className="text-[9px] text-gray-600 mt-0.5">
+                                        {reportTarget.payment.name} · Order #{reportTarget.tx.id}
+                                        <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${txRole === 'buyer' ? 'bg-sky-500/10 text-sky-400' : 'bg-violet-500/10 text-violet-400'}`}>
+                                            {txRole === 'buyer' ? 'Buyer' : 'Seller'}
+                                        </span>
+                                    </p>
+                                </div>
+                            </div>
+                            <button onClick={() => setReportTarget(null)} className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/[0.06] text-gray-400 hover:text-white">
+                                <IonIcon name="close-outline" className="text-base" />
+                            </button>
+                        </div>
+                        {/* Body */}
+                        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-2">
+                            <p className="text-[9px] font-bold text-gray-600 uppercase tracking-widest mb-3">Select a reason</p>
+                            {reasons.map(r => (
+                                <button key={r} type="button"
+                                    onClick={() => setReportReason(r)}
+                                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left transition-all active:scale-[0.98] ${reportReason === r ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-white/[0.03] border-gray-800 text-gray-400 hover:bg-white/[0.06] hover:text-white'}`}>
+                                    <div className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center ${reportReason === r ? 'border-red-400' : 'border-gray-600'}`}>
+                                        {reportReason === r && <div className="w-1.5 h-1.5 rounded-full bg-red-400" />}
+                                    </div>
+                                    <span className="text-[11px] font-semibold">{r}</span>
+                                </button>
+                            ))}
+                            {reportReason === 'Other' && (
+                                <div className="mt-2">
+                                    <textarea
+                                        value={reportCustomReason}
+                                        onChange={e => { setReportCustomReason(e.target.value); setReportError(null); }}
+                                        placeholder="Describe the issue…"
+                                        rows={3}
+                                        className="w-full bg-[#030303] border border-gray-700/50 rounded-lg px-3 py-2.5 text-xs font-semibold text-white focus:outline-none focus:ring-1 focus:ring-white/20 hover:bg-[#0b0b0b] transition-all resize-none"
+                                    />
+                                </div>
+                            )}
+                            {reportError && (
+                                <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                                    <IonIcon name="alert-circle-outline" className="text-red-400 text-sm shrink-0" />
+                                    <p className="text-[10px] font-bold text-red-400">{reportError}</p>
+                                </div>
+                            )}
+                        </div>
+                        {/* Footer */}
+                        <div className="px-5 pb-5 pt-3 border-t border-gray-800 shrink-0 flex gap-2">
+                            <button type="button" onClick={() => setReportTarget(null)}
+                                className="flex-1 py-2.5 bg-zinc-800/80 hover:bg-zinc-800 text-white font-bold rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95">
+                                Cancel
+                            </button>
+                            <button type="button" onClick={submitReport} disabled={reportSubmitting}
+                                className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 disabled:opacity-60 text-white font-black rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95 flex items-center justify-center gap-1.5">
+                                <IonIcon name="flag-outline" className="text-xs" />
+                                {reportSubmitting ? 'Submitting…' : 'Submit Report'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                );
+            })()}
 
             {/* ── No Approval Popup ── */}
             {showNoApproval && (
@@ -2391,6 +3063,29 @@ export default function Topup() {
                 <button onClick={() => setStep('buy')} className="flex items-center gap-2 text-white/60 hover:text-white transition-colors">
                     <IonIcon name="chevron-back-outline" className="text-xl" />
                     <span className="text-[11px] font-bold uppercase tracking-widest">Back</span>
+                </button>
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap mb-4">
+                <button
+                    onClick={() => setStep('buy')}
+                    className="flex items-center gap-1.5 font-bold rounded-lg px-3 py-1.5 text-[9px] uppercase tracking-widest transition-all bg-white/[0.06] hover:bg-white/[0.1] text-gray-300 hover:text-white"
+                >
+                    <IonIcon name="cash-outline" className="text-xs" />
+                    Buy Coins
+                </button>
+                <button
+                    onClick={() => router.push('/dashboard/wallet/sell')}
+                    className="flex items-center gap-1.5 font-bold rounded-lg px-3 py-1.5 text-[9px] uppercase tracking-widest transition-all bg-white/[0.06] hover:bg-white/[0.1] text-gray-300 hover:text-white"
+                >
+                    <IonIcon name="cash-outline" className="text-xs" />
+                    Sell Coins
+                </button>
+                <button
+                    disabled
+                    className="flex items-center gap-1.5 font-black rounded-lg px-3 py-1.5 text-[9px] uppercase tracking-widest shadow-md bg-white text-black"
+                >
+                    <IonIcon name="add-circle-outline" className="text-xs" />
+                    Top Up
                 </button>
             </div>
             <h1 className="text-2xl font-bold mb-6 text-white">Top Up</h1>
