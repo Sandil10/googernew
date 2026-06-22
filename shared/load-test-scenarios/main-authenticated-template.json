@@ -1,0 +1,51 @@
+{
+  "name": "main-authenticated-template",
+  "baseUrl": "${LOAD_TEST_BASE_URL}",
+  "requests": [
+    {
+      "name": "my-plan",
+      "method": "GET",
+      "path": "/api/subscription-plans/my",
+      "weight": 2,
+      "headers": {
+        "Authorization": "Bearer ${LOAD_TEST_AUTH_TOKEN}"
+      }
+    },
+    {
+      "name": "my-subscription",
+      "method": "GET",
+      "path": "/api/subscriptions/me",
+      "weight": 2,
+      "headers": {
+        "Authorization": "Bearer ${LOAD_TEST_AUTH_TOKEN}"
+      }
+    },
+    {
+      "name": "my-cart",
+      "method": "GET",
+      "path": "/api/cart",
+      "weight": 2,
+      "headers": {
+        "Authorization": "Bearer ${LOAD_TEST_AUTH_TOKEN}"
+      }
+    },
+    {
+      "name": "wallet-balance",
+      "method": "GET",
+      "path": "/api/wallet/balance",
+      "weight": 3,
+      "headers": {
+        "Authorization": "Bearer ${LOAD_TEST_AUTH_TOKEN}"
+      }
+    },
+    {
+      "name": "saved-ad-counts",
+      "method": "GET",
+      "path": "/api/ads/saves/counts",
+      "weight": 1,
+      "headers": {
+        "Authorization": "Bearer ${LOAD_TEST_AUTH_TOKEN}"
+      }
+    }
+  ]
+}

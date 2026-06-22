@@ -1,9 +1,9 @@
 FROM node:20-bookworm-slim
-WORKDIR /app/googernew-main/backend
+WORKDIR /app/googernew/backend
 ENV NODE_ENV=production
-COPY googernew-main/backend/package*.json ./
+COPY backend/package*.json ./
 RUN npm ci --omit=dev
-COPY googernew-main/backend ./
-COPY shared /app/googernew-main/shared
+COPY backend ./
+COPY shared /app/shared
 EXPOSE 5000
 CMD ["npm", "run", "start:cluster"]

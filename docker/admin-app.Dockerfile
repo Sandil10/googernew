@@ -8,7 +8,7 @@ WORKDIR /app/googeradminpanel
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/googeradminpanel/node_modules ./node_modules
 COPY googeradminpanel ./
-COPY shared /app/shared
+COPY googernew/shared /app/shared
 RUN npm run build
 
 FROM node:20-bookworm-slim AS runner

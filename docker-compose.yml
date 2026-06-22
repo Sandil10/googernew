@@ -52,7 +52,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - main-uploads:/app/googernew-main/public/uploads
+      - main-uploads:/app/googernew/public/uploads
     depends_on:
       redis:
         condition: service_healthy
@@ -80,7 +80,7 @@ services:
       CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
       CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
     volumes:
-      - main-uploads:/app/googernew-main/public/uploads
+      - main-uploads:/app/googernew/public/uploads
     depends_on:
       main-backend:
         condition: service_started
@@ -104,8 +104,8 @@ services:
 
   admin-app:
     build:
-      context: .
-      dockerfile: docker/admin-app.Dockerfile
+      context: ${ADMIN_BUILD_CONTEXT:-..}
+      dockerfile: ${ADMIN_DOCKERFILE:-googernew/docker/admin-app.Dockerfile}
     environment:
       NODE_ENV: production
       SERVE_NEXT: "true"
@@ -122,11 +122,11 @@ services:
       DB_POOL_MAX: ${ADMIN_DB_POOL_MAX:-10}
       JWT_SECRET: ${JWT_SECRET}
       REDIS_URL: redis://redis:6379
-      UPLOADS_DIR: /app/googernew-main/public/uploads
+      UPLOADS_DIR: /app/googernew/public/uploads
     ports:
       - "3002:3002"
     volumes:
-      - main-uploads:/app/googernew-main/public/uploads:ro
+      - main-uploads:/app/googernew/public/uploads:ro
     depends_on:
       main-backend:
         condition: service_started
