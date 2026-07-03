@@ -221,6 +221,45 @@ export const authService = {
         }
     },
 
+    requestPasswordResetOtp: async (email: string) => {
+        const response = await fetch(`${API_URL}/auth/forgot-password/request-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email }),
+        });
+        const result = await safeJson(response);
+        if (!response.ok) {
+            throw new Error(buildErrorMessage(result, response));
+        }
+        return result;
+    },
+
+    verifyPasswordResetOtp: async (email: string, otp: string) => {
+        const response = await fetch(`${API_URL}/auth/forgot-password/verify-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, otp }),
+        });
+        const result = await safeJson(response);
+        if (!response.ok) {
+            throw new Error(buildErrorMessage(result, response));
+        }
+        return result;
+    },
+
+    resetPasswordWithOtp: async (email: string, resetToken: string, newPassword: string) => {
+        const response = await fetch(`${API_URL}/auth/forgot-password/reset`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, resetToken, newPassword }),
+        });
+        const result = await safeJson(response);
+        if (!response.ok) {
+            throw new Error(buildErrorMessage(result, response));
+        }
+        return result;
+    },
+
     register: async (data: any) => {
         try {
             const isProd = isClient && window.location.hostname !== 'localhost';

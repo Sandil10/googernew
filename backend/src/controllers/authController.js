@@ -1,5 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 const pool = require('../config/database');
 const { saveUploadedFile } = require('../modules/media');
 const { getUserPlanLimits } = require('../utils/planLimits');
@@ -14,9 +16,102 @@ let profilePictureColumnEnsured = false;
 let extendedUserProfileSchemaEnsured = false;
 let userBlocksTableEnsured = false;
 let googerIdNormalizationPromise = null;
+let passwordResetOtpTableEnsured = false;
 
 const GOOGER_ID_MIN = 100000;
 const GOOGER_ID_MAX = 999999;
+
+const PASSWORD_RESET_OTP_TTL_MINUTES = Number.parseInt(process.env.PASSWORD_RESET_OTP_TTL_MINUTES || '10', 10);
+const PASSWORD_RESET_VERIFY_TTL_MINUTES = Number.parseInt(process.env.PASSWORD_RESET_VERIFY_TTL_MINUTES || '15', 10);
+
+const hashResetValue = (value) => crypto.createHash('sha256').update(String(value || '')).digest('hex');
+
+const normalizeResetEmail = (email) => String(email || '').trim().toLowerCase();
+
+const generateResetOtp = () => String(crypto.randomInt(100000, 1000000));
+
+const ensurePasswordResetOtpTable = async () => {
+    if (passwordResetOtpTableEnsured) return;
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS password_reset_otps (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            email VARCHAR(255) NOT NULL,
+            otp_hash VARCHAR(128) NOT NULL,
+            verify_token_hash VARCHAR(128),
+            expires_at TIMESTAMP NOT NULL,
+            verified_at TIMESTAMP,
+            used_at TIMESTAMP,
+            requested_ip TEXT,
+            user_agent TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
+
+    await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_password_reset_otps_email_created_at
+        ON password_reset_otps(email, created_at DESC);
+    `);
+
+    await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_password_reset_otps_verify_token_hash
+        ON password_reset_otps(verify_token_hash);
+    `);
+
+    passwordResetOtpTableEnsured = true;
+};
+
+const getSmtpConfig = () => {
+    const host = process.env.SMTP_HOST || process.env.MAIL_HOST;
+    const port = Number.parseInt(process.env.SMTP_PORT || process.env.MAIL_PORT || '587', 10);
+    const user = process.env.SMTP_USER || process.env.MAIL_USER;
+    const pass = process.env.SMTP_PASS || process.env.MAIL_PASS;
+    const from = process.env.SMTP_FROM || process.env.MAIL_FROM || process.env.SES_FROM_EMAIL;
+
+    if (!host || !user || !pass || !from) {
+        return null;
+    }
+
+    return {
+        host,
+        port,
+        secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true' || port === 465,
+        auth: { user, pass },
+        from,
+    };
+};
+
+const sendPasswordResetOtpEmail = async ({ email, otp, fullName }) => {
+    const smtpConfig = getSmtpConfig();
+    if (!smtpConfig) {
+        const error = new Error('Password reset email is not configured. Please set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM.');
+        error.statusCode = 503;
+        throw error;
+    }
+
+    const transporter = nodemailer.createTransport({
+        host: smtpConfig.host,
+        port: smtpConfig.port,
+        secure: smtpConfig.secure,
+        auth: smtpConfig.auth,
+    });
+
+    await transporter.sendMail({
+        from: smtpConfig.from,
+        to: email,
+        subject: 'Your Googer password reset OTP',
+        text: `Your Googer password reset OTP is ${otp}. It expires in ${PASSWORD_RESET_OTP_TTL_MINUTES} minutes. If you did not request this, ignore this email.`,
+        html: `
+            <div style="font-family:Arial,sans-serif;background:#050505;color:#ffffff;padding:24px;border-radius:18px">
+                <h2 style="margin:0 0 12px">Googer password reset</h2>
+                <p style="color:#cbd5e1">Hi ${String(fullName || 'there')}, use this OTP to reset your password:</p>
+                <div style="font-size:32px;font-weight:800;letter-spacing:8px;background:#111827;border:1px solid #334155;border-radius:14px;padding:16px;text-align:center">${otp}</div>
+                <p style="color:#94a3b8;font-size:13px">This code expires in ${PASSWORD_RESET_OTP_TTL_MINUTES} minutes. If you did not request it, you can safely ignore this email.</p>
+            </div>
+        `,
+    });
+};
 
 const hasUsersTableColumn = async (columnName) => {
     if (columnName === 'shipping_address' && usersTableHasShippingAddressColumn !== null) {
@@ -685,6 +780,197 @@ exports.login = async (req, res) => {
             error: error.message,
             stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
+    }
+};
+
+exports.requestPasswordResetOtp = async (req, res) => {
+    try {
+        const email = normalizeResetEmail(req.body?.email);
+        if (!email) {
+            return res.status(400).json({ success: false, message: 'Registered email is required' });
+        }
+
+        await ensurePasswordResetOtpTable();
+
+        const userResult = await pool.query(
+            `SELECT id, email, full_name, username, status, self_deleted_at, permanent_deactivated_at
+             FROM users
+             WHERE LOWER(email) = LOWER($1)
+             LIMIT 1`,
+            [email]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'No registered account found for this email' });
+        }
+
+        const user = userResult.rows[0];
+        if (isPermanentlyDeactivatedUser(user)) {
+            return res.status(403).json({ success: false, message: PERMANENT_DEACTIVATION_MESSAGE });
+        }
+        if (isSelfDeletedUser(user)) {
+            return res.status(404).json({ success: false, message: 'Profile not found' });
+        }
+
+        const recentResult = await pool.query(
+            `SELECT COUNT(*)::int AS count
+             FROM password_reset_otps
+             WHERE email = $1
+               AND created_at >= NOW() - INTERVAL '10 minutes'`,
+            [email]
+        );
+        if (Number(recentResult.rows[0]?.count || 0) >= 5) {
+            return res.status(429).json({ success: false, message: 'Too many OTP requests. Please wait and try again.' });
+        }
+
+        const otp = generateResetOtp();
+        const otpHash = hashResetValue(otp);
+        const ttlMinutes = Number.isFinite(PASSWORD_RESET_OTP_TTL_MINUTES) ? PASSWORD_RESET_OTP_TTL_MINUTES : 10;
+
+        await pool.query(
+            `INSERT INTO password_reset_otps (user_id, email, otp_hash, expires_at, requested_ip, user_agent)
+             VALUES ($1, $2, $3, NOW() + ($4::text || ' minutes')::interval, $5, $6)`,
+            [user.id, email, otpHash, ttlMinutes, req.ip || null, req.get('user-agent') || null]
+        );
+
+        await sendPasswordResetOtpEmail({
+            email: user.email || email,
+            otp,
+            fullName: user.full_name || user.username,
+        });
+
+        res.status(200).json({
+            success: true,
+            message: 'OTP sent to registered email',
+            expiresInMinutes: ttlMinutes,
+            ...(process.env.NODE_ENV !== 'production' && process.env.PASSWORD_RESET_DEBUG_OTP === 'true' ? { debugOtp: otp } : {}),
+        });
+    } catch (error) {
+        console.error('Request password reset OTP error:', error);
+        res.status(error.statusCode || 500).json({
+            success: false,
+            message: error.statusCode ? error.message : 'Server error sending password reset OTP',
+        });
+    }
+};
+
+exports.verifyPasswordResetOtp = async (req, res) => {
+    try {
+        const email = normalizeResetEmail(req.body?.email);
+        const otp = String(req.body?.otp || '').trim();
+        if (!email || !/^\d{6}$/.test(otp)) {
+            return res.status(400).json({ success: false, message: 'Valid email and 6-digit OTP are required' });
+        }
+
+        await ensurePasswordResetOtpTable();
+
+        const otpHash = hashResetValue(otp);
+        const result = await pool.query(
+            `SELECT id, user_id
+             FROM password_reset_otps
+             WHERE email = $1
+               AND otp_hash = $2
+               AND used_at IS NULL
+               AND expires_at > NOW()
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [email, otpHash]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+        }
+
+        const resetToken = crypto.randomBytes(32).toString('hex');
+        const resetTokenHash = hashResetValue(resetToken);
+        const verifyTtlMinutes = Number.isFinite(PASSWORD_RESET_VERIFY_TTL_MINUTES) ? PASSWORD_RESET_VERIFY_TTL_MINUTES : 15;
+
+        await pool.query(
+            `UPDATE password_reset_otps
+             SET verified_at = NOW(),
+                 verify_token_hash = $1,
+                 expires_at = NOW() + ($2::text || ' minutes')::interval
+             WHERE id = $3`,
+            [resetTokenHash, verifyTtlMinutes, result.rows[0].id]
+        );
+
+        res.status(200).json({
+            success: true,
+            message: 'OTP verified',
+            resetToken,
+            expiresInMinutes: verifyTtlMinutes,
+        });
+    } catch (error) {
+        console.error('Verify password reset OTP error:', error);
+        res.status(500).json({ success: false, message: 'Server error verifying password reset OTP' });
+    }
+};
+
+exports.resetPasswordWithOtp = async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const email = normalizeResetEmail(req.body?.email);
+        const resetToken = String(req.body?.resetToken || '').trim();
+        const newPassword = String(req.body?.newPassword || '');
+
+        if (!email || !resetToken || !newPassword) {
+            return res.status(400).json({ success: false, message: 'Email, reset token, and new password are required' });
+        }
+
+        const passwordValidation = validatePassword(newPassword);
+        if (!passwordValidation.valid) {
+            return res.status(400).json({ success: false, message: passwordValidation.message });
+        }
+
+        await ensurePasswordResetOtpTable();
+        await client.query('BEGIN');
+
+        const resetResult = await client.query(
+            `SELECT id, user_id
+             FROM password_reset_otps
+             WHERE email = $1
+               AND verify_token_hash = $2
+               AND verified_at IS NOT NULL
+               AND used_at IS NULL
+               AND expires_at > NOW()
+             ORDER BY verified_at DESC
+             LIMIT 1
+             FOR UPDATE`,
+            [email, hashResetValue(resetToken)]
+        );
+
+        if (resetResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, message: 'Invalid or expired reset session' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+        const userId = resetResult.rows[0].user_id;
+
+        await client.query(
+            `UPDATE users
+             SET password = $1,
+                 token_version = COALESCE(token_version, 0) + 1
+             WHERE id = $2`,
+            [hashedPassword, userId]
+        );
+
+        await client.query(
+            `UPDATE password_reset_otps
+             SET used_at = NOW()
+             WHERE user_id = $1 AND used_at IS NULL`,
+            [userId]
+        );
+
+        await client.query('COMMIT');
+        res.status(200).json({ success: true, message: 'Password reset successfully. Please login with your new password.' });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Reset password with OTP error:', error);
+        res.status(500).json({ success: false, message: 'Server error resetting password' });
+    } finally {
+        client.release();
     }
 };
 

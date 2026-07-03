@@ -16,6 +16,11 @@ export default function LoginPage() {
   const [resetEmail, setResetEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [resetToken, setResetToken] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const [resetMessage, setResetMessage] = useState("");
   const [redirectTo, setRedirectTo] = useState("/dashboard");
 
   useEffect(() => {
@@ -38,6 +43,82 @@ export default function LoginPage() {
       setError(err.message || "Login failed. Please check your credentials.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const closeResetFlow = () => {
+    setResetStep(0);
+    setResetEmail("");
+    setOtp("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setResetToken("");
+    setResetError("");
+    setResetMessage("");
+    setResetLoading(false);
+  };
+
+  const handleRequestResetOtp = async () => {
+    setResetError("");
+    setResetMessage("");
+    if (!resetEmail.trim()) {
+      setResetError("Please enter your registered email.");
+      return;
+    }
+    setResetLoading(true);
+    try {
+      const result = await authService.requestPasswordResetOtp(resetEmail.trim());
+      setResetMessage(result?.message || "OTP sent to registered email.");
+      setResetStep(2);
+    } catch (err: any) {
+      setResetError(err?.message || "Could not send OTP.");
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const handleVerifyResetOtp = async () => {
+    setResetError("");
+    setResetMessage("");
+    if (!/^\d{6}$/.test(otp.trim())) {
+      setResetError("Please enter the 6-digit OTP.");
+      return;
+    }
+    setResetLoading(true);
+    try {
+      const result = await authService.verifyPasswordResetOtp(resetEmail.trim(), otp.trim());
+      setResetToken(result?.resetToken || "");
+      setResetMessage(result?.message || "OTP verified.");
+      setResetStep(3);
+    } catch (err: any) {
+      setResetError(err?.message || "Could not verify OTP.");
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    setResetError("");
+    setResetMessage("");
+    if (!resetToken) {
+      setResetError("Reset session expired. Please request a new OTP.");
+      setResetStep(1);
+      return;
+    }
+    if (!newPassword || newPassword !== confirmPassword) {
+      setResetError("New password and confirm password must match.");
+      return;
+    }
+    setResetLoading(true);
+    try {
+      const result = await authService.resetPasswordWithOtp(resetEmail.trim(), resetToken, newPassword);
+      setResetMessage(result?.message || "Password reset successfully. Please login.");
+      setPassword("");
+      window.setTimeout(closeResetFlow, 1400);
+    } catch (err: any) {
+      setResetError(err?.message || "Could not reset password.");
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -141,11 +222,23 @@ export default function LoginPage() {
             <div className="absolute -top-10 -right-10 w-32 h-32 bg-purple-500/10 rounded-full blur-3xl"></div>
 
             <button
-              onClick={() => { setResetStep(0); setResetEmail(""); setOtp(""); setNewPassword(""); }}
+              onClick={closeResetFlow}
               className="absolute top-6 right-6 text-gray-500 hover:text-white transition-all hover:rotate-90"
             >
               <IonIcon name="close-outline" className="text-2xl" />
             </button>
+
+            {resetError && (
+              <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-center text-xs font-semibold text-red-200">
+                {resetError}
+              </div>
+            )}
+
+            {resetMessage && (
+              <div className="mb-4 rounded-xl border border-green-500/30 bg-green-500/10 px-4 py-3 text-center text-xs font-semibold text-green-200">
+                {resetMessage}
+              </div>
+            )}
 
             {/* Step 1: Enter Email */}
             {resetStep === 1 && (
@@ -167,10 +260,11 @@ export default function LoginPage() {
                 />
 
                 <button
-                  onClick={() => { if (resetEmail) setResetStep(2); }}
-                  className="w-full bg-white text-black font-bold py-3 px-4 rounded-full text-sm shadow-lg hover:bg-gray-200 active:scale-[0.97] transition-all"
+                  onClick={handleRequestResetOtp}
+                  disabled={resetLoading}
+                  className="w-full bg-white text-black font-bold py-3 px-4 rounded-full text-sm shadow-lg hover:bg-gray-200 active:scale-[0.97] transition-all disabled:opacity-50"
                 >
-                  Send OTP Code
+                  {resetLoading ? "Sending..." : "Send OTP Code"}
                 </button>
               </div>
             )}
@@ -196,14 +290,15 @@ export default function LoginPage() {
                 />
 
                 <button
-                  onClick={() => { if (otp.length === 6) setResetStep(3); }}
-                  className="w-full bg-white text-black font-bold py-3 px-4 rounded-full text-sm shadow-lg hover:bg-gray-200 active:scale-[0.97] transition-all"
+                  onClick={handleVerifyResetOtp}
+                  disabled={resetLoading}
+                  className="w-full bg-white text-black font-bold py-3 px-4 rounded-full text-sm shadow-lg hover:bg-gray-200 active:scale-[0.97] transition-all disabled:opacity-50"
                 >
-                  Verify & Continue
+                  {resetLoading ? "Verifying..." : "Verify & Continue"}
                 </button>
 
                 <p className="text-center mt-4 text-[10px] text-gray-500 uppercase tracking-widest font-bold">
-                  Didn't receive? <button className="text-purple-400 hover:underline">Resend OTP</button>
+                  Didn't receive? <button onClick={handleRequestResetOtp} disabled={resetLoading} className="text-purple-400 hover:underline disabled:opacity-50">Resend OTP</button>
                 </p>
               </div>
             )}
@@ -231,14 +326,17 @@ export default function LoginPage() {
                     type="password"
                     placeholder="Confirm New Password"
                     className="w-full bg-[#121212] border border-gray-800 text-white rounded-xl px-4 py-3 focus:ring-1 focus:ring-green-500/50 outline-none text-sm transition-all"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
                   />
                 </div>
 
                 <button
-                  onClick={() => { alert("Password Reset Success!"); setResetStep(0); }}
-                  className="w-full bg-green-500 text-black font-bold py-3 px-4 rounded-full text-sm shadow-lg hover:bg-green-400 active:scale-[0.97] transition-all"
+                  onClick={handleResetPassword}
+                  disabled={resetLoading}
+                  className="w-full bg-green-500 text-black font-bold py-3 px-4 rounded-full text-sm shadow-lg hover:bg-green-400 active:scale-[0.97] transition-all disabled:opacity-50"
                 >
-                  Update Password
+                  {resetLoading ? "Updating..." : "Update Password"}
                 </button>
               </div>
             )}
