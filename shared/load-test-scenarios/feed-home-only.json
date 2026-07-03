@@ -1,0 +1,11 @@
+{
+  "name": "feed-home-only",
+  "requests": [
+    {
+      "name": "feed-home",
+      "method": "GET",
+      "path": "/api/feed/home",
+      "weight": 1
+    }
+  ]
+}

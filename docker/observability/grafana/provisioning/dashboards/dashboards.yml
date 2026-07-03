@@ -1,0 +1,9 @@
+apiVersion: 1
+
+providers:
+  - name: Googer Runtime
+    orgId: 1
+    type: file
+    disableDeletion: false
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

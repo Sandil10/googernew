@@ -1,0 +1,15 @@
+tunnel: 70dad40c-325d-41c2-a3c7-ccf45815a215
+credentials-file: /etc/cloudflared/70dad40c-325d-41c2-a3c7-ccf45815a215.json
+
+ingress:
+  - hostname: appadmin.infranex.it.com
+    service: http://localhost:3002
+  - hostname: app.infranex.it.com
+    path: /api/*
+    service: http://localhost:5000
+  - hostname: app.infranex.it.com
+    path: /socket.io/*
+    service: http://localhost:5000
+  - hostname: app.infranex.it.com
+    service: http://localhost:3000
+  - service: http_status:404

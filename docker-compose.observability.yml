@@ -1,0 +1,76 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - |
+        sed s|__OPS_MONITOR_TOKEN__|${OPS_MONITOR_TOKEN}|g /etc/prometheus/prometheus.yml > /tmp/prometheus.yml
+        exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus --web.enable-lifecycle
+    ports:
+      - 127.0.0.1:9090:9090
+    volumes:
+      - ./docker/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      alertmanager:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-now}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3003}
+    ports:
+      - 127.0.0.1:3003:3000
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - |
+        sed s|__ALERTMANAGER_WEBHOOK_URL__|${ALERTMANAGER_WEBHOOK_URL:-http://127.0.0.1:65535/alerts-disabled}|g /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml
+        exec /bin/alertmanager --config.file=/tmp/alertmanager.yml
+    ports:
+      - 127.0.0.1:9093:9093
+    volumes:
+      - ./docker/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  loki:
+    image: grafana/loki:3.1.1
+    command: [-config.file=/etc/loki/local-config.yaml]
+    ports:
+      - 127.0.0.1:3100:3100
+    volumes:
+      - ./docker/observability/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    command: [-config.file=/etc/promtail/config.yml]
+    volumes:
+      - ./docker/observability/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      loki:
+        condition: service_started
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+

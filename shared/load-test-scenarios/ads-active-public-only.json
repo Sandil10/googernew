@@ -1,0 +1,11 @@
+{
+  "name": "ads-active-public-only",
+  "requests": [
+    {
+      "name": "ads-active-public",
+      "method": "GET",
+      "path": "/api/ads/active-public",
+      "weight": 1
+    }
+  ]
+}

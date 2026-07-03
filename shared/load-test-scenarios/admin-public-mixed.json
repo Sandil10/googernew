@@ -1,0 +1,42 @@
+{
+  "name": "admin-public-mixed",
+  "baseUrl": "${LOAD_TEST_BASE_URL}",
+  "requests": [
+    {
+      "name": "health",
+      "method": "GET",
+      "path": "/api/health",
+      "weight": 1
+    },
+    {
+      "name": "customization-public-overview",
+      "method": "GET",
+      "path": "/api/admin/customization/public-overview",
+      "weight": 3
+    },
+    {
+      "name": "reach-settings-public",
+      "method": "GET",
+      "path": "/api/admin/customization/reach-settings/public",
+      "weight": 2
+    },
+    {
+      "name": "reach-tiers-public",
+      "method": "GET",
+      "path": "/api/admin/customization/reach-tiers/public",
+      "weight": 2
+    },
+    {
+      "name": "allowed-countries-public",
+      "method": "GET",
+      "path": "/api/admin/customization/ad-allowed-countries",
+      "weight": 1
+    },
+    {
+      "name": "category-tree",
+      "method": "GET",
+      "path": "/api/categories/tree",
+      "weight": 2
+    }
+  ]
+}

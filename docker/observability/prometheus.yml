@@ -1,0 +1,90 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  - job_name: main-backend
+    metrics_path: /api/ops/prometheus
+    static_configs:
+      - targets: ['main-backend:5000']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__
+
+  - job_name: admin-app
+    metrics_path: /api/ops/prometheus
+    static_configs:
+      - targets: ['admin-app:3002']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__
+
+  - job_name: notification-service
+    metrics_path: /ops/prometheus
+    static_configs:
+      - targets: ['notification-service:5004']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__
+
+  - job_name: media-service
+    metrics_path: /ops/prometheus
+    static_configs:
+      - targets: ['media-service:5003']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__
+
+  - job_name: chat-service
+    metrics_path: /ops/prometheus
+    static_configs:
+      - targets: ['chat-service:5005']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__
+
+  - job_name: feed-service
+    metrics_path: /ops/prometheus
+    static_configs:
+      - targets: ['feed-service:5006']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__
+
+  - job_name: marketplace-service
+    metrics_path: /ops/prometheus
+    static_configs:
+      - targets: ['marketplace-service:5007']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__
+
+  - job_name: ads-service
+    metrics_path: /ops/prometheus
+    static_configs:
+      - targets: ['ads-service:5008']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__
+
+  - job_name: account-service
+    metrics_path: /ops/prometheus
+    static_configs:
+      - targets: ['account-service:5009']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__
+
+  - job_name: orders-service
+    metrics_path: /ops/prometheus
+    static_configs:
+      - targets: ['orders-service:5010']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__
+
+  - job_name: finance-service
+    metrics_path: /ops/prometheus
+    static_configs:
+      - targets: ['finance-service:5011']
+    authorization:
+      credentials: __OPS_MONITOR_TOKEN__

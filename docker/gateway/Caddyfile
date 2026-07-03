@@ -1,0 +1,23 @@
+{$PUBLIC_HOST} {
+    encode zstd gzip
+
+    @health path /healthz
+    respond @health "ok" 200
+
+    @socket path /socket.io/*
+    reverse_proxy @socket main-backend:5000
+
+    @backend path /api/* /uploads/* /notifications* /auth* /wallet* /ads* /market* /upload-content* /categories* /googs* /orders* /chat* /cart* /feed* /promo-codes* /admin* /verification* /withdrawal-admin* /withdrawals* /coin-requests* /p2p-ads* /p2p-sell-ads* /subscriptions* /subscription-plans* /stickers*
+    reverse_proxy @backend main-backend:5000
+
+    reverse_proxy main-frontend:3000
+}
+
+{$ADMIN_HOST} {
+    encode zstd gzip
+
+    @health path /healthz
+    respond @health "ok" 200
+
+    reverse_proxy admin-app:3002
+}
