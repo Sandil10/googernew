@@ -10,6 +10,7 @@ import AddProductModal from "@/app/components/AddProductModal";
 import ProductPlansModal from "@/app/components/ProductPlansModal";
 import CartSidebar from "@/app/components/CartSidebar";
 import LoginModal from "@/app/components/auth/LoginModal";
+import LivePresenceHeartbeat from "@/app/components/LivePresenceHeartbeat";
 import { SubscriptionExpiryWarning } from "@/app/components/subscriptions/SubscriptionExpiryWarning";
 import { useCart } from "@/app/context/CartContext";
 import { googService } from "@/services/googService";
@@ -381,10 +382,11 @@ export default function DashboardLayout({
 
     return (
         <div className={`flex flex-col bg-[#1c1917] text-white font-sans ${isAdCampaignRoute ? "min-h-screen overflow-visible" : "h-screen overflow-hidden"}`}>
+            <LivePresenceHeartbeat />
             {/* Topbar (Unified) */}
             <Topbar />
 
-            {/* Mobile Cart Floating Button — above bottom nav */}
+            {/* Mobile Cart Floating Button â€” above bottom nav */}
             <button
                 className="md:hidden fixed bottom-[4.5rem] right-4 z-[60] w-11 h-11 rounded-full bg-white/10 border border-white/15 backdrop-blur-md flex items-center justify-center text-white shadow-xl active:scale-95 transition-all"
                 onClick={() => { if (!isCartLocked) setIsCartOpen(!isCartOpen); }}
@@ -645,7 +647,7 @@ export default function DashboardLayout({
                                     onClick={() => setColorPage(p => Math.max(0, p - 1))}
                                     disabled={colorPage === 0}
                                     className="h-4 w-4 flex items-center justify-center rounded text-white/40 hover:text-white/80 disabled:opacity-20 shrink-0 text-[10px]"
-                                >‹</button>
+                                >â€¹</button>
                                 <div className="flex items-center gap-1">
                                     {googTextColors.slice(colorPage * 10, colorPage * 10 + 10).map((color) => (
                                         <button
@@ -667,7 +669,7 @@ export default function DashboardLayout({
                                     onClick={() => setColorPage(p => Math.min(Math.ceil(googTextColors.length / 10) - 1, p + 1))}
                                     disabled={colorPage >= Math.ceil(googTextColors.length / 10) - 1}
                                     className="h-4 w-4 flex items-center justify-center rounded text-white/40 hover:text-white/80 disabled:opacity-20 shrink-0 text-[10px]"
-                                >›</button>
+                                >â€º</button>
                                 <span className={`ml-auto text-[10px] font-medium shrink-0 ${googText.length >= googLetterLimit ? "text-red-400" : googText.length >= googLetterLimit * 0.85 ? "text-amber-400" : "text-white/40"}`}>
                                     {googText.length}/{googLetterLimit}
                                 </span>
