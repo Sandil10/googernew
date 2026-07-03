@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import IonIcon from "@/app/components/IonIcon";
+import { DeviceDetailsModal } from "@/app/components/security/SecurityDevicesCenter";
 import { authService } from "@/services/authService";
 import { formatGoogerId } from "@/app/lib/userDisplay";
 
@@ -53,6 +54,8 @@ type AuthSessionDevice = {
     region?: string;
     city?: string;
     timezone?: string;
+    latitude?: number | null;
+    longitude?: number | null;
     trusted: boolean;
     status: string;
     loginResult?: string;
@@ -1125,43 +1128,7 @@ export default function SettingsPage() {
                 </div>
             </section>
 
-            {selectedDevice && (
-                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
-                    <div className="absolute inset-0 bg-black/80" onClick={() => setSelectedDevice(null)} />
-                    <div className="relative w-full max-w-md overflow-hidden rounded-[2rem] border border-white/10 bg-[#141416] shadow-2xl">
-                        <div className="border-b border-white/8 px-5 py-4">
-                            <div className="flex items-center justify-between gap-4">
-                                <div>
-                                    <h3 className="text-sm font-black uppercase tracking-[0.18em] text-white">Device Details</h3>
-                                    <p className="mt-1 text-xs text-white/45">{selectedDevice.country || "Unknown"}</p>
-                                </div>
-                                <button type="button" onClick={() => setSelectedDevice(null)} className="flex h-9 w-9 items-center justify-center rounded-full bg-white/[0.06] text-white/60 transition hover:bg-white/10 hover:text-white">
-                                    <IonIcon name="close-outline" className="text-lg" />
-                                </button>
-                            </div>
-                        </div>
-                        <div className="grid gap-3 px-5 py-5">
-                            {[
-                                ["Device", selectedDevice.deviceName],
-                                ["Type", selectedDevice.deviceType],
-                                ["Browser", selectedDevice.browser],
-                                ["Operating System", selectedDevice.operatingSystem],
-                                ["IP Address", selectedDevice.ipAddress || "Unknown"],
-                                ["Country", selectedDevice.country || "Unknown"],
-                                ["City", selectedDevice.city || "Unknown"],
-                                ["Time Zone", selectedDevice.timezone || "Unknown"],
-                                ["Login Time", formatDeviceDate(selectedDevice.loginAt)],
-                                ["Last Active", formatDeviceDate(selectedDevice.lastActiveAt)],
-                            ].map(([label, value]) => (
-                                <div key={label} className="rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3">
-                                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">{label}</p>
-                                    <p className="mt-1 break-words text-sm font-semibold text-white">{value}</p>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            )}
+            {selectedDevice && <DeviceDetailsModal device={selectedDevice} onClose={() => setSelectedDevice(null)} />}
 
             {showDeactivateModal && (
                 <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">

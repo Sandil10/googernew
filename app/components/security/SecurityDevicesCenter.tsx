@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import IonIcon from "@/app/components/IonIcon";
+import LeafletDeviceMap from "@/app/components/security/LeafletDeviceMap";
 import { authService } from "@/services/authService";
 
 type SecurityLink = {
@@ -22,6 +23,8 @@ type AuthSessionDevice = {
     region?: string;
     city?: string;
     timezone?: string;
+    latitude?: number | null;
+    longitude?: number | null;
     trusted: boolean;
     status: string;
     approvalStatus?: string;
@@ -50,42 +53,129 @@ const formatLocation = (device: AuthSessionDevice) => {
     return parts.length ? parts.join(", ") : (device.country || "Unknown");
 };
 
-function DeviceDetailsModal({ device, onClose }: { device: AuthSessionDevice; onClose: () => void }) {
+type DeviceLookupDetails = {
+    location?: {
+        country?: string | null;
+        region?: string | null;
+        district?: string | null;
+        city?: string | null;
+        locality?: string | null;
+        zipcode?: string | null;
+        latitude?: number | string | null;
+        longitude?: number | string | null;
+    } | null;
+    timezone?: string | null;
+    isp?: string | null;
+    networkType?: string | null;
+};
+
+const hasLocationValue = (value: unknown) => {
+    if (value === null || value === undefined) return false;
+    if (typeof value === "number") return Number.isFinite(value);
+    return String(value).trim().length > 0 && String(value).trim().toLowerCase() !== "unknown";
+};
+
+export function DeviceDetailsModal({ device, onClose }: { device: AuthSessionDevice; onClose: () => void }) {
+    const [deviceLookup, setDeviceLookup] = useState<DeviceLookupDetails | null>(null);
+    const [deviceLookupLoading, setDeviceLookupLoading] = useState(false);
+    const [deviceLookupError, setDeviceLookupError] = useState("");
+
+    useEffect(() => {
+        let cancelled = false;
+        setDeviceLookup(null);
+        setDeviceLookupError("");
+
+        if (!device.ipAddress || (hasLocationValue(device.latitude) && hasLocationValue(device.longitude))) {
+            return;
+        }
+
+        const loadDeviceLocation = async () => {
+            try {
+                setDeviceLookupLoading(true);
+                const response = await fetch(`/device-location?ip=${encodeURIComponent(device.ipAddress)}`);
+                const result = await response.json().catch(() => null);
+                if (!response.ok) {
+                    throw new Error(result?.message || "Could not load exact IP location.");
+                }
+                if (!cancelled) setDeviceLookup(result);
+            } catch (err: any) {
+                if (!cancelled) setDeviceLookupError(err?.message || "Could not load exact IP location.");
+            } finally {
+                if (!cancelled) setDeviceLookupLoading(false);
+            }
+        };
+
+        void loadDeviceLocation();
+        return () => {
+            cancelled = true;
+        };
+    }, [device]);
+
+    const location = deviceLookup?.location || null;
+    const mapLat = hasLocationValue(device.latitude) ? Number(device.latitude) : hasLocationValue(location?.latitude) ? Number(location?.latitude) : null;
+    const mapLng = hasLocationValue(device.longitude) ? Number(device.longitude) : hasLocationValue(location?.longitude) ? Number(location?.longitude) : null;
+    const hasMap = mapLat !== null && mapLng !== null;
     const rows = [
         ["Device", device.deviceName],
         ["Type", device.deviceType],
         ["Browser", device.browser],
         ["Operating System", device.operatingSystem],
         ["IP Address", device.ipAddress || "Unknown"],
-        ["Country", device.country || "Unknown"],
-        ["City", device.city || "Unknown"],
-        ["Time Zone", device.timezone || "Unknown"],
+        ["Region", location?.region || device.region],
+        ["District", location?.district],
+        ["City", location?.city || device.city],
+        ["Locality", location?.locality],
+        ["Zip Code", location?.zipcode],
+        ["Time Zone", deviceLookup?.timezone || device.timezone],
+        ["ISP", deviceLookup?.isp],
+        ["Network Type", deviceLookup?.networkType],
         ["Login Time", formatDateTime(device.loginAt)],
         ["Last Active", formatDateTime(device.lastActiveAt)],
-    ];
+    ].filter(([, value]) => hasLocationValue(value));
 
     return (
-        <div className="fixed inset-0 z-[180] flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
-            <div className="relative w-full max-w-md overflow-hidden rounded-[2rem] border border-white/10 bg-[#111114] shadow-[0_30px_90px_rgba(0,0,0,0.65)]">
-                <div className="border-b border-white/8 px-5 py-4">
-                    <div className="flex items-center justify-between gap-4">
-                        <div>
-                            <h3 className="text-sm font-black uppercase tracking-[0.18em] text-white">Device Details</h3>
-                            <p className="mt-1 text-xs text-white/45">{device.country || "Unknown"}</p>
-                        </div>
-                        <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full bg-white/[0.06] text-white/60 transition hover:bg-white/10 hover:text-white">
-                            <IonIcon name="close-outline" className="text-lg" />
-                        </button>
+        <div className="fixed inset-0 z-[170] flex items-center justify-center bg-black/75 p-4 backdrop-blur-md">
+            <div className="absolute inset-0" onClick={onClose} />
+            <div className="relative w-full max-w-3xl overflow-hidden rounded-[2rem] border border-white/10 bg-[#111114] shadow-[0_30px_80px_rgba(0,0,0,0.45)]">
+                <div className="flex items-center justify-between border-b border-white/8 px-5 py-4">
+                    <div>
+                        <h2 className="text-base font-black text-white">{device.deviceName || "Device Details"}</h2>
+                        <p className="mt-1 text-xs text-white/45">{device.browser || "Browser"} on {device.operatingSystem || "OS"}</p>
                     </div>
+                    <button type="button" onClick={onClose} className="text-white/50 transition hover:text-white">
+                        <IonIcon name="close-outline" className="text-2xl" />
+                    </button>
                 </div>
-                <div className="grid gap-3 px-5 py-5">
-                    {rows.map(([label, value]) => (
-                        <div key={label} className="rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3">
-                            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">{label}</p>
-                            <p className="mt-1 break-words text-sm font-semibold text-white">{value}</p>
-                        </div>
-                    ))}
+
+                <div className="grid gap-5 px-5 py-5 min-[980px]:grid-cols-[minmax(0,1fr)_340px]">
+                    <div className="overflow-hidden rounded-3xl border border-white/8 bg-black/25">
+                        {deviceLookupLoading ? (
+                            <div className="flex h-[280px] items-center justify-center text-sm text-white/45">Loading location map...</div>
+                        ) : hasMap ? (
+                            <LeafletDeviceMap
+                                latitude={mapLat}
+                                longitude={mapLng}
+                                label={rows.find(([label]) => label === "City")?.[1] || device.deviceName || "Device location"}
+                            />
+                        ) : (
+                            <div className="flex h-[280px] items-center justify-center px-6 text-center text-sm text-white/45">
+                                {deviceLookupError || "Exact coordinates are not available for this session yet."}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="space-y-2">
+                        {rows.length > 0 ? rows.map(([label, value]) => (
+                            <div key={String(label)} className="flex justify-between gap-3 rounded-xl bg-white/[0.03] px-3 py-2 text-xs">
+                                <span className="text-white/35">{label}</span>
+                                <span className="text-right font-semibold text-white/75">{value}</span>
+                            </div>
+                        )) : (
+                            <div className="rounded-xl bg-white/[0.03] px-3 py-4 text-sm text-white/45">
+                                No extra device details available.
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
         </div>
