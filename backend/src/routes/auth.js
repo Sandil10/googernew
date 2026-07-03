@@ -9,6 +9,7 @@ const authMiddleware = require('../middleware/auth');
 router.post('/register', authController.register);
 router.get('/username/:username', readController.getUserByUsername);
 router.post('/login', authController.login);
+router.post('/login/device-approval/status', authController.getDeviceApprovalStatus);
 router.post('/forgot-password/request-otp', authController.requestPasswordResetOtp);
 router.post('/forgot-password/verify-otp', authController.verifyPasswordResetOtp);
 router.post('/forgot-password/reset', authController.resetPasswordWithOtp);
@@ -33,6 +34,9 @@ router.put('/update-profile', authMiddleware, upload.single('profile_picture_fil
 router.put('/update-shipping-address', authMiddleware, accountController.updateShippingAddress);
 router.post('/change-password', authMiddleware, accountController.changePassword);
 router.post('/verify-password', authMiddleware, accountController.verifyPassword);
+router.get('/sessions', authMiddleware, authController.getAuthSessions);
+router.patch('/sessions/:id', authMiddleware, authController.updateAuthSession);
+router.delete('/sessions/:id', authMiddleware, authController.removeAuthSession);
 router.post('/user/:id/subscribe', authMiddleware, socialSubscriptionsController.toggleSubscription);
 router.post('/user/:id/view', readController.logProfileView);
 router.post('/user/:id/report', authMiddleware, authController.reportUser);

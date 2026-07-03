@@ -21,12 +21,45 @@ export default function LoginPage() {
   const [resetLoading, setResetLoading] = useState(false);
   const [resetError, setResetError] = useState("");
   const [resetMessage, setResetMessage] = useState("");
+  const [deviceApproval, setDeviceApproval] = useState<{ id: string; token: string } | null>(null);
+  const [approvalStatus, setApprovalStatus] = useState("Waiting for a trusted device to respond.");
   const [redirectTo, setRedirectTo] = useState("/dashboard");
 
   useEffect(() => {
     const redirect = new URLSearchParams(window.location.search).get("redirect");
     if (redirect?.startsWith("/")) setRedirectTo(redirect);
   }, []);
+
+  useEffect(() => {
+    if (!deviceApproval) return;
+    let cancelled = false;
+    const checkApproval = async () => {
+      try {
+        const result = await authService.getDeviceApprovalStatus({
+          approvalId: deviceApproval.id,
+          approvalToken: deviceApproval.token,
+        });
+        if (cancelled) return;
+        if (result?.token || result?.status === "approved") {
+          const target = redirectTo.startsWith("/") ? redirectTo : "/dashboard";
+          window.location.assign(target);
+          return;
+        }
+        setApprovalStatus(result?.message || "Waiting for a trusted device to respond.");
+      } catch (err: any) {
+        if (cancelled) return;
+        setError(err?.message || "Login request denied.");
+        setApprovalStatus("Approval did not complete.");
+        setDeviceApproval(null);
+      }
+    };
+    void checkApproval();
+    const timer = window.setInterval(checkApproval, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [deviceApproval, redirectTo]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,6 +69,11 @@ export default function LoginPage() {
     try {
       const response = await authService.login({ email, password });
       console.log("Login successful:", response);
+      if (response?.approvalRequired && response?.approval?.id && response?.approval?.token) {
+        setDeviceApproval({ id: response.approval.id, token: response.approval.token });
+        setApprovalStatus("A new device is trying to access your account. Waiting for approval.");
+        return;
+      }
       const target = redirectTo.startsWith("/") ? redirectTo : "/dashboard";
       window.location.assign(target);
     } catch (err: any) {
@@ -149,6 +187,22 @@ export default function LoginPage() {
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
+            {deviceApproval && (
+              <div className="rounded-2xl border border-amber-400/25 bg-amber-400/10 px-4 py-4 text-center">
+                <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-400/10 text-amber-200">
+                  <IonIcon name="shield-checkmark-outline" className="text-2xl" />
+                </div>
+                <h3 className="text-sm font-black text-white">Device Approval Required</h3>
+                <p className="mt-2 text-xs leading-relaxed text-amber-100/80">{approvalStatus}</p>
+                <button
+                  type="button"
+                  onClick={() => setDeviceApproval(null)}
+                  className="mt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-white/45 hover:text-white"
+                >
+                  Cancel Request
+                </button>
+              </div>
+            )}
             {/* Email Field */}
             <div>
               <input

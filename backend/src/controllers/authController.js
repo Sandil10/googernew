@@ -17,6 +17,7 @@ let extendedUserProfileSchemaEnsured = false;
 let userBlocksTableEnsured = false;
 let googerIdNormalizationPromise = null;
 let passwordResetOtpTableEnsured = false;
+let authSessionsTableEnsured = false;
 
 const GOOGER_ID_MIN = 100000;
 const GOOGER_ID_MAX = 999999;
@@ -25,6 +26,180 @@ const PASSWORD_RESET_OTP_TTL_MINUTES = Number.parseInt(process.env.PASSWORD_RESE
 const PASSWORD_RESET_VERIFY_TTL_MINUTES = Number.parseInt(process.env.PASSWORD_RESET_VERIFY_TTL_MINUTES || '15', 10);
 
 const hashResetValue = (value) => crypto.createHash('sha256').update(String(value || '')).digest('hex');
+
+const getRequestIp = (req) => {
+    const forwarded = String(req.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
+    return forwarded || req.ip || req.socket?.remoteAddress || null;
+};
+
+const parseDeviceFromUserAgent = (userAgent = '') => {
+    const ua = String(userAgent || '');
+    const browser = /Edg\//i.test(ua) ? 'Edge'
+        : /Chrome\//i.test(ua) ? 'Chrome'
+        : /Firefox\//i.test(ua) ? 'Firefox'
+        : /Safari\//i.test(ua) ? 'Safari'
+        : 'Unknown';
+    const operatingSystem = /Windows NT 10/i.test(ua) ? 'Windows 10/11'
+        : /Android/i.test(ua) ? 'Android'
+        : /iPhone|iPad/i.test(ua) ? 'iOS'
+        : /Mac OS X/i.test(ua) ? 'macOS'
+        : /Linux/i.test(ua) ? 'Linux'
+        : 'Unknown';
+    const deviceType = /Mobi|Android|iPhone/i.test(ua) ? 'Mobile' : 'Desktop';
+    return {
+        browser,
+        operatingSystem,
+        deviceType,
+        deviceName: `${browser} on ${operatingSystem}`,
+    };
+};
+
+const ensureAuthSessionsTable = async () => {
+    if (authSessionsTableEnsured) return;
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            id VARCHAR(64) PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            device_name VARCHAR(180),
+            device_type VARCHAR(60),
+            browser VARCHAR(80),
+            operating_system VARCHAR(120),
+            ip_address TEXT,
+            country VARCHAR(80),
+            region VARCHAR(120),
+            city VARCHAR(120),
+            timezone VARCHAR(120),
+            latitude NUMERIC,
+            longitude NUMERIC,
+            user_agent TEXT,
+            device_id VARCHAR(128),
+            trusted BOOLEAN NOT NULL DEFAULT false,
+            status VARCHAR(30) NOT NULL DEFAULT 'active',
+            login_result VARCHAR(30) NOT NULL DEFAULT 'success',
+            approval_status VARCHAR(20) NOT NULL DEFAULT 'not_required',
+            approval_token_hash VARCHAR(128),
+            approval_expires_at TIMESTAMP,
+            approval_completed_at TIMESTAMP,
+            login_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_active_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            logout_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
+    await pool.query(`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS device_id VARCHAR(128)`);
+    await pool.query(`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) NOT NULL DEFAULT 'not_required'`);
+    await pool.query(`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS approval_token_hash VARCHAR(128)`);
+    await pool.query(`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMP`);
+    await pool.query(`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS approval_completed_at TIMESTAMP`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_active ON auth_sessions(user_id, status, last_active_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_pending_approval ON auth_sessions(user_id, approval_status, approval_expires_at) WHERE approval_status = 'pending'`);
+    authSessionsTableEnsured = true;
+};
+
+const mapAuthSession = (row, currentSessionId = null) => ({
+    id: row.id,
+    deviceName: row.device_name || 'Unknown device',
+    deviceType: row.device_type || 'Unknown',
+    browser: row.browser || 'Unknown',
+    operatingSystem: row.operating_system || 'Unknown',
+    ipAddress: row.ip_address || '',
+    country: row.country || '',
+    region: row.region || '',
+    city: row.city || '',
+    timezone: row.timezone || '',
+    latitude: row.latitude == null ? null : Number(row.latitude),
+    longitude: row.longitude == null ? null : Number(row.longitude),
+    trusted: !!row.trusted,
+    status: row.status,
+    loginResult: row.login_result,
+    approvalStatus: row.approval_status,
+    loginAt: row.login_at,
+    lastActiveAt: row.last_active_at,
+    logoutAt: row.logout_at,
+    isCurrent: currentSessionId ? String(row.id) === String(currentSessionId) : false,
+});
+
+const createLoginToken = (userData, sessionId = null) => jwt.sign(
+    {
+        id: userData.id,
+        userId: userData.user_id,
+        tokenVersion: userData.token_version ?? 0,
+        ...(sessionId ? { sessionId } : {}),
+    },
+    process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRE || '7d' }
+);
+
+const createAuthSession = async (userData, req) => {
+    await ensureAuthSessionsTable();
+    const parsed = parseDeviceFromUserAgent(req.get('user-agent'));
+    const userAgent = req.get('user-agent') || '';
+    const deviceId = String(req.body?.deviceId || req.headers?.['x-device-id'] || '').trim().slice(0, 128) || null;
+    const ipAddress = getRequestIp(req);
+    const priorResult = await pool.query(
+        `SELECT
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (
+                WHERE trusted = true
+                  AND status = 'active'
+                  AND logout_at IS NULL
+                  AND last_active_at > CURRENT_TIMESTAMP - INTERVAL '24 hours'
+            )::int AS active_trusted,
+            COUNT(*) FILTER (
+                WHERE ($2::text IS NOT NULL AND device_id = $2)
+                   OR COALESCE(user_agent, '') = COALESCE($3, '')
+                   OR (browser = $4 AND operating_system = $5 AND device_type = $6)
+            )::int AS familiar
+         FROM auth_sessions
+         WHERE user_id = $1`,
+        [userData.id, deviceId, userAgent, parsed.browser, parsed.operatingSystem, parsed.deviceType]
+    );
+    const hasPriorSessions = Number(priorResult.rows[0]?.total || 0) > 0;
+    const hasActiveTrustedSession = Number(priorResult.rows[0]?.active_trusted || 0) > 0;
+    const isFamiliar = Number(priorResult.rows[0]?.familiar || 0) > 0;
+    const requiresApproval = hasPriorSessions && hasActiveTrustedSession && !isFamiliar;
+    const shouldAutoTrust = !requiresApproval && (!hasPriorSessions || isFamiliar || !hasActiveTrustedSession);
+    const approvalToken = requiresApproval ? crypto.randomBytes(32).toString('base64url') : null;
+    const approvalTokenHash = approvalToken ? hashResetValue(approvalToken) : null;
+
+    const sessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+    const result = await pool.query(
+        `INSERT INTO auth_sessions (
+            id, user_id, device_name, device_type, browser, operating_system, ip_address,
+            country, region, city, timezone, user_agent, device_id, trusted,
+            status, login_result, approval_status, approval_token_hash, approval_expires_at
+         ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12, $13, $14,
+            CASE WHEN $15 THEN 'pending' ELSE 'active' END,
+            CASE WHEN $15 THEN 'pending' ELSE 'success' END,
+            CASE WHEN $15 THEN 'pending' ELSE 'not_required' END,
+            $16,
+            CASE WHEN $15 THEN CURRENT_TIMESTAMP + INTERVAL '5 minutes' ELSE NULL END
+         )
+         RETURNING *`,
+        [
+            sessionId,
+            userData.id,
+            parsed.deviceName,
+            parsed.deviceType,
+            parsed.browser,
+            parsed.operatingSystem,
+            ipAddress,
+            req.body?.country || null,
+            req.body?.region || null,
+            req.body?.city || null,
+            req.body?.timezone || null,
+            userAgent,
+            deviceId,
+            shouldAutoTrust,
+            requiresApproval,
+            approvalTokenHash,
+        ]
+    );
+    return { ...result.rows[0], approvalToken };
+};
 
 const normalizeResetEmail = (email) => String(email || '').trim().toLowerCase();
 
@@ -757,19 +932,32 @@ exports.login = async (req, res) => {
 
         await ensureGoogerIdNormalization();
 
-        const token = jwt.sign(
-            { id: userData.id, userId: userData.user_id, tokenVersion: userData.token_version ?? 0 },
-            secret,
-            { expiresIn: process.env.JWT_EXPIRE || '7d' }
-        );
-
+        const session = await createAuthSession(userData, req);
         const { password: _, ...userWithoutPassword } = userData;
+
+        if (session.approval_status === 'pending') {
+            return res.status(202).json({
+                success: true,
+                approvalRequired: true,
+                message: 'A trusted device must approve this login request.',
+                approval: {
+                    id: session.id,
+                    token: session.approvalToken,
+                    expiresInSeconds: 300,
+                },
+                user: userWithoutPassword,
+                session: mapAuthSession(session),
+            });
+        }
+
+        const token = createLoginToken(userData, session.id);
 
         res.status(200).json({
             success: true,
             message: 'Login successful',
             token,
-            user: userWithoutPassword
+            user: userWithoutPassword,
+            session: mapAuthSession(session, session.id),
         });
 
     } catch (error) {
@@ -780,6 +968,179 @@ exports.login = async (req, res) => {
             error: error.message,
             stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
+    }
+};
+
+exports.getAuthSessions = async (req, res) => {
+    try {
+        await ensureAuthSessionsTable();
+        await pool.query(
+            `UPDATE auth_sessions
+             SET approval_status = 'expired', status = 'offline', login_result = 'denied', logout_at = CURRENT_TIMESTAMP
+             WHERE user_id = $1
+               AND approval_status = 'pending'
+               AND approval_expires_at <= CURRENT_TIMESTAMP`,
+            [req.user.id]
+        );
+        const currentSessionId = req.user.sessionId || null;
+        if (currentSessionId) {
+            await pool.query(
+                `UPDATE auth_sessions SET last_active_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND user_id = $2`,
+                [currentSessionId, req.user.id]
+            );
+        }
+        const result = await pool.query(
+            `SELECT *
+             FROM auth_sessions
+             WHERE user_id = $1
+               AND (status = 'active' OR approval_status = 'pending')
+             ORDER BY
+               CASE WHEN id::text = $2 THEN 0 WHEN approval_status = 'pending' THEN 1 ELSE 2 END,
+               last_active_at DESC`,
+            [req.user.id, String(currentSessionId || '')]
+        );
+        const sessions = result.rows.map((row) => mapAuthSession(row, currentSessionId));
+        res.json({
+            success: true,
+            sessions,
+            current: sessions.find((session) => session.isCurrent) || null,
+            pendingApprovals: sessions.filter((session) => session.approvalStatus === 'pending'),
+        });
+    } catch (error) {
+        console.error('Get auth sessions error:', error);
+        res.status(500).json({ success: false, message: 'Could not load logged devices' });
+    }
+};
+
+exports.updateAuthSession = async (req, res) => {
+    try {
+        await ensureAuthSessionsTable();
+        const sessionId = String(req.params.id || '').trim();
+        const hasTrusted = Object.prototype.hasOwnProperty.call(req.body || {}, 'trusted');
+        const trusted = hasTrusted ? req.body.trusted === true : null;
+        const deviceName = typeof req.body?.deviceName === 'string' ? req.body.deviceName.trim().slice(0, 180) : null;
+        if (!sessionId || (!hasTrusted && !deviceName)) {
+            return res.status(400).json({ success: false, message: 'Session update details are required' });
+        }
+        const result = await pool.query(
+            `UPDATE auth_sessions
+             SET device_name = COALESCE($3, device_name),
+                 trusted = COALESCE($4, trusted),
+                 approval_status = CASE
+                     WHEN approval_status = 'pending' AND $4 = true THEN 'approved'
+                     WHEN approval_status = 'pending' AND $4 = false THEN 'denied'
+                     ELSE approval_status
+                 END,
+                 status = CASE WHEN approval_status = 'pending' AND $4 = false THEN 'offline' ELSE status END,
+                 login_result = CASE WHEN approval_status = 'pending' AND $4 = false THEN 'denied' ELSE login_result END,
+                 logout_at = CASE WHEN approval_status = 'pending' AND $4 = false THEN CURRENT_TIMESTAMP ELSE logout_at END,
+                 approval_completed_at = CASE WHEN approval_status = 'pending' AND $4 IS NOT NULL THEN CURRENT_TIMESTAMP ELSE approval_completed_at END,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND user_id = $2
+             RETURNING *`,
+            [sessionId, req.user.id, deviceName || null, trusted]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Device session not found' });
+        }
+        res.json({ success: true, session: mapAuthSession(result.rows[0], req.user.sessionId || null) });
+    } catch (error) {
+        console.error('Update auth session error:', error);
+        res.status(500).json({ success: false, message: 'Could not update device session' });
+    }
+};
+
+exports.removeAuthSession = async (req, res) => {
+    try {
+        await ensureAuthSessionsTable();
+        const sessionId = String(req.params.id || '').trim();
+        const result = await pool.query(
+            `UPDATE auth_sessions
+             SET status = 'offline',
+                 approval_status = CASE WHEN approval_status = 'pending' THEN 'denied' ELSE approval_status END,
+                 login_result = CASE WHEN approval_status = 'pending' THEN 'denied' ELSE login_result END,
+                 logout_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND user_id = $2
+             RETURNING *`,
+            [sessionId, req.user.id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Device session not found' });
+        }
+        res.json({ success: true, session: mapAuthSession(result.rows[0], req.user.sessionId || null) });
+    } catch (error) {
+        console.error('Remove auth session error:', error);
+        res.status(500).json({ success: false, message: 'Could not remove device session' });
+    }
+};
+
+exports.getDeviceApprovalStatus = async (req, res) => {
+    const approvalId = String(req.body?.approvalId || '').trim();
+    const approvalToken = String(req.body?.approvalToken || '').trim();
+    if (!approvalId || !approvalToken) {
+        return res.status(400).json({ success: false, message: 'Approval request details are required.' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await ensureAuthSessionsTable();
+        await client.query('BEGIN');
+        const tokenHash = hashResetValue(approvalToken);
+        const result = await client.query(
+            `SELECT u.*,
+                    s.id AS session_id,
+                    s.approval_status,
+                    s.approval_expires_at,
+                    s.status AS session_status
+             FROM auth_sessions s
+             JOIN users u ON u.id = s.user_id
+             WHERE s.id = $1 AND s.approval_token_hash = $2
+             FOR UPDATE OF s`,
+            [approvalId, tokenHash]
+        );
+        const row = result.rows[0];
+        if (!row) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'Login approval request was not found.' });
+        }
+        if (!row.approval_expires_at || new Date(row.approval_expires_at).getTime() <= Date.now()) {
+            await client.query(
+                `UPDATE auth_sessions SET approval_status = 'expired', status = 'offline',
+                 login_result = 'denied', logout_at = CURRENT_TIMESTAMP WHERE id = $1`,
+                [approvalId]
+            );
+            await client.query('COMMIT');
+            return res.status(410).json({ success: false, status: 'expired', message: 'Login approval expired. Please try again.' });
+        }
+        if (row.approval_status === 'denied' || row.session_status === 'offline') {
+            await client.query('COMMIT');
+            return res.status(403).json({ success: false, status: 'denied', message: 'Login request denied. Please try again in a few minutes.' });
+        }
+        if (row.approval_status !== 'approved') {
+            await client.query('COMMIT');
+            return res.status(202).json({ success: true, status: 'pending', message: 'Waiting for a trusted device.' });
+        }
+
+        await client.query(
+            `UPDATE auth_sessions
+             SET status = 'active', login_result = 'success', trusted = true,
+                 approval_completed_at = CURRENT_TIMESTAMP, approval_token_hash = NULL,
+                 last_active_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [approvalId]
+        );
+        await client.query('COMMIT');
+
+        const token = createLoginToken(row, approvalId);
+        const { password: _, passkey_hash: __, ...safeUser } = row;
+        return res.json({ success: true, status: 'approved', message: 'Device approved.', token, user: safeUser });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Device approval status error:', error);
+        return res.status(500).json({ success: false, message: 'Could not check device approval.' });
+    } finally {
+        client.release();
     }
 };
 

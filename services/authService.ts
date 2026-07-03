@@ -62,6 +62,20 @@ const safeJson = async (response: Response) => {
 
 const getStoredToken = () => storage.get('token');
 
+const getOrCreateDeviceId = () => {
+    if (!isClient) return "";
+    const key = "googer-device-id";
+    let value = storage.get(key);
+    if (!value) {
+        const random = typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        value = `web-${random}`;
+        storage.set(key, value);
+    }
+    return value;
+};
+
 const getCachedUser = () => {
     const raw = storage.get('user');
     if (!raw) return null;
@@ -196,7 +210,7 @@ export const authService = {
             const response = await fetch(`${API_URL}/auth/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data),
+                body: JSON.stringify({ ...data, deviceId: getOrCreateDeviceId() }),
             }).catch(() => {
                 throw new Error('Server connection failed. Is the backend running?');
             });
@@ -219,6 +233,24 @@ export const authService = {
             console.error('Login error detail:', error);
             throw error;
         }
+    },
+
+    getDeviceApprovalStatus: async (payload: { approvalId: string; approvalToken: string }) => {
+        const response = await fetch(`${API_URL}/auth/login/device-approval/status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const result = await safeJson(response);
+        if (!response.ok && response.status !== 202) {
+            throw new Error(buildErrorMessage(result, response));
+        }
+        if (result?.token) {
+            storage.set('token', result.token);
+            storage.set('user', JSON.stringify(result.user));
+            emitAuthChanged(result.user);
+        }
+        return result;
     },
 
     requestPasswordResetOtp: async (email: string) => {
@@ -604,6 +636,51 @@ export const authService = {
         } catch (error: any) {
             throw error;
         }
+    },
+
+    getAuthSessions: async () => {
+        const token = storage.get('token');
+        if (!token) throw new Error('No session found');
+        const response = await fetch(`${API_URL}/auth/sessions`, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(buildErrorMessage(result, response));
+        return result;
+    },
+
+    updateAuthSession: async (id: string, payload: { trusted?: boolean; deviceName?: string }) => {
+        const token = storage.get('token');
+        if (!token) throw new Error('No session found');
+        const response = await fetch(`${API_URL}/auth/sessions/${encodeURIComponent(id)}`, {
+            method: 'PATCH',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(buildErrorMessage(result, response));
+        return result;
+    },
+
+    removeAuthSession: async (id: string) => {
+        const token = storage.get('token');
+        if (!token) throw new Error('No session found');
+        const response = await fetch(`${API_URL}/auth/sessions/${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(buildErrorMessage(result, response));
+        return result;
     },
 
     updateProfile: async (data: any) => {

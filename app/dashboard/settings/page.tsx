@@ -41,6 +41,27 @@ type CountryOption = {
     name: string;
 };
 
+type AuthSessionDevice = {
+    id: string;
+    deviceName: string;
+    deviceType: string;
+    browser: string;
+    operatingSystem: string;
+    ipAddress: string;
+    country?: string;
+    region?: string;
+    city?: string;
+    timezone?: string;
+    trusted: boolean;
+    status: string;
+    loginResult?: string;
+    approvalStatus?: string;
+    loginAt?: string;
+    lastActiveAt?: string;
+    logoutAt?: string;
+    isCurrent?: boolean;
+};
+
 const EDIT_TABS = [
     { key: "general", label: "General" },
     { key: "password", label: "Password" },
@@ -58,6 +79,18 @@ const MAX_PROFILE_IMAGE_DIMENSION = 1200;
 const MAX_BIO_LENGTH = 50;
 const MAX_BIO_LINKS = 2;
 const TODAY_DATE_STRING = new Date().toISOString().slice(0, 10);
+
+const formatDeviceDate = (value?: string) => {
+    if (!value) return "Unknown";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "Unknown";
+    return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+};
+
+const formatDeviceLocation = (device: AuthSessionDevice) => {
+    const parts = [device.city, device.region, device.country].filter(Boolean);
+    return parts.length ? parts.join(", ") : (device.country || "Unknown");
+};
 
 const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -199,6 +232,9 @@ export default function SettingsPage() {
     const [isDeletingAccount, setIsDeletingAccount] = useState(false);
     const [showDeactivateModal, setShowDeactivateModal] = useState(false);
     const [isDeactivatingAccount, setIsDeactivatingAccount] = useState(false);
+    const [authSessions, setAuthSessions] = useState<AuthSessionDevice[]>([]);
+    const [loadingSessions, setLoadingSessions] = useState(false);
+    const [selectedDevice, setSelectedDevice] = useState<AuthSessionDevice | null>(null);
 
     const handleDeactivateAccount = async () => {
         try {
@@ -266,6 +302,57 @@ export default function SettingsPage() {
             setLoading(false);
         }
     }, [applyUserToForms, router]);
+
+    const loadAuthSessions = useCallback(async (silent = false) => {
+        try {
+            if (!silent) setLoadingSessions(true);
+            const result = await authService.getAuthSessions();
+            setAuthSessions(Array.isArray(result?.sessions) ? result.sessions : []);
+        } catch (err: any) {
+            if (!silent) {
+                setNotification({ type: "error", message: err?.message || "Could not load logged devices." });
+            }
+        } finally {
+            if (!silent) setLoadingSessions(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (activeTab !== "security" || !authService.isAuthenticated()) return;
+        void loadAuthSessions();
+        const timer = window.setInterval(() => void loadAuthSessions(true), 15000);
+        return () => window.clearInterval(timer);
+    }, [activeTab, loadAuthSessions]);
+
+    const approveDevice = async (device: AuthSessionDevice) => {
+        try {
+            await authService.updateAuthSession(device.id, { trusted: true });
+            setNotification({ type: "success", message: "Device trusted. Login can continue." });
+            await loadAuthSessions(true);
+        } catch (err: any) {
+            setNotification({ type: "error", message: err?.message || "Could not trust device." });
+        }
+    };
+
+    const denyDevice = async (device: AuthSessionDevice) => {
+        try {
+            await authService.updateAuthSession(device.id, { trusted: false });
+            setNotification({ type: "success", message: "Device request denied." });
+            await loadAuthSessions(true);
+        } catch (err: any) {
+            setNotification({ type: "error", message: err?.message || "Could not deny device." });
+        }
+    };
+
+    const removeDevice = async (device: AuthSessionDevice) => {
+        try {
+            await authService.removeAuthSession(device.id);
+            setNotification({ type: "success", message: "Device removed from logged devices." });
+            await loadAuthSessions(true);
+        } catch (err: any) {
+            setNotification({ type: "error", message: err?.message || "Could not remove device." });
+        }
+    };
 
     useEffect(() => {
         fetchProfile();
@@ -919,20 +1006,153 @@ export default function SettingsPage() {
                         )}
 
                         {activeTab === "security" && (
-                            <section className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
-                                <div className="mb-4">
-                                    <h2 className="text-base font-black text-white">Security</h2>
-                                    <p className="mt-1 text-xs text-white/45">High-impact account actions.</p>
+                            <section className="space-y-5">
+                                <div className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
+                                    <div className="mb-4">
+                                        <h2 className="text-base font-black text-white">Security Settings</h2>
+                                        <p className="mt-1 text-xs text-white/45">Manage login protection, trusted devices, and account recovery.</p>
+                                    </div>
+                                    <div className="grid gap-3 min-[860px]:grid-cols-2">
+                                        {[
+                                            ["Two-Factor Authentication", "Enabled through email OTP during login", "shield-checkmark-outline"],
+                                            ["Login Alerts", "Email alerts for new sign-ins", "notifications-outline"],
+                                            ["Trusted Devices", "Mark devices you recognize", "phone-portrait-outline"],
+                                            ["Passkeys", "Optional, not enabled yet", "key-outline"],
+                                            ["Session Timeout", "Managed by token expiry", "timer-outline"],
+                                            ["Account Recovery", "Secure email OTP password reset", "mail-open-outline"],
+                                        ].map(([title, subtitle, icon]) => (
+                                            <div key={title} className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
+                                                <div className="flex items-start gap-3">
+                                                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/[0.06] text-white">
+                                                        <IonIcon name={icon} className="text-lg" />
+                                                    </span>
+                                                    <div>
+                                                        <h3 className="text-sm font-black text-white">{title}</h3>
+                                                        <p className="mt-1 text-xs leading-5 text-white/45">{subtitle}</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
-                                <div className="flex flex-col gap-3 min-[900px]:flex-row">
-                                    <button type="button" onClick={() => setShowDeactivateModal(true)} className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-amber-200 transition hover:bg-amber-500/15">Deactivate Account</button>
-                                    <button type="button" onClick={() => setShowDeleteModal(true)} className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-red-300 transition hover:bg-red-500/15">Delete Account</button>
+
+                                <div className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
+                                    <div className="mb-4 flex items-center justify-between gap-3">
+                                        <div>
+                                            <h2 className="text-base font-black text-white">Logged Devices</h2>
+                                            <p className="mt-1 text-xs text-white/45">Current device plus approval requests from new devices.</p>
+                                        </div>
+                                        <button type="button" onClick={() => loadAuthSessions()} className="rounded-2xl border border-white/10 px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/60 transition hover:bg-white/5 hover:text-white">
+                                            {loadingSessions ? "Loading" : "Refresh"}
+                                        </button>
+                                    </div>
+
+                                    {authSessions.filter((device) => device.approvalStatus === "pending").map((device) => (
+                                        <div key={device.id} className="mb-4 overflow-hidden rounded-3xl border border-amber-400/25 bg-amber-400/10 p-4">
+                                            <div className="flex flex-col gap-4 min-[760px]:flex-row min-[760px]:items-center min-[760px]:justify-between">
+                                                <div className="min-w-0">
+                                                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-200/80">Security Alert</p>
+                                                    <h3 className="mt-1 text-sm font-black text-white">A new device is trying to access your account.</h3>
+                                                    <p className="mt-2 text-xs leading-5 text-white/55">{device.deviceName} from {formatDeviceLocation(device)}. Approve only when you recognize this device.</p>
+                                                    <p className="mt-1 text-[11px] text-white/35">Login time {formatDeviceDate(device.loginAt)}</p>
+                                                </div>
+                                                <div className="flex shrink-0 gap-2">
+                                                    <button type="button" onClick={() => approveDevice(device)} className="rounded-2xl bg-white px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-black transition hover:bg-zinc-200">Trust Device</button>
+                                                    <button type="button" onClick={() => denyDevice(device)} className="rounded-2xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-red-200 transition hover:bg-red-500/15">Don&apos;t Trust</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+
+                                    <div className="grid gap-3">
+                                        {authSessions.filter((device) => device.isCurrent || (device.status === "active" && device.approvalStatus !== "pending")).map((device) => (
+                                            <div key={device.id} className="rounded-3xl border border-white/[0.08] bg-black/20 p-4">
+                                                <div className="flex flex-col gap-4 min-[760px]:flex-row min-[760px]:items-center min-[760px]:justify-between">
+                                                    <div className="flex min-w-0 items-start gap-3">
+                                                        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white/[0.06] text-white">
+                                                            <IonIcon name={device.deviceType === "Mobile" ? "phone-portrait-outline" : "desktop-outline"} className="text-xl" />
+                                                        </span>
+                                                        <div className="min-w-0">
+                                                            <div className="flex flex-wrap items-center gap-2">
+                                                                <h3 className="truncate text-sm font-black text-white">{device.isCurrent ? "Current Device" : device.deviceName}</h3>
+                                                                {device.trusted && <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-emerald-200">Trusted</span>}
+                                                            </div>
+                                                            <p className="mt-1 text-xs text-white/45">{device.browser} on {device.operatingSystem} | {device.deviceType}</p>
+                                                            <p className="mt-1 text-[11px] text-white/35">Last active {formatDeviceDate(device.lastActiveAt)}</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex shrink-0 gap-2">
+                                                        <button type="button" onClick={() => setSelectedDevice(device)} className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 text-white/60 transition hover:bg-white/5 hover:text-white" aria-label="View device details">
+                                                            <IonIcon name="eye-outline" className="text-lg" />
+                                                        </button>
+                                                        {!device.isCurrent && (
+                                                            <button type="button" onClick={() => removeDevice(device)} className="rounded-2xl border border-red-400/25 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-red-200 transition hover:bg-red-500/10">
+                                                                Remove
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {!loadingSessions && authSessions.length === 0 && (
+                                            <div className="rounded-3xl border border-dashed border-white/10 p-6 text-center text-xs text-white/45">No logged devices found yet. Login once more to register this browser.</div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
+                                    <div className="mb-4">
+                                        <h2 className="text-base font-black text-white">High-impact account actions</h2>
+                                        <p className="mt-1 text-xs text-white/45">Deactivate or permanently delete your account.</p>
+                                    </div>
+                                    <div className="flex flex-col gap-3 min-[900px]:flex-row">
+                                        <button type="button" onClick={() => setShowDeactivateModal(true)} className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-amber-200 transition hover:bg-amber-500/15">Deactivate Account</button>
+                                        <button type="button" onClick={() => setShowDeleteModal(true)} className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-red-300 transition hover:bg-red-500/15">Delete Account</button>
+                                    </div>
                                 </div>
                             </section>
                         )}
                     </div>
                 </div>
             </section>
+
+            {selectedDevice && (
+                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/80" onClick={() => setSelectedDevice(null)} />
+                    <div className="relative w-full max-w-md overflow-hidden rounded-[2rem] border border-white/10 bg-[#141416] shadow-2xl">
+                        <div className="border-b border-white/8 px-5 py-4">
+                            <div className="flex items-center justify-between gap-4">
+                                <div>
+                                    <h3 className="text-sm font-black uppercase tracking-[0.18em] text-white">Device Details</h3>
+                                    <p className="mt-1 text-xs text-white/45">{selectedDevice.country || "Unknown"}</p>
+                                </div>
+                                <button type="button" onClick={() => setSelectedDevice(null)} className="flex h-9 w-9 items-center justify-center rounded-full bg-white/[0.06] text-white/60 transition hover:bg-white/10 hover:text-white">
+                                    <IonIcon name="close-outline" className="text-lg" />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="grid gap-3 px-5 py-5">
+                            {[
+                                ["Device", selectedDevice.deviceName],
+                                ["Type", selectedDevice.deviceType],
+                                ["Browser", selectedDevice.browser],
+                                ["Operating System", selectedDevice.operatingSystem],
+                                ["IP Address", selectedDevice.ipAddress || "Unknown"],
+                                ["Country", selectedDevice.country || "Unknown"],
+                                ["City", selectedDevice.city || "Unknown"],
+                                ["Time Zone", selectedDevice.timezone || "Unknown"],
+                                ["Login Time", formatDeviceDate(selectedDevice.loginAt)],
+                                ["Last Active", formatDeviceDate(selectedDevice.lastActiveAt)],
+                            ].map(([label, value]) => (
+                                <div key={label} className="rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3">
+                                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">{label}</p>
+                                    <p className="mt-1 break-words text-sm font-semibold text-white">{value}</p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {showDeactivateModal && (
                 <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">

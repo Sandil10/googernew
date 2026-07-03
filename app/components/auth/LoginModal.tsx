@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
 
@@ -18,6 +18,38 @@ export default function LoginModal({
     const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+    const [deviceApproval, setDeviceApproval] = useState<{ id: string; token: string } | null>(null);
+    const [approvalStatus, setApprovalStatus] = useState("Waiting for a trusted device to respond.");
+
+    useEffect(() => {
+        if (!deviceApproval) return;
+        let cancelled = false;
+        const checkApproval = async () => {
+            try {
+                const result = await authService.getDeviceApprovalStatus({
+                    approvalId: deviceApproval.id,
+                    approvalToken: deviceApproval.token,
+                });
+                if (cancelled) return;
+                if (result?.token || result?.status === "approved") {
+                    onSuccess();
+                    return;
+                }
+                setApprovalStatus(result?.message || "Waiting for a trusted device to respond.");
+            } catch (err: any) {
+                if (cancelled) return;
+                setError(err?.message || "Login request denied.");
+                setApprovalStatus("Approval did not complete.");
+                setDeviceApproval(null);
+            }
+        };
+        void checkApproval();
+        const timer = window.setInterval(checkApproval, 2000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [deviceApproval, onSuccess]);
 
     const handleSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
@@ -25,7 +57,12 @@ export default function LoginModal({
         setLoading(true);
 
         try {
-            await authService.login({ email, password });
+            const result = await authService.login({ email, password });
+            if (result?.approvalRequired && result?.approval?.id && result?.approval?.token) {
+                setDeviceApproval({ id: result.approval.id, token: result.approval.token });
+                setApprovalStatus("A new device is trying to access your account. Waiting for approval.");
+                return;
+            }
             onSuccess();
         } catch (err: any) {
             setError(err?.message || "Login failed. Please check your credentials.");
@@ -67,6 +104,22 @@ export default function LoginModal({
                 )}
 
                 <form onSubmit={handleSubmit} className="space-y-4">
+                    {deviceApproval && (
+                        <div className="rounded-2xl border border-amber-400/25 bg-amber-400/10 px-4 py-4 text-center">
+                            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-400/10 text-amber-200">
+                                <IonIcon name="shield-checkmark-outline" className="text-2xl" />
+                            </div>
+                            <h3 className="text-sm font-black text-white">Device Approval Required</h3>
+                            <p className="mt-2 text-xs leading-relaxed text-amber-100/80">{approvalStatus}</p>
+                            <button
+                                type="button"
+                                onClick={() => setDeviceApproval(null)}
+                                className="mt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-white/45 hover:text-white"
+                            >
+                                Cancel Request
+                            </button>
+                        </div>
+                    )}
                     <div>
                         <input
                             className="w-full rounded-xl border border-gray-800 bg-[#121212] px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-purple-500/50"
