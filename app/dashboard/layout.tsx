@@ -11,6 +11,7 @@ import ProductPlansModal from "@/app/components/ProductPlansModal";
 import CartSidebar from "@/app/components/CartSidebar";
 import LoginModal from "@/app/components/auth/LoginModal";
 import LivePresenceHeartbeat from "@/app/components/LivePresenceHeartbeat";
+import GlobalSecurityDeviceAlert from "@/app/components/GlobalSecurityDeviceAlert";
 import { SubscriptionExpiryWarning } from "@/app/components/subscriptions/SubscriptionExpiryWarning";
 import { useCart } from "@/app/context/CartContext";
 import { googService } from "@/services/googService";
@@ -383,6 +384,7 @@ export default function DashboardLayout({
     return (
         <div className={`flex flex-col bg-[#1c1917] text-white font-sans ${isAdCampaignRoute ? "min-h-screen overflow-visible" : "h-screen overflow-hidden"}`}>
             <LivePresenceHeartbeat />
+            <GlobalSecurityDeviceAlert />
             {/* Topbar (Unified) */}
             <Topbar />
 

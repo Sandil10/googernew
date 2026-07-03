@@ -1,8 +1,9 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import IonIcon from "@/app/components/IonIcon";
 import { authService } from "@/services/authService";
 import { formatGoogerId } from "@/app/lib/userDisplay";
@@ -183,6 +184,7 @@ function getProfileImageSrc(user: SettingsUser | null, preview?: string | null) 
 
 export default function SettingsPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const [activeTab, setActiveTab] = useState<EditTabKey>("general");
@@ -235,6 +237,13 @@ export default function SettingsPage() {
     const [authSessions, setAuthSessions] = useState<AuthSessionDevice[]>([]);
     const [loadingSessions, setLoadingSessions] = useState(false);
     const [selectedDevice, setSelectedDevice] = useState<AuthSessionDevice | null>(null);
+
+    useEffect(() => {
+        const tab = searchParams?.get("tab");
+        if (tab === "security" || tab === "privacy" || tab === "password" || tab === "general") {
+            setActiveTab(tab);
+        }
+    }, [searchParams]);
 
     const handleDeactivateAccount = async () => {
         try {
@@ -1014,14 +1023,14 @@ export default function SettingsPage() {
                                     </div>
                                     <div className="grid gap-3 min-[860px]:grid-cols-2">
                                         {[
-                                            ["Two-Factor Authentication", "Enabled through email OTP during login", "shield-checkmark-outline"],
-                                            ["Login Alerts", "Email alerts for new sign-ins", "notifications-outline"],
-                                            ["Trusted Devices", "Mark devices you recognize", "phone-portrait-outline"],
-                                            ["Passkeys", "Optional, not enabled yet", "key-outline"],
-                                            ["Session Timeout", "Managed by token expiry", "timer-outline"],
-                                            ["Account Recovery", "Secure email OTP password reset", "mail-open-outline"],
-                                        ].map(([title, subtitle, icon]) => (
-                                            <div key={title} className="rounded-2xl border border-white/[0.08] bg-black/20 p-4">
+                                            ["Change Login Email", "Verify your password and both email addresses before updating login email.", "shield-checkmark-outline", "/settings/two-factor"],
+                                            ["Security Alerts", "Review new-device alerts and password-reset protection.", "notifications-outline", "/settings/security-alerts"],
+                                            ["Trusted Devices", "Mark devices you recognize and review logged devices.", "phone-portrait-outline", "/settings/security-alerts"],
+                                            ["6-Digit Passkey", "Enable, change, or remove your account passkey.", "key-outline", "/settings/passkeys"],
+                                            ["Session Timeout", "Managed by token expiry.", "timer-outline", "/settings/security-alerts"],
+                                            ["Reset Password", "Verify current password and email OTP before creating a new password.", "mail-open-outline", "/settings/reset-password"],
+                                        ].map(([title, subtitle, icon, href]) => (
+                                            <Link key={title} href={href} className="rounded-2xl border border-white/[0.08] bg-black/20 p-4 transition hover:border-white/15 hover:bg-white/[0.05]">
                                                 <div className="flex items-start gap-3">
                                                     <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/[0.06] text-white">
                                                         <IonIcon name={icon} className="text-lg" />
@@ -1031,7 +1040,7 @@ export default function SettingsPage() {
                                                         <p className="mt-1 text-xs leading-5 text-white/45">{subtitle}</p>
                                                     </div>
                                                 </div>
-                                            </div>
+                                            </Link>
                                         ))}
                                     </div>
                                 </div>
