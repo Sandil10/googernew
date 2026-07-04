@@ -1,0 +1,24 @@
+{
+  "name": "ops-monitoring-template",
+  "baseUrl": "${LOAD_TEST_BASE_URL}",
+  "requests": [
+    {
+      "name": "ops-health",
+      "method": "GET",
+      "path": "/api/ops/health",
+      "weight": 2,
+      "headers": {
+        "Authorization": "Bearer ${OPS_MONITOR_TOKEN}"
+      }
+    },
+    {
+      "name": "ops-metrics",
+      "method": "GET",
+      "path": "/api/ops/metrics",
+      "weight": 1,
+      "headers": {
+        "Authorization": "Bearer ${OPS_MONITOR_TOKEN}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,323 @@
+"use client";
+
+import type React from "react";
+import { SharedPhotoVideoAdCard } from "@/app/components/ads/SharedPhotoVideoAdCard";
+import { SharedProfilePromoteAdCard } from "@/app/components/ads/SharedProfilePromoteAdCard";
+import { SharedProductPromoteAdCard } from "@/app/components/ads/SharedProductPromoteAdCard";
+import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
+import { useAdStore } from "@/app/lib/ads/adStore";
+import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
+import { isPhotoVideoPromotableAd, isProductPromotableAd } from "@/app/lib/ads/promoteAgain";
+
+type PromotedAdCardProps = {
+  ad: any;
+  source?: "home" | "shop" | "profile";
+  isMenuOpen?: boolean;
+  onToggleMenu?: (adId: any) => void;
+  onCloseMenu?: () => void;
+  onOpenSecondView?: (ad: any) => void;
+  onProductClick?: (product: any) => void;
+  onAddToBagClick?: (product: any) => void;
+  onProfileClick?: (ad: any) => void;
+  onToggleLike?: (ad: any) => void | Promise<void>;
+  onOpenSheet?: (type: any, ad: any) => void;
+  onShare?: (ad: any) => void;
+  onLogView?: (ad: any, item?: any) => void;
+  onReport?: (ad: any) => void;
+  onNotInterested?: (id: string | number) => void;
+  onPromoteAgain?: (ad: any) => void | Promise<void>;
+  onCollectCoin?: (event: React.MouseEvent, ad: any) => void;
+  onNavigateToProfile?: (event: React.MouseEvent, ad: any) => void;
+  canShowCollectCoin?: (ad: any) => boolean;
+  currentUser?: any;
+  compact?: boolean;
+  onToggleSave?: (ad: any) => void | Promise<void>;
+  isSaved?: boolean;
+  saveAtLimit?: boolean;
+  showExpiryWarning?: boolean;
+  allowPhotoVideoPromoteAgain?: boolean;
+};
+
+const EMPTY_OBJECT = {};
+
+function getNormalizedStatus(value: unknown) {
+  return String(value ?? "").trim().toLowerCase().replace(/[_-]+/g, " ");
+}
+
+function isActivePhotoVideoStatus(status: string) {
+  return status === "active" || status === "running" || status === "approved";
+}
+
+export function PromotedAdCard({
+  ad,
+  source,
+  isMenuOpen = false,
+  onToggleMenu,
+  onCloseMenu,
+  onOpenSecondView,
+  onProductClick,
+  onAddToBagClick,
+  onProfileClick,
+  onToggleLike,
+  onOpenSheet,
+  onShare,
+  onLogView,
+  onReport,
+  onNotInterested,
+  onPromoteAgain,
+  onCollectCoin,
+  onNavigateToProfile,
+  canShowCollectCoin,
+  currentUser,
+  compact,
+  onToggleSave,
+  isSaved,
+  saveAtLimit,
+  showExpiryWarning,
+  allowPhotoVideoPromoteAgain = false,
+}: PromotedAdCardProps) {
+  const normalized = normalizeAdData(ad);
+  const actionAd = normalized.raw || ad;
+  const nestedRawAd = (actionAd as any)?.raw || ad?.raw || {};
+
+  // Resolve the ad promoter's identity — collect every possible owner ID from the raw ad.
+  // The ads table may store users.user_id (sequential, e.g. 5) while currentUser.id is
+  // the PK (e.g. 312495), so we must check against ALL currentUser ID fields.
+  const adOwnerCandidates: string[] = [
+    normalized.ad_owner_user_id,
+    normalized.advertiser_id,
+    normalized.userId,
+    normalized.user_id,
+    normalized.owner_user_id,
+    (actionAd as any)?.ad_owner_user_id,
+    (actionAd as any)?.advertiser_id,
+    (actionAd as any)?.owner_user_id,
+    (actionAd as any)?.ownerUserId,
+    ad?.ad_owner_user_id,
+    ad?.advertiser_id,
+    ad?.owner_user_id,
+    ad?.ownerUserId,
+    // Also check user_id on the raw ad (Product Promote sets this to the promoter's users.user_id)
+    (actionAd as any)?.user_id,
+    ad?.user_id,
+    (nestedRawAd as any)?.ad_owner_user_id,
+    (nestedRawAd as any)?.advertiser_id,
+    (nestedRawAd as any)?.owner_user_id,
+    (nestedRawAd as any)?.ownerUserId,
+    (nestedRawAd as any)?.user_id,
+    (nestedRawAd as any)?.userId,
+  ]
+    .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+    .map((v) => String(v));
+
+  const currentUserCandidates: string[] = [
+    currentUser?.id,
+    currentUser?.user_id,
+    currentUser?.googer_id,
+    currentUser?.userId,
+    currentUser?.owner_id,
+  ]
+    .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+    .map((v) => String(v));
+
+  const adOwnerNameCandidates: string[] = [
+    normalized.username,
+    normalized.owner_username,
+    (actionAd as any)?.owner_username,
+    (actionAd as any)?.ownerUsername,
+    (actionAd as any)?.username,
+    ad?.owner_username,
+    ad?.ownerUsername,
+    ad?.username,
+    (nestedRawAd as any)?.owner_username,
+    (nestedRawAd as any)?.ownerUsername,
+    (nestedRawAd as any)?.username,
+  ]
+    .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+    .map((v) => String(v).trim().toLowerCase());
+
+  const currentUserNameCandidates: string[] = [
+    currentUser?.username,
+    currentUser?.name,
+    currentUser?.full_name,
+  ]
+    .filter((v) => v !== null && v !== undefined && String(v).trim() !== "")
+    .map((v) => String(v).trim().toLowerCase());
+
+  const isAdOwner =
+    (
+      adOwnerCandidates.length > 0 &&
+      currentUserCandidates.length > 0 &&
+      adOwnerCandidates.some((oid) => currentUserCandidates.includes(oid))
+    ) || (
+      adOwnerNameCandidates.length > 0 &&
+      currentUserNameCandidates.length > 0 &&
+      adOwnerNameCandidates.some((name) => currentUserNameCandidates.includes(name))
+    );
+
+  const guardedCanShowCollectCoin = isAdOwner
+    ? () => false
+    : canShowCollectCoin;
+
+  // Connect to global reactive store
+  const interactionId = getAdInteractionId(actionAd);
+  const liveState = useAdStore((state) => state.adStates[interactionId] || EMPTY_OBJECT);
+
+  // Merge live state into normalized object for UI parity
+  const merged: any = {
+    ...normalized,
+    liked: liveState.user_liked ?? normalized.liked,
+    user_liked: liveState.user_liked ?? normalized.user_liked,
+    likeCount: liveState.likes_count ?? liveState.likeCount ?? normalized.likeCount,
+    likes_count: liveState.likes_count ?? liveState.likeCount ?? normalized.likes_count,
+    coinCollected: liveState.ad_coin_collected ?? normalized.coinCollected,
+    ad_coin_collected: liveState.ad_coin_collected ?? normalized.ad_coin_collected,
+    ad_like_locked: liveState.ad_like_locked ?? normalized.ad_like_locked ?? liveState.ad_coin_collected ?? normalized.ad_coin_collected,
+    viewCount: liveState.views_count ?? liveState.viewCount ?? normalized.viewCount,
+    views_count: liveState.views_count ?? liveState.viewCount ?? normalized.views_count,
+    impressions: liveState.impressions ?? liveState.impressions_count ?? normalized.impressions,
+    impressions_count: liveState.impressions ?? liveState.impressions_count ?? normalized.impressions_count,
+    commentCount: liveState.comments_count ?? liveState.commentCount ?? normalized.commentCount,
+    comments_count: liveState.comments_count ?? liveState.commentCount ?? normalized.comments_count,
+    shareCount: liveState.shares_count ?? liveState.shareCount ?? normalized.shareCount,
+    shares_count: liveState.shares_count ?? liveState.shareCount ?? normalized.shares_count,
+    current_reach: liveState.current_reach ?? liveState.reach ?? normalized.current_reach,
+    reach: liveState.current_reach ?? liveState.reach ?? normalized.reach,
+    clicks: liveState.clicks ?? liveState.link_actions ?? normalized.clicks,
+    link_actions: liveState.clicks ?? liveState.link_actions ?? normalized.link_actions,
+    message_clicks: liveState.message_clicks ?? normalized.message_clicks,
+    visit_clicks: liveState.visit_clicks ?? normalized.visit_clicks,
+    call_clicks: liveState.call_clicks ?? normalized.call_clicks,
+  };
+  const campaignType = String(merged.campaign_type || merged.campaignType || actionAd?.campaign_type || actionAd?.campaignType || "").trim();
+  const isProductPromote = campaignType.toLowerCase() === "product promote";
+  const promoteAgainLabel = isAdOwner ? "Promote Again" : "Promote";
+  const photoVideoStatus = getNormalizedStatus(merged.status || actionAd?.status || ad?.status);
+  const isSavedProfilePhotoVideo = source === "profile" && allowPhotoVideoPromoteAgain && isSaved === true && !isActivePhotoVideoStatus(photoVideoStatus);
+  const canPromotePhotoVideoAgain = isAdOwner && isSavedProfilePhotoVideo && isPhotoVideoPromotableAd(merged);
+  const canPromoteProductAgain = isProductPromotableAd(merged);
+
+  if (merged.type === "product" || isProductPromote) {
+    const hydratedProduct = (normalized.raw as any) || actionAd || ad;
+    const productItem = {
+      ...hydratedProduct,
+      ...merged,
+      image_url: hydratedProduct?.image_url || hydratedProduct?.main_image || hydratedProduct?.media_preview || merged.image,
+      main_image: hydratedProduct?.main_image || hydratedProduct?.image_url || hydratedProduct?.media_preview || merged.image,
+      images: Array.isArray(hydratedProduct?.images)
+        ? hydratedProduct.images
+        : Array.isArray(hydratedProduct?.media_gallery)
+          ? hydratedProduct.media_gallery
+          : merged.image
+            ? [merged.image]
+            : [],
+      variants: Array.isArray(hydratedProduct?.variants) ? hydratedProduct.variants : [],
+      sizes: Array.isArray(hydratedProduct?.sizes) ? hydratedProduct.sizes : [],
+      price: hydratedProduct?.price ?? hydratedProduct?.main_price ?? hydratedProduct?.product_price ?? merged.price,
+      main_price: hydratedProduct?.main_price ?? hydratedProduct?.price ?? hydratedProduct?.product_price ?? merged.price,
+      product_price: hydratedProduct?.product_price ?? hydratedProduct?.price ?? hydratedProduct?.main_price ?? merged.price,
+      promo_price: hydratedProduct?.promo_price ?? merged.promo_price ?? null,
+      raw: hydratedProduct?.raw || hydratedProduct,
+      adId: merged.adId || actionAd?.adId || hydratedProduct?.adId,
+      ad_id: merged.ad_id || actionAd?.ad_id || hydratedProduct?.ad_id,
+      productId:
+        hydratedProduct?.productId ??
+        hydratedProduct?.product_id ??
+        hydratedProduct?.linked_product_id ??
+        merged.productId ??
+        merged.product_id ??
+        merged.linked_product_id,
+      product_id:
+        hydratedProduct?.product_id ??
+        hydratedProduct?.productId ??
+        hydratedProduct?.linked_product_id ??
+        merged.product_id ??
+        merged.productId ??
+        merged.linked_product_id,
+      linked_product_id:
+        hydratedProduct?.linked_product_id ??
+        hydratedProduct?.product_id ??
+        hydratedProduct?.productId ??
+        merged.linked_product_id ??
+        merged.product_id ??
+        merged.productId,
+      linkedProductId:
+        hydratedProduct?.linkedProductId ??
+        hydratedProduct?.linked_product_id ??
+        hydratedProduct?.productId ??
+        hydratedProduct?.product_id ??
+        merged.linkedProductId ??
+        merged.linked_product_id ??
+        merged.productId ??
+        merged.product_id,
+      campaign_type: merged.campaign_type || campaignType,
+      is_sponsored: true,
+      user_liked: merged.user_liked,
+      likes_count: merged.likes_count,
+      views_count: merged.views_count,
+      comments_count: merged.comments_count,
+      shares_count: merged.shares_count,
+      ad_coin_collected: merged.ad_coin_collected,
+      ad_like_locked: !!(merged.ad_like_locked ?? merged.ad_coin_collected),
+    };
+    const productAdViewId = productItem.adId || productItem.ad_id || merged.adId || merged.ad_id || merged.id;
+
+    return (
+      <SharedProductPromoteAdCard
+        item={productItem as any}
+        onClick={(item) => onProductClick?.(item)}
+        onAddToBagClick={(item) => onAddToBagClick?.(item)}
+        onToggleLike={onToggleLike || (() => {})}
+        onOpenSheet={onOpenSheet || (() => {})}
+        onShare={onShare || (() => {})}
+        onLogView={() => onLogView?.(`ad-${String(productAdViewId).replace(/^ad-/, "")}`, productItem)}
+        onReport={onReport || (() => {})}
+        onNotInterested={onNotInterested || (() => {})}
+        onCollectCoin={onCollectCoin || (() => {})}
+        canShowCollectCoin={guardedCanShowCollectCoin || (() => false)}
+        onNavigateToProfile={(event) => onNavigateToProfile?.(event, actionAd.user_id)}
+        onPromoteAgain={canPromoteProductAgain ? onPromoteAgain : undefined}
+        promoteAgainLabel={promoteAgainLabel}
+        currentUser={currentUser}
+        compact={compact}
+      />
+    );
+  }
+
+  if (merged.type === "profile") {
+    return (
+      <SharedProfilePromoteAdCard
+        ad={merged}
+        onProductClick={(product) => onProductClick?.(product)}
+        onProfileClick={() => onProfileClick?.(actionAd)}
+        onCollectCoin={onCollectCoin}
+        canShowCollectCoin={guardedCanShowCollectCoin}
+      />
+    );
+  }
+
+  return (
+    <SharedPhotoVideoAdCard
+      ad={merged}
+      isMenuOpen={isMenuOpen}
+      onToggleMenu={onToggleMenu || (() => {})}
+      onCloseMenu={onCloseMenu || (() => {})}
+      onOpenSecondView={onOpenSecondView}
+      onToggleLike={onToggleLike || (() => {})}
+      onOpenSheet={onOpenSheet || (() => {})}
+      onShare={onShare || (() => {})}
+      onReport={onReport || (() => {})}
+      onNotInterested={onNotInterested || (() => {})}
+      onPromoteAgain={canPromotePhotoVideoAgain ? onPromoteAgain : undefined}
+      promoteAgainLabel={promoteAgainLabel}
+      onCollectCoin={onCollectCoin || (() => {})}
+      onNavigateToProfile={onNavigateToProfile || (() => {})}
+      canShowCollectCoin={guardedCanShowCollectCoin || (() => false)}
+      showSaveButton={source === "profile" && !!onToggleSave}
+      onToggleSave={onToggleSave}
+      isSaved={isSaved}
+      saveAtLimit={saveAtLimit}
+      showExpiryWarning={showExpiryWarning}
+    />
+  );
+}

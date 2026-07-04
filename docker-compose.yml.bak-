@@ -1,0 +1,245 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:17-alpine
+    profiles: ["local-db"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-googer}
+      POSTGRES_USER: ${POSTGRES_USER:-googer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-googer_password_change_me}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-googer} -d ${POSTGRES_DB:-googer}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  main-backend:
+    build:
+      context: .
+      dockerfile: docker/main-backend.Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      WEB_URL: ${WEB_URL:-http://localhost:3000}
+      MOBILE_URL: ${MOBILE_URL:-http://localhost:3000}
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-googer}
+      DB_USER: ${DB_USER:-googer}
+      DB_PASSWORD: ${DB_PASSWORD:-googer_password_change_me}
+      DB_SSL: ${DB_SSL:-false}
+      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-false}
+      DB_POOL_MAX: ${DB_POOL_MAX:-20}
+      JWT_SECRET: ${JWT_SECRET}
+      REDIS_URL: redis://redis:6379
+      CLUSTER_WORKERS: ${CLUSTER_WORKERS:-2}
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-googer-internal-dev-token}
+      OPS_MONITOR_TOKEN: ${OPS_MONITOR_TOKEN:-googer-ops-monitor-token}
+      MEDIA_SERVICE_URL: http://media-service:5003
+      NOTIFICATION_SERVICE_URL: http://notification-service:5004
+      PUBLIC_UPLOAD_CONTENT_CACHE_TTL_MS: ${PUBLIC_UPLOAD_CONTENT_CACHE_TTL_MS:-15000}
+      WORKER_STALE_AFTER_SECONDS: ${WORKER_STALE_AFTER_SECONDS:-120}
+    ports:
+      - "5000:5000"
+    volumes:
+      - main-uploads:/app/googernew/public/uploads
+    depends_on:
+      media-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:5000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  main-worker:
+    build:
+      context: .
+      dockerfile: docker/main-backend.Dockerfile
+    command: ["npm", "run", "worker"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-googer}
+      DB_USER: ${DB_USER:-googer}
+      DB_PASSWORD: ${DB_PASSWORD:-googer_password_change_me}
+      DB_SSL: ${DB_SSL:-false}
+      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-false}
+      DB_POOL_MAX: ${WORKER_DB_POOL_MAX:-5}
+      JWT_SECRET: ${JWT_SECRET}
+      REDIS_URL: redis://redis:6379
+      WORKER_ID: main-worker-1
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-googer-internal-dev-token}
+      OPS_MONITOR_TOKEN: ${OPS_MONITOR_TOKEN:-googer-ops-monitor-token}
+      NOTIFICATION_SERVICE_URL: http://notification-service:5004
+    volumes:
+      - main-uploads:/app/googernew/public/uploads
+    depends_on:
+      main-backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  media-service:
+    build:
+      context: .
+      dockerfile: docker/media-service.Dockerfile
+    environment:
+      NODE_ENV: production
+      MEDIA_SERVICE_PORT: 5003
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-googer-internal-dev-token}
+      OPS_MONITOR_TOKEN: ${OPS_MONITOR_TOKEN:-googer-ops-monitor-token}
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
+      UPLOADS_DIR: /app/googernew/public/uploads
+    ports:
+      - "5003:5003"
+    volumes:
+      - main-uploads:/app/googernew/public/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:5003/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: docker/notification-service.Dockerfile
+    environment:
+      NODE_ENV: production
+      NOTIFICATION_SERVICE_PORT: 5004
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-googer}
+      DB_USER: ${DB_USER:-googer}
+      DB_PASSWORD: ${DB_PASSWORD:-googer_password_change_me}
+      DB_SSL: ${DB_SSL:-false}
+      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-false}
+      DB_POOL_MAX: ${NOTIFICATION_DB_POOL_MAX:-10}
+      REDIS_URL: redis://redis:6379
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-googer-internal-dev-token}
+    ports:
+      - "5004:5004"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:5004/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  notification-worker:
+    build:
+      context: .
+      dockerfile: docker/notification-service.Dockerfile
+    command: ["node", "microservices/notification-service/src/worker.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-googer}
+      DB_USER: ${DB_USER:-googer}
+      DB_PASSWORD: ${DB_PASSWORD:-googer_password_change_me}
+      DB_SSL: ${DB_SSL:-false}
+      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-false}
+      DB_POOL_MAX: ${NOTIFICATION_WORKER_DB_POOL_MAX:-5}
+      REDIS_URL: redis://redis:6379
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-googer-internal-dev-token}
+      OPS_MONITOR_TOKEN: ${OPS_MONITOR_TOKEN:-googer-ops-monitor-token}
+      NOTIFICATION_SERVICE_URL: http://notification-service:5004
+      WORKER_ID: notification-worker-1
+    depends_on:
+      notification-service:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  main-frontend:
+    build:
+      context: .
+      dockerfile: docker/main-frontend.Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      BACKEND_URL: http://main-backend:5000
+      NEXT_PUBLIC_API_URL: /api
+    ports:
+      - "3000:3000"
+    depends_on:
+      main-backend:
+        condition: service_started
+
+  admin-app:
+    build:
+      context: ${ADMIN_BUILD_CONTEXT:-..}
+      dockerfile: ${ADMIN_DOCKERFILE:-googernew/docker/admin-app.Dockerfile}
+    environment:
+      NODE_ENV: production
+      SERVE_NEXT: "true"
+      PORT: 3002
+      FRONTEND_URL: ${ADMIN_URL:-http://localhost:3002}
+      ADMIN_URL: ${ADMIN_URL:-http://localhost:3002}
+      WEB_URL: ${WEB_URL:-http://localhost:3000}
+      CORS_ORIGIN: ${ADMIN_URL:-http://localhost:3002}
+      BACKEND_URL: http://admin-app:3002
+      GOOGER_MAIN_API_URL: http://main-backend:5000
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-googer}
+      DB_USER: ${DB_USER:-googer}
+      DB_PASSWORD: ${DB_PASSWORD:-googer_password_change_me}
+      DB_SSL: ${DB_SSL:-false}
+      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-false}
+      DB_POOL_MAX: ${ADMIN_DB_POOL_MAX:-10}
+      JWT_SECRET: ${JWT_SECRET}
+      REDIS_URL: redis://redis:6379
+      UPLOADS_DIR: /app/googernew/public/uploads
+    ports:
+      - "3002:3002"
+    volumes:
+      - main-uploads:/app/googernew/public/uploads:ro
+    depends_on:
+      main-backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:
+  postgres-data:
+  main-uploads:

@@ -1,0 +1,48 @@
+{
+  "name": "main-public-mixed",
+  "baseUrl": "${LOAD_TEST_BASE_URL}",
+  "requests": [
+    {
+      "name": "health",
+      "method": "GET",
+      "path": "/api/health",
+      "weight": 1
+    },
+    {
+      "name": "home-feed",
+      "method": "GET",
+      "path": "/api/feed/home",
+      "weight": 4
+    },
+    {
+      "name": "category-tree",
+      "method": "GET",
+      "path": "/api/categories/tree",
+      "weight": 2
+    },
+    {
+      "name": "global-commission",
+      "method": "GET",
+      "path": "/api/categories/commission/global",
+      "weight": 1
+    },
+    {
+      "name": "manual-commission-flag",
+      "method": "GET",
+      "path": "/api/categories/commission/manual-enabled",
+      "weight": 1
+    },
+    {
+      "name": "public-subscription-plans",
+      "method": "GET",
+      "path": "/api/subscription-plans",
+      "weight": 2
+    },
+    {
+      "name": "public-ads",
+      "method": "GET",
+      "path": "/api/ads/active-public",
+      "weight": 3
+    }
+  ]
+}
