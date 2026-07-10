@@ -28,6 +28,7 @@ import { getAdInteractionId, matchesAdIdentity } from "@/app/lib/ads/adIdentity"
 import { canShowCollectCoinButton as canShowAdCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
 import { resolveProductPromoteProduct } from "@/app/lib/ads/resolveProductPromoteProduct";
 import { filterAdsForViewer } from "@/app/lib/ads/adVisibility";
+import { getPublicProfileHref } from "@/app/lib/profileRoute";
 import { promotePhotoVideoAdAgain, promoteProductAdAgain } from "@/app/lib/ads/promoteAgain";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { RelativeTime } from "@/app/components/RelativeTime";
@@ -1360,7 +1361,7 @@ function renderDescription(text: string, router?: any): React.ReactNode[] {
           key={i}
           onClick={(e) => {
             e.stopPropagation();
-            if (router) router.push(`/dashboard/profile?user=${username}`);
+            if (router) router.push(getPublicProfileHref(username, null));
           }}
           className="text-emerald-400 font-bold cursor-pointer hover:underline"
         >
@@ -2301,10 +2302,11 @@ export default function ShopPage() {
   const navigateToProfile = (
     event: React.MouseEvent,
     profileId?: string | number | null,
+    username?: string | null,
   ) => {
     event.stopPropagation();
     if (!profileId) return;
-    router.push(`/dashboard/profile?id=${profileId}`);
+    router.push(getPublicProfileHref(username, profileId));
   };
 
   const getAdCoinEligibilityKey = (product: any) => String(product?.id || "");
@@ -2492,7 +2494,7 @@ export default function ShopPage() {
     if (activeTab === "my-products") {
       return {
         id: baseItem.buyer_id,
-        name: baseItem.buyer_username || "Buyer",
+        name: baseItem.buyer_full_name || baseItem.buyer_username || "Buyer",
         profile_picture: baseItem.profile_picture || null,
         roleLabel: "Buyer",
         orderNumber: baseItem.order_number,
@@ -2501,7 +2503,7 @@ export default function ShopPage() {
 
     return {
       id: baseItem.seller_id,
-      name: baseItem.seller_username || "Seller",
+      name: baseItem.seller_full_name || baseItem.seller_username || "Seller",
       profile_picture: baseItem.profile_picture || null,
       roleLabel: "Seller",
       orderNumber: baseItem.order_number,
@@ -4400,7 +4402,7 @@ export default function ShopPage() {
               onNotInterested={(id) => handleNotInterested(Number(id))}
               onPromoteAgain={handlePromoteAgain}
               onCollectCoin={(event) => handleAdCoinClick(event, product)}
-              onNavigateToProfile={(event) => navigateToProfile(event, product.user_id)}
+              onNavigateToProfile={(event) => navigateToProfile(event, product.user_id, product.username || product.owner_username || product.user?.username)}
               canShowCollectCoin={canShowCollectCoinButton}
               currentUser={currentUser}
             />
@@ -4444,7 +4446,7 @@ export default function ShopPage() {
             onNotInterested={(id) => handleNotInterested(Number(id))}
             onCollectCoin={(event, p) => handleAdCoinClick(event, p)}
             canShowCollectCoin={canShowCollectCoinButton}
-            onNavigateToProfile={(event, userId) => navigateToProfile(event, userId)}
+            onNavigateToProfile={(event, userId) => navigateToProfile(event, userId, product.username || product.owner_username || product.user?.username)}
             onEditProduct={handleEditProduct}
             onDeleteProduct={handleDeleteProduct}
             onPromoteProduct={handlePromoteProduct}
@@ -5382,6 +5384,7 @@ export default function ShopPage() {
                                         navigateToProfile(
                                           e,
                                           activeTab === "orders" ? item.seller_id : item.buyer_id,
+                                          activeTab === "orders" ? item.seller_username : item.buyer_username,
                                         )
                                       }
                                       className="cursor-pointer hover:text-blue-400 transition-colors"
@@ -5939,7 +5942,7 @@ export default function ShopPage() {
                       onNotInterested={(id) => handleNotInterested(Number(id))}
                       onPromoteAgain={handlePromoteAgain}
                       onCollectCoin={(event) => handleAdCoinClick(event, product)}
-                      onNavigateToProfile={(event) => navigateToProfile(event, product.user_id)}
+                      onNavigateToProfile={(event) => navigateToProfile(event, product.user_id, product.username || product.owner_username || product.user?.username)}
                       canShowCollectCoin={canShowCollectCoinButton}
                       currentUser={currentUser}
                     />
@@ -5987,7 +5990,7 @@ export default function ShopPage() {
                     onNotInterested={(id) => handleNotInterested(Number(id))}
                     onCollectCoin={(event, p) => handleAdCoinClick(event, p)}
                     canShowCollectCoin={canShowCollectCoinButton}
-                    onNavigateToProfile={(event, userId) => navigateToProfile(event, userId)}
+                    onNavigateToProfile={(event, userId) => navigateToProfile(event, userId, product.username || product.owner_username || product.user?.username)}
                     onEditProduct={handleEditProduct}
                     onDeleteProduct={handleDeleteProduct}
                     onPromoteProduct={handlePromoteProduct}
@@ -6062,7 +6065,7 @@ export default function ShopPage() {
           onReport={(ad) => setReportingProduct(ad)}
           onNotInterested={(id) => handleNotInterested(Number(id))}
           onCollectCoin={(event, ad) => handleAdCoinClick(event, ad)}
-          onNavigateToProfile={(event, ad) => navigateToProfile(event, ad.user_id)}
+          onNavigateToProfile={(event, ad) => navigateToProfile(event, ad.user_id, ad.username || ad.owner_username || ad.user?.username)}
           canShowCollectCoin={canShowCollectCoinButton}
           requiredWatchSeconds={requiredAdWatchSeconds}
           onVideoWatchEligible={(ad, watchedSeconds) => {
@@ -6079,7 +6082,7 @@ export default function ShopPage() {
           currentUser={currentUser}
           justSubscribedSellerId={justSubscribedSellerId}
           onClose={closeProductModal}
-          onNavigateToProfile={(event, product) => navigateToProfile(event, product.user_id)}
+          onNavigateToProfile={(event, product) => navigateToProfile(event, product.user_id, product.username || product.owner_username || product.user?.username)}
           showSubscribeForProduct={showSubscribeForProduct}
           getSellerId={getSellerId}
           onSubscribeSeller={handleSubscribeSeller}
@@ -6176,7 +6179,7 @@ export default function ShopPage() {
                         <button
                           type="button"
                           className="flex items-center gap-2.5 pointer-events-auto group/profile cursor-pointer"
-                          onClick={(e) => navigateToProfile(e, selectedProduct.user_id)}
+                          onClick={(e) => navigateToProfile(e, selectedProduct.user_id, selectedProduct.username || selectedProduct.owner_username || selectedProduct.user?.username)}
                         >
                           <div className="w-8 h-8 rounded-full bg-slate-800 border border-white/10 overflow-hidden relative shadow-lg group-hover/profile:border-blue-400/60 transition-all">
                             {getItemProfilePicture(selectedProduct) ? (

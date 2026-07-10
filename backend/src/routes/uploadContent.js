@@ -14,6 +14,15 @@ router.get(
     }),
     uploadContentController.getApprovedUploadContentsPublic
 );
+router.get(
+    '/public/reel/:shareCode',
+    createPublicResponseCache({
+        ttlMs: Number(process.env.PUBLIC_UPLOAD_CONTENT_CACHE_TTL_MS || 5000),
+        keyPrefix: 'upload-content-public-reel',
+        anonymousOnly: true,
+    }),
+    uploadContentController.getApprovedUploadContentPublicByShareCode
+);
 router.get('/:contentId/likes', uploadContentController.getLikes);
 router.get('/:contentId/comments', uploadContentController.getComments);
 router.get('/:contentId/shares', uploadContentController.getShares);
@@ -24,13 +33,16 @@ router.post('/:contentId/view', uploadContentController.logView);
 router.use(authMiddleware);
 
 router.get('/my', uploadContentController.getMyUploadContents);
+router.get('/:contentId/insights', uploadContentController.getContentInsights);
 router.post('/:contentId/like', uploadContentController.toggleLike);
 router.post('/:contentId/repost', uploadContentController.repostContent);
+router.delete('/:contentId/repost', uploadContentController.removeRepost);
 router.post('/:contentId/pin', uploadContentController.togglePin);
 router.post('/:contentId/report', uploadContentController.reportContent);
 router.post('/:contentId/purchase', uploadContentController.purchaseVaultContent);
 router.post('/:contentId/subscriptions/purchase', uploadContentController.purchaseCreatorSubscription);
 router.post('/:contentId/comments', uploadContentController.addComment);
+router.delete('/:contentId', uploadContentController.deleteContent);
 router.delete('/comments/:commentId', uploadContentController.deleteComment);
 router.post('/comments/:commentId/like', uploadContentController.likeComment);
 router.post('/comments/:commentId/dislike', uploadContentController.dislikeComment);

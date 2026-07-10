@@ -9,12 +9,14 @@ import { GoogCard, type WritePost } from "@/app/components/googs/GoogCard";
 import ShareModal from "@/app/components/ShareModal";
 import { getShareUrlForItem } from "@/app/lib/shareLinks";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
+import { getPublicProfileHref } from "@/app/lib/profileRoute";
 
 // Type moved to GoogCard.tsx
 
 export default function ShareGoogPage() {
     const params = useParams();
     const router = useRouter();
+    const activeShareUrl = typeof window !== "undefined" ? window.location.href : "";
     const postId = params?.postId as string;
     const [post, setPost] = useState<WritePost | null>(null);
     const [loading, setLoading] = useState(true);
@@ -121,7 +123,7 @@ export default function ShareGoogPage() {
                     {post && (
                         <GoogCard
                             post={post}
-                            onNavigateToProfile={() => router.push(`/profile/${post.user.username || post.user.id}`)}
+                            onNavigateToProfile={() => router.push(getPublicProfileHref(post.user.username, post.user.id))}
                             onToggleLike={() => {}}
                             onOpenSheet={openPostSheet}
                             onViewPost={() => {}}
@@ -137,7 +139,7 @@ export default function ShareGoogPage() {
                 <ShareModal
                     isOpen={showShareModal}
                     onClose={() => setShowShareModal(false)}
-                    shareUrl={getShareUrlForItem(post, "goog")}
+                    shareUrl={activeShareUrl || getShareUrlForItem(post, "goog")}
                     title={post.text}
                 />
             )}

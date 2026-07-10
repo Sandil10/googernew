@@ -1,7 +1,7 @@
 "use client";
 
-import CampaignEditor from "../components/CampaignEditor";
+import AdsCampaignEditor from "../components/AdsCampaignEditor";
 
 export default function ProductPromoteCampaignPage() {
-    return <CampaignEditor campaignType="Product Promote" />;
+    return <AdsCampaignEditor campaignType="Product Promote" />;
 }

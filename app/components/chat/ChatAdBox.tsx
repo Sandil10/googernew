@@ -12,6 +12,7 @@ import { useAdStore } from "@/app/lib/ads/adStore";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
 import { logSponsoredAdClick } from "@/app/lib/ads/adClickTracking";
 import { RelativeTime } from "@/app/components/RelativeTime";
+import { getPublicChatHref } from "@/app/lib/profileRoute";
 
 type ChatAdBoxProps = {
     ad: any;
@@ -105,9 +106,10 @@ export function ChatAdBox({
     );
     const canShowVideo = isVideo && !!videoSrc;
 
-    const advertiserName =
+    const advertiserUsername =
         normalizedAd?.username || normalizedAd?.owner_username ||
-        raw.username || raw.owner_username || "Advertiser";
+        raw.username || raw.owner_username || "";
+    const advertiserName = advertiserUsername || "Advertiser";
     const advertiserImage =
         normalizedAd?.profile_picture || raw.profile_picture || raw.owner_profile_picture || "";
     const displayTitle = String(normalizedAd?.title || raw.title || raw.caption || "").trim();
@@ -155,7 +157,7 @@ export function ChatAdBox({
                         event.stopPropagation();
                         if (!advertiserId) return;
                         trackAdClick("message");
-                        window.location.href = `/chats?user=${encodeURIComponent(String(advertiserId))}`;
+                        window.location.href = getPublicChatHref(advertiserUsername, advertiserId);
                     }}
                     className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] transition ${getSponsoredCtaClassName("Message", !!advertiserId)}`}
                     disabled={!advertiserId}

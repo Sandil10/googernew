@@ -23,50 +23,57 @@ const getGoogExpansionStage = (views, likes, comments, shares) => {
     if (viewCount < 200) {
         stage = '200';
         cap = 200;
-    } else if (likeCount < 25) {
+    } else if (likeCount < 50) {
         stage = 'followers';
         cap = 200;
-        minLikes = 25;
+        minLikes = 50;
         canExpand = false;
     } else if (viewCount < 500) {
         stage = '500';
         cap = 500;
-        minLikes = 25;
-    } else if (score < 60) {
+        minLikes = 50;
+    } else if (score < 60 && likeCount < 100) {
         stage = 'followers';
         cap = 500;
-        minLikes = 50;
+        minLikes = 100;
         canExpand = false;
     } else if (score < 100) {
         stage = '2000';
         cap = 2000;
-        minLikes = 50;
+        minLikes = 100;
     } else if (score <= 200) {
         stage = '10000';
         cap = 10000;
-        minLikes = 200;
+        minLikes = 250;
     } else {
-        stage = '100000';
-        cap = 100000;
+        stage = '50000';
+        cap = 50000;
         minLikes = 1000;
     }
 
-    if (viewCount >= 500 && likeCount >= 50 && cap < 2000) {
+    if (viewCount >= 500 && likeCount >= 100 && cap < 2000) {
         stage = '2000';
         cap = 2000;
-        minLikes = 50;
+        minLikes = 100;
         canExpand = true;
     }
-    if (viewCount >= 2000 && likeCount >= 200 && cap < 10000) {
+    if (viewCount >= 2000 && likeCount >= 250 && cap < 10000) {
         stage = '10000';
         cap = 10000;
-        minLikes = 200;
+        minLikes = 250;
         canExpand = true;
     }
-    if (viewCount >= 10000 && likeCount >= 1000 && cap < 100000) {
-        stage = '100000';
-        cap = 100000;
+    if (viewCount >= 10000 && likeCount >= 1000 && cap < 50000) {
+        stage = '50000';
+        cap = 50000;
         minLikes = 1000;
+        canExpand = true;
+    }
+    if (viewCount >= 50000 && likeCount >= 5000) {
+        const extraStage = Math.max(0, Math.floor((likeCount - 5000) / 5000));
+        stage = extraStage > 0 ? `unlimited-${extraStage + 1}` : 'unlimited';
+        cap = null;
+        minLikes = 5000 + (extraStage * 5000);
         canExpand = true;
     }
 

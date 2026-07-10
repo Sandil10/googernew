@@ -94,9 +94,13 @@ interface ShareModalProps {
     product?: any;
     initialView?: "share" | "resell";
     onCopyLink?: () => void | Promise<void>;
+    resellMode?: "resell" | "repost";
+    forceResellOnly?: boolean;
+    shareOnly?: boolean;
+    shareType?: "goog" | "ad" | "product" | "upload";
 }
 
-export default function ShareModal({ isOpen, onClose, title, url, shareUrl, description, product, initialView = "share", onCopyLink }: ShareModalProps) {
+export default function ShareModal({ isOpen, onClose, title, url, shareUrl, description, product, initialView = "share", onCopyLink, resellMode = "resell", forceResellOnly = false, shareOnly = false, shareType }: ShareModalProps) {
     const [copied, setCopied] = useState(false);
     const [view, setView] = useState<"share" | "resell">(initialView);
     const [resellId, setResellId] = useState("");
@@ -122,16 +126,46 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
     const isGoogShareItem =
         String(product?.id || "").startsWith("goog-") ||
         (!product?.is_sponsored && !product?.campaign_type && typeof product?.text === "string");
-    const canShowResellFlow = !!product && !isSponsoredAd && !isGoogShareItem;
+    const isUploadShareItem =
+        shareType === "upload" ||
+        String(product?.id || "").startsWith("upload-") ||
+        !!product?.content_type ||
+        !!product?.preview_url;
+    const effectiveShareType = shareType || (isUploadShareItem ? "upload" : undefined);
+    const canShowResellFlow = !shareOnly && !!product && !isSponsoredAd && !isGoogShareItem;
+    const resellFlowMode = resellMode === "repost" ? "repost" : "resell";
+    const flowActionLabel = isUploadShareItem ? "Share" : (resellFlowMode === "repost" ? "Repost" : "Resell");
+    const flowActionLabelLower = flowActionLabel.toLowerCase();
+    const flowEarnLabel = isUploadShareItem ? "Share & Earn" : (resellFlowMode === "repost" ? "Repost & Earn" : "Resell & Earn");
+    const flowTitle = isUploadShareItem ? "Share Link" : (resellFlowMode === "repost" ? "Repost Link" : "Resell Link");
+    const flowSubtitle = isUploadShareItem
+        ? "Share this content and earn when eligible viewers watch through your link"
+        : (resellFlowMode === "repost" ? "Create your repost link and earn on every sale" : "Earn commission on every sale");
+    const flowCommissionTitle = isUploadShareItem ? "Share Commission" : (resellFlowMode === "repost" ? "Repost Commission" : "Resell Commission");
+    const flowReadyLabel = isUploadShareItem ? "Share link ready" : (resellFlowMode === "repost" ? "Repost link ready" : "Resell link ready");
+    const flowGeneratedLabel = `Your ${flowActionLabel} Link`;
+    const flowCopyButtonLabel = `Copy ${flowActionLabel} Link`;
+    const flowSharePrompt = `Share your ${flowActionLabelLower} link`;
+    const flowGenerateButtonLabel = `Generate ${flowActionLabel}`;
+    const showShareView = shareOnly || !forceResellOnly;
+    const autoHandleRepostFlow = !shareOnly && forceResellOnly && resellFlowMode === "repost";
+
+    const buildResellLink = (identifier: string) => {
+        const trimmedId = String(identifier || "").trim();
+        if (!trimmedId) return "";
+        let baseUrl = displayUrl.split("?")[0];
+        if (baseUrl.endsWith("/")) baseUrl = baseUrl.slice(0, -1);
+        return `${baseUrl}/${encodeURIComponent(trimmedId)}`;
+    };
 
     // Animate in/out
     useEffect(() => {
         if (isOpen) {
             setTimeout(() => setIsVisible(true), 10);
-            const canonicalUrl = product ? getShareUrlForItem(product) : providedUrl;
+            const canonicalUrl = providedUrl || (product ? getShareUrlForItem(product, effectiveShareType) : "");
             const canonicalCode = String(canonicalUrl || "").split("/").filter(Boolean).pop() || "";
             setProductCode(canonicalCode);
-            setView(canShowResellFlow ? initialView : "share");
+            setView(shareOnly ? "share" : canShowResellFlow ? (forceResellOnly ? "resell" : initialView) : "share");
             setCopied(false);
             setResellId("");
             setResellLink("");
@@ -151,18 +185,24 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                         setResellOwnUsername(username);
                         setResellOwnUserId(userId);
                         const ownIdentifier = userId || username;
-                        if (ownIdentifier) setResellId(ownIdentifier);
+                        if (ownIdentifier) {
+                            setResellId(ownIdentifier);
+                            if (autoHandleRepostFlow) {
+                                setResellLink(buildResellLink(ownIdentifier));
+                                setResellGenerated(true);
+                            }
+                        }
                     })
                     .catch(() => {});
             }
         } else {
             setIsVisible(false);
         }
-    }, [isOpen, initialView, isProductPromote, isSponsoredAd, canShowResellFlow, product, title, providedUrl]);
+    }, [isOpen]);
 
     // Construct final share URL with requested public path format.
     const getShareLinks = () => {
-        const generatedShareUrl = product ? getShareUrlForItem(product) : "";
+        const generatedShareUrl = providedUrl || (product ? getShareUrlForItem(product, effectiveShareType) : "");
         if (generatedShareUrl) {
             return {
                 short: generatedShareUrl,
@@ -182,6 +222,8 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
     const displayUrl = links.short || links.product || providedUrl;
 
     const getResellCommission = (): string | null => {
+        const uploadAffiliateCommission = Number(product?.affiliate_commission ?? product?.affiliateCommission ?? 0);
+        if (uploadAffiliateCommission > 0) return String(uploadAffiliateCommission);
         if (!product?.commission_info) return null;
         try {
             const info = typeof product.commission_info === "string"
@@ -229,15 +271,8 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
     };
 
     const handleGenerateResellLink = () => {
-        const trimmedId = resellId.trim();
-        if (!trimmedId) return;
-
-        // Strip any existing query params if they got in, and ensure no trailing slashes
-        let baseUrl = displayUrl.split("?")[0];
-        if (baseUrl.endsWith("/")) baseUrl = baseUrl.slice(0, -1);
-        
-        // Final format: host/shop/ID/USER_ID
-        const finalLink = `${baseUrl}/${encodeURIComponent(trimmedId)}`;
+        const finalLink = buildResellLink(resellId);
+        if (!finalLink) return;
         setResellLink(finalLink);
         setResellGenerated(true);
     };
@@ -300,7 +335,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
             name: "WhatsApp",
             icon: <WhatsAppIcon />,
             bg: "bg-[#25D366]",
-            action: () => window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent("🛍️ " + title + "\n\nCheck it out & order here:\n" + resellLink)}`, "_blank"),
+            action: () => window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent((isUploadShareItem ? "🎬 " : "🛍️ ") + title + "\n\n" + (isUploadShareItem ? "Watch here:\n" : "Check it out & order here:\n") + resellLink)}`, "_blank"),
         },
         {
             name: "Facebook",
@@ -322,6 +357,10 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
         },
     ];
 
+    if (forceResellOnly && resellFlowMode === "repost") {
+        return null;
+    }
+
     return (
         <div
             className={`fixed inset-0 z-[300] flex items-end md:items-center justify-center md:p-4 transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] ${isVisible ? "bg-black/60 backdrop-blur-md opacity-100" : "bg-black/0 backdrop-blur-none opacity-0 pointer-events-none"}`}
@@ -339,7 +378,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
 
                 {/* ── Header ── */}
                 <div className="flex items-center gap-3 px-5 pt-4 pb-4 md:pt-5">
-                    {view === "resell" && (
+                    {view === "resell" && showShareView && (
                         <button
                             onClick={() => { setView("share"); setResellGenerated(false); }}
                             className="w-9 h-9 rounded-full bg-white/[0.06] hover:bg-white/10 flex items-center justify-center text-white/60 hover:text-white transition-all flex-shrink-0"
@@ -349,10 +388,10 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                     )}
                     <div className="flex-1 min-w-0">
                         <h3 className="text-white font-bold text-[15px] leading-tight">
-                            {view === "share" ? "Share" : "Resell Link"}
+                            {view === "share" ? "Share" : flowTitle}
                         </h3>
-                        <p className="text-[11px] text-white/30 mt-0.5 font-medium truncate">
-                            {view === "share" ? title : "Earn commission on every sale"}
+                        <p className="mt-0.5 text-[11px] font-medium leading-relaxed text-white/30">
+                            {view === "share" ? title : flowSubtitle}
                         </p>
                     </div>
                     <button
@@ -370,7 +409,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                 <div className="overflow-y-auto" style={{ maxHeight: "calc(92dvh - 90px)" }}>
 
                     {/* ════════════ VIEW 1 — Normal Share ════════════ */}
-                    {view === "share" && (
+                    {view === "share" && showShareView && (
                         <div className="p-5 space-y-5">
 
                             {/* Platform Grid */}
@@ -393,7 +432,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
 
                             {/* Single Product Link Bar */}
                             <div className="space-y-3">
-                                <p className="text-[9px] text-white/25 font-black uppercase tracking-[0.2em] px-1">{isSponsoredAd ? "Ad Link" : "Product Link"}</p>
+                                <p className="text-[9px] text-white/25 font-black uppercase tracking-[0.2em] px-1">{isSponsoredAd ? "Ad Link" : isUploadShareItem ? "Reel Link" : "Product Link"}</p>
                                 <div className="flex items-center gap-3 bg-white/[0.04] border border-white/[0.07] rounded-2xl p-3.5">
                                     <div className="flex-1 min-w-0">
                                         <p className="text-[11px] text-blue-400 truncate font-mono block">
@@ -419,11 +458,13 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                                         <ResellIcon />
                                     </div>
                                     <div className="flex-1 text-left min-w-0">
-                                        <p className="text-[13px] font-bold text-white">Resell & Earn</p>
+                                        <p className="text-[13px] font-bold text-white">{flowEarnLabel}</p>
                                         <p className="text-[10px] text-amber-400/60 font-medium mt-0.5">
                                             {resellCommission
-                                                ? `${resellCommission}% commission on every sale`
-                                                : "Create your personalized resell link"}
+                                                ? isUploadShareItem
+                                                    ? `${resellCommission}% commission when eligible viewers watch through your link`
+                                                    : `${resellCommission}% commission on every sale`
+                                                : `Create your personalized ${flowActionLabelLower} link`}
                                         </p>
                                     </div>
                                     <div className="text-white/20 group-hover:text-white/40 transition-colors flex-shrink-0">
@@ -434,7 +475,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
 
                             {canShowResellFlow && (
                                 <p className="text-center text-[10px] text-white/15 font-medium pb-2">
-                                    Googer Marketplace · Share & Earn
+                                    {isUploadShareItem ? "Googer Reel · Share & Earn" : "Googer Marketplace · Share & Earn"}
                                 </p>
                             )}
                         </div>
@@ -445,6 +486,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                         <div className="p-5 space-y-4 pb-6">
 
                             {/* Commission Badge */}
+                            {!autoHandleRepostFlow && (
                             <div className={`flex items-center gap-4 p-4 rounded-2xl border ${resellCommission ? "border-amber-500/20 bg-gradient-to-r from-amber-500/10 to-transparent" : "border-white/[0.06] bg-white/[0.03]"}`}>
                                 <div className={`px-4 h-16 min-w-[4rem] rounded-2xl flex items-center justify-center flex-shrink-0 ${resellCommission ? "bg-amber-500/15" : "bg-white/5"}`}>
                                     {resellCommission ? (
@@ -454,22 +496,28 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                                     )}
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                    <p className="text-[9px] text-white/25 font-semibold uppercase tracking-widest mb-1">Resell Commission</p>
+                                    <p className="text-[9px] text-white/25 font-semibold uppercase tracking-widest mb-1">{flowCommissionTitle}</p>
                                     {resellCommission ? (
                                         <>
-                                            <p className="text-white font-bold text-[15px] truncate">{resellCommission}% per sale</p>
-                                            <p className="text-[10px] text-amber-400/60 font-medium mt-0.5 leading-relaxed">Credited to your account on order completion</p>
+                                            <p className="text-white font-bold text-[15px] truncate">{isUploadShareItem ? `${resellCommission}% per eligible watch` : `${resellCommission}% per sale`}</p>
+                                            <p className="text-[10px] text-amber-400/60 font-medium mt-0.5 leading-relaxed">
+                                                {isUploadShareItem
+                                                    ? "Credited after eligible watch."
+                                                    : "Credited to your account on order completion"}
+                                            </p>
                                         </>
                                     ) : (
-                                        <p className="text-white/40 text-[13px] font-medium">Not set for this product</p>
+                                        <p className="text-white/40 text-[13px] font-medium">{isUploadShareItem ? "Not set for this content" : "Not set for this product"}</p>
                                     )}
                                 </div>
                             </div>
+                            )}
 
                             {/* ID Input */}
+                            {!autoHandleRepostFlow && (
                             <div className="space-y-2">
                                 <label className="block text-[10px] text-white/35 font-semibold uppercase tracking-widest px-1">
-                                    Enter User ID or Username
+                                    {isUploadShareItem ? "Enter your Googer ID or Username" : "Enter User ID or Username"}
                                 </label>
                                 <div className="flex flex-col xs:flex-row items-stretch xs:items-center gap-2.5">
                                     <div className="flex-1 relative">
@@ -503,7 +551,7 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                                         disabled={!resellId.trim() || !isOwnIdentifier(resellId)}
                                         className="w-full xs:w-auto flex-shrink-0 px-5 py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-black font-bold text-[12px] transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-amber-500 active:scale-95"
                                     >
-                                        Generate
+                                        {flowGenerateButtonLabel}
                                     </button>
                                 </div>
                                 {resellError ? (
@@ -512,11 +560,12 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                                         <p className="text-[11px] text-red-400 font-semibold leading-relaxed">{resellError}</p>
                                     </div>
                                 ) : (
-                                    <p className="text-[10px] text-white/20 px-1 font-medium leading-relaxed italic">
-                                        Only your own account identifier is allowed. Final Link will combine code <span className="text-amber-400 font-bold">{productCode}</span> with your ID.
-                                    </p>
+                                        <p className="text-[10px] text-white/20 px-1 font-medium leading-relaxed italic">
+                                            Only your own account identifier is allowed. Final link will combine code <span className="text-amber-400 font-bold">{productCode}</span> with your ID.
+                                        </p>
                                 )}
                             </div>
+                            )}
 
                             {/* Generated Link Box */}
                             {resellGenerated && resellLink && (
@@ -524,12 +573,12 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                                     {/* Success indicator */}
                                     <div className="flex items-center gap-2">
                                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                                        <span className="text-[10px] text-emerald-400 font-semibold uppercase tracking-widest">Resell link ready</span>
+                                        <span className="text-[10px] text-emerald-400 font-semibold uppercase tracking-widest">{flowReadyLabel}</span>
                                     </div>
 
                                     {/* Link Display */}
                                     <div className="bg-white/[0.04] border border-white/[0.08] rounded-2xl p-4 space-y-3">
-                                        <p className="text-[10px] text-white/25 font-semibold uppercase tracking-widest">Your Resell Link</p>
+                                        <p className="text-[10px] text-white/25 font-semibold uppercase tracking-widest">{flowGeneratedLabel}</p>
                                         <a href={resellLink} className="text-[12px] text-emerald-400 hover:text-emerald-300 break-all font-mono leading-relaxed bg-black/30 rounded-xl p-3 border border-white/[0.05] block cursor-pointer transition-colors">
                                             {resellLink}
                                         </a>
@@ -537,13 +586,13 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
                                             onClick={() => { void copyToClipboard(resellLink, setResellCopied); }}
                                             className={`w-full py-3 rounded-xl text-[12px] font-bold transition-all duration-200 active:scale-[0.97] ${resellCopied ? "bg-emerald-500 text-white" : "bg-amber-500 hover:bg-amber-400 text-black"}`}
                                         >
-                                            {resellCopied ? "✓ Copied to clipboard!" : "Copy Resell Link"}
+                                            {resellCopied ? "Copied to clipboard!" : flowCopyButtonLabel}
                                         </button>
                                     </div>
 
                                     {/* Quick share resell link */}
                                     <div>
-                                        <p className="text-[10px] text-white/20 font-semibold uppercase tracking-widest mb-3 px-1">Share your resell link</p>
+                                        <p className="text-[10px] text-white/20 font-semibold uppercase tracking-widest mb-3 px-1">{flowSharePrompt}</p>
                                         <div className="flex gap-3">
                                             {resellSharePlatforms.map((p) => (
                                                 <button

@@ -15,10 +15,12 @@ import { AdInteractionType } from "@/app/components/ads/AdInteractionButton";
 import { useAdActions } from "@/app/lib/ads/useAdActions";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { useAdStore } from "@/app/lib/ads/adStore";
+import { getPublicProfileHref } from "@/app/lib/profileRoute";
 
 export default function ShareAdPage() {
     const params = useParams();
     const router = useRouter();
+    const activeShareUrl = typeof window !== "undefined" ? window.location.href : "";
     const adId = params?.adId as string;
     const [ad, setAd] = useState<any>(null);
     const [loading, setLoading] = useState(true);
@@ -186,7 +188,7 @@ export default function ShareAdPage() {
                         onReport={() => {}}
                         onNotInterested={() => {}}
                         onCollectCoin={(e) => adActions.handleAdCoinClick(e)}
-                        onNavigateToProfile={() => router.push(`/profile/${ad.user?.username || ad.owner_user_id}`)}
+                        onNavigateToProfile={() => router.push(getPublicProfileHref(ad.user?.username || ad.owner_username || ad.username, ad.owner_user_id || ad.user_id))}
                         canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                     />
                 </div>
@@ -212,7 +214,7 @@ export default function ShareAdPage() {
                 <ShareModal
                     isOpen={showShareModal}
                     onClose={() => setShowShareModal(false)}
-                    shareUrl={getShareUrlForItem(ad, "ad")}
+                    shareUrl={activeShareUrl || getShareUrlForItem(ad, "ad")}
                     title={ad.title}
                 />
             )}

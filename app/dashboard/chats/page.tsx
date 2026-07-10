@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
 import { authService } from "@/services/authService";
 import IonIcon from "@/app/components/IonIcon";
@@ -23,6 +23,7 @@ import { UserVerifiedBadge } from "@/app/components/VerifiedBadge";
 import { getShareUrlForItem } from "@/app/lib/shareLinks";
 import { useThemePreference } from "@/app/lib/themeMode";
 import { getUserDisplayName } from "@/app/lib/userDisplay";
+import { getPublicProfileHref } from "@/app/lib/profileRoute";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { resolveProductPromoteProduct } from "@/app/lib/ads/resolveProductPromoteProduct";
 import { filterAdsForViewer } from "@/app/lib/ads/adVisibility";
@@ -350,6 +351,7 @@ const toRtcSessionDescription = (payload: any): RTCSessionDescriptionInit => ({
 
 export default function ChatsPage() {
     const router = useRouter();
+    const pathname = usePathname();
     const searchParams = useSearchParams();
     const scopedProductStatusId = String(searchParams?.get("productStatusId") || "").trim() || null;
     const scopedTopupRequestId = Number(searchParams?.get("topupRequestId") || 0) || null;
@@ -1321,7 +1323,10 @@ export default function ChatsPage() {
 
     useEffect(() => {
         if (!currentUser?.id || typeof window === "undefined") return;
-        const queryUserId = String(searchParams?.get("user") || "");
+        const pathUsername = pathname?.startsWith("/chats/")
+            ? decodeURIComponent(pathname.slice("/chats/".length).split("/")[0] || "").replace(/^@+/, "").trim()
+            : "";
+        const queryUserId = String(searchParams?.get("user") || pathUsername || "");
         if (queryUserId) return;
 
         const listCacheKey = getChatListCacheKey(currentUser.id);
@@ -1368,7 +1373,7 @@ export default function ChatsPage() {
         } catch {
             // Cache restore is an optimization only; live refresh below remains source of truth.
         }
-    }, [currentUser?.id, searchParams]);
+    }, [currentUser?.id, pathname, searchParams]);
 
     useEffect(() => {
         if (!currentUser?.id || typeof window === "undefined") return;
@@ -1392,53 +1397,90 @@ export default function ChatsPage() {
     useEffect(() => {
         if (!currentUser?.id) return;
 
-        const queryUserId = String(searchParams?.get("user") || "");
+        const pathUsername = pathname?.startsWith("/chats/")
+            ? decodeURIComponent(pathname.slice("/chats/".length).split("/")[0] || "").replace(/^@+/, "").trim()
+            : "";
+        const queryParamUser = String(searchParams?.get("user") || "");
+        const queryTarget = String(queryParamUser || pathUsername || "");
+        const shouldResolveAsUsername = !!pathUsername && !queryParamUser;
         const lastOpenKey = getLastOpenChatKey(currentUser.id);
         const lastOpenId = lastOpenKey && typeof window !== "undefined" ? String(window.localStorage.getItem(lastOpenKey) || "") : "";
-        const initialPreferredParticipantId = String(preferredParticipantIdRef.current || queryUserId || "");
-        const queryParticipant = searchParams?.get("user")
-            ? normalizeChatParticipant({
-                id: searchParams.get("user"),
-                name: searchParams.get("name") || "User",
-                profile_picture: null,
-                roleLabel: "User",
-                username: null,
-            })
-            : null;
-        if (initialPreferredParticipantId) {
-            preferredParticipantIdRef.current = initialPreferredParticipantId;
-        }
-        if (lastOpenId && !queryUserId && !preferredParticipantIdRef.current) {
+        if (lastOpenId && !queryTarget && !preferredParticipantIdRef.current) {
             preferredConversationKeyRef.current = String(lastOpenId);
-        } else if (queryUserId) {
+        } else if (queryTarget) {
             preferredConversationKeyRef.current = "";
         }
 
         const mobileViewKey = typeof window !== "undefined" ? getChatMobileViewKey(currentUser.id) : null;
-        const shouldOpenMobileChat = !!queryUserId || (!!mobileViewKey && window.localStorage.getItem(mobileViewKey) === "chat");
+        const shouldOpenMobileChat = !!queryTarget || (!!mobileViewKey && window.localStorage.getItem(mobileViewKey) === "chat");
 
-        // Initial load restores data, but only opens mobile chat if the user was inside a chat.
-        refreshConversations(initialPreferredParticipantId, queryParticipant, shouldOpenMobileChat, true);
+        let cancelled = false;
+        const loadInitialConversation = async () => {
+            let resolvedTargetId = queryTarget;
+            let queryParticipant = queryTarget
+                ? normalizeChatParticipant({
+                    id: queryTarget,
+                    name: searchParams?.get("name") || "User",
+                    profile_picture: null,
+                    roleLabel: "User",
+                    username: pathUsername || null,
+                })
+                : null;
+
+            if (queryTarget) {
+                try {
+                    const profile = !shouldResolveAsUsername && /^\d+$/.test(queryTarget)
+                        ? await authService.getUserProfile(queryTarget)
+                        : await authService.getUserByUsername(queryTarget);
+                    if (!cancelled && profile?.id) {
+                        resolvedTargetId = String(profile.id);
+                        queryParticipant = normalizeChatParticipant({
+                            ...profile,
+                            id: profile.id,
+                            name: profile.full_name || profile.username || queryParticipant?.name || "User",
+                            username: profile.username || null,
+                            profile_picture: profile.profile_picture || null,
+                            roleLabel: "User",
+                        });
+                    }
+                } catch {
+                    // Keep the lightweight fallback participant if profile lookup fails.
+                }
+            }
+
+            const initialPreferredParticipantId = String(preferredParticipantIdRef.current || resolvedTargetId || "");
+            if (initialPreferredParticipantId) {
+                preferredParticipantIdRef.current = initialPreferredParticipantId;
+            }
+
+            if (!cancelled) {
+                // Initial load restores data, but only opens mobile chat if the user was inside a chat.
+                await refreshConversations(initialPreferredParticipantId, queryParticipant, shouldOpenMobileChat, true);
+            }
+        };
+
+        void loadInitialConversation();
         const fallbackRefreshId = window.setInterval(() => {
             if (typeof document !== "undefined" && document.hidden) return;
-            refreshConversations(preferredParticipantIdRef.current || searchParams?.get("user") || "", null, false);
+            refreshConversations(preferredParticipantIdRef.current || queryTarget || "", null, false);
         }, 2000);
         const handleVisibilityChange = () => {
             // Skip background poll when tab is hidden — saves connections and prevents stale
             // state racing with active-tab interactions (Instagram/Facebook pattern)
             if (typeof document !== "undefined" && document.hidden) return;
             // Background polling: never force-open mobile chat
-            refreshConversations(preferredParticipantIdRef.current || searchParams?.get("user") || "", null, false);
+            refreshConversations(preferredParticipantIdRef.current || queryTarget || "", null, false);
         };
         window.addEventListener("focus", handleVisibilityChange);
         document.addEventListener("visibilitychange", handleVisibilityChange);
 
         return () => {
+            cancelled = true;
             window.clearInterval(fallbackRefreshId);
             window.removeEventListener("focus", handleVisibilityChange);
             document.removeEventListener("visibilitychange", handleVisibilityChange);
         };
-    }, [currentUser?.id, searchParams]);
+    }, [currentUser?.id, pathname, searchParams]);
 
     useEffect(() => {
         const trimmedQuery = searchQuery.trim();
@@ -1944,7 +1986,11 @@ export default function ChatsPage() {
         const socket = io(socketUrl, {
             path: "/socket.io",
             auth: { token },
-            transports: ["websocket", "polling"],
+            transports: ["websocket"],
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            reconnectionAttempts: 5,
         });
         chatSocketRef.current = socket;
 
@@ -1961,10 +2007,12 @@ export default function ChatsPage() {
         socket.on("chat:message_status", mergeMessageStatus);
         socket.on("chat:message_deleted", mergeDeletedMessage);
         socket.on("chat:presence", mergePresenceUpdate);
+        const typingTimeoutRef = { current: null as any };
         socket.on("chat:typing", (payload: any) => {
             if (String(payload?.sender_id || "") === String(activeConversationRef.current?.id || "")) {
                 setParticipantTyping(!!payload.is_typing);
-                window.setTimeout(() => setParticipantTyping(false), 3500);
+                if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                typingTimeoutRef.current = window.setTimeout(() => setParticipantTyping(false), 3500);
             }
         });
 
@@ -1976,6 +2024,8 @@ export default function ChatsPage() {
             socket.off("chat:message_status", mergeMessageStatus);
             socket.off("chat:message_deleted", mergeDeletedMessage);
             socket.off("chat:presence", mergePresenceUpdate);
+            socket.off("chat:typing");
+            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
             socket.disconnect();
             if (chatSocketRef.current === socket) chatSocketRef.current = null;
         };
@@ -2116,8 +2166,9 @@ export default function ChatsPage() {
     const handleChatAdNavigateToProfile = useCallback((event: React.MouseEvent, ad: any) => {
         event.stopPropagation();
         const userId = ad?.userId || ad?.user_id || ad?.raw?.user_id || ad?.raw?.userId;
+        const username = ad?.username || ad?.owner_username || ad?.raw?.username || ad?.raw?.owner_username || ad?.raw?.user?.username;
         if (userId && typeof window !== "undefined") {
-            window.location.href = `/dashboard/profile?id=${encodeURIComponent(userId)}`;
+            window.location.href = getPublicProfileHref(username, userId);
         }
     }, []);
 
@@ -2453,7 +2504,7 @@ export default function ChatsPage() {
 
     const openActiveConversationProfile = () => {
         if (!activeConversation?.id) return;
-        router.push(`/dashboard/profile?id=${encodeURIComponent(activeConversation.id)}`);
+        router.push(getPublicProfileHref(activeConversation?.username, activeConversation.id));
     };
 
     const getCopyableMessageText = (message: any) => {
@@ -5435,14 +5486,14 @@ export default function ChatsPage() {
                                                                     >
                                                                         {videoThumb ? (
                                                                             <div className="relative h-10 w-16 shrink-0 overflow-hidden rounded-lg bg-black/30">
-                                                                                <Image src={videoThumb} alt={host} fill className="object-cover" unoptimized />
+                                                                                <Image src={videoThumb} alt={host} fill className="object-cover" loading="lazy" quality={50} />
                                                                                 <span className="absolute inset-0 flex items-center justify-center">
                                                                                     <svg width="14" height="14" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="white"/></svg>
                                                                                 </span>
                                                                             </div>
                                                                         ) : (
                                                                             <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-white/5">
-                                                                                <Image src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`} alt={host} width={16} height={16} unoptimized />
+                                                                                <Image src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`} alt={host} width={16} height={16} loading="lazy" quality={50} />
                                                                             </div>
                                                                         )}
                                                                         <div className="min-w-0 flex-1">

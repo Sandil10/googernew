@@ -2,7 +2,8 @@
 
 import Image from "next/image";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { flushSync } from "react-dom";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { authService } from "@/services/authService";
 import { marketService } from "@/services/marketService";
 import { googService } from "@/services/googService";
@@ -13,8 +14,11 @@ import { GoogCard, type WritePost } from "@/app/components/googs/GoogCard";
 import IonIcon from "@/app/components/IonIcon";
 import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
+import { InteractionButton as FeedInteractionButton } from "@/app/components/InteractionButton";
 import UploadContentMedia from "@/app/components/UploadContentMedia";
 import UploadContentWatchModal from "@/app/components/UploadContentWatchModal";
+import UploadContentInsightsModal from "@/app/components/upload-content/UploadContentInsightsModal";
+import UploadContentFeedCard from "@/app/components/upload-content/UploadContentFeedCard";
 
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { formatGoogerId, getUserDisplayName } from "@/app/lib/userDisplay";
@@ -30,10 +34,11 @@ import { promotePhotoVideoAdAgain, promoteProductAdAgain } from "@/app/lib/ads/p
 import { matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondViewModal";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
-import { getAdPreviewImage, getSponsoredAdImages } from "@/app/components/ads/adHelpers";
+import { getAdPreviewImage, getSponsoredAdImages, getSponsoredLinkPreviewType } from "@/app/components/ads/adHelpers";
 import { subscriptionService } from "@/services/subscriptionService";
 import { useThemePreference } from "@/app/lib/themeMode";
 import { addTopbarNotification } from "@/app/lib/topbarNotifications";
+import { getPublicChatHref, getPublicProfileHref } from "@/app/lib/profileRoute";
 import { formatRelativeTime } from "@/app/lib/relativeTime";
 
 type UserRecord = {
@@ -220,6 +225,21 @@ function isUploadSupportAccount(userType?: string | null) {
     return normalized === "super_admin" || normalized === "superadmin";
 }
 
+function isUploadOwnedByViewer(item: UploadContentRecord, viewer: any) {
+    const viewerIds = new Set(
+        [viewer?.id, viewer?.user_id, viewer?.owner_user_id]
+            .map((value) => String(value ?? "").trim())
+            .filter(Boolean),
+    );
+
+    if (!viewerIds.size) return false;
+
+    return [item.user_id, item.owner_user_id]
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean)
+        .some((value) => viewerIds.has(value));
+}
+
 function getUploadContentStatusMeta(status?: UploadContentRecord["status"]) {
     if (status === "Approved") {
         return {
@@ -245,285 +265,6 @@ function getUploadContentStatusMeta(status?: UploadContentRecord["status"]) {
     };
 }
 
-function ProfileUploadContentCard({
-    item,
-    onToggleLike,
-    onOpenSheet,
-    onShare,
-    onLogView,
-    onEdit,
-    showStatusMeta = true,
-}: {
-    item: UploadContentRecord;
-    onToggleLike: (item: UploadContentRecord) => void;
-    onOpenSheet: (type: SheetType, item: UploadContentRecord) => void;
-    onShare: (item: UploadContentRecord) => void;
-    onLogView: (item: UploadContentRecord) => void;
-    onEdit?: (item: UploadContentRecord) => void;
-    showStatusMeta?: boolean;
-}) {
-    const statusMeta = getUploadContentStatusMeta(item.status);
-    const canEditUnderReview = item.status === "Pending Approval";
-    const media = item.media_preview || item.media_gallery?.[0] || item.thumbnail_url;
-    const showBlur = item.content_access_mode === "blurred";
-    const isVideo = String(item.media_type || "").toLowerCase().includes("video");
-    const isFlashContent = item.content_type === "flash";
-    const isLink = String(item.media_type || "").toLowerCase().includes("link");
-    const isPlayableFlash = isFlashContent && (isVideo || isLink);
-    const watchSource = item.external_link && (isVideo || isLink) ? item.external_link : media || "";
-    const contentId = item.contentId || item.content_id || String(item.id);
-    const watchTarget = item.show_link_on_home && item.external_link ? normalizeUrl(item.external_link) : media;
-    const createdLabel = item.created_at ? formatRelativeTime(item.created_at) : "Now";
-    const isSupportAccount = isUploadSupportAccount(item.user_type);
-    const creatorName = isSupportAccount ? "Googer Support" : (item.username || item.full_name || "User");
-    const hasLegacySupportAvatar = /ui-avatars\.com\/api\/\?name=G(?:&|$)/i.test(String(item.profile_picture || ""));
-    const profileImage = String(!isSupportAccount && hasLegacySupportAvatar ? "" : (item.profile_picture || "")).trim();
-    const likesCount = Number(item.likes_count ?? item.likeCount ?? 0);
-    const viewsCount = Number(item.views_count ?? item.viewCount ?? 0);
-    const commentsCount = Number(item.comments_count ?? item.commentCount ?? 0);
-    const sharesCount = Number(item.shares_count ?? item.shareCount ?? 0);
-    const [showFullVideo, setShowFullVideo] = useState(false);
-    const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
-    useEffect(() => {
-        setMediaAspectRatio(null);
-    }, [item.id, media]);
-    const mediaFrameStyle = mediaAspectRatio
-        ? { aspectRatio: String(Math.min(1.78, Math.max(0.56, mediaAspectRatio))) }
-        : undefined;
-    const blurredPreviewMedia =
-        item.thumbnail_url
-        || (isLink ? getProfileUploadLinkPreview(item.external_link) : "")
-        || item.media_preview
-        || item.media_gallery?.[0]
-        || "";
-
-    const handleWatchNow = (event?: React.MouseEvent<HTMLButtonElement>) => {
-        event?.preventDefault();
-        event?.stopPropagation();
-        onLogView(item);
-        if ((isVideo || isPlayableFlash) && watchSource) {
-            setShowFullVideo(true);
-            return;
-        }
-        if (watchTarget) window.open(watchTarget, "_blank", "noopener,noreferrer");
-    };
-
-    return (
-        <>
-        <article className="mx-auto w-full max-w-[360px] overflow-hidden rounded-[1.7rem] border border-white/10 bg-[#171411] shadow-[0_18px_55px_rgba(0,0,0,0.28)]">
-            <div className="flex items-center justify-between gap-2 p-3">
-                <div className="flex min-w-0 items-center gap-2">
-                    <div className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/10 bg-blue-600 text-[10px] font-black text-white">
-                        {profileImage ? (
-                            <Image src={profileImage} alt={creatorName} fill sizes="32px" className="object-cover" unoptimized />
-                        ) : (
-                            <IonIcon name="person" className="text-sm" />
-                        )}
-                    </div>
-                    <div className="min-w-0">
-                        <p className="truncate text-[11px] font-black text-white">{creatorName}</p>
-                        <p className="mt-1 text-[9px] font-bold tracking-[0.18em] text-white/42">{createdLabel}</p>
-                    </div>
-                </div>
-                {canEditUnderReview && onEdit ? (
-                    <button
-                        type="button"
-                        onClick={() => onEdit(item)}
-                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-white/[0.06] px-3 text-[9px] font-black uppercase tracking-[0.12em] text-white/75 transition hover:bg-white/[0.1] hover:text-white"
-                    >
-                        <IonIcon name="create-outline" className="text-sm" />
-                        Edit
-                    </button>
-                ) : null}
-            </div>
-            <div className="px-3">
-            <div className="relative aspect-square overflow-hidden rounded-[1.6rem] bg-black" style={mediaFrameStyle}>
-                <UploadContentMedia
-                    mediaType={item.media_type}
-                    mediaPreview={media || blurredPreviewMedia}
-                    mediaGallery={item.media_gallery}
-                    thumbnailUrl={item.thumbnail_url}
-                    previewMode={item.preview_mode}
-                    previewUrl={item.preview_url}
-                    alt={item.description || item.topic || "Upload content"}
-                    blurred={showBlur}
-                    onAspectRatioChange={setMediaAspectRatio}
-                />
-                <div className="absolute left-3 top-3 rounded-full border border-white/15 bg-black/50 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">
-                    {item.topic || "Content"}
-                </div>
-                {showStatusMeta ? (
-                    <div className={`absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] ${statusMeta.className}`}>
-                        <IonIcon name={statusMeta.icon} className="text-sm" />
-                        {statusMeta.label}
-                    </div>
-                ) : null}
-                {showBlur && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-[linear-gradient(180deg,rgba(0,0,0,0.18),rgba(0,0,0,0.56))] px-6 text-center">
-                        <div className="flex h-12 w-12 items-center justify-center rounded-full border border-white/15 bg-black/45 text-white shadow-[0_18px_40px_rgba(0,0,0,0.35)]">
-                            <IonIcon name="eye-off-outline" className="text-[24px]" />
-                        </div>
-                        <p className="mt-3 text-[15px] font-black text-white">Blurred Content</p>
-                        <p className="mt-2 max-w-[220px] text-[11px] font-semibold leading-5 text-white/78">
-                            Preview hidden. Open to watch the full content.
-                        </p>
-                        {watchTarget && (
-                            <button
-                                type="button"
-                                onClick={handleWatchNow}
-                                className="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-full border border-white/15 bg-white px-5 text-[10px] font-black uppercase tracking-[0.18em] text-black transition hover:bg-white/90"
-                            >
-                                <IonIcon name="eye-outline" className="text-[13px]" />
-                                Watch Now
-                            </button>
-                        )}
-                    </div>
-                )}
-                {!showBlur && (isVideo || isPlayableFlash) && watchSource && (
-                    <button type="button" onClick={handleWatchNow} className="absolute bottom-4 left-1/2 z-30 inline-flex h-9 -translate-x-1/2 items-center justify-center gap-2 rounded-full border border-white/20 bg-black/65 px-4 text-[9px] font-black uppercase tracking-[0.14em] text-white backdrop-blur-md transition hover:bg-black/80">
-                        <IonIcon name="play" className="text-xs" /> Watch Now
-                    </button>
-                )}
-                <div className="absolute bottom-3 right-3 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[11px] font-black text-emerald-300">
-                    +{Number(item.affiliate_commission || 0)}%
-                </div>
-            </div>
-            </div>
-            <div className="space-y-3 px-4 pb-4 pt-3">
-                <div>
-                    <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/35">Upload Content #{contentId}</p>
-                    <p className="mt-2 line-clamp-2 text-[12px] font-semibold leading-5 text-white">{item.description || "Uploaded content"}</p>
-                </div>
-                <div className="flex items-end justify-between gap-3">
-                    <div>
-                        <div className="text-[10px] font-black uppercase tracking-[0.14em] text-white/38">R</div>
-                        <div className="text-[19px] font-black leading-none text-white">{Number(item.price || 0).toLocaleString()}</div>
-                    </div>
-                    <div className="text-right">
-                        <div className="text-[9px] font-black uppercase tracking-[0.14em] text-white/35">Share Commission</div>
-                        <div className="mt-1 text-[12px] font-black text-white">{Number(item.affiliate_commission || 0)}%</div>
-                    </div>
-                </div>
-                <div className="flex items-center justify-between border-t border-white/8 pt-3 text-white/78">
-                    <InteractionButton
-                        type="likes"
-                        icon="heart-outline"
-                        activeIcon="heart"
-                        count={formatUploadMetric(likesCount)}
-                        activeColor="text-white"
-                        isActive={!!item.user_liked}
-                        onSingleClick={() => onToggleLike(item)}
-                        onLongReach={() => onOpenSheet("likes", item)}
-                        iconSize="text-[16px]"
-                    />
-                    <InteractionButton
-                        type="views"
-                        icon="eye-outline"
-                        activeIcon="eye"
-                        count={formatUploadMetric(viewsCount)}
-                        activeColor="text-white"
-                        onSingleClick={() => {
-                            onLogView(item);
-                            onOpenSheet("views", item);
-                        }}
-                        onLongReach={() => onOpenSheet("views", item)}
-                        iconSize="text-[16px]"
-                    />
-                    <InteractionButton
-                        type="comments"
-                        icon="chatbubble-outline"
-                        activeIcon="chatbubble"
-                        count={formatUploadMetric(commentsCount)}
-                        activeColor="text-white"
-                        onSingleClick={() => onOpenSheet("comments", item)}
-                        onLongReach={() => onOpenSheet("comments", item)}
-                        iconSize="text-[16px]"
-                    />
-                    <InteractionButton
-                        type="shares"
-                        icon="share-social-outline"
-                        activeIcon="share-social"
-                        count={formatUploadMetric(sharesCount)}
-                        activeColor="text-emerald-300"
-                        onSingleClick={() => onShare(item)}
-                        onLongReach={() => onOpenSheet("shares", item)}
-                        iconSize="text-[15px]"
-                    />
-                </div>
-                {showStatusMeta ? (
-                    <p className="rounded-2xl border border-white/8 bg-white/[0.035] px-3 py-2 text-[10px] font-semibold leading-5 text-white/55">
-                        {item.status === "Rejected" && item.rejection_reason ? item.rejection_reason : statusMeta.helper}
-                    </p>
-                ) : null}
-            </div>
-        </article>
-        <UploadContentWatchModal
-            open={showFullVideo}
-            source={watchSource}
-            poster={item.thumbnail_url}
-            title={item.description || item.topic || "Full Content"}
-            lockedPrice={isFlashContent ? Number(item.price || 0) : null}
-            onClose={() => setShowFullVideo(false)}
-            actionRail={(
-                <>
-                    <InteractionButton
-                        type="likes"
-                        icon="heart-outline"
-                        activeIcon="heart"
-                        count={formatUploadMetric(likesCount)}
-                        activeColor="text-white"
-                        isActive={!!item.user_liked}
-                        onSingleClick={() => onToggleLike(item)}
-                        onLongReach={() => onOpenSheet("likes", item)}
-                        orientation="vertical"
-                        iconWrapperClassName="flex h-8 w-8 items-center justify-center rounded-full border border-white/25 bg-zinc-700/35 shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-md"
-                        countClassName="drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)]"
-                    />
-                    <InteractionButton
-                        type="views"
-                        icon="eye-outline"
-                        activeIcon="eye"
-                        count={formatUploadMetric(viewsCount)}
-                        activeColor="text-white"
-                        onSingleClick={() => {
-                            onLogView(item);
-                            onOpenSheet("views", item);
-                        }}
-                        onLongReach={() => onOpenSheet("views", item)}
-                        orientation="vertical"
-                        iconWrapperClassName="flex h-8 w-8 items-center justify-center rounded-full border border-white/25 bg-zinc-700/35 shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-md"
-                        countClassName="drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)]"
-                    />
-                    <InteractionButton
-                        type="comments"
-                        icon="chatbubble-outline"
-                        activeIcon="chatbubble"
-                        count={formatUploadMetric(commentsCount)}
-                        activeColor="text-white"
-                        onSingleClick={() => onOpenSheet("comments", item)}
-                        onLongReach={() => onOpenSheet("comments", item)}
-                        orientation="vertical"
-                        iconWrapperClassName="flex h-8 w-8 items-center justify-center rounded-full border border-white/25 bg-zinc-700/35 shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-md"
-                        countClassName="drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)]"
-                    />
-                    <InteractionButton
-                        type="shares"
-                        icon="share-social-outline"
-                        activeIcon="share-social"
-                        count={formatUploadMetric(sharesCount)}
-                        activeColor="text-emerald-300"
-                        onSingleClick={() => onShare(item)}
-                        onLongReach={() => onOpenSheet("shares", item)}
-                        orientation="vertical"
-                        iconWrapperClassName="flex h-8 w-8 items-center justify-center rounded-full border border-white/25 bg-zinc-700/35 shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-md"
-                        countClassName="drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)]"
-                    />
-                </>
-            )}
-        />
-        </>
-    );
-}
 
 const InteractionButton = memo(({
     icon,
@@ -537,6 +278,8 @@ const InteractionButton = memo(({
     orientation = "horizontal",
     iconWrapperClassName = "",
     countClassName = "",
+    iconSize = "text-[21px]",
+    countSize = "text-[7px] md:text-[9px]",
 }: any) => {
     const timerRef = useRef<any>(null);
     const longPressedRef = useRef(false);
@@ -583,9 +326,9 @@ const InteractionButton = memo(({
             aria-pressed={isLikeButton ? !!isActive : undefined}
         >
             <span className={iconWrapperClassName}>
-                <IonIcon key={iconRenderKey} name={currentIcon} className={`shrink-0 text-[21px] ${colorClass}`} style={iconColorStyle} />
+                <IonIcon key={iconRenderKey} name={currentIcon} className={`shrink-0 ${iconSize} ${colorClass}`} style={iconColorStyle} />
             </span>
-            {hasCount && <span className={`shrink-0 text-[7px] font-black tracking-tighter md:text-[9px] ${countClassName}`}>{count}</span>}
+            {hasCount && <span className={`shrink-0 ${countSize} font-black tracking-tighter ${countClassName}`}>{count}</span>}
         </button>
     );
 });
@@ -593,11 +336,30 @@ const InteractionButton = memo(({
 InteractionButton.displayName = "InteractionButton";
 
 export default function ProfilePage() {
+    const uploadLikeLocksRef = useRef(new Set<string>());
+    const googLikeLocksRef = useRef(new Set<string>());
     const router = useRouter();
+    const params = useParams();
+    const pathname = usePathname();
     const searchParams = useSearchParams();
     const { preference: themePreference, resolvedTheme, setPreference, toggleManualTheme } = useThemePreference();
+    const routeUserParam =
+        typeof params?.user === "string"
+            ? params.user
+            : typeof (params as Record<string, unknown> | undefined)?.username === "string"
+                ? String((params as Record<string, unknown>).username)
+                : null;
+    const pathUserParam = pathname?.startsWith("/@")
+        ? pathname.slice(2).split("/")[0]?.trim() || null
+        : null;
+    const normalizedRouteUserParam = routeUserParam ? routeUserParam.replace(/^@+/, "").trim() : null;
+    const normalizedPathUserParam = pathUserParam ? decodeURIComponent(pathUserParam).replace(/^@+/, "").trim() : null;
     const profileId = searchParams ? searchParams.get("id") : null;
-    const profileUser = searchParams ? searchParams.get("user") : null;
+    const searchProfileHandle = searchParams ? searchParams.get("handle") : null;
+    const searchProfileUser = searchParams ? searchParams.get("user") : null;
+    const normalizedSearchProfileHandle = searchProfileHandle ? searchProfileHandle.replace(/^@+/, "").trim() : null;
+    const profileUser = normalizedPathUserParam || normalizedRouteUserParam || normalizedSearchProfileHandle || searchProfileUser;
+    const shouldTreatProfileUserAsId = !!searchProfileUser && !normalizedSearchProfileHandle && !normalizedPathUserParam && !normalizedRouteUserParam && /^\d+$/.test(profileUser || "");
     const profileShareCode = searchParams ? searchParams.get("share") : null;
     const requestedTab = searchParams ? searchParams.get("tab") : null;
     const requestedModal = searchParams ? searchParams.get("modal") : null;
@@ -622,6 +384,8 @@ export default function ProfilePage() {
     const [googs, setGoogs] = useState<WritePost[]>([]);
     const [profileAds, setProfileAds] = useState<any[]>([]);
     const [uploadContents, setUploadContents] = useState<UploadContentRecord[]>([]);
+    const [flashContentAutoPlay, setFlashContentAutoPlay] = useState(false);
+    const [flashPreviewSeconds, setFlashPreviewSeconds] = useState(5);
     const syncAds = useAdStore((state) => state.syncAds);
     const updateAdState = useAdStore((state) => state.updateAdState);
     const setViewerContext = useAdStore((state) => state.setViewerContext);
@@ -657,7 +421,16 @@ export default function ProfilePage() {
     const [showShareModal, setShowShareModal] = useState(false);
     const [shareProduct, setShareProduct] = useState<any>(null);
     const [initialShareView, setInitialShareView] = useState<"share" | "resell">("share");
+    const [shareResellMode, setShareResellMode] = useState<"resell" | "repost">("resell");
+    const [shareForceResellOnly, setShareForceResellOnly] = useState(false);
     const [reportingProduct, setReportingProduct] = useState<PostRecord | null>(null);
+    const [reportTargetUpload, setReportTargetUpload] = useState<UploadContentRecord | null>(null);
+    const [insightsUpload, setInsightsUpload] = useState<UploadContentRecord | null>(null);
+    const [uploadReportReason, setUploadReportReason] = useState("");
+    const [uploadReportCustomReason, setUploadReportCustomReason] = useState("");
+    const [uploadReportSubmitting, setUploadReportSubmitting] = useState(false);
+    const [uploadReportSubmitted, setUploadReportSubmitted] = useState(false);
+    const [uploadReportError, setUploadReportError] = useState("");
 
     const [isBottomSheetOpen, setIsBottomSheetOpen] = useState(false);
     const [isBottomSheetLoading, setIsBottomSheetLoading] = useState(false);
@@ -730,6 +503,20 @@ export default function ProfilePage() {
         const previewType = String(raw?.media_type || ad?.media_type || "").toLowerCase().includes("video") ? "video" : "image";
         return getSponsoredAdImages(raw, ad?.image || ad?.mediaPreview || ad?.media_preview || getAdPreviewImage(raw, previewType));
     }, []);
+    const getProfileAdSecondViewKind = useCallback((ad: any): "image" | "video" | "embed" => {
+        const raw = ad?.raw || ad || {};
+        const activeLink = String(raw.active_link || ad?.active_link || "").trim();
+        const previewType = getSponsoredLinkPreviewType(activeLink);
+        if (previewType === "embed") return "embed";
+        if (
+            previewType === "video" ||
+            String(ad?.type || raw?.media_type || ad?.media_type || "").toLowerCase().includes("video") ||
+            /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(String(raw.media_preview || raw.video_url || ad?.video || ""))
+        ) {
+            return "video";
+        }
+        return "image";
+    }, []);
 
     useEffect(() => {
         if (!notification) return;
@@ -748,7 +535,6 @@ export default function ProfilePage() {
             setCurrentUser(nextUser);
             setViewerContext(nextUser);
             if (profileId) setIsOwnProfile(!!nextUser?.id && nextUser.id === Number(profileId));
-            if (profileUser || profileShareCode) setIsOwnProfile(false);
             if (profileShareCode) setIsOwnProfile(false);
         };
         window.addEventListener("googer-auth-changed", handleAuthChanged as EventListener);
@@ -861,8 +647,7 @@ export default function ProfilePage() {
             let profileData: UserRecord;
             let viewingOwnProfileForUploads = false;
             if (profileUser) {
-                const isNumericId = /^\d+$/.test(profileUser);
-                profileData = isNumericId
+                profileData = shouldTreatProfileUserAsId
                     ? await authService.getUserProfile(profileUser)
                     : await authService.getUserByUsername(profileUser);
 
@@ -877,13 +662,13 @@ export default function ProfilePage() {
                 const [userProducts, userGoogs, activeOwnerAds, savedAds, savedIds] = await Promise.all([
                     marketService.getItems({ user_id: profileData.id, status: "active,approved" }),
                     googService.getUserPosts(profileData.id!),
-                    viewingOwnProfile ? adsService.getActiveAdsByUser(profileData.id!) : Promise.resolve([]),
+                    adsService.getActiveAdsByUser(profileData.id!),
                     viewingOwnProfile ? adsService.getSavedAds() : adsService.getPublicSavedAdsByUser(profileData.id!),
                     viewingOwnProfile ? adsService.getSavedAdIds() : Promise.resolve([]),
                 ]);
                 const ownerAds = viewingOwnProfile
                     ? mergeActiveAdsWithSavedCompletedAds(activeOwnerAds || [], savedAds || [])
-                    : getPublicCompletedSavedAds(savedAds || []);
+                    : mergeActiveAdsWithCompletedAds(activeOwnerAds || [], getPublicCompletedSavedAds(savedAds || []));
                 const filtered = (userProducts || []).filter(isLiveMarketPost);
                 applyProfileCollections(filtered, userGoogs || [], ownerAds || []);
                 syncAds(ownerAds || []);
@@ -906,13 +691,13 @@ export default function ProfilePage() {
                 const [userProducts, userGoogs, activeOwnerAds, savedAds, savedIds] = await Promise.all([
                     marketService.getItems({ user_id: profileData.id, status: "active,approved" }),
                     googService.getUserPosts(profileData.id!),
-                    viewingOwnProfile ? adsService.getActiveAdsByUser(profileData.id!) : Promise.resolve([]),
+                    adsService.getActiveAdsByUser(profileData.id!),
                     viewingOwnProfile ? adsService.getSavedAds() : adsService.getPublicSavedAdsByUser(profileData.id!),
                     viewingOwnProfile ? adsService.getSavedAdIds() : Promise.resolve([]),
                 ]);
                 const ownerAds = viewingOwnProfile
                     ? mergeActiveAdsWithSavedCompletedAds(activeOwnerAds || [], savedAds || [])
-                    : getPublicCompletedSavedAds(savedAds || []);
+                    : mergeActiveAdsWithCompletedAds(activeOwnerAds || [], getPublicCompletedSavedAds(savedAds || []));
                 const filtered = (userProducts || []).filter(isLiveMarketPost);
                 applyProfileCollections(filtered, userGoogs || [], ownerAds || []);
                 syncAds(ownerAds || []);
@@ -929,13 +714,13 @@ export default function ProfilePage() {
                 const [userProducts, userGoogs, activeOwnerAds, savedAds, savedIds] = await Promise.all([
                     marketService.getItems({ user_id: profileId, status: "active,approved" }),
                     googService.getUserPosts(profileId),
-                    viewingOwnProfile ? adsService.getActiveAdsByUser(profileId) : Promise.resolve([]),
+                    adsService.getActiveAdsByUser(profileId),
                     viewingOwnProfile ? adsService.getSavedAds() : adsService.getPublicSavedAdsByUser(profileId),
                     viewingOwnProfile ? adsService.getSavedAdIds() : Promise.resolve([]),
                 ]);
                 const ownerAds = viewingOwnProfile
                     ? mergeActiveAdsWithSavedCompletedAds(activeOwnerAds || [], savedAds || [])
-                    : getPublicCompletedSavedAds(savedAds || []);
+                    : mergeActiveAdsWithCompletedAds(activeOwnerAds || [], getPublicCompletedSavedAds(savedAds || []));
                 const filtered = (userProducts || []).filter(isLiveMarketPost);
                 applyProfileCollections(filtered, userGoogs || [], ownerAds || []);
                 syncAds(ownerAds || []);
@@ -963,8 +748,25 @@ export default function ProfilePage() {
                 syncAds(ownerAds || []);
                 setSavedAdIds(new Set((savedIds || []).map(String)));
             }
-            if (viewingOwnProfileForUploads) {
-                uploadContentService.getMine().then(setUploadContents).catch(() => setUploadContents([]));
+            if (viewingOwnProfileForUploads && profileData?.id) {
+                Promise.all([
+                    uploadContentService.getMine().catch(() => [] as UploadContentRecord[]),
+                    uploadContentService.getPublicApprovedByUser(profileData.id).catch(() => [] as UploadContentRecord[]),
+                ]).then(([ownUploads, publicUploads]) => {
+                    const merged = new Map<number, UploadContentRecord>();
+
+                    ownUploads.forEach((item) => {
+                        merged.set(Number(item.id), item);
+                    });
+
+                    publicUploads.forEach((item) => {
+                        const key = Number(item.id);
+                        const existing = merged.get(key);
+                        merged.set(key, existing ? { ...existing, ...item } : item);
+                    });
+
+                    setUploadContents(Array.from(merged.values()));
+                }).catch(() => setUploadContents([]));
             } else if (profileData?.id) {
                 uploadContentService.getPublicApprovedByUser(profileData.id).then(setUploadContents).catch(() => setUploadContents([]));
             } else {
@@ -991,7 +793,7 @@ export default function ProfilePage() {
         } finally {
             setLoading(false);
         }
-    }, [applyProfileCollections, getPublicCompletedSavedAds, mergeActiveAdsWithSavedCompletedAds, profileId, profileShareCode, profileUser, router, setViewerContext, syncAds]);
+    }, [applyProfileCollections, getPublicCompletedSavedAds, mergeActiveAdsWithSavedCompletedAds, profileId, profileShareCode, profileUser, router, setViewerContext, shouldTreatProfileUserAsId, syncAds]);
 
     useEffect(() => { fetchProfile(); }, [fetchProfile]);
 
@@ -1150,14 +952,42 @@ export default function ProfilePage() {
         }));
     }, [followerUsers.length, followingUsers.length]);
 
+    useEffect(() => {
+        let mounted = true;
+        const loadUploadControlSettings = async () => {
+            try {
+                const settings = await adsService.getUploadControlSettingsPublic();
+                if (mounted) {
+                    setFlashContentAutoPlay(Boolean(settings?.flash_auto_play));
+                    setFlashPreviewSeconds(Math.max(1, Math.floor(Number(settings?.flash_preview_seconds ?? 5))));
+                }
+            } catch {
+                if (mounted) {
+                    setFlashContentAutoPlay(false);
+                    setFlashPreviewSeconds(5);
+                }
+            }
+        };
+
+        void loadUploadControlSettings();
+        window.addEventListener("focus", loadUploadControlSettings);
+        return () => {
+            mounted = false;
+            window.removeEventListener("focus", loadUploadControlSettings);
+        };
+    }, []);
+
+    const getUploadContentLookupId = useCallback((item: UploadContentRecord) => item.content_id || item.contentId || item.id, []);
+
     const updateUploadContentLocal = useCallback((contentId: string | number, updater: (item: UploadContentRecord) => UploadContentRecord) => {
         const normalizedId = String(contentId);
         setUploadContents((prev) =>
-            prev.map((entry) =>
-                String(entry.id) === normalizedId || String(entry.content_id || entry.contentId || "") === normalizedId
+            prev.map((entry) => {
+                const entryLookupId = String(entry.content_id || entry.contentId || entry.id || "");
+                return String(entry.id) === normalizedId || entryLookupId === normalizedId
                     ? updater(entry)
-                    : entry
-            )
+                    : entry;
+            })
         );
     }, []);
 
@@ -1197,6 +1027,9 @@ export default function ProfilePage() {
             openLoginRequired({ message: "Please log in to like upload content." });
             return;
         }
+        const likeKey = String(item.id);
+        if (uploadLikeLocksRef.current.has(likeKey)) return;
+        uploadLikeLocksRef.current.add(likeKey);
         const previousLiked = !!item.user_liked;
         const optimisticLiked = !previousLiked;
         updateUploadContentLocal(item.id, (entry) => ({
@@ -1217,25 +1050,32 @@ export default function ProfilePage() {
                 setBottomSheetData(await uploadContentService.getLikes(item.id));
             }
         } catch (error) {
-            console.error("Failed to toggle upload content like:", error);
             updateUploadContentLocal(item.id, (entry) => ({
                 ...entry,
                 user_liked: previousLiked,
                 likes_count: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (previousLiked ? 1 : -1)),
                 likeCount: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (previousLiked ? 1 : -1)),
             }));
+            if ((error as { status?: number } | null)?.status === 429) return;
+            console.error("Failed to toggle upload content like:", error);
+        } finally {
+            uploadLikeLocksRef.current.delete(likeKey);
         }
     }, [bottomSheetType, currentUser?.id, interactionProduct, isBottomSheetOpen, isBottomSheetUpload, updateUploadContentLocal]);
 
     const handleUploadContentShare = useCallback(async (item: UploadContentRecord) => {
-        setShareProduct({
-            ...item,
-            title: item.topic || "Upload content",
-            image_url: item.media_preview || item.thumbnail_url || item.media_gallery?.[0] || "",
+        flushSync(() => {
+            setShareProduct({
+                ...item,
+                title: item.topic || "Upload content",
+                image_url: item.media_preview || item.thumbnail_url || item.media_gallery?.[0] || "",
+            });
+            setShareUrlOverride(getShareUrlForItem(item, "upload"));
+            setInitialShareView("share");
+            setShareResellMode("resell");
+            setShareForceResellOnly(false);
+            setShowShareModal(true);
         });
-        setShareUrlOverride(getShareUrlForItem(item, "upload"));
-        setInitialShareView("share");
-        setShowShareModal(true);
         try {
             const result = await uploadContentService.logShare(item.id);
             updateUploadContentLocal(item.id, (entry) => ({
@@ -1248,13 +1088,215 @@ export default function ProfilePage() {
         }
     }, [updateUploadContentLocal]);
 
+    const handleOpenUploadInsights = useCallback((item: UploadContentRecord) => {
+        flushSync(() => {
+            setInsightsUpload(item);
+        });
+        void uploadContentService.prefetchInsights(item.id, "7d");
+    }, []);
+
+    const handleUploadContentRepost = useCallback(async (item: UploadContentRecord) => {
+        if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to repost content." });
+            throw new Error("Please log in to repost content.");
+        }
+        if (String(item.user_id || "") === String(currentUser.id || "")) {
+            throw new Error("You cannot repost your own content.");
+        }
+        try {
+            const result = await uploadContentService.repostContent(item.id);
+            updateUploadContentLocal(item.id, (entry) => ({
+                ...entry,
+                reposts_count: Number(result.reposts_count || 0),
+                repostCount: Number(result.reposts_count || 0),
+                user_reposted: true,
+                userReposted: true,
+            }));
+            if (result.alreadyReposted) {
+                throw new Error("Already reposted");
+            }
+            return result;
+        } catch (error) {
+            throw error;
+        }
+    }, [currentUser?.id, updateUploadContentLocal]);
+
+    const handleUploadContentRemoveRepost = useCallback(async (item: UploadContentRecord) => {
+        if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to remove repost." });
+            throw new Error("Please log in to remove repost.");
+        }
+        const result = await uploadContentService.removeRepost(item.id);
+        const nextCount = Number(result.reposts_count || 0);
+        const viewerName = currentUser?.username || currentUser?.full_name || "You";
+        setUploadContents((prev) => prev
+            .filter((entry) => {
+                const sameContent = String(entry.id) === String(item.id)
+                    || String(entry.content_id || entry.contentId || "") === String(item.id)
+                    || String(entry.content_id || entry.contentId || "") === String(item.content_id || item.contentId || "");
+                const sameReposter = String(entry.reposted_by_username || entry.reposted_by_full_name || "") === String(viewerName)
+                    || String(entry.reposted_by_user_id || "") === String(currentUser.id || currentUser.user_id || "");
+                return !(sameContent && sameReposter);
+            })
+            .map((entry) => {
+                const sameContent = String(entry.id) === String(item.id)
+                    || String(entry.content_id || entry.contentId || "") === String(item.id)
+                    || String(entry.content_id || entry.contentId || "") === String(item.content_id || item.contentId || "");
+                return sameContent ? {
+                    ...entry,
+                    reposts_count: nextCount,
+                    repostCount: nextCount,
+                    user_reposted: false,
+                    userReposted: false,
+                } : entry;
+            }));
+        setNotification({ type: "success", title: "Removed", message: "Repost removed from your profile." });
+        return result;
+    }, [currentUser?.full_name, currentUser?.id, currentUser?.user_id, currentUser?.username]);
+
+    const handleUploadContentRepostFlow = useCallback((item: UploadContentRecord) => {
+        if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to repost content." });
+            return;
+        }
+        if (String(item.user_id || "") === String(currentUser.id || "")) {
+            setNotification({ type: "error", title: "Not allowed", message: "You cannot repost your own content." });
+            return;
+        }
+        flushSync(() => {
+            setShareProduct({
+                ...item,
+                title: item.topic || "Upload content",
+                image_url: item.media_preview || item.thumbnail_url || item.media_gallery?.[0] || "",
+            });
+            setShareUrlOverride(getShareUrlForItem(item, "upload"));
+            setInitialShareView("resell");
+            setShareResellMode("repost");
+            setShareForceResellOnly(true);
+            setShowShareModal(true);
+        });
+    }, [currentUser?.id]);
+
+    const handleUploadContentPin = useCallback(async (item: UploadContentRecord) => {
+        if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to pin content." });
+            return;
+        }
+        if (!isUploadOwnedByViewer(item, currentUser)) {
+            setNotification({ type: "error", title: "Not allowed", message: "Only the creator can pin this content." });
+            return;
+        }
+        try {
+            const lookupId = getUploadContentLookupId(item);
+            const updated = await uploadContentService.togglePin(lookupId);
+            updateUploadContentLocal(lookupId, (entry) => ({
+                ...entry,
+                ...updated,
+                pinned_at: updated?.pinned_at || null,
+            }));
+            setNotification({
+                type: "success",
+                title: updated?.pinned_at ? "Pinned" : "Unpinned",
+                message: updated?.pinned_at ? "Content pinned on your profile." : "Content removed from pinned position.",
+            });
+        } catch (error) {
+            console.error("Failed to update upload pin:", error);
+            setNotification({ type: "error", title: "Pin failed", message: error instanceof Error ? error.message : "Could not update pin." });
+        }
+    }, [currentUser, currentUser?.id, getUploadContentLookupId, updateUploadContentLocal]);
+
+    const handleUploadContentPromote = useCallback((item: UploadContentRecord) => {
+        try {
+            window.localStorage.setItem("googer-promote-upload-content", JSON.stringify({
+                contentId: item.id,
+                title: item.topic || item.description || "Upload content",
+                mediaPreview: item.media_preview || item.thumbnail_url || item.media_gallery?.[0] || "",
+                mediaType: item.media_type || "",
+            }));
+        } catch {}
+        router.push("/dashboard/ad-campaign/photo-video");
+    }, [router]);
+
+    const handleUploadContentDelete = useCallback(async (item: UploadContentRecord) => {
+        if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to delete content." });
+            return;
+        }
+        if (String(item.user_id || "") !== String(currentUser.id || "")) {
+            setNotification({ type: "error", title: "Not allowed", message: "Only the creator can delete this content." });
+            return;
+        }
+        const confirmed = typeof window === "undefined" ? true : window.confirm("Delete this upload content?");
+        if (!confirmed) return;
+        try {
+            await uploadContentService.deleteContent(item.id);
+            setUploadContents((prev) => prev.filter((entry) => String(entry.id) !== String(item.id)));
+            setNotification({ type: "success", title: "Deleted", message: "Upload content deleted." });
+        } catch (error) {
+            setNotification({ type: "error", title: "Delete failed", message: error instanceof Error ? error.message : "Could not delete content." });
+        }
+    }, [currentUser?.id]);
+
+    const handleUploadContentNotInterested = useCallback((item: UploadContentRecord) => {
+        const key = `upload-${item.id}`;
+        setHiddenPostIds((prev) => prev.includes(key) ? prev : [...prev, key]);
+        setNotification({ type: "success", title: "Hidden", message: "This content was hidden from your profile feed." });
+    }, []);
+
+    const openUploadReportModal = useCallback((item: UploadContentRecord) => {
+        if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to report content." });
+            return;
+        }
+        setReportTargetUpload(item);
+        setUploadReportReason("");
+        setUploadReportCustomReason("");
+        setUploadReportError("");
+        setUploadReportSubmitted(false);
+    }, [currentUser?.id]);
+
+    const submitUploadReport = useCallback(async () => {
+        if (!reportTargetUpload || uploadReportSubmitting) return;
+        const reason = uploadReportReason.trim();
+        const customReason = uploadReportCustomReason.trim();
+        if (!reason) {
+            setUploadReportError("Please choose a report reason.");
+            return;
+        }
+        if (reason === "Other" && !customReason) {
+            setUploadReportError("Please describe the issue.");
+            return;
+        }
+        setUploadReportSubmitting(true);
+        setUploadReportError("");
+        try {
+            await uploadContentService.reportContent(reportTargetUpload.id, reason, customReason);
+            setUploadReportSubmitted(true);
+            setNotification({ type: "success", title: "Report submitted", message: "We will review this content shortly." });
+        } catch (error) {
+            setUploadReportError(error instanceof Error ? error.message : "Could not submit report.");
+        } finally {
+            setUploadReportSubmitting(false);
+        }
+    }, [reportTargetUpload, uploadReportCustomReason, uploadReportReason, uploadReportSubmitting]);
+
     const handleEditUploadContent = useCallback((item: UploadContentRecord) => {
-        if (item.status !== "Pending Approval") return;
         try {
             const mediaGallery = Array.isArray(item.media_gallery) ? item.media_gallery : [];
+            const isFlashDraft = item.content_type === "flash";
+            const draftKey = isFlashDraft ? "googer-ad-draft-flash-content" : "googer-ad-draft-vault-content";
             const draftPayload = {
                 version: 1,
                 editingAdId: String(item.content_id || item.contentId || item.id || ""),
+                originalSensitiveFields: {
+                    price: Number(item.price || 0),
+                    externalLink: item.external_link || "",
+                    mediaType: item.media_type || "",
+                    mediaPreview: item.media_preview || mediaGallery[0] || "",
+                    mediaGallery,
+                    thumbnailUrl: item.thumbnail_url || "",
+                    contentAccessMode: item.content_access_mode || "unblurred",
+                },
                 activeLink: item.external_link || "",
                 linkInput: item.external_link || "",
                 description: item.description || "",
@@ -1278,9 +1320,9 @@ export default function ProfilePage() {
                 contentAccessMode: item.content_access_mode || "unblurred",
                 uploadPreviewMode: item.preview_mode || "thumbnail",
             };
-            window.localStorage.setItem("googer-ad-draft-vault-content", JSON.stringify(draftPayload));
+            window.localStorage.setItem(draftKey, JSON.stringify(draftPayload));
         } catch {}
-        router.push("/dashboard/ad-campaign/upload-content");
+        router.push(item.content_type === "flash" ? "/dashboard/ad-campaign/flash-content" : "/dashboard/ad-campaign/upload-content");
     }, [router]);
 
     const handleUploadContentView = useCallback(async (item: UploadContentRecord) => {
@@ -1292,6 +1334,7 @@ export default function ProfilePage() {
                 viewCount: Number(result.views_count || 0),
             }));
         } catch (error) {
+            if ((error as { status?: number } | null)?.status === 429) return;
             console.error("Failed to log upload content view:", error);
         }
     }, [updateUploadContentLocal]);
@@ -1373,6 +1416,9 @@ export default function ProfilePage() {
     };
 
     const handleGoogToggleLike = useCallback(async (goog: WritePost) => {
+        const likeKey = String(goog.id);
+        if (googLikeLocksRef.current.has(likeKey)) return;
+        googLikeLocksRef.current.add(likeKey);
         const wasLiked = !!goog.liked;
         const willBeLiked = !wasLiked;
         setGoogs((prev) => prev.map((g) => g.id === goog.id ? { ...g, liked: willBeLiked, likes: Math.max(0, (g.likes || 0) + (willBeLiked ? 1 : -1)) } : g));
@@ -1381,6 +1427,8 @@ export default function ProfilePage() {
             setGoogs((prev) => prev.map((g) => g.id === goog.id ? { ...g, liked: serverLiked, likes: Math.max(0, (g.likes || 0) + (serverLiked === g.liked ? 0 : serverLiked ? 1 : -1)) } : g));
         } catch {
             setGoogs((prev) => prev.map((g) => g.id === goog.id ? { ...g, liked: wasLiked, likes: Math.max(0, (g.likes || 0) + (wasLiked === g.liked ? 0 : wasLiked ? 1 : -1)) } : g));
+        } finally {
+            googLikeLocksRef.current.delete(likeKey);
         }
     }, []);
 
@@ -1391,7 +1439,9 @@ export default function ProfilePage() {
             if (Number.isFinite(nextViews) || result?.incremented === true) {
                 setGoogs((prev) => prev.map((g) => g.id === postId ? { ...g, views: Number.isFinite(nextViews) ? nextViews : (g.views || 0) + 1 } : g));
             }
-        } catch { }
+        } catch (error) {
+            if ((error as { status?: number } | null)?.status === 429) return;
+        }
     }, []);
 
     const handleToggleGoogMenu = (event: React.MouseEvent<HTMLButtonElement>, post: WritePost) => {
@@ -1433,6 +1483,8 @@ export default function ProfilePage() {
             }
         }
         setInitialShareView(view);
+        setShareResellMode("resell");
+        setShareForceResellOnly(false);
         setShareProduct(product);
         setShowShareModal(true);
         handleLogShare(product.id);
@@ -1822,7 +1874,7 @@ export default function ProfilePage() {
 
     const handleMessageClick = () => {
         if (!user?.id || isOwnProfile) return;
-        router.push(`/chats?user=${user.id}`);
+        router.push(getPublicChatHref(user.username, user.id));
     };
 
     const handleBlockAccountClick = async () => {
@@ -1995,8 +2047,7 @@ export default function ProfilePage() {
         });
     }, [visiblePosts]);
 
-    // Interleaved feed: googs/upload reviews with profile owner's ads every 4 posts.
-    // Upload review cards are owner-only, so pending/rejected content never appears to other users.
+    // Interleaved feed: Googs, upload content, and profile ads. Public profile uploads are already filtered by the API.
     const googsFeed = useMemo(() => {
         type FeedItem =
             | { type: 'goog'; data: WritePost }
@@ -2004,20 +2055,15 @@ export default function ProfilePage() {
             | { type: 'upload-content'; data: UploadContentRecord };
         const visibleProfileAds = profileAds.filter((ad) => {
             if (hiddenPostIds.some((hiddenId) => matchesAdIdentity(ad, hiddenId) || String(ad?.id) === hiddenId)) return false;
-            if (isOwnProfile) return true;
-            const status = String(ad?.status || ad?.raw?.status || "").trim().toLowerCase().replace(/[_-]+/g, " ");
-            const savedAt = ad?.saved_at || ad?.savedAt || ad?.raw?.saved_at || ad?.raw?.savedAt;
-            return status === "completed" && !!savedAt;
+            return true;
         });
-        if (!isOwnProfile) {
-            return [
-                ...googs.map((g): FeedItem => ({ type: 'goog', data: g })),
-                ...visibleProfileAds.map((a): FeedItem => ({ type: 'ad', data: a })),
-            ];
-        }
-        const ownerUploadItems = uploadContents.map((item): FeedItem => ({ type: 'upload-content', data: item }));
-        const ownerPrimaryItems = [
-            ...ownerUploadItems,
+        const visibleUploadContents = uploadContents.filter((item) => {
+            const id = String(item.id || item.content_id || item.contentId || "");
+            return (isOwnProfile || item.status === "Approved") && !hiddenPostIds.includes(`upload-${id}`);
+        });
+        const uploadItems = visibleUploadContents.map((item): FeedItem => ({ type: 'upload-content', data: item }));
+        const primaryItems = [
+            ...uploadItems,
             ...googs.map((g): FeedItem => ({ type: 'goog', data: g })),
         ].sort((a, b) => {
             const aPinned = a.type === 'upload-content' ? Date.parse(String(a.data?.pinned_at || "")) : 0;
@@ -2025,15 +2071,25 @@ export default function ProfilePage() {
             if ((Number.isFinite(aPinned) ? aPinned : 0) || (Number.isFinite(bPinned) ? bPinned : 0)) {
                 return (Number.isFinite(bPinned) ? bPinned : 0) - (Number.isFinite(aPinned) ? aPinned : 0);
             }
-            const aDate = Date.parse(String(a.data?.created_at || a.data?.updated_at || ""));
-            const bDate = Date.parse(String(b.data?.created_at || b.data?.updated_at || ""));
+            const aUpload = a.type === 'upload-content' ? (a.data as any) : null;
+            const bUpload = b.type === 'upload-content' ? (b.data as any) : null;
+            const aDate = Date.parse(String(
+                a.type === 'upload-content'
+                    ? (aUpload?.reposted_at || aUpload?.feed_sort_at || aUpload?.approved_at || aUpload?.created_at || aUpload?.updated_at || "")
+                    : (a.data?.created_at || a.data?.updated_at || "")
+            ));
+            const bDate = Date.parse(String(
+                b.type === 'upload-content'
+                    ? (bUpload?.reposted_at || bUpload?.feed_sort_at || bUpload?.approved_at || bUpload?.created_at || bUpload?.updated_at || "")
+                    : (b.data?.created_at || b.data?.updated_at || "")
+            ));
             return (Number.isFinite(bDate) ? bDate : 0) - (Number.isFinite(aDate) ? aDate : 0);
         });
-        if (!ownerPrimaryItems.length) return visibleProfileAds.map((a): FeedItem => ({ type: 'ad', data: a }));
-        if (!visibleProfileAds.length) return ownerPrimaryItems;
+        if (!primaryItems.length) return visibleProfileAds.map((a): FeedItem => ({ type: 'ad', data: a }));
+        if (!visibleProfileAds.length) return primaryItems;
         const result: FeedItem[] = [];
         let adIndex = 0;
-        ownerPrimaryItems.forEach((item, i) => {
+        primaryItems.forEach((item, i) => {
             result.push(item);
             if ((i + 1) % 4 === 0) {
                 if (adIndex < visibleProfileAds.length) {
@@ -2051,7 +2107,16 @@ export default function ProfilePage() {
     }, [googs, hiddenPostIds, isOwnProfile, profileAds, uploadContents]);
 
     if (loading) return <div className="flex min-h-[60vh] items-center justify-center text-zinc-400">Loading profile</div>;
-    if (!user) return null;
+    if (!user) {
+        return (
+            <main className="flex min-h-[60vh] items-center justify-center px-4 text-center text-white">
+                <div>
+                    <h1 className="text-2xl font-black">Profile not found</h1>
+                    <p className="mt-2 text-sm text-white/55">This profile link could not be loaded.</p>
+                </div>
+            </main>
+        );
+    }
     if (!isOwnProfile && isBlocked) {
         return (
             <div className="mx-auto max-w-[880px] pb-10 text-white">
@@ -2179,12 +2244,22 @@ export default function ProfilePage() {
                                         <button
                                             onClick={() => {
                                                 setShowMenu(false);
-                                                router.push("/terms-and-policies");
+                                                router.push("/terms-and-conditions");
                                             }}
                                             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-white transition hover:bg-white/6"
                                         >
                                             <IonIcon name="document-text-outline" className="text-sm" />
-                                            Terms and Policies
+                                            Terms & Conditions
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                setShowMenu(false);
+                                                router.push("/privacy-policy");
+                                            }}
+                                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-white transition hover:bg-white/6"
+                                        >
+                                            <IonIcon name="lock-closed-outline" className="text-sm" />
+                                            Privacy Policy
                                         </button>
                                         <button
                                             onClick={() => {
@@ -2415,7 +2490,7 @@ export default function ProfilePage() {
                                                 onOpenSecondView={(targetAd) => setAdPreviewModal({
                                                     ad: targetAd,
                                                     type: "ad",
-                                                    kind: normalizedAd.type === "video" ? "video" : "image",
+                                                    kind: getProfileAdSecondViewKind(targetAd),
                                                     images: getProfileAdSecondViewImages(targetAd),
                                                 })}
                                                 onToggleLike={(item) => handleAdToggleLike(item)}
@@ -2428,7 +2503,11 @@ export default function ProfilePage() {
                                                 onCollectCoin={(event, p) => adActions.handleAdCoinClick(event, p)}
                                                 canShowCollectCoin={(p) => adActions.canShowCollectCoin(p)}
                                                 onNavigateToProfile={(event, userId) => {
-                                                    if (userId) router.push(`/dashboard/profile?id=${userId}`);
+                                                    event.stopPropagation();
+                                                    router.push(getPublicProfileHref(
+                                                        normalizedAd.username || normalizedAd.owner_username || normalizedAd.raw?.username || normalizedAd.raw?.owner_username || normalizedAd.raw?.user?.username,
+                                                        userId,
+                                                    ));
                                                 }}
                                                 currentUser={currentUser}
                                                 isSaved={isAdSaved(normalizedAd)}
@@ -2455,7 +2534,11 @@ export default function ProfilePage() {
                                             onCollectCoin={(event, p) => adActions.handleAdCoinClick(event, p)}
                                             canShowCollectCoin={(p) => adActions.canShowCollectCoin(p)}
                                             onNavigateToProfile={(event, userId) => {
-                                                if (userId) router.push(`/dashboard/profile?id=${userId}`);
+                                                event.stopPropagation();
+                                                router.push(getPublicProfileHref(
+                                                    post.username || post.owner_username || post.user?.username,
+                                                    userId,
+                                                ));
                                             }}
                                             onEditProduct={(p) => router.push(`/shop?id=${p.id}`)}
                                             onDeleteProduct={async (p) => {
@@ -2488,7 +2571,7 @@ export default function ProfilePage() {
                                                     onOpenSecondView={(targetAd) => setAdPreviewModal({
                                                         ad: targetAd,
                                                         type: "ad",
-                                                        kind: normalizedAd.type === "video" ? "video" : "image",
+                                                        kind: getProfileAdSecondViewKind(targetAd),
                                                         images: getProfileAdSecondViewImages(targetAd),
                                                         suppressCoinRewards: !isOwnProfile,
                                                     })}
@@ -2505,7 +2588,11 @@ export default function ProfilePage() {
                                                     }}
                                                     canShowCollectCoin={(p) => isOwnProfile && adActions.canShowCollectCoin(p)}
                                                     onNavigateToProfile={(event, userId) => {
-                                                        if (userId) router.push(`/dashboard/profile?id=${userId}`);
+                                                        event.stopPropagation();
+                                                        router.push(getPublicProfileHref(
+                                                            normalizedAd.username || normalizedAd.owner_username || normalizedAd.raw?.username || normalizedAd.raw?.owner_username || normalizedAd.raw?.user?.username,
+                                                            userId,
+                                                        ));
                                                     }}
                                                     currentUser={currentUser}
                                                     isSaved={isOwnProfile ? isAdSaved(normalizedAd) : false}
@@ -2519,18 +2606,56 @@ export default function ProfilePage() {
                                     );
                                 }
                                 if (item.type === 'upload-content') {
+                                    const uploadItem = item.data;
                                     return (
-                                        <article key={`upload-content-${item.data.contentId || item.data.content_id || item.data.id}`} className="px-4 py-4 transition-colors sm:px-7">
-                                            <ProfileUploadContentCard
-                                                item={item.data}
-                                                onToggleLike={handleUploadContentLike}
-                                                onOpenSheet={(type, uploadItem) => openBottomSheet(type, uploadItem, "upload")}
-                                                onShare={handleUploadContentShare}
-                                                onLogView={handleUploadContentView}
-                                                onEdit={isOwnProfile ? handleEditUploadContent : undefined}
-                                                showStatusMeta={isOwnProfile}
-                                            />
-                                        </article>
+                                        <UploadContentFeedCard
+                                            key={`upload-content-${uploadItem.contentId || uploadItem.content_id || uploadItem.id}-${uploadItem.reposted_by_username || uploadItem.reposted_by_full_name || "original"}-${uploadItem.reposted_at || ""}`}
+                                            item={uploadItem}
+                                            currentUser={currentUser}
+                                            onToggleLike={handleUploadContentLike}
+                                            onOpenSheet={(type, sheetItem) => openBottomSheet(type, sheetItem, "upload")}
+                                            onShare={handleUploadContentShare}
+                                            onRepost={handleUploadContentRepost}
+                                            onRemoveRepost={handleUploadContentRemoveRepost}
+                                            onOpenRepostFlow={handleUploadContentRepostFlow}
+                                            onLogView={handleUploadContentView}
+                                            onEdit={isOwnProfile ? handleEditUploadContent : undefined}
+                                            onPin={handleUploadContentPin}
+                                            onDelete={handleUploadContentDelete}
+                                            onNotInterested={handleUploadContentNotInterested}
+                                            onReport={openUploadReportModal}
+                                            onInsights={handleOpenUploadInsights}
+                                            onAccessChanged={(changedItem, accessType = "content") => {
+                                                const creatorId = String(changedItem.user_id || changedItem.owner_user_id || "");
+                                                setUploadContents((currentItems) =>
+                                                    currentItems.map((entry) => {
+                                                        const entryLookupId = String(entry.content_id || entry.contentId || entry.id || "");
+                                                        const changedLookupId = String(changedItem.content_id || changedItem.contentId || changedItem.id || "");
+                                                        const entryCreatorId = String(entry.user_id || entry.owner_user_id || "");
+                                                        const isSameCreator = accessType === "creator_subscription" && creatorId && entryCreatorId === creatorId;
+                                                        const isSameContent = String(entry.id) === String(changedItem.id) || entryLookupId === changedLookupId;
+                                                        return isSameCreator || isSameContent
+                                                            ? {
+                                                                ...entry,
+                                                                user_purchased: isSameContent ? true : entry.user_purchased,
+                                                                user_has_access: true,
+                                                                user_purchase_expires_at: isSameContent
+                                                                    ? changedItem.user_purchase_expires_at || entry.user_purchase_expires_at || null
+                                                                    : entry.user_purchase_expires_at,
+                                                            }
+                                                            : entry;
+                                                    })
+                                                );
+                                            }}
+                                            flashContentAutoPlay={flashContentAutoPlay}
+                                            flashPreviewSeconds={flashPreviewSeconds}
+                                            showStatusMeta={isOwnProfile}
+                                            maxWidthClassName="max-w-[360px]"
+                                            articleClassName="w-full"
+                                            onOpenProfile={() => {
+                                                router.push(getPublicProfileHref(uploadItem.username, uploadItem.user_id));
+                                            }}
+                                        />
                                     );
                                 }
                                 return (
@@ -2539,7 +2664,13 @@ export default function ProfilePage() {
                                         post={item.data}
                                         showSubscribe={false}
                                         onNavigateToProfile={(event, userId) => {
-                                            if (userId) router.push(`/dashboard/profile?id=${userId}`);
+                                            event.stopPropagation();
+                                            router.push(
+                                                getPublicProfileHref(
+                                                    item.data?.username || item.data?.owner_username || item.data?.user?.username,
+                                                    userId,
+                                                ),
+                                            );
                                         }}
                                         onToggleLike={() => handleGoogToggleLike(item.data)}
                                         onOpenSheet={(type, g) => openBottomSheet(type as SheetType, g, true)}
@@ -2677,14 +2808,14 @@ export default function ProfilePage() {
                                             onClick={() => {
                                                 if (!connectionId) return;
                                                 setIsConnectionsModalOpen(false);
-                                                router.push(`/dashboard/profile?id=${connectionId}`);
+                                                router.push(getPublicProfileHref(connectionUser.username, connectionId));
                                             }}
                                             onKeyDown={(event) => {
                                                 if (event.key !== "Enter" && event.key !== " ") return;
                                                 event.preventDefault();
                                                 if (!connectionId) return;
                                                 setIsConnectionsModalOpen(false);
-                                                router.push(`/dashboard/profile?id=${connectionId}`);
+                                                router.push(getPublicProfileHref(connectionUser.username, connectionId));
                                             }}
                                             className="mb-2 flex w-full cursor-pointer items-center gap-3 rounded-2xl px-3 py-3 text-left transition hover:bg-white/[0.04]"
                                         >
@@ -2800,7 +2931,7 @@ export default function ProfilePage() {
                                                 type="button"
                                                 onClick={() => {
                                                     setIsBlockedModalOpen(false);
-                                                    router.push(`/dashboard/profile?id=${blockedUser.id}`);
+                                                    router.push(getPublicProfileHref(blockedUser.username, blockedUser.id));
                                                 }}
                                                 className="min-w-0 flex-1 text-left"
                                             >
@@ -2847,7 +2978,7 @@ export default function ProfilePage() {
                         <div className="flex items-center justify-between">
                             <div>
                                 <h3 className="text-sm font-black uppercase tracking-widest">Share Profile</h3>
-                                <p className="mt-1 text-xs text-white/50">Copy your public profile link.</p>
+                                <p className="mt-1 text-xs text-white/50">Copy your public share profile link.</p>
                             </div>
                             <button
                                 type="button"
@@ -2858,7 +2989,7 @@ export default function ProfilePage() {
                             </button>
                         </div>
                         <div className="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
-                            <p className="text-[11px] font-semibold uppercase tracking-widest text-white/35">Profile Link</p>
+                            <p className="text-[11px] font-semibold uppercase tracking-widest text-white/35">Share Link</p>
                             <p className="mt-2 break-all text-sm text-white">{getProfileShareUrl({ username: username || user?.id || "profile" })}</p>
                         </div>
                         <div className="mt-4 flex gap-3">
@@ -2997,16 +3128,134 @@ export default function ProfilePage() {
                 </div>
             )}
 
+            {reportTargetUpload && (
+                <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+                    <div
+                        className="absolute inset-0 bg-black/80"
+                        onClick={() => !uploadReportSubmitting && setReportTargetUpload(null)}
+                    />
+                    <div className="relative w-full max-w-md rounded-3xl border border-white/10 bg-[#121316] p-5 text-white shadow-[0_28px_90px_rgba(0,0,0,0.55)]">
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-[0.24em] text-red-300">Report Content</p>
+                                <h3 className="mt-1 text-lg font-black">Why are you reporting this?</h3>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setReportTargetUpload(null)}
+                                disabled={uploadReportSubmitting}
+                                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/60 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-50"
+                            >
+                                <IonIcon name="close-outline" className="text-xl" />
+                            </button>
+                        </div>
+                        {uploadReportSubmitted ? (
+                            <div className="mt-5 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
+                                <p className="text-sm font-black text-emerald-200">Report submitted successfully</p>
+                                <p className="mt-1 text-xs font-semibold leading-5 text-emerald-100/75">We will review this content shortly.</p>
+                                <button
+                                    type="button"
+                                    onClick={() => setReportTargetUpload(null)}
+                                    className="mt-4 rounded-xl bg-white px-4 py-2 text-[11px] font-black uppercase tracking-[0.16em] text-black"
+                                >
+                                    Close
+                                </button>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="mt-5 space-y-2">
+                                    {[
+                                        "Copyright Violation",
+                                        "Spam / Scam Content",
+                                        "Inappropriate Content",
+                                        "Fake or Fraud Content",
+                                        "Misleading or Not as Described",
+                                        "Other",
+                                    ].map((reason) => (
+                                        <label
+                                            key={reason}
+                                            className={`flex cursor-pointer items-center gap-3 rounded-2xl border px-3 py-2.5 text-[12px] font-bold transition ${
+                                                uploadReportReason === reason
+                                                    ? "border-red-300/45 bg-red-500/10 text-white"
+                                                    : "border-white/10 bg-white/[0.03] text-white/72 hover:border-white/20 hover:text-white"
+                                            }`}
+                                        >
+                                            <input
+                                                type="radio"
+                                                name="upload-report-reason"
+                                                value={reason}
+                                                checked={uploadReportReason === reason}
+                                                onChange={() => {
+                                                    setUploadReportReason(reason);
+                                                    setUploadReportError("");
+                                                }}
+                                                className="h-4 w-4 accent-red-400"
+                                            />
+                                            {reason}
+                                        </label>
+                                    ))}
+                                </div>
+                                {uploadReportReason === "Other" ? (
+                                    <textarea
+                                        value={uploadReportCustomReason}
+                                        onChange={(event) => setUploadReportCustomReason(event.target.value)}
+                                        placeholder="Tell us what happened..."
+                                        className="mt-3 min-h-[92px] w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm font-semibold text-white outline-none placeholder:text-white/35 focus:border-red-300/45"
+                                    />
+                                ) : null}
+                                {uploadReportError ? (
+                                    <p className="mt-3 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-200">{uploadReportError}</p>
+                                ) : null}
+                                <div className="mt-5 flex gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setReportTargetUpload(null)}
+                                        disabled={uploadReportSubmitting}
+                                        className="flex-1 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/[0.08] disabled:opacity-50"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={submitUploadReport}
+                                        disabled={uploadReportSubmitting}
+                                        className="flex-1 rounded-2xl bg-red-400 px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] text-black transition hover:bg-red-300 disabled:opacity-50"
+                                    >
+                                        {uploadReportSubmitting ? "Submitting..." : "Submit"}
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {insightsUpload && (
+                <UploadContentInsightsModal
+                    contentId={insightsUpload.id}
+                    onClose={() => setInsightsUpload(null)}
+                />
+            )}
+
             {reportingProduct && <div className="fixed inset-0 z-[110] flex items-center justify-center p-4"><div className="absolute inset-0 bg-black/80" onClick={() => setReportingProduct(null)} /><div className="relative w-full max-w-md rounded-2xl border border-white/10 bg-[#151515] p-5"><h3 className="text-sm font-black uppercase tracking-widest">Report Post</h3><p className="mt-2 text-xs text-white/60">Product {reportingProduct.id} reported to admin for review.</p><div className="mt-4 flex justify-end"><button onClick={() => setReportingProduct(null)} className="rounded-xl bg-white px-4 py-2 text-xs font-black uppercase tracking-widest text-black">Close</button></div></div></div>}
 
             <ShareModal
                 isOpen={showShareModal}
-                onClose={() => { setShowShareModal(false); setShareUrlOverride(null); }}
+                onClose={() => {
+                    setShowShareModal(false);
+                    setShareUrlOverride(null);
+                    setShareResellMode("resell");
+                    setShareForceResellOnly(false);
+                }}
                 title={shareProduct?.title || "Check out this post"}
-                url={shareUrlOverride || (shareProduct ? getShareUrlForItem(shareProduct, "product") : "")}
+                url={shareUrlOverride || (shareProduct ? getShareUrlForItem(shareProduct, (String(shareProduct?.id || "").startsWith("upload-") || shareProduct?.content_type) ? "upload" : "product") : "")}
                 description={shareProduct?.description}
                 product={shareProduct}
                 initialView={initialShareView}
+                resellMode={shareResellMode}
+                forceResellOnly={shareForceResellOnly}
+                shareOnly={String(shareProduct?.content_type || "").toLowerCase() === "flash" && !shareForceResellOnly && shareResellMode !== "repost"}
+                shareType={String(shareProduct?.id || "").startsWith("upload-") || shareProduct?.content_type ? "upload" : undefined}
             />
 
             <InteractionBottomSheet
@@ -3125,7 +3374,7 @@ export default function ProfilePage() {
                     }}
                     onNavigateToProfile={(e, target) => {
                         setAdPreviewModal(null);
-                        router.push(`/dashboard/profile?id=${target.user_id}`);
+                        router.push(getPublicProfileHref(target.username || target.owner_username || target.user?.username, target.user_id));
                     }}
                     canShowCollectCoin={(target) => !adPreviewModal.suppressCoinRewards && adActions.canShowCollectCoin(target)}
                 />

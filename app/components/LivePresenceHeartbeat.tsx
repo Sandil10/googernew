@@ -5,7 +5,7 @@ import { API_URL } from "@/services/apiConfig";
 import { authService } from "@/services/authService";
 
 const HEARTBEAT_INTERVAL_MS = 10000;
-const MIN_ACTIVITY_GAP_MS = 2500;
+const MIN_ACTIVITY_GAP_MS = 10000;
 
 export default function LivePresenceHeartbeat() {
     const lastSentAt = useRef(0);
@@ -49,14 +49,12 @@ export default function LivePresenceHeartbeat() {
         const interval = window.setInterval(() => void sendHeartbeat(true), HEARTBEAT_INTERVAL_MS);
         window.addEventListener("focus", onActivity);
         window.addEventListener("scroll", onActivity, { passive: true });
-        window.addEventListener("pointerdown", onActivity, { passive: true });
         document.addEventListener("visibilitychange", onVisible);
 
         return () => {
             window.clearInterval(interval);
             window.removeEventListener("focus", onActivity);
             window.removeEventListener("scroll", onActivity);
-            window.removeEventListener("pointerdown", onActivity);
             document.removeEventListener("visibilitychange", onVisible);
         };
     }, []);

@@ -37,13 +37,11 @@ taskkill /IM cloudflared.exe /F >nul 2>nul
 taskkill /IM nodemon.exe /F >nul 2>nul
 timeout /t 3 /nobreak >nul
 
-echo [2/4] Clearing frontend cache...
-if exist "%ROOT%.next\cache" rd /s /q "%ROOT%.next\cache" >nul 2>nul
+echo [2/4] Preparing live-reload development mode...
 if exist "%ROOT%.next\dev\lock" del /f /q "%ROOT%.next\dev\lock" >nul 2>nul
-if exist "%ROOT%.next\trace" del /f /q "%ROOT%.next\trace" >nul 2>nul
 
 echo [3/4] Starting backend on port 5000...
-start "Googer Backend" /D "%ROOT%backend" cmd /k "set WEB_URL=%PUBLIC_URL%&& set MOBILE_URL=%PUBLIC_URL%&& npm run start"
+start "Googer Backend" /D "%ROOT%backend" cmd /k "set WEB_URL=%PUBLIC_URL%&& set MOBILE_URL=%PUBLIC_URL%&& npm run dev"
 timeout /t 4 /nobreak >nul
 
 echo Starting Cloudflare named tunnel...
@@ -64,16 +62,8 @@ timeout /t 1 /nobreak >nul
 goto wait_tunnel_ready
 :tunnel_ready
 
-echo [4/4] Building frontend for preview...
-call cmd /c "cd /d "%ROOT%" && set "BACKEND_URL=http://127.0.0.1:5000" && npm run build"
-if errorlevel 1 (
-  echo [ERROR] Frontend build failed. Tunnel is running, but app was not started.
-  pause
-  exit /b 1
-)
-
-echo Starting frontend preview on port 3000...
-start "Googer Frontend" /D "%ROOT%" cmd /k "set BACKEND_URL=http://127.0.0.1:5000&& npm run start:3000"
+echo [4/4] Starting frontend with hot reload on port 3000...
+start "Googer Frontend" /D "%ROOT%" cmd /k "set BACKEND_URL=http://127.0.0.1:5000&& set CHOKIDAR_USEPOLLING=1&& set WATCHPACK_POLLING=true&& npm run dev:3000"
 
 echo Waiting for frontend port 3000...
 set /a FRONTEND_WAIT=0

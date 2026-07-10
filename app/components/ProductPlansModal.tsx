@@ -58,6 +58,15 @@ function getContentExpiryLabel(extra: Record<string, any>): string {
     return `${labels.content_expiry || "Upload Content Expiry"}: ${value} ${unit}`;
 }
 
+function formatVideoLimitMinutes(value: number): string {
+    const totalSeconds = Math.max(0, Math.round(value * 60));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes > 0 && seconds > 0) return `${minutes} min ${seconds} sec`;
+    if (minutes > 0) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+    return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
 function derivePlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; chat: string[]; content: string[] } {
     const e = plan.extra || {};
     const regular: string[] = (plan.features || []).filter((label) => !isChatFeatureLabel(String(label)));
@@ -87,13 +96,17 @@ function derivePlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; c
     if (productLimit != null && productLimit > 0)
         regular.push(`Upload up to ${productLimit} products`);
 
+    const uploadContentLimit = Number(e.content_upload_limit ?? (isBasicPlan ? 5 : 15));
+    if (Number.isFinite(uploadContentLimit) && uploadContentLimit > 0)
+        content.push(`${contentLabels.content_upload_limit || "Upload Content Limit"}: ${uploadContentLimit}`);
+
     const dailyUploadLimit = Number(e.content_daily_upload_limit ?? (isBasicPlan ? 1 : 3));
     if (Number.isFinite(dailyUploadLimit) && dailyUploadLimit > 0)
         content.push(`${contentLabels.content_daily_upload_limit || "Daily Uploads"}: ${dailyUploadLimit}`);
 
     const videoLimitMinutes = Number(e.content_video_limit_minutes ?? (isBasicPlan ? 1 : 5));
     if (Number.isFinite(videoLimitMinutes) && videoLimitMinutes > 0)
-        content.push(`${contentLabels.content_video_limit_minutes || "Video Limit"}: ${videoLimitMinutes} minute${videoLimitMinutes === 1 ? "" : "s"}`);
+        content.push(`${contentLabels.content_video_limit_minutes || "Video Limit"}: ${formatVideoLimitMinutes(videoLimitMinutes)}`);
 
     content.push(getContentExpiryLabel(e));
 

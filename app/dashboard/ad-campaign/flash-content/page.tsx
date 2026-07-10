@@ -1,7 +1,7 @@
 "use client";
 
-import CampaignEditor from "../components/CampaignEditor";
+import UploadContentCampaignEditor from "../components/UploadContentCampaignEditor";
 
 export default function FlashContentCampaignPage() {
-    return <CampaignEditor campaignType="Flash Content" />;
+    return <UploadContentCampaignEditor campaignType="Flash Content" />;
 }

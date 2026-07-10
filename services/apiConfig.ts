@@ -1,6 +1,6 @@
 /**
  * Smart API URL detection:
- * - For localhost: use http://localhost:5000 (direct connection)
+ * - For localhost: use http://127.0.0.1:5000 (direct connection)
  * - For production/Cloudflare domains: use /api (relative path through tunnel)
  * - Use environment variable if explicitly set
  */
@@ -11,7 +11,7 @@ export const getApiUrl = (): string => {
     
     const envUrl = process.env.NEXT_PUBLIC_API_URL;
     // If environment variable is explicitly set and not the default '/api', use it
-    if (envUrl && envUrl !== '/api' && envUrl !== 'http://localhost:5000') {
+    if (envUrl && envUrl !== '/api' && envUrl !== 'http://127.0.0.1:5000') {
         return envUrl;
     }
     
@@ -19,7 +19,7 @@ export const getApiUrl = (): string => {
     
     // For localhost development, use direct connection
     if (hostname === 'localhost' || hostname === '127.0.0.1') {
-        return 'http://localhost:5000';
+        return 'http://127.0.0.1:5000';
     }
     
     // For all other environments (Cloudflare, production), use relative path

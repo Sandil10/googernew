@@ -1542,8 +1542,8 @@ function BuyScreen({ onBack, walletBalance: initialWalletBalance, onGoRequest, o
                                         {(transactionFilter === 'pending' || transactionFilter === 'completed') && tx && (txStatus === 'pending' || txStatus === 'completed') && (() => {
                                             const chatPartnerId = isOwn ? tx.buyer_id : p.userId;
                                             const chatPartnerName = isOwn
-                                                ? (tx.buyer_username || 'Buyer')
-                                                : (tx.seller_username || username || 'Seller');
+                                                ? ((tx as any).buyer_full_name || tx.buyer_username || 'Buyer')
+                                                : ((tx as any).seller_full_name || tx.seller_username || username || 'Seller');
                                             if (!chatPartnerId) return null;
                                             return (
                                                 <button

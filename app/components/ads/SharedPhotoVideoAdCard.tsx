@@ -29,6 +29,7 @@ import { NormalizedAd } from "@/app/lib/ads/adTypes";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
 import { logSponsoredAdClick } from "@/app/lib/ads/adClickTracking";
+import { getPublicChatHref } from "@/app/lib/profileRoute";
 
 export type AdCardHandlers = {
     onOpenSecondView?: (ad: any) => void;
@@ -112,21 +113,12 @@ export function SharedPhotoVideoAdCard({
     const secondaryCtaLabel = ctaTopic === "Call Now" ? "" : ctaLabel;
     const hasSecondaryCta = !!secondaryCtaLabel && ctaTopic !== "No Button";
     const showAdCoinButton = displayLiked && !displayCoinCollected && canShowCollectCoin(ad);
-    const advertiserName = ad.username || ad.owner_username || raw.username || raw.owner_username || raw.ownerUsername || raw.user?.username || raw.user?.name || "Advertiser";
+    const advertiserUsername = ad.username || ad.owner_username || raw.username || raw.owner_username || raw.ownerUsername || raw.user?.username || "";
+    const advertiserName = advertiserUsername || raw.user?.name || "Advertiser";
     const advertiserImage = ad.profile_picture || raw.profile_picture || raw.profilePicture || raw.owner_profile_picture || raw.ownerProfilePicture || raw.user?.profile_picture || raw.user?.profilePicture || getItemProfilePicture(raw);
     const advertiserId = ad.userId || ad.user_id || raw.user_id || raw.userId || raw.owner_user_id || raw.ownerUserId || raw.user?.id;
     const displayTitle = String(ad.title || raw.title || raw.caption || "").trim();
     const isGenericTitle = /^(Sponsored(?: post)?|Ad)$/i.test(displayTitle);
-    const displayHeading = isGenericTitle ? advertiserName : displayTitle;
-    const displayTopic = String(
-        ad.category ||
-        raw.category ||
-        ad.topic ||
-        raw.topic ||
-        ad.content_category ||
-        raw.content_category ||
-        "",
-    ).trim();
 
     const likeCount = Number(ad.likeCount ?? ad.likes_count ?? raw.likes_count ?? raw.likeCount ?? 0);
     const viewCount = Number(ad.viewCount ?? ad.views_count ?? raw.views_count ?? raw.viewCount ?? 0);
@@ -181,7 +173,7 @@ export function SharedPhotoVideoAdCard({
         if (!participantId) return;
         trackAdClick("message");
         if (typeof window !== "undefined") {
-            window.location.href = `/chats?user=${encodeURIComponent(participantId)}`;
+            window.location.href = getPublicChatHref(advertiserUsername, participantId);
         }
     };
 
@@ -341,7 +333,7 @@ export function SharedPhotoVideoAdCard({
 
             <div
                 onClick={(event) => { event.stopPropagation(); if (onOpenSecondView) onOpenSecondView(ad); }}
-                className={`relative mx-0 mb-0 overflow-hidden border border-white/5 bg-black shadow-inner cursor-pointer ${canRenderVideoPreview ? "aspect-video" : "aspect-square"} rounded-[1.2rem] md:rounded-[2rem]`}>
+                className="relative mx-2 mb-1.5 overflow-hidden rounded-[1.2rem] border border-white/5 bg-black shadow-inner aspect-square cursor-pointer">
                 {canRenderVideoPreview ? (
                     <video
                         src={videoPreviewSrc}
@@ -364,92 +356,14 @@ export function SharedPhotoVideoAdCard({
                         unoptimized={shouldBypassNextImageOptimization(previewImage)}
                     />
                 )}
-                <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-24 bg-gradient-to-b from-black/75 via-black/25 to-transparent" />
-                <div className="pointer-events-none absolute bottom-0 right-0 top-0 z-10 w-24 bg-gradient-to-l from-black/55 via-black/15 to-transparent" />
-                {displayTopic && (
-                    <div className="absolute left-3 top-3 z-20 rounded-full border border-white/15 bg-black/60 px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.18em] text-white shadow-lg backdrop-blur-md md:left-4 md:top-4 md:text-[10px]">
-                        {displayTopic}
-                    </div>
-                )}
                 {playOverlay}
-                <div className="absolute right-5 top-1/2 z-30 flex -translate-y-1/2 flex-col items-center overflow-hidden rounded-full bg-black/45 text-white shadow-[0_14px_36px_rgba(0,0,0,0.35)] backdrop-blur-md md:right-6">
-                    <div className="relative flex flex-col items-center border-b border-white/10 px-2.5 py-2.5">
-                        <AdInteractionButton
-                            type="likes"
-                            icon="heart-outline"
-                            activeIcon="heart"
-                            isActive={displayLiked}
-                            count={likeCount}
-                            color="text-white"
-                            activeColor="text-white"
-                            onSingleClick={handleLikeClick}
-                            onLongPress={() => onOpenSheet("likes", ad.raw || ad)}
-                            iconSize="text-[17px] md:text-[20px]"
-                            className="flex-col gap-1"
-                            countClassName="text-[8px] font-black leading-none md:text-[9px]"
-                        />
-                        {likeLockMessage && (
-                            <span className="absolute right-full top-1/2 mr-2 -translate-y-1/2 whitespace-nowrap rounded-full bg-black/75 px-2 py-1 text-[8px] font-black uppercase tracking-wider text-red-400">
-                                Like locked
-                            </span>
-                        )}
-                    </div>
-                    <div className="border-b border-white/10 px-2.5 py-2.5">
-                        <AdInteractionButton
-                            type="views"
-                            icon="eye-outline"
-                            activeIcon="eye"
-                            count={viewCount}
-                            color="text-white"
-                            activeColor="text-white"
-                            onSingleClick={() => onOpenSheet("views", ad.raw || ad)}
-                            onLongPress={() => onOpenSheet("views", ad.raw || ad)}
-                            iconSize="text-[17px] md:text-[20px]"
-                            className="flex-col gap-1"
-                            countClassName="text-[8px] font-black leading-none md:text-[9px]"
-                        />
-                    </div>
-                    <div className="border-b border-white/10 px-2.5 py-2.5">
-                        <AdInteractionButton
-                            type="comments"
-                            icon="chatbubble-outline"
-                            activeIcon="chatbubble"
-                            count={commentCount}
-                            color="text-white"
-                            activeColor="text-white"
-                            onSingleClick={() => onOpenSheet("comments", ad.raw || ad)}
-                            onLongPress={() => onOpenSheet("comments", ad.raw || ad)}
-                            iconSize="text-[17px] md:text-[20px]"
-                            className="flex-col gap-1"
-                            countClassName="text-[8px] font-black leading-none md:text-[9px]"
-                        />
-                    </div>
-                    <div className="px-2.5 py-2.5">
-                        <AdInteractionButton
-                            type="shares"
-                            icon="share-social-outline"
-                            activeIcon="share-social"
-                            count={shareCount}
-                            color="text-white"
-                            activeColor="text-white"
-                            onSingleClick={() => {
-                                trackAdClick("visit");
-                                onShare(ad.raw || ad);
-                            }}
-                            onLongPress={() => onOpenSheet("shares", ad.raw || ad)}
-                            iconSize="text-[17px] opacity-90 md:text-[20px]"
-                            className="flex-col gap-1"
-                            countClassName="text-[8px] font-black leading-none md:text-[9px]"
-                        />
-                    </div>
-                </div>
             </div>
 
-            <div className="px-3 pb-2 pt-3">
+            <div className="px-2.5 pb-1.5 pt-1">
                 {/* Title row */}
-                <div className="flex items-start justify-between gap-2">
-                    <h2 className="overflow-hidden text-[13px] md:text-[15px] font-black leading-tight text-white [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] break-words normal-case tracking-tight flex-1">
-                        {displayHeading}
+                <div className="mb-1 flex items-start justify-between gap-1">
+                    <h2 className="overflow-hidden text-[9px] md:text-[12px] font-black leading-tight text-white [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] break-words uppercase tracking-tight group-hover:text-amber-400 transition-colors flex-1">
+                        {isGenericTitle ? advertiserName : displayTitle}
                     </h2>
                     {ctaTopic !== "No Button" && (
                         ctaTopic === "Call Now" ? (
@@ -478,7 +392,7 @@ export function SharedPhotoVideoAdCard({
                 </div>
 
                 {/* CTA row — mirrors price+cart row in product card */}
-                <div className="hidden">
+                <div className="mt-1 border-t border-white/5 pt-0.5">
                     <div className="flex items-center justify-between text-white/80 w-full px-0.5">
                         <div className="relative flex flex-col items-center">
                             <AdInteractionButton
@@ -565,11 +479,6 @@ export function SharedPhotoVideoAdCard({
                     </div>
                 </div>
             </div>
-            {showExpiryWarning && (
-                <p className="px-3 pb-2 pt-2 text-center text-[9px] font-semibold leading-tight text-amber-400/80">
-                    {ad.type === "video" ? "Your video will be removed soon" : "Your photos will expire soon and will be deleted"}
-                </p>
-            )}
         </div>
         </div>
     );

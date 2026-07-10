@@ -163,35 +163,57 @@ export const getShareUrlForItem = (item: any, type?: "goog" | "ad" | "product" |
   if (!shareCode) return "";
   const isGoogLike = type === "goog" || String(item?.id ?? "").startsWith("goog-") || typeof item?.text === "string";
   const isAdLike = type === "ad" || (!!item?.is_sponsored && item?.campaign_type !== "Product Promote");
-  const isUploadLike = type === "upload" || String(item?.id ?? "").startsWith("upload-") || !!item?.content_type || !!item?.media_preview || !!item?.preview_url;
   const isProductLike =
     type === "product" ||
-    item?.campaign_type === "Product Promote" ||
-    (!isGoogLike && !isAdLike && (
-      item?.product_code ||
-      item?.share_code ||
-      item?.shareCode ||
-      item?.linked_product_code ||
-      item?.product_id ||
-      item?.productId ||
-      item?.price !== undefined ||
-      item?.promo_price !== undefined
-    ));
+    (
+      type !== "upload" &&
+      (
+        item?.campaign_type === "Product Promote" ||
+        (!isGoogLike && !isAdLike && (
+          item?.linked_product_id ||
+          item?.product_code ||
+          item?.share_code ||
+          item?.shareCode ||
+          item?.linked_product_code ||
+          item?.product_id ||
+          item?.productId ||
+          item?.promo_price !== undefined
+        ))
+      )
+    );
+  const isUploadLike =
+    type === "upload" ||
+    (
+      !isProductLike &&
+      (
+        String(item?.id ?? "").startsWith("upload-") ||
+        !!item?.content_type ||
+        !!item?.preview_url ||
+        (
+          !!item?.media_preview &&
+          !item?.product_code &&
+          !item?.product_id &&
+          !item?.productId &&
+          !item?.linked_product_id &&
+          item?.campaign_type !== "Product Promote"
+        )
+      )
+    );
 
-  if (isUploadLike) {
-    return buildPublicUrl(`/reel/${encodeURIComponent(shareCode)}`);
-  }
   if (isProductLike) {
     return buildPublicUrl(`/product/${encodeURIComponent(shareCode)}`);
+  }
+  if (isUploadLike) {
+    return buildPublicUrl(`/reel/${encodeURIComponent(shareCode)}`);
   }
   return buildPublicUrl(`/share/${encodeURIComponent(shareCode)}`);
 };
 
 export const getProfileShareUrl = (user: any) => {
   const username = String(user?.username || "").trim().toLowerCase();
-  if (username) return buildPublicUrl(`/${encodeURIComponent(username)}`);
+  if (username) return buildPublicUrl(`/@${encodeURIComponent(username)}`);
 
   const target = String(user?.user_id ?? user?.id ?? "").trim();
-  if (!target) return buildPublicUrl("/");
-  return buildPublicUrl(`/${encodeURIComponent(target)}`);
+  if (!target) return buildPublicUrl("/profile");
+  return buildPublicUrl(`/@${encodeURIComponent(target)}`);
 };

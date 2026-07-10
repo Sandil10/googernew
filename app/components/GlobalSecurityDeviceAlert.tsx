@@ -53,7 +53,7 @@ export default function GlobalSecurityDeviceAlert() {
 
     useEffect(() => {
         void loadDevices();
-        const timer = window.setInterval(loadDevices, 3000);
+        const timer = window.setInterval(loadDevices, 60000);
         return () => window.clearInterval(timer);
     }, [loadDevices]);
 

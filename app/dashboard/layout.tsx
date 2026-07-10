@@ -37,6 +37,7 @@ export default function DashboardLayout({
     const router = useRouter();
     const pathname = usePathname();
     const isAdCampaignRoute = pathname?.startsWith("/dashboard/ad-campaign") ?? false;
+    const isPublicProfileRoute = pathname?.startsWith("/@") || pathname?.startsWith("/profile/");
     const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
     const [isCreateActionMenuOpen, setIsCreateActionMenuOpen] = useState(false);
     const [isWriteGoogsModalOpen, setIsWriteGoogsModalOpen] = useState(false);
@@ -239,12 +240,12 @@ export default function DashboardLayout({
                 return;
             }
             setCurrentUser(null);
-            router.replace("/");
+            if (!isPublicProfileRoute) router.replace("/");
         };
 
         window.addEventListener("googer-auth-changed", handleAuthChanged as EventListener);
         return () => window.removeEventListener("googer-auth-changed", handleAuthChanged as EventListener);
-    }, [router]);
+    }, [isPublicProfileRoute, router]);
 
     useEffect(() => {
         if (shouldRedirectSuspendedUser(currentUser)) router.replace("/suspended");

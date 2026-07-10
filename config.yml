@@ -1,33 +1,33 @@
 tunnel: 70dad40c-325d-41c2-a3c7-ccf45815a215
-credentials-file: /etc/cloudflared/70dad40c-325d-41c2-a3c7-ccf45815a215.json
+credentials-file: D:/googer-recovery-code/googernew-main/.cloudflared/70dad40c-325d-41c2-a3c7-ccf45815a215.json
 
 ingress:
   - hostname: admin.googer.site
-    service: http://localhost:6001
+    service: http://127.0.0.1:6001
   - hostname: googer.site
     path: /api/*
-    service: http://localhost:5000
+    service: http://127.0.0.1:5000
   - hostname: googer.site
     path: /socket.io/*
-    service: http://localhost:5000
+    service: http://127.0.0.1:5000
   - hostname: googer.site
-    service: http://localhost:3000
+    service: http://127.0.0.1:3000
   - hostname: www.googer.site
     path: /api/*
-    service: http://localhost:5000
+    service: http://127.0.0.1:5000
   - hostname: www.googer.site
     path: /socket.io/*
-    service: http://localhost:5000
+    service: http://127.0.0.1:5000
   - hostname: www.googer.site
-    service: http://localhost:3000
+    service: http://127.0.0.1:3000
   - hostname: appadmin.infranex.it.com
-    service: http://localhost:6001
+    service: http://127.0.0.1:6001
   - hostname: app.infranex.it.com
     path: /api/*
-    service: http://localhost:5000
+    service: http://127.0.0.1:5000
   - hostname: app.infranex.it.com
     path: /socket.io/*
-    service: http://localhost:5000
+    service: http://127.0.0.1:5000
   - hostname: app.infranex.it.com
-    service: http://localhost:3000
+    service: http://127.0.0.1:3000
   - service: http_status:404

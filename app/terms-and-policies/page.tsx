@@ -1,12 +1,5 @@
-"use client";
-
-import DashboardLayout from "@/app/dashboard/layout";
-import TermsPage from "@/app/dashboard/terms/page";
+import { redirect } from "next/navigation";
 
 export default function TermsAndPoliciesPage() {
-    return (
-        <DashboardLayout>
-            <TermsPage />
-        </DashboardLayout>
-    );
+    redirect("/privacy-policy");
 }

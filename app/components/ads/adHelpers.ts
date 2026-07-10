@@ -247,25 +247,24 @@ const getAdMediaGallery = (ad: any) => {
 export const getAdPreviewImage = (ad: any, previewType: string | null) => {
     const activeLink = normalizeExternalUrl(ad?.active_link || "");
     const linkPreviewImage = getSponsoredLinkPreviewImage(activeLink);
-    if (previewType === "image" && linkPreviewImage) return linkPreviewImage;
 
     const gallery = getAdMediaGallery(ad);
 
     const value = [
         ad?.mediaPreview,
         ad?.raw?.mediaPreview,
+        ad?.media_preview,
+        ad?.raw?.media_preview,
+        ...gallery.map(extractMediaValue),
         ad?.image_url,
         ad?.main_image,
         ad?.thumbnail_url,
-        ad?.media_preview,
         ad?.raw?.image_url,
         ad?.raw?.main_image,
         ad?.raw?.thumbnail_url,
-        ad?.raw?.media_preview,
         ad?.media_url,
         ad?.video_url,
         linkPreviewImage,
-        ...gallery.map(extractMediaValue),
     ].find((item) => String(item || "").trim());
     const image = String(value || "https://picsum.photos/400/400").trim();
     return normalizeUploadPath(image);
@@ -283,18 +282,18 @@ export const getSponsoredAdImages = (ad: any, fallbackImage?: string): string[] 
                 fallbackImage,
                 ad?.mediaPreview,
                 ad?.raw?.mediaPreview,
+                ad?.media_preview,
+                ad?.raw?.media_preview,
+                ...gallery.map(extractMediaValue),
                 ad?.image_url,
                 ad?.main_image,
                 ad?.thumbnail_url,
-                ad?.media_preview,
                 ad?.media_url,
                 ad?.raw?.image_url,
                 ad?.raw?.main_image,
                 ad?.raw?.thumbnail_url,
-                ad?.raw?.media_preview,
                 ad?.raw?.media_url,
                 linkImage,
-                ...gallery.map(extractMediaValue),
             ]
                 .map((item) => normalizeUploadPath(String(item || "").trim()))
                 .filter(Boolean) as string[],

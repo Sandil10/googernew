@@ -687,7 +687,7 @@ export default function SettingsPage() {
                     <div className="flex items-center gap-2">
                         <button
                             type="button"
-                            onClick={() => router.push("/dashboard/profile")}
+                            onClick={() => router.push("/profile")}
                             className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2 text-xs font-bold text-white transition hover:bg-white/[0.07]"
                         >
                             <IonIcon name="arrow-back-outline" className="text-sm" />

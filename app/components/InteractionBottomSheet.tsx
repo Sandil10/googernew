@@ -5,6 +5,7 @@ import IonIcon from "./IonIcon";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { RelativeTime } from "@/app/components/RelativeTime";
+import { getPublicProfileHref } from "@/app/lib/profileRoute";
 
 type SheetType = "likes" | "comments" | "shares" | "views";
 
@@ -114,7 +115,7 @@ export default function InteractionBottomSheet({
     onAction,
     currentUser,
     isLoading,
-    refreshIntervalMs = 1200,
+    refreshIntervalMs = 5000,
 }: InteractionBottomSheetProps) {
     const router = useRouter();
     const [visible, setVisible] = useState(false);
@@ -210,19 +211,20 @@ export default function InteractionBottomSheet({
         if (!isOpen || type !== "comments" || !onRefresh) return;
 
         const intervalId = window.setInterval(() => {
+            if (document.hidden || sending) return;
             void onRefresh();
         }, refreshIntervalMs);
 
         return () => window.clearInterval(intervalId);
-    }, [isOpen, type, onRefresh, refreshIntervalMs]);
+    }, [isOpen, type, onRefresh, refreshIntervalMs, sending]);
 
     if (!visible) return null;
 
-    const handleUserClick = (userId: any, e: React.MouseEvent) => {
+    const handleUserClick = (userId: any, username: any, e: React.MouseEvent) => {
         e.stopPropagation();
         if (!userId || String(userId).startsWith("legacy-views-")) return;
         onClose();
-        router.push(`/dashboard/profile?id=${userId}`);
+        router.push(getPublicProfileHref(username, userId));
     };
 
     const handlePointerDown = (id: string | number) => {
@@ -305,7 +307,7 @@ export default function InteractionBottomSheet({
             >
                 {/* Avatar */}
                 <div 
-                    onClick={(e) => handleUserClick(item.user_id, e)}
+                    onClick={(e) => handleUserClick(item.user_id, item.username, e)}
                     className={`${isReply ? 'w-6 h-6' : 'w-8 h-8'} rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center overflow-hidden shrink-0 relative cursor-pointer active:scale-90 transition-transform mt-0.5`}
                 >
                     {item.profile_picture ? (
@@ -321,7 +323,7 @@ export default function InteractionBottomSheet({
                     <div className="bg-white/[0.045] hover:bg-white/[0.07] border border-white/5 px-3 py-2 rounded-[1.25rem] transition-colors relative group/bubble">
                         <div className="flex items-center gap-2 mb-0.5">
                             <span 
-                                onClick={(e) => handleUserClick(item.user_id, e)}
+                                onClick={(e) => handleUserClick(item.user_id, item.username, e)}
                                 className={`${isReply ? 'text-[9px]' : 'text-[10px]'} font-black text-white uppercase tracking-tight truncate cursor-pointer hover:underline`}
                             >
                                 {item.username || "Anonymous"}
@@ -522,7 +524,7 @@ export default function InteractionBottomSheet({
                                         data.map((item, idx) => (
                                             <div
                                                 key={item.id || idx}
-                                                onClick={(e) => handleUserClick(item.user_id || item.id, e)}
+                                                onClick={(e) => handleUserClick(item.user_id || item.id, item.username, e)}
                                                 className={`flex items-center gap-3 p-3 bg-white/[0.025] rounded-2xl border border-white/5 transition-all animate-in slide-in-from-bottom-2 duration-300 ${item.is_aggregate ? "cursor-default" : "cursor-pointer hover:bg-white/[0.05] active:scale-[0.98]"}`}
                                                 style={{ animationDelay: `${idx * 50}ms` }}
                                             >

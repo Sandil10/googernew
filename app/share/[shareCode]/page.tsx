@@ -24,6 +24,7 @@ import { useAdActions } from "@/app/lib/ads/useAdActions";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { useAdStore } from "@/app/lib/ads/adStore";
+import { getPublicProfileHref } from "@/app/lib/profileRoute";
 
 const getAdSecondViewKind = (ad: any): AdSecondViewKind => {
     const link = normalizeExternalUrl(ad?.active_link || "");
@@ -102,6 +103,7 @@ export default function UnifiedSharePage() {
     const router = useRouter();
     const shareCode = params?.shareCode as string;
     const resellerRef = typeof params?.resellerRef === "string" ? decodeURIComponent(params.resellerRef) : "";
+    const activeShareUrl = typeof window !== "undefined" ? window.location.href : "";
 
     const [loading, setLoading] = useState(true);
     const [item, setItem] = useState<any>(null);
@@ -215,7 +217,7 @@ export default function UnifiedSharePage() {
                     if (data.type === "profile") {
                         const profileHandle = data.data?.username || data.data?.user_id || data.data?.id;
                         if (profileHandle) {
-                            router.replace(`/profile/${encodeURIComponent(String(profileHandle))}`);
+                            router.replace(getPublicProfileHref(String(profileHandle)));
                             return;
                         }
                     }
@@ -334,8 +336,17 @@ export default function UnifiedSharePage() {
     };
 
     const handleToggleLike = async (id: any) => {
+        if (!authService.isAuthenticated()) {
+            setNotification({ type: "error", message: "Please log in to like content." });
+            return;
+        }
         if (type === "ad" || type === "product") {
-            await adActions.like();
+            try {
+                await adActions.like();
+            } catch (err) {
+                console.error('Toggle ad like failed', err);
+                setNotification({ type: "error", message: "Failed to update like. Please try again." });
+            }
             return;
         }
         try {
@@ -344,7 +355,13 @@ export default function UnifiedSharePage() {
                 setItem((prev: any) => prev ? { ...prev, liked, likes: (prev.likes || 0) + (liked ? 1 : -1) } : prev);
             }
         } catch (err) {
-            console.error('Toggle like failed', err);
+            const errorMsg = (err as any)?.message || '';
+            if (errorMsg.includes('Too many')) {
+                setNotification({ type: "warning", message: "Please wait before liking again." });
+            } else {
+                console.error('Toggle like failed', err);
+                setNotification({ type: "error", message: "Failed to update like. Please try again." });
+            }
         }
     };
 
@@ -547,20 +564,22 @@ export default function UnifiedSharePage() {
     return (
         <main className="min-h-screen bg-[#1c1917] text-white">
             <div className="mx-auto max-w-lg p-4 sm:p-6 pb-24">
-                <button
-                    type="button"
-                    onClick={() => router.push("/dashboard")}
-                    className="mb-8 inline-flex items-center gap-2.5 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-[11px] font-black uppercase tracking-[0.14em] text-white/70 transition hover:bg-white/[0.08] hover:text-white"
-                >
-                    <IonIcon name="grid-outline" className="text-base" />
-                    Go to Dashboard
-                </button>
+                {currentUser && (
+                    <button
+                        type="button"
+                        onClick={() => window.history.back()}
+                        className="mb-8 inline-flex items-center gap-2.5 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-[11px] font-black uppercase tracking-[0.14em] text-white/70 transition hover:bg-white/[0.08] hover:text-white"
+                    >
+                        <IonIcon name="arrow-back-outline" className="text-base" />
+                        Back
+                    </button>
+                )}
 
                 <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[#211d1a]">
                     {type === "goog" && (
                         <GoogCard
                             post={item}
-                            onNavigateToProfile={() => router.push(`/profile/${item.user.username || item.user.id}`)}
+                            onNavigateToProfile={() => router.push(getPublicProfileHref(item.user.username, item.user.id))}
                             onToggleLike={(id) => handleToggleLike(id)}
                             onOpenSheet={openSheet}
                             onViewPost={(id) => handleLogView({ id })}
@@ -581,11 +600,11 @@ export default function UnifiedSharePage() {
                                 onShare={(ad) => handleShare(ad)}
                                 onCollectCoin={handleCollectCoin}
                                 canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
-                                onProfileClick={(profileAd) => router.push(`/profile/${profileAd.user?.username || profileAd.owner_username || profileAd.user_id}`)}
+                                onProfileClick={(profileAd) => router.push(getPublicProfileHref(profileAd.user?.username || profileAd.owner_username || profileAd.username, profileAd.user_id))}
                                 onOpenSecondView={(targetAd) => setPreviewModal({ ad: targetAd, type: "ad", kind: getAdSecondViewKind(targetAd) })}
                                 onReport={() => { }}
                                 onNotInterested={() => { }}
-                                onNavigateToProfile={() => router.push(`/profile/${item.user?.username || item.owner_user_id}`)}
+                                onNavigateToProfile={() => router.push(getPublicProfileHref(item.user?.username || item.owner_username || item.username, item.owner_user_id || item.user_id))}
                             />
                         </div>
                     )}
@@ -600,7 +619,7 @@ export default function UnifiedSharePage() {
                             onOpenSheet={openSheet}
                             onShare={(it) => handleShare(it)}
                             onLogView={(id) => handleLogView({ id })}
-                            onNavigateToProfile={() => router.push(`/profile/${item.user?.username || item.owner_user_id}`)}
+                            onNavigateToProfile={() => router.push(getPublicProfileHref(item.user?.username || item.owner_username || item.username, item.owner_user_id || item.user_id))}
                             currentUser={currentUser}
                             onCollectCoin={handleCollectCoin}
                             canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
@@ -620,7 +639,7 @@ export default function UnifiedSharePage() {
                     onReport={() => { }}
                     onNotInterested={() => { }}
                     onCollectCoin={handleCollectCoin}
-                    onNavigateToProfile={() => router.push(`/profile/${item.user?.username || item.owner_user_id}`)}
+                    onNavigateToProfile={() => router.push(getPublicProfileHref(item.user?.username || item.owner_username || item.username, item.owner_user_id || item.user_id))}
                     canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                 />
             )}
@@ -637,7 +656,7 @@ export default function UnifiedSharePage() {
                     onAddToBag={handleAddToBag}
                     initialSizeError={productSizeError}
                     onSizeRequired={() => setNotification({ type: "error", title: "Size is required", message: "Size is required" })}
-                    onNavigateToProfile={() => router.push(`/profile/${item.user?.username || item.owner_user_id}`)}
+                    onNavigateToProfile={() => router.push(getPublicProfileHref(item.user?.username || item.owner_username || item.username, item.owner_user_id || item.user_id))}
                     onCollectCoin={handleCollectCoin}
                     canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
                 />
@@ -647,7 +666,7 @@ export default function UnifiedSharePage() {
                 <ShareModal
                     isOpen={showShareModal}
                     onClose={() => setShowShareModal(false)}
-                    shareUrl={getShareUrlForItem(item, type === "profile" ? undefined : (type || undefined))}
+                    shareUrl={activeShareUrl || getShareUrlForItem(item, type === "profile" ? undefined : (type || undefined))}
                     title={item.text || item.title || "Googer Shared Item"}
                     product={type === "product" ? normalizeProductAd(item) : item}
                 />

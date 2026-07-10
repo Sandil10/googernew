@@ -1,7 +1,7 @@
 "use client";
 
-import CampaignEditor from "../components/CampaignEditor";
+import AdsCampaignEditor from "../components/AdsCampaignEditor";
 
 export default function PhotoVideoCampaignPage() {
-    return <CampaignEditor campaignType="Photo and Video" />;
+    return <AdsCampaignEditor campaignType="Photo and Video" />;
 }

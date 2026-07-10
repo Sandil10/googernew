@@ -1,7 +1,7 @@
 "use client";
 
-import CampaignEditor from "../components/CampaignEditor";
+import UploadContentCampaignEditor from "../components/UploadContentCampaignEditor";
 
 export default function UploadContentCampaignPage() {
-    return <CampaignEditor campaignType="Vault Content" />;
+    return <UploadContentCampaignEditor campaignType="Vault Content" />;
 }

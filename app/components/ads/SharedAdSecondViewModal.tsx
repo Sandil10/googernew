@@ -20,6 +20,7 @@ import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { normalizeMediaSrc } from "@/app/lib/mediaOptimization";
 import { logSponsoredAdClick } from "@/app/lib/ads/adClickTracking";
+import { getPublicChatHref } from "@/app/lib/profileRoute";
 
 export type AdSecondViewKind = "image" | "video" | "embed";
 
@@ -72,7 +73,8 @@ export function SharedAdSecondViewModal({
     const link = normalizeExternalUrl(normalizedAd?.active_link || raw.active_link || "");
     const ctaTopic = normalizedAd?.cta_topic || raw.cta_topic;
     const ctaValue = normalizedAd?.cta_value || raw.cta_value;
-    const advertiserName = normalizedAd?.username || normalizedAd?.owner_username || raw.username || raw.owner_username || raw.ownerUsername || raw.user?.username || raw.user?.name || "Advertiser";
+    const advertiserUsername = normalizedAd?.username || normalizedAd?.owner_username || raw.username || raw.owner_username || raw.ownerUsername || raw.user?.username || "";
+    const advertiserName = advertiserUsername || raw.user?.name || "Advertiser";
     const advertiserImage = normalizedAd?.profile_picture || raw.profile_picture || raw.profilePicture || raw.owner_profile_picture || raw.ownerProfilePicture || raw.user?.profile_picture || raw.user?.profilePicture || "";
     const advertiserId = normalizedAd?.userId || normalizedAd?.user_id || raw.user_id || raw.userId || raw.owner_user_id || raw.ownerUserId || raw.user?.id;
 
@@ -212,7 +214,7 @@ export function SharedAdSecondViewModal({
                         event.stopPropagation();
                         if (!advertiserId) return;
                         logSponsoredAdClick(mergedAd, "message");
-                        window.location.href = `/chats?user=${encodeURIComponent(String(advertiserId))}`;
+                        window.location.href = getPublicChatHref(advertiserUsername, advertiserId);
                     }}
                     className={`rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] transition ${getSponsoredCtaClassName("Message", canUseMessage)}`}
                     disabled={!canUseMessage}
@@ -248,14 +250,14 @@ export function SharedAdSecondViewModal({
         const embedUrl = kind === "embed" ? (getSponsoredSocialEmbedUrl(link) || link) : "";
 
         return (
-            <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black p-0 md:p-3">
+            <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/88 p-3 backdrop-blur-sm">
                 <button
                     type="button"
                     onClick={onClose}
                     className="absolute inset-0"
                     aria-label="Close sponsored media preview"
                 />
-                <div className="relative z-10 h-[100dvh] w-full overflow-hidden bg-black shadow-[0_30px_90px_rgba(0,0,0,0.45)] md:h-[calc(100vh-24px)] md:max-w-[1120px] md:rounded-[1.6rem]">
+                <div className="relative z-10 h-auto max-h-[82vh] w-full max-w-[560px] overflow-hidden rounded-[1.35rem] border border-white/10 bg-black shadow-[0_30px_90px_rgba(0,0,0,0.45)] md:max-w-[640px]">
                     <div className="hidden">
                         <div className="flex min-w-0 items-center gap-3">
                             <button
@@ -337,14 +339,14 @@ export function SharedAdSecondViewModal({
                             </button>
                         </div>
                     </div>
-                    <div className="relative h-full w-full overflow-hidden bg-black">
+                    <div className="relative aspect-video max-h-[82vh] w-full overflow-hidden bg-black">
                         {kind === "embed" && embedUrl ? (
                             <iframe
                                 src={embedUrl}
                                 title={mergedAd?.title || "Ad"}
                                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                                 allowFullScreen
-                                className="h-full w-full"
+                                className="h-full w-full border-0"
                             />
                         ) : videoUrl ? (
                             <>
@@ -369,7 +371,7 @@ export function SharedAdSecondViewModal({
                                         videoWatchEligibleSentRef.current = true;
                                         onVideoWatchEligible?.(mergedAd, watchedSeconds);
                                     }}
-                                    className="absolute inset-0 h-full w-full object-cover"
+                                    className="absolute inset-0 h-full w-full object-contain"
                                 />
                             </>
                         ) : null}

@@ -312,10 +312,11 @@ const fetchPosts = async (userId) => pool.query(
     `${selectPostsSql}
       AND (
         gp.views_count < 200
-        OR (gp.likes_count >= 25 AND gp.views_count < 500)
-        OR ((${GOOG_HOME_SCORE_SQL} >= 60 OR (gp.views_count >= 500 AND gp.likes_count >= 50)) AND gp.views_count < 2000)
-        OR ((${GOOG_HOME_SCORE_SQL} >= 100 OR (gp.views_count >= 2000 AND gp.likes_count >= 200)) AND gp.views_count < 10000)
-        OR ((${GOOG_HOME_SCORE_SQL} > 200 OR (gp.views_count >= 10000 AND gp.likes_count >= 1000)) AND gp.views_count < 100000)
+        OR (gp.likes_count >= 50 AND gp.views_count < 500)
+        OR ((${GOOG_HOME_SCORE_SQL} >= 60 OR (gp.views_count >= 500 AND gp.likes_count >= 100)) AND gp.views_count < 2000)
+        OR ((${GOOG_HOME_SCORE_SQL} >= 100 OR (gp.views_count >= 2000 AND gp.likes_count >= 250)) AND gp.views_count < 10000)
+        OR ((${GOOG_HOME_SCORE_SQL} > 200 OR (gp.views_count >= 10000 AND gp.likes_count >= 1000)) AND gp.views_count < 50000)
+        OR (gp.views_count >= 50000 AND gp.likes_count >= 5000)
         OR (
             $1::INTEGER IS NOT NULL
             AND (
@@ -331,10 +332,11 @@ const fetchPosts = async (userId) => pool.query(
       )
      ORDER BY
         CASE
+            WHEN gp.views_count >= 50000 AND gp.likes_count >= 5000 THEN 6
             WHEN ${GOOG_HOME_SCORE_SQL} > 200 OR gp.likes_count >= 1000 THEN 5
-            WHEN ${GOOG_HOME_SCORE_SQL} >= 100 OR gp.likes_count >= 200 THEN 4
-            WHEN ${GOOG_HOME_SCORE_SQL} >= 60 OR gp.likes_count >= 50 THEN 3
-            WHEN gp.likes_count >= 25 THEN 2
+            WHEN ${GOOG_HOME_SCORE_SQL} >= 100 OR gp.likes_count >= 250 THEN 4
+            WHEN ${GOOG_HOME_SCORE_SQL} >= 60 OR gp.likes_count >= 100 THEN 3
+            WHEN gp.likes_count >= 50 THEN 2
             ELSE 1
         END DESC,
         ${GOOG_HOME_SCORE_SQL} DESC,

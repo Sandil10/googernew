@@ -28,6 +28,12 @@ const numberOrUndefined = (value: any) => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+const isVideoLikeUrl = (value: any) => {
+  const url = String(value || "").trim();
+  return /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(url)
+    || /(?:youtube\.com|youtu\.be|vimeo\.com|tiktok\.com|facebook\.com\/watch)/i.test(url);
+};
+
 export const normalizeAdTimestamp = (value: any): string | undefined => {
   if (value === null || value === undefined) return undefined;
   const raw = String(value).trim();
@@ -83,12 +89,14 @@ export function normalizeAdData(ad: any): NormalizedAd {
   const campaignType = String(ad.campaign_type || ad.campaignType || "").toLowerCase();
   const normalizedMediaType = firstPresent(ad.media_type, ad.mediaType);
   const mediaType = String(normalizedMediaType || "").toLowerCase();
+  const activeLink = firstPresent(ad.active_link, ad.activeLink, ad.cta_link, ad.ctaLink);
+  const videoCandidate = firstPresent(ad.video_url, ad.video, ad.media_url, ad.media_preview, activeLink);
 
   if (campaignType.includes("product") || ad.product_id || ad.productId || ad.is_product_ad) {
     type = "product";
   } else if (campaignType.includes("profile") || ad.profile_id || ad.profileId || ad.is_profile_ad) {
     type = "profile";
-  } else if (mediaType.includes("video") || ad.video_url || ad.video) {
+  } else if (mediaType.includes("video") || ad.video_url || ad.video || isVideoLikeUrl(videoCandidate)) {
     type = "video";
   }
 
@@ -104,9 +112,9 @@ export function normalizeAdData(ad: any): NormalizedAd {
 
   // Media
   const image = type === "photo" || type === "video"
-    ? firstPresent(ad.media_preview, ad.image, ad.thumbnail, ad.image_url)
-    : firstPresent(ad.image_url, ad.media_preview, ad.image, ad.thumbnail);
-  const video = ad.video_url || ad.video || (type === "video" ? ad.media_preview : undefined);
+    ? firstPresent(ad.media_preview, ad.image, ad.thumbnail, ad.thumbnail_url, ad.image_url, ad.main_image, ad.media_url)
+    : firstPresent(ad.image_url, ad.media_preview, ad.image, ad.thumbnail, ad.thumbnail_url, ad.main_image, ad.media_url);
+  const video = ad.video_url || ad.video || (type === "video" ? firstPresent(ad.media_url, ad.media_preview, activeLink) : undefined);
 
   // Advertiser/user metadata
   const userId = firstPresent(
@@ -148,7 +156,6 @@ export function normalizeAdData(ad: any): NormalizedAd {
   const activeStartRaw = firstPresent(ad.active_start_time, ad.activeStartTime, ad.started_at, ad.startedAt);
   const createdAtRaw = firstPresent(ad.created_at, ad.createdAt, ad.created, ad.published_at, ad.updated_at);
   const createdAt = normalizeAdTimestamp(activeStartRaw || createdAtRaw) || activeStartRaw || createdAtRaw;
-  const activeLink = firstPresent(ad.active_link, ad.activeLink, ad.cta_link, ad.ctaLink);
   const ctaTopic = firstPresent(ad.cta_topic, ad.ctaTopic);
   const ctaValue = firstPresent(ad.cta_value, ad.ctaValue);
   const draft = safeParse(ad.editDraft || ad.edit_draft) || {};

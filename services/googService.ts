@@ -25,6 +25,30 @@ const getAuthHeaders = () => {
     };
 };
 
+const googRequestCache = new Map<string, { expiresAt: number; data: any }>();
+const googRequestInflight = new Map<string, Promise<any>>();
+const googLikeInflight = new Map<string, Promise<boolean>>();
+const dedupeGoogRequest = async <T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> => {
+    const cached = googRequestCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+        return cached.data as T;
+    }
+    const inflight = googRequestInflight.get(key);
+    if (inflight) {
+        return inflight as Promise<T>;
+    }
+    const request = loader()
+        .then((data) => {
+            googRequestCache.set(key, { expiresAt: Date.now() + ttlMs, data });
+            return data;
+        })
+        .finally(() => {
+            googRequestInflight.delete(key);
+        });
+    googRequestInflight.set(key, request);
+    return request;
+};
+
 const requestJson = async (path: string, options: RequestInit = {}) => {
     const response = await fetch(`${API_URL}${path}`, {
         cache: 'no-store',
@@ -35,7 +59,11 @@ const requestJson = async (path: string, options: RequestInit = {}) => {
         },
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.message || 'Goog request failed');
+    if (!response.ok) {
+        const error = new Error(data.message || 'Goog request failed') as Error & { status?: number };
+        error.status = response.status;
+        throw error;
+    }
     return data;
 };
 
@@ -73,8 +101,17 @@ export const googService = {
 
     toggleLike: async (id: any) => {
         const cleanId = String(id).replace(/^(goog-|write-)/, "");
-        const data = await requestJson(`/googs/${cleanId}/like`, { method: 'POST' });
-        return data.liked;
+        const inflight = googLikeInflight.get(cleanId);
+        if (inflight) {
+            return inflight;
+        }
+        const request = requestJson(`/googs/${cleanId}/like`, { method: 'POST' })
+            .then((data) => !!data.liked)
+            .finally(() => {
+                googLikeInflight.delete(cleanId);
+            });
+        googLikeInflight.set(cleanId, request);
+        return request;
     },
 
     toggleSubscribe: async (id: number) => {
@@ -88,7 +125,7 @@ export const googService = {
     },
 
     logShare: async (id: number) => {
-        return requestJson(`/googs/${id}/share`, { method: 'POST' });
+        return dedupeGoogRequest(`share:${id}`, 8000, () => requestJson(`/googs/${id}/share`, { method: 'POST' }));
     },
 
     createReport: async (id: number, reason: string, custom_reason?: string) => {
@@ -121,7 +158,7 @@ export const googService = {
     },
 
     logView: async (id: number) => {
-        return requestJson(`/googs/${id}/view`, { method: 'POST' });
+        return dedupeGoogRequest(`view:${id}`, 8000, () => requestJson(`/googs/${id}/view`, { method: 'POST' }));
     },
 
     getLikes: async (id: number) => {

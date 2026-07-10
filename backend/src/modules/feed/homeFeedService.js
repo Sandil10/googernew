@@ -239,12 +239,18 @@ const mapActiveAdToHomeAd = (row) => {
     const draft = safeJsonParse(row.edit_draft, row.edit_draft) || {};
     const gallery = normalizeMediaGallery(row.media_gallery, normalizeMediaGallery(draft.mediaGallery, row.media_preview ? [row.media_preview] : []));
     const mediaPreview = getMediaUrl(row.media_preview) || gallery[0] || getDataUrlFallback(row.media_preview, row.media_gallery, draft.mediaGallery) || '/assets/images/googer.png';
+    const computedMediaUrl = getMediaUrl(row.media_url) || getMediaUrl(draft.mediaUrl) || getMediaUrl(draft.media_url) || getMediaUrl(draft.video_url) || mediaPreview;
+    const computedVideoUrl = getMediaUrl(row.video_url) || getMediaUrl(draft.video_url) || getMediaUrl(row.media_url) || mediaPreview;
     const canonicalShareCode = /^[0-9A-Za-z]{8}$/.test(String(row.share_code || '').trim())
         ? String(row.share_code).trim()
         : buildShortShareCode('a', row.ad_id || '', 8);
     const isProductPromote = String(row.campaign_type || '').trim().toLowerCase() === 'product promote';
     const linkedProductId = row.linked_product_id ?? null;
     const linkedProductShareCode = row.linked_product_share_code ?? null;
+    const ownerUsername = row.owner_username_joined || row.owner_username || 'Ads';
+    const createdAtTime = toUtcIso(row.active_start_time || row.started_at || row.created_at);
+    const activeStartTime = toUtcIso(row.active_start_time || row.started_at);
+    const startedAtTime = toUtcIso(row.started_at || row.active_start_time);
     const safeDraft = {
         ...draft,
         activeLink: draft.activeLink || '',
@@ -258,12 +264,12 @@ const mapActiveAdToHomeAd = (row) => {
         ad_id: row.ad_id,
         user_id: row.user_id,
         owner_user_id: row.owner_user_id,
-        username: row.owner_username_joined || row.owner_username || 'Ads',
-        owner_username: row.owner_username_joined || row.owner_username || 'Ads',
+        username: ownerUsername,
+        owner_username: ownerUsername,
         user: {
             id: row.user_id,
             user_id: row.owner_user_id,
-            username: row.owner_username_joined || row.owner_username || 'Ads',
+            username: ownerUsername,
             profile_picture: stripDataUrl(row.profile_picture) || null,
         },
         title: row.title || draft.headline || row.description || row.campaign_type || 'Ads',
@@ -272,9 +278,9 @@ const mapActiveAdToHomeAd = (row) => {
         price: Number(row.budget || 0),
         image_url: mediaPreview,
         main_image: mediaPreview,
-        media_url: getMediaUrl(row.media_url) || getMediaUrl(draft.mediaUrl) || getMediaUrl(draft.media_url) || getMediaUrl(draft.video_url) || mediaPreview,
+        media_url: computedMediaUrl,
         thumbnail_url: mediaPreview,
-        video_url: getMediaUrl(row.video_url) || getMediaUrl(draft.video_url) || getMediaUrl(row.media_url) || mediaPreview,
+        video_url: computedVideoUrl,
         media_preview: mediaPreview,
         media_gallery: gallery,
         images: gallery,
@@ -290,12 +296,12 @@ const mapActiveAdToHomeAd = (row) => {
         viewCount: Number(row.views_count || 0),
         impressions: Number(row.impressions || 0),
         impressions_count: Number(row.impressions || 0),
-        createdAt: toUtcIso(row.active_start_time || row.started_at || row.created_at),
-        created_at: toUtcIso(row.active_start_time || row.started_at || row.created_at),
-        activeStartTime: toUtcIso(row.active_start_time || row.started_at),
-        active_start_time: toUtcIso(row.active_start_time || row.started_at),
-        startedAt: toUtcIso(row.started_at || row.active_start_time),
-        started_at: toUtcIso(row.started_at || row.active_start_time),
+        createdAt: createdAtTime,
+        created_at: createdAtTime,
+        activeStartTime: activeStartTime,
+        active_start_time: activeStartTime,
+        startedAt: startedAtTime,
+        started_at: startedAtTime,
         profile_picture: stripDataUrl(row.profile_picture) || null,
         product_code: isProductPromote ? (linkedProductShareCode || row.product_code || null) : row.ad_id,
         share_code: isProductPromote ? (linkedProductShareCode || row.share_code || null) : canonicalShareCode,
@@ -454,10 +460,14 @@ const buildHomeFeedPayload = async ({ req, userId, isAnonymousRequest, limit, of
         : Math.min(Math.max(limit * 3, 40), 120);
 
     const queriesStartedAt = process.hrtime.bigint();
-    const [postResult, adResult] = await Promise.all([
+    const queries = [
         homeFeedRepository.fetchHomeFeedPosts({ userId, isAnonymousRequest, limit, offset }),
         homeFeedRepository.fetchHomeFeedAds({ userId, isAnonymousRequest, adFetchLimit }),
-    ]);
+    ];
+    if (!isAnonymousRequest) {
+        queries.push(loadViewerAdProfile(homeFeedRepository.db, userId, req));
+    }
+    const [postResult, adResult, viewerProfile] = await Promise.all(queries);
     mark('queriesMs', queriesStartedAt);
 
     const normalizePostsStartedAt = process.hrtime.bigint();
@@ -467,10 +477,6 @@ const buildHomeFeedPayload = async ({ req, userId, isAnonymousRequest, limit, of
 
     let matchedAdRows = adResult.rows || [];
     if (!isAnonymousRequest) {
-        const viewerProfileStartedAt = process.hrtime.bigint();
-        const viewerProfile = await loadViewerAdProfile(homeFeedRepository.db, userId, req);
-        mark('viewerProfileMs', viewerProfileStartedAt);
-
         const filterAdsStartedAt = process.hrtime.bigint();
         matchedAdRows = filterDeliverableAds(matchedAdRows, viewerProfile);
         mark('filterAdsMs', filterAdsStartedAt);

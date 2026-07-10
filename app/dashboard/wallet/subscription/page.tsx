@@ -95,6 +95,15 @@ function getContentExpiryLabel(extra: Record<string, any>): string {
     return `${labels.content_expiry || "Upload Content Expiry"}: ${value} ${unit}`;
 }
 
+function formatVideoLimitMinutes(value: number): string {
+    const totalSeconds = Math.max(0, Math.round(value * 60));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes > 0 && seconds > 0) return `${minutes} min ${seconds} sec`;
+    if (minutes > 0) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+    return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
 function getPlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; chat: string[]; content: string[] } {
     const extra = plan.extra || {};
     const manualChat = (plan.features || [])
@@ -106,6 +115,7 @@ function getPlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; chat
     const content: string[] = [];
     const contentLabels = extra.labels || {};
     const isBasicPlan = plan.slug === "basic" || Number(plan.price) === 0;
+    const uploadContentLimit = Number(extra.content_upload_limit ?? (isBasicPlan ? 5 : 15));
     const dailyUploadLimit = Number(extra.content_daily_upload_limit ?? (isBasicPlan ? 1 : 3));
     const videoLimitMinutes = Number(extra.content_video_limit_minutes ?? (isBasicPlan ? 1 : 5));
     const textMessaging = extra.text_messaging;
@@ -128,8 +138,9 @@ function getPlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; chat
     }
     if (hasVoiceToText) chat.push("Voice to text");
     if (hasTextToVoice) chat.push("Text to voice");
+    if (Number.isFinite(uploadContentLimit) && uploadContentLimit > 0) content.push(`${contentLabels.content_upload_limit || "Upload Content Limit"}: ${uploadContentLimit}`);
     if (Number.isFinite(dailyUploadLimit) && dailyUploadLimit > 0) content.push(`${contentLabels.content_daily_upload_limit || "Daily Uploads"}: ${dailyUploadLimit}`);
-    if (Number.isFinite(videoLimitMinutes) && videoLimitMinutes > 0) content.push(`${contentLabels.content_video_limit_minutes || "Video Limit"}: ${videoLimitMinutes} minute${videoLimitMinutes === 1 ? "" : "s"}`);
+    if (Number.isFinite(videoLimitMinutes) && videoLimitMinutes > 0) content.push(`${contentLabels.content_video_limit_minutes || "Video Limit"}: ${formatVideoLimitMinutes(videoLimitMinutes)}`);
     content.push(getContentExpiryLabel(extra));
 
     return {

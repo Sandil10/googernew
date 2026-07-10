@@ -17,6 +17,17 @@ const isReachFirstCampaign = (adRow) => {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const getGraceIntervalSql = () => `((${getGraceDurationSeconds()}::text || ' seconds')::interval)`;
 
+// Cache schema column checks to avoid querying information_schema on every feed request
+const schemaColumnCache = new Map();
+const getCachedColumnCheck = async (pool, tableName, columnName) => {
+    const key = `${tableName}.${columnName}`;
+    if (schemaColumnCache.has(key)) return schemaColumnCache.get(key);
+
+    const result = await hasTableColumn(pool, tableName, columnName);
+    schemaColumnCache.set(key, result);
+    return result;
+};
+
 const safeJsonParse = (value, fallback = null) => {
     if (!value) return fallback;
     if (typeof value !== 'string') return value;
@@ -366,11 +377,13 @@ const loadViewerAdProfile = async (pool, viewerId, req = null) => {
         };
     }
 
-    const usersHasGender = await hasTableColumn(pool, 'users', 'gender');
-    const usersHasCountry = await hasTableColumn(pool, 'users', 'country');
-    const usersHasShipping = await hasTableColumn(pool, 'users', 'shipping_address');
-    const usersHasInterests = await hasTableColumn(pool, 'users', 'interests');
-    const usersHasBio = await hasTableColumn(pool, 'users', 'bio');
+    const [usersHasGender, usersHasCountry, usersHasShipping, usersHasInterests, usersHasBio] = await Promise.all([
+        getCachedColumnCheck(pool, 'users', 'gender'),
+        getCachedColumnCheck(pool, 'users', 'country'),
+        getCachedColumnCheck(pool, 'users', 'shipping_address'),
+        getCachedColumnCheck(pool, 'users', 'interests'),
+        getCachedColumnCheck(pool, 'users', 'bio'),
+    ]);
 
     const profileResult = await pool.query(
         `SELECT id,
@@ -391,7 +404,7 @@ const loadViewerAdProfile = async (pool, viewerId, req = null) => {
     );
 
     let activityRows = [];
-    if (await hasTableColumn(pool, 'market_views', 'user_id')) {
+    if (await getCachedColumnCheck(pool, 'market_views', 'user_id')) {
         try {
             const result = await pool.query(
                 `SELECT DISTINCT m.category, m.sub_category, m.manual_category, m.title

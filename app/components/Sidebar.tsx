@@ -186,7 +186,7 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
                                 {/* Menu Items */}
                                 <div className="space-y-1">
                                     <Link
-                                        href="/dashboard/profile"
+                                        href="/profile"
                                         className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-sm text-white"
                                         onClick={() => setShowUserMenu(false)}
                                     >

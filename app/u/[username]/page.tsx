@@ -2,6 +2,7 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect } from "react";
+import { getPublicProfileHref } from "@/app/lib/profileRoute";
 
 export default function LegacyPublicProfileShortUrlPage() {
     const params = useParams();
@@ -9,7 +10,7 @@ export default function LegacyPublicProfileShortUrlPage() {
     const username = String(params?.username || "").trim();
 
     useEffect(() => {
-        router.replace(username ? `/${encodeURIComponent(username)}` : "/");
+        router.replace(username ? getPublicProfileHref(username) : "/");
     }, [router, username]);
 
     return (

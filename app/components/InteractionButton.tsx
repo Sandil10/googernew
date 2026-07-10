@@ -61,14 +61,27 @@ export const InteractionButton = memo(({
   const handleEnd = (e: React.PointerEvent) => {
     e.stopPropagation();
     if (timerRef.current) clearTimeout(timerRef.current);
-    if (!longPressedRef.current) {
-      onSingleClick();
-    }
   };
 
   const handleCancel = (e?: React.PointerEvent) => {
     e?.stopPropagation();
     if (timerRef.current) clearTimeout(timerRef.current);
+  };
+
+  const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    if (longPressedRef.current) {
+      longPressedRef.current = false;
+      return;
+    }
+    onSingleClick();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    e.stopPropagation();
+    onSingleClick();
   };
 
   const displayCount = typeof count === "number"
@@ -94,6 +107,8 @@ export const InteractionButton = memo(({
       onPointerUp={handleEnd}
       onPointerCancel={handleCancel}
       onPointerLeave={handleCancel}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
       className={`group flex touch-none select-none items-center transition-all duration-300 active:scale-75 focus:outline-none focus:ring-0 ${compact ? "gap-1" : "gap-1.5"} ${
         orientation === "vertical" ? "flex-col" : ""
       } ${className}`}

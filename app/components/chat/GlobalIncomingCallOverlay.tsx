@@ -50,8 +50,8 @@ export default function GlobalIncomingCallOverlay() {
         };
 
         void poll();
-        // Fast polling: 1200ms on all pages so calls appear quickly everywhere
-        intervalRef.current = window.setInterval(poll, 1200);
+        // Polling every 30 seconds to reduce API load (was 1200ms causing 6000+ calls/hour)
+        intervalRef.current = window.setInterval(poll, 30000);
         return () => {
             if (intervalRef.current) window.clearInterval(intervalRef.current);
         };
@@ -98,17 +98,18 @@ export default function GlobalIncomingCallOverlay() {
 
             {/* Top section — caller info */}
             <div className="relative z-10 flex flex-col items-center pt-20 pb-8 text-center px-6">
-                {/* Pulsing ring behind avatar */}
+                {/* Ring behind avatar */}
                 <div className="relative mb-5">
-                    <span className="absolute inset-0 rounded-full border-2 border-green-400/30 animate-ping" style={{ borderRadius: "9999px" }} />
-                    <span className="absolute -inset-3 rounded-full border border-green-400/15 animate-ping" style={{ animationDelay: "0.3s", borderRadius: "9999px" }} />
+                    <span className="absolute inset-0 rounded-full border-2 border-green-400/30" style={{ borderRadius: "9999px" }} />
+                    <span className="absolute -inset-3 rounded-full border border-green-400/15" style={{ borderRadius: "9999px" }} />
                     <div className="relative h-28 w-28 overflow-hidden rounded-full border-4 border-green-400/40 shadow-[0_0_40px_rgba(34,197,94,0.35)]">
                         <Image
                             src={callerImage}
                             alt={callerName}
                             fill
                             className="object-cover"
-                            unoptimized
+                            loading="lazy"
+                            quality={75}
                         />
                     </div>
                 </div>
@@ -126,16 +127,14 @@ export default function GlobalIncomingCallOverlay() {
                     End-to-end encrypted
                 </p>
 
-                {/* Animated wave bars — indicates ringing */}
+                {/* Wave bars — indicates ringing */}
                 <div className="mt-5 flex items-end gap-1 h-6">
-                    {[0.5, 0.8, 1, 0.7, 0.9, 0.6, 1, 0.75].map((h, i) => (
+                    {[0.5, 0.8, 1, 0.7, 0.9, 0.6, 1, 0.75].map((h) => (
                         <span
-                            key={i}
+                            key={h}
                             className="w-1 rounded-full bg-green-400/60"
                             style={{
                                 height: `${h * 100}%`,
-                                animation: `wave 1.1s ease-in-out infinite`,
-                                animationDelay: `${i * 0.12}s`,
                             }}
                         />
                     ))}
@@ -174,13 +173,6 @@ export default function GlobalIncomingCallOverlay() {
                     </div>
                 </div>
             </div>
-
-            <style>{`
-                @keyframes wave {
-                    0%, 100% { transform: scaleY(0.4); opacity: 0.5; }
-                    50% { transform: scaleY(1); opacity: 1; }
-                }
-            `}</style>
         </div>
     );
 }

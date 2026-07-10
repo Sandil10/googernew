@@ -47,12 +47,10 @@ export default function OrderChatPopup({
     const scrollRef = useRef<HTMLDivElement | null>(null);
 
     const numericParticipantId = Number(participantId);
-    const currentUserName = currentUser?.username || currentUser?.full_name || currentUser?.name || "Admin";
+    const currentUserName = currentUser?.full_name || currentUser?.username || currentUser?.name || "Admin";
     const displayParticipantName = useMemo(() => {
         for (let index = messages.length - 1; index >= 0; index -= 1) {
             const message = messages[index];
-            if (!message?.assigned_admin_id) continue;
-
             if (String(message.sender_id || "") === String(numericParticipantId) && message.sender_name) {
                 return message.sender_name;
             }

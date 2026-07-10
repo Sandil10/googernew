@@ -51,14 +51,14 @@ function getCanonicalProfileUrl(origin: string, username: string) {
     const normalizedOrigin = origin.replace(/\/+$/, "");
     const cleanUsername = String(username || "").trim();
     if (!cleanUsername) return normalizedOrigin || "/";
-    return normalizedOrigin ? `${normalizedOrigin}/${encodeURIComponent(cleanUsername)}` : `/${encodeURIComponent(cleanUsername)}`;
+    return normalizedOrigin ? `${normalizedOrigin}/@${encodeURIComponent(cleanUsername)}` : `/@${encodeURIComponent(cleanUsername)}`;
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ username: string }> }): Promise<Metadata> {
     const { username } = await params;
     const headerStore = await headers();
     const origin = getRequestOrigin(headerStore);
-    const decodedUsername = decodeURIComponent(String(username || "").trim());
+    const decodedUsername = decodeURIComponent(String(username || "").trim()).replace(/^@+/, "");
     const user = await loadProfileUser(decodedUsername, origin);
     const canonicalUrl = getCanonicalProfileUrl(origin, user?.username || decodedUsername);
     const title = user?.full_name || user?.username || decodedUsername || "Googer Profile";
@@ -90,5 +90,6 @@ export async function generateMetadata({ params }: { params: Promise<{ username:
 
 export default async function PublicProfileUsernamePage({ params }: { params: Promise<{ username: string }> }) {
     const { username } = await params;
-    return <PublicProfileUsernameClient username={String(username || "").trim()} />;
+    const decodedUsername = decodeURIComponent(String(username || "").trim()).replace(/^@+/, "");
+    return <PublicProfileUsernameClient username={decodedUsername} />;
 }

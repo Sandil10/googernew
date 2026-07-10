@@ -60,6 +60,7 @@ type UploadControlSettings = {
     max_upload_price: number;
     flash_content_price?: number;
     flash_preview_seconds?: number;
+    flash_commission_percentage?: number;
     default_topic: string;
     default_content_access_mode: "blurred" | "unblurred";
     normal_user_video_limit_seconds: number;
@@ -286,14 +287,16 @@ function sanitizeUploadSubscriptionPackages(value: unknown): StoredUploadSubscri
     const normalized: StoredUploadSubscriptionPackage[] = [];
     value.forEach((item: any, index) => {
             const price = Number(item?.price ?? 0);
-            const days = Number(item?.days ?? 0);
-            if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(days) || days <= 0) {
+            const minutes = Number(item?.minutes ?? item?.days ?? 0);
+            if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(minutes) || minutes <= 0) {
                 return;
             }
+            const safeMinutes = Math.max(1, Math.round(minutes));
             normalized.push({
                 id: typeof item?.id === "string" && item.id.trim() ? item.id : `upload-package-${index + 1}`,
                 price: Math.round(price),
-                days: Math.max(1, Math.round(days)),
+                days: safeMinutes,
+                minutes: safeMinutes,
                 affiliateCommission: Number.isFinite(Number(item?.affiliateCommission)) ? Math.min(100, Math.max(0, Number(item.affiliateCommission))) : 0,
             });
         });
@@ -1916,9 +1919,13 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const existingReview = editingAdId ? await adsService.getAdById(editingAdId).catch(() => null) : null;
         // Fall back to editingOriginalBudget from draft if the API fetch failed, so we never charge the full budget on an edit
         const existingBudget = isPromoteAgain ? 0 : Number(existingReview?.budget ?? editingOriginalBudget ?? 0);
-        const nextAdId = !isPromoteAgain && existingReview?.adId && typeof existingReview.adId === "string"
-            ? existingReview.adId
-            : createNextAdId();
+        const existingUploadContentId = !isPromoteAgain && isUploadContent && editingAdId
+            ? String(editingAdId).trim()
+            : "";
+        const nextAdId = existingUploadContentId
+            || (!isPromoteAgain && existingReview?.adId && typeof existingReview.adId === "string"
+                ? existingReview.adId
+                : createNextAdId());
         const carryOverViews = isPromoteAgain
             ? Number(existingReview?.views_count ?? existingReview?.viewCount ?? existingReview?.views ?? 0)
             : 0;

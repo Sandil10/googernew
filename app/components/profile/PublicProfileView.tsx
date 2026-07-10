@@ -254,14 +254,14 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
             const [userProducts, userGoogs, activeOwnerAds, savedAds, userBadge] = await Promise.all([
                 marketService.getItems({ user_id: profileUserId, status: "active,approved" }),
                 googService.getUserPosts(profileUserId),
-                isOwnProfile ? adsService.getActiveAdsByUser(profileUserId) : Promise.resolve([]),
+                adsService.getActiveAdsByUser(profileUserId),
                 adsService.getPublicSavedAdsByUser(profileUserId),
                 subscriptionService.getBadgeForUser(profileUserId),
             ]);
 
             const ownerAds = isOwnProfile
                 ? mergeActiveAdsWithSavedAds(activeOwnerAds || [], savedAds || [])
-                : getPublicCompletedSavedAds(savedAds || []);
+                : mergeActiveAdsWithSavedAds(activeOwnerAds || [], getPublicCompletedSavedAds(savedAds || []));
 
             setPosts((userProducts || []).filter((p: any) => !p.is_sponsored && !p.campaign_type));
             const normalizedAds = (ownerAds || []).map(normalizeAdData).filter((ad: any) => ad.type !== 'product');
@@ -457,13 +457,7 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
     // If no googs but has ads, show all ads directly
     const googsFeed = useMemo(() => {
         type FeedItem = { type: 'goog'; data: WritePost } | { type: 'ad'; data: any };
-        const visibleProfileAds = isOwnProfile
-            ? profileAds
-            : profileAds.filter((ad) => {
-                const status = String(ad?.status || ad?.raw?.status || "").trim().toLowerCase().replace(/[_-]+/g, " ");
-                const savedAt = ad?.saved_at || ad?.savedAt || ad?.raw?.saved_at || ad?.raw?.savedAt;
-                return status === "completed" && !!savedAt;
-            });
+        const visibleProfileAds = profileAds;
         if (!isOwnProfile) {
             return [
                 ...googs.map((g): FeedItem => ({ type: 'goog', data: g })),

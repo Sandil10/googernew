@@ -7,6 +7,7 @@ export type UploadContentSubscriptionPackage = {
     id: string;
     price: number | null;
     days: number | null;
+    minutes?: number | null;
     affiliateCommission?: number;
 };
 
@@ -30,7 +31,7 @@ type Props = {
 
 const PACKAGE_PRESET_STORAGE_KEY = "googer-upload-content-subscription-packages-v1";
 const MAX_SUBSCRIPTION_PACKAGES = 3;
-const SUBSCRIPTION_DAY_OPTIONS = Array.from({ length: 30 }, (_, index) => index + 1);
+const SUBSCRIPTION_MINUTE_OPTIONS = Array.from({ length: 30 }, (_, index) => index + 1);
 
 const createPackageId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -44,8 +45,11 @@ const sanitizePackages = (packages: UploadContentSubscriptionPackage[]) =>
         .map((item) => ({
             id: item.id || createPackageId(),
             price: Number.isFinite(Number(item.price)) && Number(item.price) > 0 ? Number(item.price) : null,
-            days: Number.isFinite(Number(item.days)) && Number(item.days) > 0
-                ? Math.min(30, Number(item.days))
+            days: Number.isFinite(Number(item.minutes ?? item.days)) && Number(item.minutes ?? item.days) > 0
+                ? Math.min(30, Number(item.minutes ?? item.days))
+                : null,
+            minutes: Number.isFinite(Number(item.minutes ?? item.days)) && Number(item.minutes ?? item.days) > 0
+                ? Math.min(30, Number(item.minutes ?? item.days))
                 : null,
             affiliateCommission: Number.isFinite(Number(item.affiliateCommission)) && Number(item.affiliateCommission) >= 0
                 ? Math.min(100, Math.max(0, Number(item.affiliateCommission)))
@@ -54,10 +58,9 @@ const sanitizePackages = (packages: UploadContentSubscriptionPackage[]) =>
         .filter((item) => item.price !== null && item.days !== null)
         .slice(0, MAX_SUBSCRIPTION_PACKAGES);
 
-const formatPlanDuration = (days: number | null) => {
-    if (!days) return "";
-    if (days === 30) return "Month";
-    return `${days} Day${days === 1 ? "" : "s"}`;
+const formatPlanDuration = (minutes: number | null) => {
+    if (!minutes) return "";
+    return `${minutes} Minute${minutes === 1 ? "" : "s"}`;
 };
 
 export default function UploadContentSettingsSection({
@@ -226,6 +229,7 @@ export default function UploadContentSettingsSection({
         }
         onSubscriptionPackagesChange(subscriptionAccessEnabled ? sanitized.map((item) => ({
             ...item,
+            minutes: item.days,
             affiliateCommission: getSubscriptionCommission(item.price),
         })) : []);
         setIsSubscriptionModalOpen(false);
@@ -330,7 +334,7 @@ export default function UploadContentSettingsSection({
                             <div>
                                 <h3 className="text-[15px] font-black text-white">Subscription Access Packages</h3>
                                 <p className="mt-1 text-[11px] font-semibold text-white/45">
-                                    Add up to 3 custom packages with price and days. Subscription commission is applied automatically based on the selected price.
+                                    Add up to 3 custom packages with price and minutes. Subscription commission is applied automatically based on the selected price.
                                 </p>
                             </div>
                             <button
@@ -413,16 +417,16 @@ export default function UploadContentSettingsSection({
                                                 />
                                             </label>
                                             <label className="block rounded-xl border border-white/10 bg-black/20 px-3 py-2.5">
-                                                <p className="mb-1 text-[8px] font-black uppercase tracking-[0.12em] text-white/35">Days</p>
+                                                <p className="mb-1 text-[8px] font-black uppercase tracking-[0.12em] text-white/35">Minutes</p>
                                                 <select
                                                     value={item.days === null ? "" : String(item.days)}
                                                     onChange={(event) => updateDraftPackage(item.id, "days", event.target.value)}
                                                     className="h-5 w-full bg-transparent p-0 text-[11px] font-black text-white outline-none"
                                                 >
-                                                    <option value="" className="bg-[#111216] text-white/35">Select days</option>
-                                                    {SUBSCRIPTION_DAY_OPTIONS.map((day) => (
-                                                        <option key={day} value={day} className="bg-[#111216] text-white">
-                                                            {day}
+                                                    <option value="" className="bg-[#111216] text-white/35">Select minutes</option>
+                                                    {SUBSCRIPTION_MINUTE_OPTIONS.map((minute) => (
+                                                        <option key={minute} value={minute} className="bg-[#111216] text-white">
+                                                            {minute}
                                                         </option>
                                                     ))}
                                                 </select>

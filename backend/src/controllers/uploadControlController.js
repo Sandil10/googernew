@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS = {
     flash_content_price: 100,
     flash_preview_seconds: 5,
     flash_auto_play: false,
+    flash_commission_percentage: 0,
     default_topic: 'Technology',
     default_content_access_mode: 'unblurred',
     normal_user_video_limit_seconds: 60,
@@ -29,6 +30,7 @@ const ensureTable = async () => {
             flash_content_price DECIMAL(12, 2) NOT NULL DEFAULT 100,
             flash_preview_seconds INTEGER NOT NULL DEFAULT 5,
             flash_auto_play BOOLEAN NOT NULL DEFAULT false,
+            flash_commission_percentage NUMERIC(8, 2) NOT NULL DEFAULT 0,
             default_topic VARCHAR(80) NOT NULL DEFAULT 'Technology',
             default_content_access_mode VARCHAR(20) NOT NULL DEFAULT 'unblurred',
             normal_user_video_limit_seconds INTEGER NOT NULL DEFAULT 60,
@@ -50,6 +52,7 @@ const ensureTable = async () => {
     await pool.query(`ALTER TABLE upload_control_settings ADD COLUMN IF NOT EXISTS flash_content_price DECIMAL(12, 2) NOT NULL DEFAULT 100`);
     await pool.query(`ALTER TABLE upload_control_settings ADD COLUMN IF NOT EXISTS flash_preview_seconds INTEGER NOT NULL DEFAULT 5`);
     await pool.query(`ALTER TABLE upload_control_settings ADD COLUMN IF NOT EXISTS flash_auto_play BOOLEAN NOT NULL DEFAULT false`);
+    await pool.query(`ALTER TABLE upload_control_settings ADD COLUMN IF NOT EXISTS flash_commission_percentage NUMERIC(8, 2) NOT NULL DEFAULT 0`);
 
     await pool.query(`
         ALTER TABLE upload_control_settings
@@ -68,10 +71,11 @@ const ensureTable = async () => {
             flash_content_price,
             flash_preview_seconds,
             flash_auto_play,
+            flash_commission_percentage,
             default_topic,
             default_content_access_mode
         )
-        SELECT $1, $2, $3, $4, $5, $6, $7
+        SELECT $1, $2, $3, $4, $5, $6, $7, $8
         WHERE NOT EXISTS (
             SELECT 1 FROM upload_control_settings
         )
@@ -81,6 +85,7 @@ const ensureTable = async () => {
         DEFAULT_SETTINGS.flash_content_price,
         DEFAULT_SETTINGS.flash_preview_seconds,
         DEFAULT_SETTINGS.flash_auto_play,
+        DEFAULT_SETTINGS.flash_commission_percentage,
         DEFAULT_SETTINGS.default_topic,
         DEFAULT_SETTINGS.default_content_access_mode,
     ]);
@@ -94,6 +99,7 @@ const normalizeRow = (row) => ({
     flash_content_price: Number(row?.flash_content_price ?? DEFAULT_SETTINGS.flash_content_price),
     flash_preview_seconds: Number(row?.flash_preview_seconds ?? DEFAULT_SETTINGS.flash_preview_seconds),
     flash_auto_play: Boolean(row?.flash_auto_play ?? DEFAULT_SETTINGS.flash_auto_play),
+    flash_commission_percentage: Number(row?.flash_commission_percentage ?? row?.flashCommissionPercentage ?? DEFAULT_SETTINGS.flash_commission_percentage),
     default_topic: String(row?.default_topic || DEFAULT_SETTINGS.default_topic),
     default_content_access_mode: row?.default_content_access_mode === 'blurred' ? 'blurred' : 'unblurred',
     normal_user_video_limit_seconds: Number(row?.normal_user_video_limit_seconds ?? DEFAULT_SETTINGS.normal_user_video_limit_seconds),
@@ -159,6 +165,7 @@ exports.update = async (req, res) => {
         const flashContentPrice = Number(req.body?.flash_content_price ?? req.body?.flashContentPrice ?? currentSettings.flash_content_price);
         const flashPreviewSeconds = Number(req.body?.flash_preview_seconds ?? req.body?.flashPreviewSeconds ?? currentSettings.flash_preview_seconds);
         const flashAutoPlay = Boolean(req.body?.flash_auto_play ?? req.body?.flashAutoPlay ?? currentSettings.flash_auto_play);
+        const flashCommissionPercentage = Number(req.body?.flash_commission_percentage ?? req.body?.flashCommissionPercentage ?? currentSettings.flash_commission_percentage);
         const normalUserVideoLimitSeconds = Number(req.body?.normal_user_video_limit_seconds ?? req.body?.normalUserVideoLimitSeconds);
         const subscribedUserVideoLimitSeconds = Number(req.body?.subscribed_user_video_limit_seconds ?? req.body?.subscribedUserVideoLimitSeconds);
         const defaultTopic = String(req.body?.default_topic ?? req.body?.defaultTopic ?? currentSettings.default_topic).trim();
@@ -208,6 +215,9 @@ exports.update = async (req, res) => {
         if (!Number.isFinite(flashPreviewSeconds) || flashPreviewSeconds < 1) {
             return res.status(400).json({ success: false, message: 'Flash preview time must be at least 1 second' });
         }
+        if (!Number.isFinite(flashCommissionPercentage) || flashCommissionPercentage < 0 || flashCommissionPercentage > 100) {
+            return res.status(400).json({ success: false, message: 'Flash commission must be between 0 and 100' });
+        }
 
         if (!defaultTopic) {
             return res.status(400).json({ success: false, message: 'Default topic is required' });
@@ -232,12 +242,13 @@ exports.update = async (req, res) => {
                 flash_content_price = $3,
                 flash_preview_seconds = $4,
                 flash_auto_play = $5,
-                default_topic = $6,
-                default_content_access_mode = $7,
-                normal_user_video_limit_seconds = $8,
-                subscribed_user_video_limit_seconds = $9,
-                commission_tiers = $10::jsonb,
-                subscription_commission_tiers = $11::jsonb,
+                flash_commission_percentage = $6,
+                default_topic = $7,
+                default_content_access_mode = $8,
+                normal_user_video_limit_seconds = $9,
+                subscribed_user_video_limit_seconds = $10,
+                commission_tiers = $11::jsonb,
+                subscription_commission_tiers = $12::jsonb,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = (
                 SELECT id
@@ -252,6 +263,7 @@ exports.update = async (req, res) => {
             flashContentPrice,
             Math.floor(flashPreviewSeconds),
             flashAutoPlay,
+            flashCommissionPercentage,
             defaultTopic,
             defaultContentAccessMode,
             normalUserVideoLimitSeconds,

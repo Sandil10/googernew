@@ -32,6 +32,7 @@ const normalizeUploadControlSettings = (result: any) => {
         flash_content_price: Number(result.flash_content_price ?? 100),
         flash_preview_seconds: Number(result.flash_preview_seconds ?? 5),
         flash_auto_play: Boolean(result.flash_auto_play ?? false),
+        flash_commission_percentage: Number(result.flash_commission_percentage ?? result.flashCommissionPercentage ?? 0),
         default_topic: String(result.default_topic || 'Technology'),
         default_content_access_mode: result.default_content_access_mode === 'blurred' ? 'blurred' as const : 'unblurred' as const,
         normal_user_video_limit_seconds: Number(result.normal_user_video_limit_seconds ?? 60),
@@ -251,6 +252,7 @@ export const adsService = {
         flash_content_price: number;
         flash_preview_seconds: number;
         flash_auto_play: boolean;
+        flash_commission_percentage: number;
         default_topic: string;
         default_content_access_mode: 'blurred' | 'unblurred';
         normal_user_video_limit_seconds: number;

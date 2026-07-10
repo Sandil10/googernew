@@ -12,6 +12,10 @@ const {
 } = require('../../../../shared/utils/financeCommands');
 
 const TOPIC_FALLBACK = 'Technology';
+const SHARE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+const DIGITS = '0123456789';
+const UPPERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const LOWERS = 'abcdefghijklmnopqrstuvwxyz';
 const VALID_STATUSES = new Set(['Pending Approval', 'Approved', 'Rejected']);
 const VALID_ACCESS_MODES = new Set(['blurred', 'unblurred']);
 const VALID_VISIBILITIES = new Set(['public', 'subscribers_only', 'private']);
@@ -30,18 +34,27 @@ const DEFAULT_CONTENT_LIMITS = {
 const DEFAULT_UPLOAD_CONTROL_SETTINGS = {
     min_upload_price: 100,
     max_upload_price: 10000,
+    flash_commission_percentage: 0,
     commission_tiers: [],
     subscription_commission_tiers: [],
 };
 const DEFAULT_RESELL_GOOGER_PERCENTAGE = 10;
+const UPLOAD_CONTENT_PURCHASE_UNLOCK_MINUTES = Math.max(
+    1,
+    Math.round(Number(process.env.UPLOAD_CONTENT_PURCHASE_UNLOCK_MINUTES || 2)),
+);
 
 let schemaReady = false;
 let schemaPromise = null;
 
+// Simple insights cache (content_id + range -> insights)
+const insightsCache = new Map();
+const INSIGHTS_CACHE_TTL = 30000; // 30 seconds
+
 const loadUploadControlSettings = async () => {
     try {
         const { rows } = await pool.query(`
-            SELECT min_upload_price, max_upload_price, commission_tiers, subscription_commission_tiers
+            SELECT *
             FROM upload_control_settings
             ORDER BY id ASC
             LIMIT 1
@@ -50,6 +63,7 @@ const loadUploadControlSettings = async () => {
         return {
             min_upload_price: Number(row.min_upload_price ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.min_upload_price),
             max_upload_price: Number(row.max_upload_price ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.max_upload_price),
+            flash_commission_percentage: Number(row.flash_commission_percentage ?? row.flashCommissionPercentage ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.flash_commission_percentage),
             commission_tiers: Array.isArray(row.commission_tiers)
                 ? row.commission_tiers
                     .map((tier) => ({
@@ -75,6 +89,28 @@ const loadUploadControlSettings = async () => {
         }
         throw error;
     }
+};
+
+const activeUploadPurchaseSql = (alias) => (
+    `${alias}.created_at > CURRENT_TIMESTAMP - (${UPLOAD_CONTENT_PURCHASE_UNLOCK_MINUTES} * INTERVAL '1 minute')`
+);
+
+const uploadPurchaseExpiresAtSql = (alias) => (
+    `${alias}.created_at + (${UPLOAD_CONTENT_PURCHASE_UNLOCK_MINUTES} * INTERVAL '1 minute')`
+);
+
+const loadCurrentUploadResellGoogerCommissionPercentage = async (client) => {
+    const result = await client.query(`
+        SELECT resell_googer_commission_percentage
+        FROM ad_coin_reward_settings
+        WHERE is_active = true
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+    `);
+    const percentage = Number(result.rows[0]?.resell_googer_commission_percentage ?? DEFAULT_RESELL_GOOGER_PERCENTAGE);
+    return Number.isFinite(percentage) && percentage >= 0
+        ? Math.min(100, percentage)
+        : DEFAULT_RESELL_GOOGER_PERCENTAGE;
 };
 
 const ensureSchema = async () => {
@@ -106,6 +142,10 @@ const ensureSchema = async () => {
                 visibility VARCHAR(24) NOT NULL DEFAULT 'public',
                 preview_mode VARCHAR(20) NOT NULL DEFAULT 'thumbnail',
                 preview_url TEXT,
+                video_duration_seconds NUMERIC(12, 3) NOT NULL DEFAULT 0,
+                video_trim_start_seconds NUMERIC(12, 3) NOT NULL DEFAULT 0,
+                video_trim_end_seconds NUMERIC(12, 3) NOT NULL DEFAULT 0,
+                video_original_duration_seconds NUMERIC(12, 3) NOT NULL DEFAULT 0,
                 status VARCHAR(30) NOT NULL DEFAULT 'Pending Approval',
                 rejection_reason TEXT,
                 admin_note TEXT,
@@ -150,6 +190,10 @@ const ensureSchema = async () => {
                 ADD COLUMN IF NOT EXISTS visibility VARCHAR(24) NOT NULL DEFAULT 'public',
                 ADD COLUMN IF NOT EXISTS preview_mode VARCHAR(20) NOT NULL DEFAULT 'thumbnail',
                 ADD COLUMN IF NOT EXISTS preview_url TEXT,
+                ADD COLUMN IF NOT EXISTS video_duration_seconds NUMERIC(12, 3) NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS video_trim_start_seconds NUMERIC(12, 3) NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS video_trim_end_seconds NUMERIC(12, 3) NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS video_original_duration_seconds NUMERIC(12, 3) NOT NULL DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS status VARCHAR(30) NOT NULL DEFAULT 'Pending Approval',
                 ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
                 ADD COLUMN IF NOT EXISTS admin_note TEXT,
@@ -333,6 +377,12 @@ const ensureSchema = async () => {
                 ADD COLUMN IF NOT EXISTS resell_commission_transfer_id INTEGER NULL,
                 ADD COLUMN IF NOT EXISTS resell_googer_transfer_id INTEGER NULL
         `);
+        await pool.query(`
+            ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS country VARCHAR(120),
+                ADD COLUMN IF NOT EXISTS gender VARCHAR(50),
+                ADD COLUMN IF NOT EXISTS date_of_birth DATE
+        `);
         schemaReady = true;
     })();
     try {
@@ -375,6 +425,7 @@ const applyUploadResellPayout = async (client, {
     googerUserId,
     resellerRef,
     resellPercentage,
+    resellGoogerPercentage,
     amount,
     notePrefix,
 }) => {
@@ -393,7 +444,9 @@ const applyUploadResellPayout = async (client, {
     const resellAmount = normalizeMoney((amount * percentage) / 100);
     if (!(resellAmount > 0)) return null;
 
-    const googerPercentage = DEFAULT_RESELL_GOOGER_PERCENTAGE;
+    const googerPercentage = Number.isFinite(Number(resellGoogerPercentage))
+        ? Math.min(100, Math.max(0, Number(resellGoogerPercentage)))
+        : DEFAULT_RESELL_GOOGER_PERCENTAGE;
     const googerShare = normalizeMoney((resellAmount * googerPercentage) / 100);
     const resellerShare = normalizeMoney(Math.max(0, resellAmount - googerShare));
 
@@ -474,15 +527,17 @@ const parseSubscriptionPackages = (value) => {
     return parsed
         .map((item, index) => {
             const price = Number(item?.price ?? 0);
-            const days = Number(item?.days ?? 0);
+            const minutes = Number(item?.minutes ?? item?.days ?? 0);
             const affiliateCommission = Number(item?.affiliateCommission ?? item?.affiliate_commission ?? 0);
-            if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(days) || days <= 0) {
+            if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(minutes) || minutes <= 0) {
                 return null;
             }
+            const safeMinutes = Math.max(1, Math.round(minutes));
             return {
                 id: String(item?.id || `package-${index + 1}`),
                 price: Math.round(price),
-                days: Math.max(1, Math.round(days)),
+                days: safeMinutes,
+                minutes: safeMinutes,
                 affiliateCommission: Number.isFinite(affiliateCommission)
                     ? Math.min(100, Math.max(0, affiliateCommission))
                     : 0,
@@ -522,6 +577,128 @@ const normalizeContentType = (value) => {
 };
 
 const buildContentId = () => `${Date.now()}${Math.floor(1000 + Math.random() * 9000)}`;
+const hash32 = (input, seed = 0x811c9dc5) => {
+    let hash = seed >>> 0;
+    for (let index = 0; index < input.length; index += 1) {
+        hash ^= input.charCodeAt(index);
+        hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return hash >>> 0;
+};
+
+const positiveModulo = (value, modulus) => {
+    const normalized = Number(value) >>> 0;
+    return normalized % modulus;
+};
+
+const buildShortShareCode = (type, target, length = 8) => {
+    const normalizedTarget = String(target || '').trim();
+    if (!normalizedTarget) return '';
+    const payload = `${type}:${normalizedTarget}`;
+    let stateA = hash32(payload, 0x9e3779b9);
+    let stateB = hash32(payload, 0x85ebca6b);
+
+    const chars = [];
+    for (let index = 0; index < length; index += 1) {
+        stateA = (Math.imul(stateA ^ (stateA >>> 15), 2246822519) + stateB + index) >>> 0;
+        stateB = (Math.imul(stateB ^ (stateB >>> 13), 3266489917) + stateA + index * 17) >>> 0;
+        const nextIndex = positiveModulo(stateA ^ stateB, SHARE_ALPHABET.length);
+        chars.push(SHARE_ALPHABET[nextIndex]);
+    }
+
+    const codeChars = [...chars];
+    const hasDigit = codeChars.some((char) => DIGITS.includes(char));
+    const hasUpper = codeChars.some((char) => UPPERS.includes(char));
+    const hasLower = codeChars.some((char) => LOWERS.includes(char));
+
+    if (!hasDigit) codeChars[positiveModulo(stateA + 1, length)] = DIGITS[positiveModulo(stateB, DIGITS.length)];
+    if (!hasUpper) codeChars[positiveModulo(stateB + 3, length)] = UPPERS[positiveModulo(stateA, UPPERS.length)];
+    if (!hasLower) codeChars[positiveModulo(stateA + stateB + 5, length)] = LOWERS[positiveModulo(stateA ^ stateB, LOWERS.length)];
+
+    return codeChars.join('');
+};
+
+const getUploadHomeScore = (likes, comments, shares) => (
+    (Number(likes || 0) * 3)
+    + (Number(comments || 0) * 8)
+    + (Number(shares || 0) * 15)
+);
+
+const getUploadExpansionStage = (views, likes, comments, shares) => {
+    const viewCount = Number(views || 0);
+    const likeCount = Number(likes || 0);
+    const score = getUploadHomeScore(likes, comments, shares);
+
+    let stage = '200';
+    let cap = 200;
+    let minLikes = 0;
+    let canExpand = true;
+
+    if (viewCount < 200) {
+        stage = '200';
+        cap = 200;
+    } else if (likeCount < 50) {
+        stage = 'followers';
+        cap = 200;
+        minLikes = 50;
+        canExpand = false;
+    } else if (viewCount < 500) {
+        stage = '500';
+        cap = 500;
+        minLikes = 50;
+    } else if (score < 60 && likeCount < 100) {
+        stage = 'followers';
+        cap = 500;
+        minLikes = 100;
+        canExpand = false;
+    } else if (score < 100) {
+        stage = '2000';
+        cap = 2000;
+        minLikes = 100;
+    } else if (score <= 200) {
+        stage = '10000';
+        cap = 10000;
+        minLikes = 250;
+    } else {
+        stage = '50000';
+        cap = 50000;
+        minLikes = 1000;
+    }
+
+    if (viewCount >= 500 && likeCount >= 100 && cap < 2000) {
+        stage = '2000';
+        cap = 2000;
+        minLikes = 100;
+        canExpand = true;
+    }
+    if (viewCount >= 2000 && likeCount >= 250 && cap < 10000) {
+        stage = '10000';
+        cap = 10000;
+        minLikes = 250;
+        canExpand = true;
+    }
+    if (viewCount >= 10000 && likeCount >= 1000 && cap < 50000) {
+        stage = '50000';
+        cap = 50000;
+        minLikes = 1000;
+        canExpand = true;
+    }
+    if (viewCount >= 50000 && likeCount >= 5000) {
+        const extraStage = Math.max(0, Math.floor((likeCount - 5000) / 5000));
+        stage = extraStage > 0 ? `unlimited-${extraStage + 1}` : 'unlimited';
+        cap = null;
+        minLikes = 5000 + (extraStage * 5000);
+        canExpand = true;
+    }
+
+    return {
+        canExpand,
+        cap,
+        minLikes,
+        score,
+        stage,
+    };
+};
 
 const mapRow = (row) => {
     const mediaGallery = Array.isArray(row.media_gallery)
@@ -530,6 +707,7 @@ const mapRow = (row) => {
     const subscriptionPackages = Array.isArray(row.subscription_packages)
         ? row.subscription_packages
         : parseJsonField(row.subscription_packages, []);
+    const expansion = getUploadExpansionStage(row.views_count, row.likes_count, row.comments_count, row.shares_count);
     return {
         id: row.id,
         contentId: row.content_id,
@@ -555,6 +733,14 @@ const mapRow = (row) => {
         visibility: normalizeVisibility(row.visibility),
         preview_mode: VALID_PREVIEW_MODES.has(row.preview_mode) ? row.preview_mode : 'thumbnail',
         preview_url: row.preview_url || '',
+        video_duration_seconds: Number(row.video_duration_seconds || 0),
+        videoDurationSeconds: Number(row.video_duration_seconds || 0),
+        video_trim_start_seconds: Number(row.video_trim_start_seconds || 0),
+        videoTrimStartSeconds: Number(row.video_trim_start_seconds || 0),
+        video_trim_end_seconds: Number(row.video_trim_end_seconds || 0),
+        videoTrimEndSeconds: Number(row.video_trim_end_seconds || 0),
+        video_original_duration_seconds: Number(row.video_original_duration_seconds || 0),
+        videoOriginalDurationSeconds: Number(row.video_original_duration_seconds || 0),
         status: normalizeStatus(row.status),
         rejection_reason: row.rejection_reason || null,
         admin_note: row.admin_note || null,
@@ -570,10 +756,22 @@ const mapRow = (row) => {
         repostCount: Number(row.reposts_count || 0),
         views_count: Number(row.views_count || 0),
         viewCount: Number(row.views_count || 0),
+        home_expansion_stage: expansion.stage,
+        homeExpansionStage: expansion.stage,
+        home_expansion_cap: expansion.cap,
+        homeExpansionCap: expansion.cap,
+        home_expansion_score: expansion.score,
+        homeExpansionScore: expansion.score,
+        home_expansion_min_likes: expansion.minLikes,
+        homeExpansionMinLikes: expansion.minLikes,
+        home_can_expand: expansion.canExpand,
+        homeCanExpand: expansion.canExpand,
         reports_count: Number(row.reports_count || 0),
         user_liked: !!row.user_liked,
+        user_reposted: !!row.user_reposted,
         user_purchased: !!row.user_purchased,
         user_has_access: !!row.user_has_access || !!row.user_purchased,
+        user_purchase_expires_at: toUtcIso(row.user_purchase_expires_at),
         pinned_at: toUtcIso(row.pinned_at),
         created_at: toUtcIso(row.created_at),
         updated_at: toUtcIso(row.updated_at),
@@ -583,6 +781,23 @@ const mapRow = (row) => {
 const assertAdmin = async (userId) => {
     const result = await pool.query('SELECT user_type FROM users WHERE id = $1 LIMIT 1', [userId]);
     return String(result.rows[0]?.user_type || '').toLowerCase() === 'admin';
+};
+
+const hasInsightsModerationAccess = async (userId) => {
+    const result = await pool.query('SELECT user_type FROM users WHERE id = $1 LIMIT 1', [userId]);
+    const normalizedRole = String(result.rows[0]?.user_type || '').trim().toLowerCase().replace(/-/g, '_');
+    return ['admin', 'administrator', 'employee', 'moderator', 'super_admin', 'superadmin'].includes(normalizedRole);
+};
+
+const resolveContentOwnerId = (content) => {
+    const ownerId = Number(content?.owner_user_id ?? content?.user_id ?? 0);
+    return Number.isFinite(ownerId) && ownerId > 0 ? ownerId : null;
+};
+
+const isContentOwnedByUser = (content, userId) => {
+    const ownerId = resolveContentOwnerId(content);
+    const viewerId = Number(userId || 0);
+    return ownerId !== null && Number.isFinite(viewerId) && ownerId === viewerId;
 };
 
 const parseExtra = (value) => {
@@ -715,7 +930,12 @@ const parseOptionalUserIdFromRequest = (req) => {
 const resolveContentLookup = async (identifier, extraColumns = '') => {
     const rawIdentifier = String(identifier || '').trim();
     if (!rawIdentifier) return null;
-    const numericId = /^\d+$/.test(rawIdentifier) ? Number(rawIdentifier) : null;
+    const parsedNumericId = /^\d+$/.test(rawIdentifier) ? Number(rawIdentifier) : null;
+    // Public content_id values can be numeric-looking strings that exceed PostgreSQL INTEGER.
+    // Only treat the identifier as the internal row id when it safely fits that column type.
+    const numericId = Number.isSafeInteger(parsedNumericId) && parsedNumericId <= 2147483647
+        ? parsedNumericId
+        : null;
     const result = await pool.query(
         `SELECT uc.*${extraColumns ? `, ${extraColumns}` : ''}
          FROM upload_contents uc
@@ -735,6 +955,33 @@ const mapActorRow = (row) => ({
     profile_picture: row.profile_picture || null,
     created_at: toUtcIso(row.created_at),
 });
+
+const getInsightsRangeCondition = (alias, range) => {
+    if (range === 'today') return `${alias}.created_at >= date_trunc('day', CURRENT_TIMESTAMP)`;
+    if (range === '7d') return `${alias}.created_at >= CURRENT_TIMESTAMP - INTERVAL '7 days'`;
+    if (range === '30d') return `${alias}.created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'`;
+    return 'TRUE';
+};
+
+const normalizeInsightRange = (value) => {
+    const range = String(value || '').toLowerCase();
+    return ['today', '7d', '30d', 'all'].includes(range) ? range : '7d';
+};
+
+const rowsWithPercentages = (rows, valueKey = 'count') => {
+    const cleanRows = (rows || [])
+        .map((row) => ({
+            label: String(row.label || '').trim(),
+            count: Number(row[valueKey] || row.count || 0),
+            value: Number(row.value || row[valueKey] || row.count || 0),
+        }))
+        .filter((row) => row.label && row.label.toLowerCase() !== 'unknown' && row.count > 0);
+    const total = cleanRows.reduce((sum, row) => sum + row.count, 0);
+    return cleanRows.map((row) => ({
+        ...row,
+        percentage: total > 0 ? Number(((row.count / total) * 100).toFixed(2)) : 0,
+    }));
+};
 
 const mapCommentRow = (row) => ({
     id: row.id,
@@ -830,6 +1077,12 @@ const loadCurrentVaultCommissionForPrice = async (price) => {
     return Math.min(100, Math.max(0, Number(matchingTier.commission || 0)));
 };
 
+const loadCurrentFlashCommissionPercentage = async () => {
+    const settings = await loadUploadControlSettings();
+    const percentage = Number(settings.flash_commission_percentage ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.flash_commission_percentage);
+    return Number.isFinite(percentage) ? Math.min(100, Math.max(0, percentage)) : 0;
+};
+
 exports.createUploadContent = async (req, res) => {
     try {
         await ensureSchema();
@@ -869,8 +1122,12 @@ exports.createUploadContent = async (req, res) => {
         let thumbnailUrl = String(body.thumbnailPreview || body.thumbnail_url || '').trim();
         let previewUrl = String(body.previewUrl || body.preview_url || '').trim();
         const submittedVideoDurationSeconds = Number(body.videoDurationSeconds ?? body.video_duration_seconds ?? 0);
+        const submittedVideoTrimStartSeconds = Math.max(0, Number(body.videoTrimStartSeconds ?? body.video_trim_start_seconds ?? 0) || 0);
+        const submittedVideoTrimEndSeconds = Math.max(0, Number(body.videoTrimEndSeconds ?? body.video_trim_end_seconds ?? 0) || 0);
+        const submittedVideoOriginalDurationSeconds = Math.max(0, Number(body.videoOriginalDurationSeconds ?? body.video_original_duration_seconds ?? 0) || 0);
         const contentFiles = Array.isArray(req.files) ? req.files : (req.files?.images || []);
         const previewFiles = Array.isArray(req.files) ? [] : (req.files?.preview || []);
+        const thumbnailFiles = Array.isArray(req.files) ? [] : (req.files?.thumbnail || []);
 
         if (!contentId) {
             return res.status(400).json({ success: false, message: 'Content ID is required.' });
@@ -935,17 +1192,15 @@ exports.createUploadContent = async (req, res) => {
         }
 
         const existing = await pool.query(
-            'SELECT id, user_id, status FROM upload_contents WHERE content_id = $1 LIMIT 1',
+            'SELECT * FROM upload_contents WHERE content_id = $1 LIMIT 1',
             [contentId]
         );
         const existingContent = existing.rows[0] || null;
-        const isEditingPendingContent = !!existingContent
-            && Number(existingContent.user_id) === Number(userId)
-            && existingContent.status === 'Pending Approval';
+        const isEditingExistingContent = !!existingContent && Number(existingContent.user_id) === Number(userId);
 
         const planLimits = await getUploadContentPlanLimits(userId);
         const contentExpirySql = buildContentExpirySql(planLimits);
-        if (!isEditingPendingContent) {
+        if (!isEditingExistingContent) {
             const totalCountResult = await pool.query(
                 `SELECT COUNT(*)::int AS count
                  FROM upload_contents
@@ -973,7 +1228,7 @@ exports.createUploadContent = async (req, res) => {
                 });
             }
         }
-        if (!isEditingPendingContent && planLimits.dailyUploads > 0) {
+        if (!isEditingExistingContent && planLimits.dailyUploads > 0) {
             const todayCount = await pool.query(
                 `SELECT COUNT(*)::int AS count
                  FROM upload_contents
@@ -1003,15 +1258,6 @@ exports.createUploadContent = async (req, res) => {
             }
         }
 
-        if (mediaType === 'video' && Number.isFinite(submittedVideoDurationSeconds) && submittedVideoDurationSeconds > 0) {
-            if (submittedVideoDurationSeconds > planLimits.videoLimitSeconds) {
-                return res.status(400).json({
-                    success: false,
-                    message: `Video duration exceeds the allowed limit of ${planLimits.videoLimitSeconds} seconds.`,
-                });
-            }
-        }
-
         if (contentFiles.length > 0) {
             const uploadedUrls = await saveUploadedFiles(contentFiles, 'upload-content');
             mediaGallery = uploadedUrls.filter(Boolean);
@@ -1025,11 +1271,16 @@ exports.createUploadContent = async (req, res) => {
             previewUrl = previewUrls[0] || '';
         }
 
+        if (thumbnailFiles.length > 0) {
+            const thumbnailUrls = await saveUploadedFiles(thumbnailFiles, 'upload-content-thumbnails');
+            thumbnailUrl = thumbnailUrls[0] || '';
+        }
+
         if (mediaType === 'image' && Array.isArray(mediaGallery) && mediaGallery.length === 1) {
             accessMode = 'blurred';
         }
 
-        if (thumbnailUrl.startsWith('data:')) {
+        if (thumbnailUrl && thumbnailUrl.startsWith('data:')) {
             thumbnailUrl = await saveDataUrl(thumbnailUrl, 'upload-content-thumbnails');
         }
 
@@ -1049,9 +1300,21 @@ exports.createUploadContent = async (req, res) => {
             if (Number(existingContent.user_id) !== Number(userId)) {
                 return res.status(409).json({ success: false, message: 'Content ID already exists.' });
             }
-            if (existingContent.status !== 'Pending Approval') {
-                return res.status(409).json({ success: false, message: 'Approved content cannot be edited.' });
-            }
+            const normalizeCompare = (value) => String(value ?? '').trim();
+            const normalizeNumberCompare = (value) => Number(Number(value || 0).toFixed(2));
+            const normalizeArrayCompare = (value) => JSON.stringify(Array.isArray(value) ? value.filter(Boolean) : []);
+            const existingGallery = Array.isArray(existingContent.media_gallery) ? existingContent.media_gallery : parseJsonField(existingContent.media_gallery, []);
+            const nextGallery = Array.isArray(mediaGallery) ? mediaGallery : [];
+            const sensitiveFieldsChanged = [
+                normalizeNumberCompare(existingContent.price) !== normalizeNumberCompare(price),
+                normalizeCompare(existingContent.external_link) !== normalizeCompare(externalLink),
+                normalizeCompare(existingContent.media_type) !== normalizeCompare(mediaType),
+                normalizeCompare(existingContent.media_preview) !== normalizeCompare(mediaPreview || (Array.isArray(mediaGallery) ? mediaGallery[0] : '') || ''),
+                normalizeArrayCompare(existingGallery) !== normalizeArrayCompare(nextGallery),
+            ].some(Boolean);
+            const nextStatus = existingContent.status === 'Approved' && !sensitiveFieldsChanged
+                ? 'Approved'
+                : 'Pending Approval';
             const updated = await pool.query(
                 `UPDATE upload_contents
                  SET content_type = $2,
@@ -1072,6 +1335,14 @@ exports.createUploadContent = async (req, res) => {
                      visibility = $17,
                      preview_mode = $18,
                      preview_url = $19,
+                     video_duration_seconds = $20,
+                     video_trim_start_seconds = $21,
+                     video_trim_end_seconds = $22,
+                     video_original_duration_seconds = $23,
+                     status = $24,
+                     rejection_reason = CASE WHEN $24 = 'Pending Approval' THEN NULL ELSE rejection_reason END,
+                     admin_note = CASE WHEN $24 = 'Pending Approval' THEN NULL ELSE admin_note END,
+                     approved_at = CASE WHEN $24 = 'Pending Approval' THEN NULL ELSE approved_at END,
                      updated_at = CURRENT_TIMESTAMP
                  WHERE id = $1
                  RETURNING *`,
@@ -1095,6 +1366,11 @@ exports.createUploadContent = async (req, res) => {
                     visibility,
                     previewMode,
                     previewUrl || null,
+                    Number.isFinite(submittedVideoDurationSeconds) ? Math.max(0, submittedVideoDurationSeconds) : 0,
+                    submittedVideoTrimStartSeconds,
+                    submittedVideoTrimEndSeconds,
+                    submittedVideoOriginalDurationSeconds,
+                    nextStatus,
                 ]
             );
             return res.status(200).json({ success: true, content: mapRow(updated.rows[0]) });
@@ -1104,11 +1380,15 @@ exports.createUploadContent = async (req, res) => {
             `INSERT INTO upload_contents (
                 content_id, user_id, owner_user_id, owner_username, content_type, description, topic, price,
                 subscription_packages, affiliate_commission, hashtags, allow_comments, show_link_on_home, external_link, media_type, media_preview,
-                media_gallery, thumbnail_url, content_access_mode, visibility, preview_mode, preview_url, status, expires_at, created_at, updated_at
+                media_gallery, thumbnail_url, content_access_mode, visibility, preview_mode, preview_url,
+                video_duration_seconds, video_trim_start_seconds, video_trim_end_seconds, video_original_duration_seconds,
+                status, expires_at, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8,
                 $9::jsonb, $10, $11::jsonb, $12, $13, $14, $15, $16,
-                $17::jsonb, $18, $19, $20, $21, $22, 'Pending Approval', ${contentExpirySql || 'NULL'}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                $17::jsonb, $18, $19, $20, $21, $22,
+                $23, $24, $25, $26,
+                'Pending Approval', ${contentExpirySql || 'NULL'}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             RETURNING *`,
             [
@@ -1134,6 +1414,10 @@ exports.createUploadContent = async (req, res) => {
                 visibility,
                 previewMode,
                 previewUrl || null,
+                Number.isFinite(submittedVideoDurationSeconds) ? Math.max(0, submittedVideoDurationSeconds) : 0,
+                submittedVideoTrimStartSeconds,
+                submittedVideoTrimEndSeconds,
+                submittedVideoOriginalDurationSeconds,
             ]
         );
 
@@ -1159,12 +1443,69 @@ exports.getMyUploadContents = async (req, res) => {
              ORDER BY uc.created_at DESC`,
             [req.user.id]
         );
-        const contents = result.rows.map((row) => ({
+        let rows = result.rows;
+        const repostResult = await pool.query(
+            `SELECT uc.*, u.full_name, u.username AS user_username, u.profile_picture, u.user_type,
+                    requested_repost_user.username AS reposted_by_username,
+                    requested_repost_user.id AS reposted_by_user_id,
+                    requested_repost_user.full_name AS reposted_by_full_name,
+                    requested_repost_user.profile_picture AS reposted_by_profile_picture,
+                    requested_repost.created_at AS reposted_at,
+                    EXISTS (
+                        SELECT 1 FROM upload_content_likes ucl
+                        WHERE ucl.content_id = uc.id AND ucl.user_id = $1
+                    ) AS user_liked,
+                    EXISTS (
+                        SELECT 1 FROM upload_content_purchases ucp
+                        WHERE ucp.content_id = uc.id AND ucp.buyer_id = $1
+                          AND ${activeUploadPurchaseSql('ucp')}
+                    ) AS user_purchased,
+                    (
+                        SELECT MAX(${uploadPurchaseExpiresAtSql('ucp_exp')})
+                        FROM upload_content_purchases ucp_exp
+                        WHERE ucp_exp.content_id = uc.id AND ucp_exp.buyer_id = $1
+                          AND ${activeUploadPurchaseSql('ucp_exp')}
+                    ) AS user_purchase_expires_at,
+                    (
+                        uc.user_id = $1
+                        OR EXISTS (
+                            SELECT 1 FROM upload_content_purchases ucp2
+                            WHERE ucp2.content_id = uc.id AND ucp2.buyer_id = $1
+                              AND ${activeUploadPurchaseSql('ucp2')}
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM upload_content_subscriptions ucs
+                            WHERE ucs.creator_id = uc.user_id
+                              AND ucs.buyer_id = $1
+                              AND ucs.expires_at > NOW()
+                        )
+                    ) AS user_has_access
+             FROM upload_content_reposts requested_repost
+            INNER JOIN upload_contents uc ON uc.id = requested_repost.content_id
+            INNER JOIN users u ON u.id = uc.user_id
+            INNER JOIN users requested_repost_user ON requested_repost_user.id = requested_repost.user_id
+            WHERE requested_repost.user_id = $1
+              AND uc.status = 'Approved'
+              AND COALESCE(u.is_deactivated, false) = false
+              AND COALESCE(u.status, 'Active') <> 'Deactivated'
+              AND (uc.expires_at IS NULL OR uc.expires_at > NOW())
+            ORDER BY requested_repost.created_at DESC
+            LIMIT 80`,
+            [req.user.id]
+        );
+        rows = [...result.rows, ...repostResult.rows];
+
+        const contents = rows.map((row) => ({
             ...mapRow(row),
             full_name: row.full_name || null,
             username: row.user_username || row.owner_username || null,
             profile_picture: row.profile_picture || null,
             user_type: row.user_type || null,
+            reposted_by_username: row.reposted_by_username || null,
+            reposted_by_user_id: row.reposted_by_user_id || null,
+            reposted_by_full_name: row.reposted_by_full_name || null,
+            reposted_by_profile_picture: row.reposted_by_profile_picture || null,
+            reposted_at: toUtcIso(row.reposted_at),
         }));
         return res.status(200).json({ success: true, contents });
     } catch (error) {
@@ -1212,7 +1553,7 @@ exports.purchaseCreatorSubscription = async (req, res) => {
         }
 
         const amount = normalizeMoney(selectedPackage.price);
-        const days = Math.max(1, Math.round(Number(selectedPackage.days || 0)));
+        const packageMinutes = Math.max(1, Math.round(Number(selectedPackage.days || selectedPackage.minutes || 0)));
         const currentCommissionPercentage = await loadCurrentSubscriptionCommissionForPrice(amount);
         const commissionPercentage = currentCommissionPercentage > 0 ? currentCommissionPercentage : 0;
         const commissionAmount = normalizeMoney((amount * commissionPercentage) / 100);
@@ -1268,7 +1609,7 @@ exports.purchaseCreatorSubscription = async (req, res) => {
             senderId: buyerId,
             receiverId: creatorId,
             amount: creatorAmount,
-            note: `Vault Creator Subscription - ${days} day${days === 1 ? '' : 's'}`,
+            note: `Creator Content Subscription - ${packageMinutes} minute${packageMinutes === 1 ? '' : 's'}`,
             type: 'vault_subscription',
             status: 'accepted',
             commission: commissionAmount,
@@ -1300,7 +1641,7 @@ exports.purchaseCreatorSubscription = async (req, res) => {
                 $7, $8, $9,
                 $10, $11, $12, $13, $14,
                 $15, $16, $17,
-                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + ($5::int * INTERVAL '1 day'), CURRENT_TIMESTAMP
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + ($5::int * INTERVAL '1 minute'), CURRENT_TIMESTAMP
              )
              RETURNING id, starts_at, expires_at`,
             [
@@ -1308,7 +1649,7 @@ exports.purchaseCreatorSubscription = async (req, res) => {
                 creatorId,
                 Number(contentRow.id),
                 selectedPackage.id,
-                days,
+                packageMinutes,
                 amount,
                 commissionPercentage,
                 commissionAmount,
@@ -1335,7 +1676,8 @@ exports.purchaseCreatorSubscription = async (req, res) => {
                 creator_id: creatorId,
                 content_id: Number(contentRow.id),
                 package_id: selectedPackage.id,
-                package_days: days,
+                package_days: packageMinutes,
+                package_minutes: packageMinutes,
                 amount,
                 commission_percentage: commissionPercentage,
                 commission_amount: commissionAmount,
@@ -1371,10 +1713,12 @@ exports.purchaseVaultContent = async (req, res) => {
         await client.query('BEGIN');
 
         const contentRow = await resolveContentLookup(contentIdentifier);
-        if (!contentRow || normalizeStatus(contentRow.status) !== 'Approved' || contentRow.content_type === 'flash') {
+        if (!contentRow || normalizeStatus(contentRow.status) !== 'Approved') {
             await client.query('ROLLBACK');
-            return res.status(404).json({ success: false, message: 'Vault content is not available.' });
+            return res.status(404).json({ success: false, message: 'Content is not available.' });
         }
+        const isFlashContent = contentRow.content_type === 'flash';
+        const purchaseLabel = isFlashContent ? 'Flash Content Purchase' : 'Vault Content Purchase';
 
         const creatorId = Number(contentRow.user_id);
         if (!Number.isFinite(creatorId) || creatorId <= 0) {
@@ -1386,10 +1730,21 @@ exports.purchaseVaultContent = async (req, res) => {
             return res.status(400).json({ success: false, message: 'You cannot purchase your own content.' });
         }
 
+        await client.query(
+            `DELETE FROM upload_content_purchases
+             WHERE buyer_id = $1
+               AND content_id = $2
+               AND NOT (${activeUploadPurchaseSql('upload_content_purchases')})`,
+            [buyerId, Number(contentRow.id)]
+        );
+
         const existingPurchase = await client.query(
-            `SELECT id, amount, commission_percentage, commission_amount, creator_amount, wallet_transfer_id, created_at
+            `SELECT id, amount, commission_percentage, commission_amount, creator_amount, wallet_transfer_id, created_at,
+                    created_at + (${UPLOAD_CONTENT_PURCHASE_UNLOCK_MINUTES} * INTERVAL '1 minute') AS expires_at
              FROM upload_content_purchases
              WHERE buyer_id = $1 AND content_id = $2
+               AND ${activeUploadPurchaseSql('upload_content_purchases')}
+             ORDER BY created_at DESC
              LIMIT 1`,
             [buyerId, Number(contentRow.id)]
         );
@@ -1416,6 +1771,7 @@ exports.purchaseVaultContent = async (req, res) => {
                     creator_amount: normalizeMoney(row.creator_amount),
                     wallet_transfer_id: row.wallet_transfer_id,
                     created_at: toUtcIso(row.created_at),
+                    expires_at: toUtcIso(row.expires_at),
                 },
             });
         }
@@ -1426,10 +1782,13 @@ exports.purchaseVaultContent = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Content price is invalid.' });
         }
 
-        const currentCommissionPercentage = await loadCurrentVaultCommissionForPrice(amount);
+        const currentCommissionPercentage = isFlashContent
+            ? await loadCurrentFlashCommissionPercentage()
+            : await loadCurrentVaultCommissionForPrice(amount);
         const commissionPercentage = currentCommissionPercentage > 0 ? currentCommissionPercentage : 0;
         const commissionAmount = normalizeMoney((amount * commissionPercentage) / 100);
-        const affiliatePercentage = Math.min(100, Math.max(0, Number(contentRow.affiliate_commission || 0)));
+        const affiliatePercentage = isFlashContent ? 0 : Math.min(100, Math.max(0, Number(contentRow.affiliate_commission || 0)));
+        const resellGoogerPercentage = isFlashContent ? 0 : await loadCurrentUploadResellGoogerCommissionPercentage(client);
         const googerUserId = await resolveGoogerMainWalletUserId(client);
 
         if (!googerUserId) {
@@ -1438,21 +1797,22 @@ exports.purchaseVaultContent = async (req, res) => {
         }
 
         let buyerWallet;
-        const reseller = await resolveResellerUser(client, requestedResellerRef);
+        const reseller = isFlashContent ? null : await resolveResellerUser(client, requestedResellerRef);
         const resellerUserId = Number(reseller?.id || 0);
         const lockUserIds = [buyerId, creatorId, googerUserId];
         if (resellerUserId > 0 && !lockUserIds.includes(resellerUserId)) lockUserIds.push(resellerUserId);
 
         await lockWalletUsers(client, lockUserIds);
 
-        const resellPayout = await applyUploadResellPayout(client, {
+        const resellPayout = isFlashContent ? null : await applyUploadResellPayout(client, {
             buyerId,
             creatorId,
             googerUserId,
             resellerRef: requestedResellerRef,
             resellPercentage: affiliatePercentage,
+            resellGoogerPercentage,
             amount,
-            notePrefix: `Vault Content Purchase - ${contentRow.content_id}`,
+            notePrefix: `${purchaseLabel} - ${contentRow.content_id}`,
         });
         const creatorAmount = normalizeMoney(amount - commissionAmount - Number(resellPayout?.amount || 0));
         if (creatorAmount < 0) {
@@ -1478,23 +1838,23 @@ exports.purchaseVaultContent = async (req, res) => {
             throw financeError;
         }
 
-        const transfer = await insertWalletTransfer(client, {
+        const transfer = creatorAmount > 0 ? await insertWalletTransfer(client, {
             senderId: buyerId,
             receiverId: creatorId,
             amount: creatorAmount,
-            note: `Vault Content Purchase - ${contentRow.content_id}`,
-            type: 'vault_purchase',
+            note: `${purchaseLabel} - ${contentRow.content_id}`,
+            type: isFlashContent ? 'flash_purchase' : 'vault_purchase',
             status: 'accepted',
-            commission: commissionAmount,
+            commission: 0,
             commissionPercentage,
-        });
+        }) : null;
 
         if (commissionAmount > 0) {
             await insertWalletTransfer(client, {
                 senderId: buyerId,
                 receiverId: googerUserId,
                 amount: commissionAmount,
-                note: `Googer commission for Vault Content Purchase - ${contentRow.content_id}`,
+                note: `Googer commission for ${purchaseLabel} - ${contentRow.content_id}`,
                 type: 'commission_hold',
                 status: 'accepted',
                 commission: commissionAmount,
@@ -1508,8 +1868,8 @@ exports.purchaseVaultContent = async (req, res) => {
                 commission_amount, creator_amount,
                 reseller_user_id, reseller_ref, resell_commission_percentage, resell_commission_amount, resell_googer_commission_percentage,
                 wallet_transfer_id, resell_commission_transfer_id, resell_googer_transfer_id, created_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, CURRENT_TIMESTAMP)
-             RETURNING id, created_at`,
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, CURRENT_TIMESTAMP)
+             RETURNING id, created_at, created_at + (${UPLOAD_CONTENT_PURCHASE_UNLOCK_MINUTES} * INTERVAL '1 minute') AS expires_at`,
             [
                 buyerId,
                 creatorId,
@@ -1523,7 +1883,7 @@ exports.purchaseVaultContent = async (req, res) => {
                 Number(resellPayout?.percentage || 0),
                 Number(resellPayout?.amount || 0),
                 Number(resellPayout?.googerPercentage || 0),
-                transfer.id,
+                transfer?.id || null,
                 resellPayout?.resellerTransferId || null,
                 resellPayout?.googerTransferId || null,
             ]
@@ -1548,15 +1908,16 @@ exports.purchaseVaultContent = async (req, res) => {
                 reseller_ref: resellPayout?.resellerRef || null,
                 resell_commission_percentage: Number(resellPayout?.percentage || 0),
                 resell_commission_amount: Number(resellPayout?.amount || 0),
-                wallet_transfer_id: transfer.id,
+                wallet_transfer_id: transfer?.id || null,
                 created_at: toUtcIso(purchaseResult.rows[0].created_at),
+                expires_at: toUtcIso(purchaseResult.rows[0].expires_at),
             },
         });
     } catch (error) {
         try {
             await client.query('ROLLBACK');
         } catch {}
-        console.error('Purchase vault content error:', error);
+        console.error('Purchase upload content error:', error);
         if (error?.code === 'INSUFFICIENT_WALLET_BALANCE') {
             return res.status(400).json({ success: false, message: 'Insufficient wallet balance.' });
         }
@@ -1575,6 +1936,7 @@ exports.getApprovedUploadContentsPublic = async (req, res) => {
         const topic = String(req.query.topic || '').trim();
         const requestedUserId = Number(req.query.userId || 0);
         const viewerId = parseOptionalUserIdFromRequest(req);
+        const uploadHomeScoreSql = `(COALESCE(uc.likes_count, 0) * 3 + COALESCE(uc.comments_count, 0) * 8 + COALESCE(uc.shares_count, 0) * 15)`;
         const params = [];
         let where = `WHERE uc.status = 'Approved'
             AND COALESCE(u.is_deactivated, false) = false
@@ -1594,27 +1956,73 @@ exports.getApprovedUploadContentsPublic = async (req, res) => {
             )`;
         if (Number.isFinite(requestedUserId) && requestedUserId > 0) {
             params.push(requestedUserId);
-            where += ` AND uc.user_id = $${params.length}`;
+            where += ` AND (
+                uc.user_id = $${params.length}
+                OR EXISTS (
+                    SELECT 1
+                    FROM upload_content_reposts ucr_filter
+                    WHERE ucr_filter.content_id = uc.id
+                      AND ucr_filter.user_id = $${params.length}
+                )
+            )`;
         }
         if (topic) {
             params.push(topic);
             where += ` AND uc.topic = $${params.length}`;
         }
+        const visibilityGate = requestedUserId > 0
+            ? ''
+            : ` AND (
+                uc.views_count < 200
+                OR (uc.likes_count >= 50 AND uc.views_count < 500)
+                OR ((${uploadHomeScoreSql} >= 60 OR (uc.views_count >= 500 AND uc.likes_count >= 100)) AND uc.views_count < 2000)
+                OR ((${uploadHomeScoreSql} >= 100 OR (uc.views_count >= 2000 AND uc.likes_count >= 250)) AND uc.views_count < 10000)
+                OR ((${uploadHomeScoreSql} > 200 OR (uc.views_count >= 10000 AND uc.likes_count >= 1000)) AND uc.views_count < 50000)
+                OR (uc.views_count >= 50000 AND uc.likes_count >= 5000)
+                OR (
+                    ${viewerId ? Number(viewerId) : 'NULL'}::INTEGER IS NOT NULL
+                    AND (
+                        uc.user_id = ${viewerId ? Number(viewerId) : 'NULL'}
+                        OR EXISTS (
+                            SELECT 1 FROM user_subscriptions us2
+                            WHERE us2.subscriber_id = ${viewerId ? Number(viewerId) : 'NULL'}
+                              AND us2.subscribed_to_id = uc.user_id
+                        )
+                    )
+                )
+             )`;
         const result = await pool.query(
              `SELECT uc.*, u.full_name, u.username AS user_username, u.profile_picture, u.user_type,
+                     requested_repost_user.username AS reposted_by_username,
+                     requested_repost_user.id AS reposted_by_user_id,
+                     requested_repost_user.full_name AS reposted_by_full_name,
+                     requested_repost_user.profile_picture AS reposted_by_profile_picture,
+                     requested_repost.created_at AS reposted_at,
                      ${viewerId ? `EXISTS (
                          SELECT 1 FROM upload_content_likes ucl
                          WHERE ucl.content_id = uc.id AND ucl.user_id = ${Number(viewerId)}
                      )` : 'FALSE'} AS user_liked,
                      ${viewerId ? `EXISTS (
+                         SELECT 1 FROM upload_content_reposts ucr_viewer
+                         WHERE ucr_viewer.content_id = uc.id AND ucr_viewer.user_id = ${Number(viewerId)}
+                     )` : 'FALSE'} AS user_reposted,
+                     ${viewerId ? `EXISTS (
                          SELECT 1 FROM upload_content_purchases ucp
                          WHERE ucp.content_id = uc.id AND ucp.buyer_id = ${Number(viewerId)}
+                           AND ${activeUploadPurchaseSql('ucp')}
                      )` : 'FALSE'} AS user_purchased,
+                     ${viewerId ? `(
+                         SELECT MAX(${uploadPurchaseExpiresAtSql('ucp_exp')})
+                         FROM upload_content_purchases ucp_exp
+                         WHERE ucp_exp.content_id = uc.id AND ucp_exp.buyer_id = ${Number(viewerId)}
+                           AND ${activeUploadPurchaseSql('ucp_exp')}
+                     )` : 'NULL'} AS user_purchase_expires_at,
                      ${viewerId ? `(
                          uc.user_id = ${Number(viewerId)}
                          OR EXISTS (
                              SELECT 1 FROM upload_content_purchases ucp2
                              WHERE ucp2.content_id = uc.id AND ucp2.buyer_id = ${Number(viewerId)}
+                               AND ${activeUploadPurchaseSql('ucp2')}
                          )
                          OR EXISTS (
                              SELECT 1 FROM upload_content_subscriptions ucs
@@ -1625,24 +2033,229 @@ exports.getApprovedUploadContentsPublic = async (req, res) => {
                      )` : 'FALSE'} AS user_has_access
               FROM upload_contents uc
              INNER JOIN users u ON u.id = uc.user_id
+             LEFT JOIN upload_content_reposts requested_repost
+               ON requested_repost.content_id = uc.id
+              AND requested_repost.user_id = ${Number.isFinite(requestedUserId) && requestedUserId > 0 ? Number(requestedUserId) : 'NULL'}
+             LEFT JOIN users requested_repost_user ON requested_repost_user.id = requested_repost.user_id
              ${where}
-             ORDER BY COALESCE(uc.approved_at, uc.created_at) DESC
+             ${visibilityGate}
+             ORDER BY
+                ${Number.isFinite(requestedUserId) && requestedUserId > 0
+                    ? `CASE
+                        WHEN requested_repost.created_at IS NOT NULL THEN requested_repost.created_at
+                        ELSE COALESCE(uc.pinned_at, uc.approved_at, uc.created_at)
+                       END DESC,`
+                    : ''}
+                CASE
+                    WHEN uc.views_count >= 50000 AND uc.likes_count >= 5000 THEN 6
+                    WHEN ${uploadHomeScoreSql} > 200 OR uc.likes_count >= 1000 THEN 5
+                    WHEN ${uploadHomeScoreSql} >= 100 OR uc.likes_count >= 250 THEN 4
+                    WHEN ${uploadHomeScoreSql} >= 60 OR uc.likes_count >= 100 THEN 3
+                    WHEN uc.likes_count >= 50 THEN 2
+                    ELSE 1
+                END DESC,
+                ${uploadHomeScoreSql} DESC,
+                uc.likes_count DESC,
+                uc.comments_count DESC,
+                uc.shares_count DESC,
+                COALESCE(uc.approved_at, uc.created_at) DESC
              LIMIT 80`,
             params
         );
 
-        const contents = result.rows.map((row) => ({
+        let rows = result.rows;
+        if ((!Number.isFinite(requestedUserId) || requestedUserId <= 0) && viewerId) {
+            const viewerReposts = await pool.query(
+                `SELECT uc.*, u.full_name, u.username AS user_username, u.profile_picture, u.user_type,
+                        requested_repost_user.username AS reposted_by_username,
+                        requested_repost_user.id AS reposted_by_user_id,
+                        requested_repost_user.full_name AS reposted_by_full_name,
+                        requested_repost_user.profile_picture AS reposted_by_profile_picture,
+                        requested_repost.created_at AS reposted_at,
+                        EXISTS (
+                            SELECT 1 FROM upload_content_likes ucl
+                            WHERE ucl.content_id = uc.id AND ucl.user_id = $1
+                        ) AS user_liked,
+                        TRUE AS user_reposted,
+                        EXISTS (
+                            SELECT 1 FROM upload_content_purchases ucp
+                            WHERE ucp.content_id = uc.id AND ucp.buyer_id = $1
+                              AND ${activeUploadPurchaseSql('ucp')}
+                        ) AS user_purchased,
+                        (
+                            SELECT MAX(${uploadPurchaseExpiresAtSql('ucp_exp')})
+                            FROM upload_content_purchases ucp_exp
+                            WHERE ucp_exp.content_id = uc.id AND ucp_exp.buyer_id = $1
+                              AND ${activeUploadPurchaseSql('ucp_exp')}
+                        ) AS user_purchase_expires_at,
+                        (
+                            uc.user_id = $1
+                            OR EXISTS (
+                                SELECT 1 FROM upload_content_purchases ucp2
+                                WHERE ucp2.content_id = uc.id AND ucp2.buyer_id = $1
+                                  AND ${activeUploadPurchaseSql('ucp2')}
+                            )
+                            OR EXISTS (
+                                SELECT 1 FROM upload_content_subscriptions ucs
+                                WHERE ucs.creator_id = uc.user_id
+                                  AND ucs.buyer_id = $1
+                                  AND ucs.expires_at > NOW()
+                            )
+                        ) AS user_has_access
+                 FROM upload_content_reposts requested_repost
+                INNER JOIN upload_contents uc ON uc.id = requested_repost.content_id
+                INNER JOIN users u ON u.id = uc.user_id
+                INNER JOIN users requested_repost_user ON requested_repost_user.id = requested_repost.user_id
+                WHERE requested_repost.user_id = $1
+                  AND uc.status = 'Approved'
+                  AND COALESCE(u.is_deactivated, false) = false
+                  AND COALESCE(u.status, 'Active') <> 'Deactivated'
+                  AND (uc.expires_at IS NULL OR uc.expires_at > NOW())
+                ORDER BY requested_repost.created_at DESC
+                LIMIT 40`,
+                [Number(viewerId)]
+            );
+            const existingRepostKeys = new Set(
+                rows
+                    .filter((row) => row.reposted_at)
+                    .map((row) => `${row.id}:${row.reposted_by_user_id || ''}`),
+            );
+            const missingRepostRows = viewerReposts.rows.filter((row) => {
+                const key = `${row.id}:${row.reposted_by_user_id || ''}`;
+                if (existingRepostKeys.has(key)) return false;
+                existingRepostKeys.add(key);
+                return true;
+            });
+            rows = [...rows, ...missingRepostRows];
+        }
+
+        const contents = rows.map((row) => ({
             ...mapRow(row),
             full_name: row.full_name || null,
             username: row.user_username || row.owner_username || null,
             profile_picture: row.profile_picture || null,
             user_type: row.user_type || null,
-        }));
+            reposted_by_username: row.reposted_by_username || null,
+            reposted_by_user_id: row.reposted_by_user_id || null,
+            reposted_by_full_name: row.reposted_by_full_name || null,
+            reposted_by_profile_picture: row.reposted_by_profile_picture || null,
+            reposted_at: toUtcIso(row.reposted_at),
+        })).sort((a, b) => {
+            const aDate = Date.parse(String(a.reposted_at || a.feed_sort_at || a.approved_at || a.created_at || a.updated_at || ''));
+            const bDate = Date.parse(String(b.reposted_at || b.feed_sort_at || b.approved_at || b.created_at || b.updated_at || ''));
+            return (Number.isFinite(bDate) ? bDate : 0) - (Number.isFinite(aDate) ? aDate : 0);
+        });
         const topics = Array.from(new Set(contents.map((item) => item.topic).filter(Boolean))).sort((a, b) => a.localeCompare(b));
         return res.status(200).json({ success: true, contents, topics });
     } catch (error) {
         console.error('Get public upload contents error:', error);
         return res.status(500).json({ success: false, message: 'Failed to fetch upload contents.' });
+    }
+};
+
+exports.getApprovedUploadContentPublicByShareCode = async (req, res) => {
+    try {
+        await ensureSchema();
+        const shareCode = String(req.params.shareCode || '').trim();
+        if (!/^[0-9A-Za-z]{8}$/.test(shareCode)) {
+            return res.status(404).json({ success: false, message: 'Content not found.' });
+        }
+
+        const candidates = await pool.query(
+            `SELECT uc.id, uc.content_id
+               FROM upload_contents uc
+               INNER JOIN users u ON u.id = uc.user_id
+              WHERE uc.status = 'Approved'
+                AND COALESCE(u.is_deactivated, false) = false
+                AND COALESCE(u.status, 'Active') <> 'Deactivated'`
+        );
+
+        const matchedRow = (candidates.rows || []).find((row) => {
+            const codeByContentId = buildShortShareCode('u', row.content_id || '');
+            const codeById = buildShortShareCode('u', row.id || '');
+            return codeByContentId === shareCode || codeById === shareCode;
+        });
+
+        if (!matchedRow?.id) {
+            return res.status(404).json({ success: false, message: 'Content not found.' });
+        }
+
+        const result = await pool.query(
+            `SELECT
+                uc.*,
+                u.full_name,
+                u.username AS user_username,
+                u.profile_picture,
+                u.user_type,
+                requested_repost.created_at AS reposted_at,
+                requested_repost_user.username AS reposted_by_username,
+                requested_repost_user.user_id AS reposted_by_user_id,
+                requested_repost_user.full_name AS reposted_by_full_name,
+                requested_repost_user.profile_picture AS reposted_by_profile_picture,
+                COALESCE(l.like_count, 0) AS likes_count,
+                COALESCE(c.comment_count, 0) AS comments_count,
+                COALESCE(s.share_count, 0) AS shares_count,
+                COALESCE(r.repost_count, 0) AS reposts_count,
+                COALESCE(v.view_count, 0) AS views_count
+             FROM upload_contents uc
+             INNER JOIN users u ON u.id = uc.user_id
+             LEFT JOIN upload_content_reposts requested_repost ON requested_repost.content_id = uc.id AND requested_repost.user_id IS NULL
+             LEFT JOIN users requested_repost_user ON requested_repost_user.id = requested_repost.user_id
+             LEFT JOIN (
+                SELECT content_id, COUNT(*) AS like_count
+                FROM upload_content_likes
+                GROUP BY content_id
+             ) l ON l.content_id = uc.id
+             LEFT JOIN (
+                SELECT content_id, COUNT(*) AS comment_count
+                FROM upload_content_comments
+                GROUP BY content_id
+             ) c ON c.content_id = uc.id
+             LEFT JOIN (
+                SELECT content_id, COUNT(*) AS share_count
+                FROM upload_content_shares
+                GROUP BY content_id
+             ) s ON s.content_id = uc.id
+             LEFT JOIN (
+                SELECT content_id, COUNT(*) AS repost_count
+                FROM upload_content_reposts
+                GROUP BY content_id
+             ) r ON r.content_id = uc.id
+             LEFT JOIN (
+                SELECT content_id, COUNT(*) AS view_count
+                FROM upload_content_views
+                GROUP BY content_id
+             ) v ON v.content_id = uc.id
+             WHERE uc.id = $1
+               AND uc.status = 'Approved'
+               AND COALESCE(u.is_deactivated, false) = false
+               AND COALESCE(u.status, 'Active') <> 'Deactivated'
+             LIMIT 1`,
+            [matchedRow.id]
+        );
+
+        const row = result.rows[0];
+        if (!row) {
+            return res.status(404).json({ success: false, message: 'Content not found.' });
+        }
+
+        const content = {
+            ...mapRow(row),
+            full_name: row.full_name || null,
+            username: row.user_username || row.owner_username || null,
+            profile_picture: row.profile_picture || null,
+            user_type: row.user_type || null,
+            reposted_by_username: row.reposted_by_username || null,
+            reposted_by_user_id: row.reposted_by_user_id || null,
+            reposted_by_full_name: row.reposted_by_full_name || null,
+            reposted_by_profile_picture: row.reposted_by_profile_picture || null,
+            reposted_at: toUtcIso(row.reposted_at),
+        };
+
+        return res.status(200).json({ success: true, content });
+    } catch (error) {
+        console.error('Get public upload content by share code error:', error);
+        return res.status(500).json({ success: false, message: 'Failed to fetch upload content.' });
     }
 };
 
@@ -1660,9 +2273,44 @@ exports.getAdminUploadContents = async (req, res) => {
             where = `WHERE uc.status = $${params.length}`;
         }
         const result = await pool.query(
-            `SELECT uc.*, u.full_name, u.username AS user_username, u.profile_picture, u.user_type
+            `SELECT
+                uc.*,
+                u.full_name,
+                u.username AS user_username,
+                u.profile_picture,
+                u.user_type,
+                COALESCE(l.like_count, 0) AS likes_count,
+                COALESCE(c.comment_count, 0) AS comments_count,
+                COALESCE(s.share_count, 0) AS shares_count,
+                COALESCE(r.repost_count, 0) AS reposts_count,
+                COALESCE(v.view_count, 0) AS views_count
              FROM upload_contents uc
              INNER JOIN users u ON u.id = uc.user_id
+             LEFT JOIN (
+                SELECT content_id, COUNT(*)::int AS like_count
+                FROM upload_content_likes
+                GROUP BY content_id
+             ) l ON l.content_id = uc.id
+             LEFT JOIN (
+                SELECT content_id, COUNT(*)::int AS comment_count
+                FROM upload_content_comments
+                GROUP BY content_id
+             ) c ON c.content_id = uc.id
+             LEFT JOIN (
+                SELECT content_id, COUNT(*)::int AS share_count
+                FROM upload_content_shares
+                GROUP BY content_id
+             ) s ON s.content_id = uc.id
+             LEFT JOIN (
+                SELECT content_id, COUNT(*)::int AS repost_count
+                FROM upload_content_reposts
+                GROUP BY content_id
+             ) r ON r.content_id = uc.id
+             LEFT JOIN (
+                SELECT content_id, COUNT(*)::int AS view_count
+                FROM upload_content_views
+                GROUP BY content_id
+             ) v ON v.content_id = uc.id
              ${where}
              ORDER BY uc.created_at DESC`,
             params
@@ -1787,6 +2435,170 @@ exports.logShare = async (req, res) => {
     }
 };
 
+exports.getContentInsights = async (req, res) => {
+    try {
+        await ensureSchema();
+        const content = await resolveContentLookup(req.params.contentId);
+        if (!content) {
+            return res.status(404).json({ success: false, message: 'Upload content not found.' });
+        }
+        const ownerUserId = resolveContentOwnerId(content);
+
+        const range = normalizeInsightRange(req.query.range);
+
+        // Check cache first
+        const cacheKey = `${content.id}:${range}`;
+        const cached = insightsCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < INSIGHTS_CACHE_TTL) {
+            return res.status(200).json({
+                success: true,
+                insights: cached.data,
+            });
+        }
+        const viewWhere = getInsightsRangeCondition('ucv', range);
+        const shareWhere = getInsightsRangeCondition('ucs', range);
+        const purchaseWhere = getInsightsRangeCondition('ucp', range);
+        const subscriptionWhere = getInsightsRangeCondition('sub', range);
+
+        const [totalsResult, trendResult, countryResult, audienceTypeResult, genderResult, ageResult] = await Promise.all([
+            pool.query(
+                `SELECT
+                    (SELECT COUNT(*)::int FROM upload_content_views ucv WHERE ucv.content_id = $1 AND ${viewWhere}) AS views,
+                    (SELECT COUNT(*)::int FROM upload_content_shares ucs WHERE ucs.content_id = $1 AND ${shareWhere}) AS shares,
+                    (
+                        (SELECT COUNT(*)::int FROM upload_content_purchases ucp WHERE ucp.content_id = $1 AND ${purchaseWhere})
+                        +
+                        (SELECT COUNT(*)::int FROM upload_content_subscriptions sub WHERE sub.content_id = $1 AND ${subscriptionWhere})
+                    ) AS sales,
+                    (
+                        (SELECT COALESCE(SUM(creator_amount), 0)::numeric FROM upload_content_purchases ucp WHERE ucp.content_id = $1 AND ${purchaseWhere})
+                        +
+                        (SELECT COALESCE(SUM(creator_amount), 0)::numeric FROM upload_content_subscriptions sub WHERE sub.content_id = $1 AND ${subscriptionWhere})
+                    ) AS earnings`,
+                [content.id]
+            ),
+            pool.query(
+                `WITH activity AS (
+                    SELECT DATE(ucv.created_at) AS activity_date, COUNT(*)::int AS views, 0::int AS shares, 0::int AS sales, 0::numeric AS earnings
+                    FROM upload_content_views ucv
+                    WHERE ucv.content_id = $1 AND ${viewWhere}
+                    GROUP BY DATE(ucv.created_at)
+                    UNION ALL
+                    SELECT DATE(ucs.created_at) AS activity_date, 0::int AS views, COUNT(*)::int AS shares, 0::int AS sales, 0::numeric AS earnings
+                    FROM upload_content_shares ucs
+                    WHERE ucs.content_id = $1 AND ${shareWhere}
+                    GROUP BY DATE(ucs.created_at)
+                    UNION ALL
+                    SELECT DATE(ucp.created_at) AS activity_date, 0::int AS views, 0::int AS shares, COUNT(*)::int AS sales, COALESCE(SUM(ucp.creator_amount), 0)::numeric AS earnings
+                    FROM upload_content_purchases ucp
+                    WHERE ucp.content_id = $1 AND ${purchaseWhere}
+                    GROUP BY DATE(ucp.created_at)
+                    UNION ALL
+                    SELECT DATE(sub.created_at) AS activity_date, 0::int AS views, 0::int AS shares, COUNT(*)::int AS sales, COALESCE(SUM(sub.creator_amount), 0)::numeric AS earnings
+                    FROM upload_content_subscriptions sub
+                    WHERE sub.content_id = $1 AND ${subscriptionWhere}
+                    GROUP BY DATE(sub.created_at)
+                )
+                SELECT to_char(activity_date, 'YYYY-MM-DD') AS date,
+                       SUM(views)::int AS views,
+                       SUM(shares)::int AS shares,
+                       SUM(sales)::int AS sales,
+                       SUM(earnings)::numeric AS earnings
+                FROM activity
+                GROUP BY activity_date
+                ORDER BY activity_date ASC
+                LIMIT 30`,
+                [content.id]
+            ),
+            pool.query(
+                `SELECT NULLIF(u.country, '') AS label,
+                       COUNT(*)::int AS count
+                 FROM upload_content_views ucv
+                 INNER JOIN users u ON u.id = ucv.user_id
+                 WHERE ucv.content_id = $1 AND ${viewWhere}
+                 GROUP BY label
+                 ORDER BY count DESC
+                 LIMIT 5`,
+                [content.id]
+            ),
+            pool.query(
+                `SELECT
+                    CASE
+                        WHEN sub.buyer_id IS NOT NULL THEN 'Subscribers'
+                        ELSE 'Non-subscribers'
+                    END AS label,
+                    COUNT(*)::int AS count
+                 FROM upload_content_views ucv
+                 LEFT JOIN upload_content_subscriptions sub ON sub.buyer_id = ucv.user_id AND sub.creator_id = $2 AND sub.expires_at > CURRENT_TIMESTAMP
+                 WHERE ucv.content_id = $1 AND ucv.user_id IS NOT NULL AND ${viewWhere}
+                 GROUP BY label
+                 ORDER BY count DESC`,
+                [content.id, ownerUserId]
+            ),
+            pool.query(
+                `SELECT NULLIF(u.gender, '') AS label, COUNT(*)::int AS count
+                 FROM upload_content_views ucv
+                 INNER JOIN users u ON u.id = ucv.user_id
+                 WHERE ucv.content_id = $1 AND ${viewWhere}
+                 GROUP BY label
+                 ORDER BY count DESC`,
+                [content.id]
+            ),
+            pool.query(
+                `SELECT
+                    CASE
+                        WHEN u.date_of_birth IS NULL THEN NULL
+                        WHEN DATE_PART('year', AGE(u.date_of_birth)) BETWEEN 18 AND 24 THEN '18-24'
+                        WHEN DATE_PART('year', AGE(u.date_of_birth)) BETWEEN 25 AND 34 THEN '25-34'
+                        WHEN DATE_PART('year', AGE(u.date_of_birth)) BETWEEN 35 AND 44 THEN '35-44'
+                        WHEN DATE_PART('year', AGE(u.date_of_birth)) >= 45 THEN '45+'
+                        ELSE 'Under 18'
+                    END AS label,
+                    COUNT(*)::int AS count
+                 FROM upload_content_views ucv
+                 INNER JOIN users u ON u.id = ucv.user_id
+                 WHERE ucv.content_id = $1 AND ${viewWhere}
+                 GROUP BY label
+                 ORDER BY count DESC`,
+                [content.id]
+            ),
+        ]);
+
+        const totals = totalsResult.rows[0] || {};
+        const insightsData = {
+            range,
+            totals: {
+                views: Number(totals.views || 0),
+                earnings: normalizeMoney(totals.earnings || 0),
+                sales: Number(totals.sales || 0),
+                shares: Number(totals.shares || 0),
+            },
+            trend: trendResult.rows.map((row) => ({
+                date: row.date,
+                views: Number(row.views || 0),
+                shares: Number(row.shares || 0),
+                sales: Number(row.sales || 0),
+                earnings: normalizeMoney(row.earnings || 0),
+            })),
+            countries: rowsWithPercentages(countryResult.rows),
+            audienceTypes: rowsWithPercentages(audienceTypeResult.rows),
+            genders: rowsWithPercentages(genderResult.rows),
+            ages: rowsWithPercentages(ageResult.rows),
+        };
+
+        // Cache the result
+        insightsCache.set(cacheKey, { data: insightsData, timestamp: Date.now() });
+
+        return res.status(200).json({
+            success: true,
+            insights: insightsData,
+        });
+    } catch (error) {
+        console.error('Get upload content insights error:', error);
+        return res.status(500).json({ success: false, message: 'Failed to load insights.' });
+    }
+};
+
 exports.repostContent = async (req, res) => {
     try {
         await ensureSchema();
@@ -1821,6 +2633,55 @@ exports.repostContent = async (req, res) => {
     }
 };
 
+exports.removeRepost = async (req, res) => {
+    try {
+        await ensureSchema();
+        const content = await resolveContentLookup(req.params.contentId);
+        if (!content) {
+            return res.status(404).json({ success: false, message: 'Upload content not found.' });
+        }
+        const deleted = await pool.query(
+            'DELETE FROM upload_content_reposts WHERE content_id = $1 AND user_id = $2 RETURNING id',
+            [content.id, req.user.id]
+        );
+        if (deleted.rows.length > 0) {
+            await syncContentCounters(content.id);
+        }
+        const refreshed = await resolveContentLookup(content.id);
+        return res.status(200).json({
+            success: true,
+            removed: deleted.rows.length > 0,
+            reposts_count: Number(refreshed?.reposts_count || 0),
+        });
+    } catch (error) {
+        console.error('Remove upload content repost error:', error);
+        return res.status(500).json({ success: false, message: 'Failed to remove repost.' });
+    }
+};
+
+exports.deleteContent = async (req, res) => {
+    try {
+        await ensureSchema();
+        const content = await resolveContentLookup(req.params.contentId);
+        if (!content) {
+            return res.status(404).json({ success: false, message: 'Upload content not found.' });
+        }
+        if (!isContentOwnedByUser(content, req.user.id)) {
+            return res.status(403).json({ success: false, message: 'Only the creator can delete this content.' });
+        }
+
+        await pool.query('DELETE FROM upload_contents WHERE id = $1', [content.id]);
+        return res.status(200).json({
+            success: true,
+            deleted: true,
+            contentId: content.id,
+        });
+    } catch (error) {
+        console.error('Delete upload content error:', error);
+        return res.status(500).json({ success: false, message: 'Failed to delete upload content.' });
+    }
+};
+
 exports.togglePin = async (req, res) => {
     try {
         await ensureSchema();
@@ -1828,7 +2689,7 @@ exports.togglePin = async (req, res) => {
         if (!content) {
             return res.status(404).json({ success: false, message: 'Upload content not found.' });
         }
-        if (Number(content.user_id) !== Number(req.user.id)) {
+        if (!isContentOwnedByUser(content, req.user.id)) {
             return res.status(403).json({ success: false, message: 'You can only pin your own content.' });
         }
         const shouldPin = !content.pinned_at;
@@ -1858,10 +2719,6 @@ exports.reportContent = async (req, res) => {
         if (!content) {
             return res.status(404).json({ success: false, message: 'Upload content not found.' });
         }
-        if (Number(content.user_id) === Number(req.user.id)) {
-            return res.status(400).json({ success: false, message: 'You cannot report your own content.' });
-        }
-
         const reason = String(req.body?.reason || '').trim();
         const customReason = String(req.body?.custom_reason || req.body?.customReason || '').trim();
         if (!reason) {

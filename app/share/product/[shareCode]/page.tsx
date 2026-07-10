@@ -17,6 +17,7 @@ import ShareModal from "@/app/components/ShareModal";
 import { getShareUrlForItem } from "@/app/lib/shareLinks";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
 import { useCart } from "@/app/context/CartContext";
+import { getPublicProfileHref } from "@/app/lib/profileRoute";
 
 const PENDING_RESELL_CART_KEY = "googer:pending-resell-cart-add";
 const RESELL_ATTRIBUTION_STORAGE_KEY = "googer:resell-attribution";
@@ -51,6 +52,7 @@ const rememberResellAttribution = (product: any, ref: string) => {
 export default function ShareProductPage() {
     const params = useParams();
     const router = useRouter();
+    const activeShareUrl = typeof window !== "undefined" ? window.location.href : "";
     const shareCode = params?.shareCode as string;
     const resellerRef = typeof params?.resellerRef === "string" ? decodeURIComponent(params.resellerRef) : "";
     const [product, setProduct] = useState<any>(null);
@@ -318,7 +320,7 @@ export default function ShareProductPage() {
                             onShare={() => adActions.share()}
                             onCollectCoin={(e) => adActions.handleAdCoinClick(e)}
                             canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
-                            onNavigateToProfile={() => router.push(`/profile/${product.user?.username || product.owner_user_id}`)}
+                            onNavigateToProfile={() => router.push(getPublicProfileHref(product.user?.username || product.owner_username || product.username, product.owner_user_id || product.user_id))}
                         />
                     ) : (
                         <SharedProductCard
@@ -333,7 +335,7 @@ export default function ShareProductPage() {
                             onShare={(item) => adActions.share(item)}
                             onCollectCoin={(e, item) => adActions.handleAdCoinClick(e, item)}
                             canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
-                            onNavigateToProfile={() => router.push(`/profile/${product.user?.username || product.owner_user_id}`)}
+                            onNavigateToProfile={() => router.push(getPublicProfileHref(product.user?.username || product.owner_username || product.username, product.owner_user_id || product.user_id))}
                         />
                     )}
                 </div>
@@ -356,7 +358,7 @@ export default function ShareProductPage() {
                 <ShareModal
                     isOpen={showShareModal}
                     onClose={() => setShowShareModal(false)}
-                    shareUrl={getShareUrlForItem(product, "product")}
+                    shareUrl={activeShareUrl || getShareUrlForItem(product, "product")}
                     title={product.title}
                     product={normalizedProduct}
                 />

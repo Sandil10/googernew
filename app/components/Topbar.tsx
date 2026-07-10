@@ -507,7 +507,7 @@ export default function Topbar() {
                     </div>
                 </div>
             ) : (
-                <div id="shop-search-portal" className="absolute bottom-[-24px] left-1/2 mx-2 w-[min(540px,40vw)] -translate-x-1/2"></div>
+                <div id="shop-search-portal" className="absolute bottom-[-24px] left-1/2 w-[168px] -translate-x-1/2 sm:w-[220px] md:w-[min(320px,34vw)]"></div>
             )}
 
             {/* Actions & Profile Menu */}
@@ -737,7 +737,7 @@ export default function Topbar() {
                     ) : profileImage && !profileImageFailed ? (
                         <div className="relative w-9 h-9">
                             <Link
-                                href="/dashboard/profile"
+                                href="/profile"
                                 className="block w-9 h-9 rounded-full overflow-hidden border-2 border-white/10 hover:border-purple-500/50 transition-all active:scale-95 group"
                             >
                                 <Image
@@ -757,7 +757,7 @@ export default function Topbar() {
                     ) : user ? (
                         <div className="relative w-9 h-9">
                             <Link
-                                href="/dashboard/profile"
+                                href="/profile"
                                 className="flex w-9 h-9 items-center justify-center rounded-full overflow-hidden border-2 border-white/10 bg-zinc-800 text-xs font-black text-white hover:border-purple-500/50 transition-all active:scale-95"
                             >
                                 {profileInitial}
