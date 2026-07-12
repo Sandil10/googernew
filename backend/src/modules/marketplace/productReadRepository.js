@@ -75,6 +75,18 @@ const getRawMediaValue = (value) => {
     return '';
 };
 
+const isPlaceholderImage = (value) => {
+    const text = String(value || '').trim().toLowerCase();
+    return !text || text.includes('/assets/images/googer.png') || text.includes('/assets/images/rupeer');
+};
+
+const firstRealImage = (...values) => {
+    for (const value of values.flat()) {
+        if (!isPlaceholderImage(value)) return value;
+    }
+    return '';
+};
+
 const normalizeImageUrl = (item) => {
     const variants = safeJsonParse(item.variants, item.variants);
     const rawImageList = safeJsonParse(item.images, item.images);
@@ -84,16 +96,17 @@ const normalizeImageUrl = (item) => {
     const variantImages = Array.isArray(variants)
         ? variants.map((variant) => getMediaUrl(variant?.image_url) || getMediaUrl(variant?.url) || getMediaUrl(variant?.image) || getRawMediaValue(variant?.image_url)).filter(Boolean)
         : [];
-    const primaryImage = mediaGallery[0] || variantImages[0] || getMediaUrl(item.image_url) || getRawMediaValue(item.image_url) || '/assets/images/googer.png';
+    const directImage = getMediaUrl(item.image_url) || getRawMediaValue(item.image_url);
+    const primaryImage = firstRealImage(mediaGallery, variantImages, directImage) || '/assets/images/googer.png';
 
     return {
         ...item,
-        image_url: getMediaUrl(item.image_url) || getRawMediaValue(item.image_url) || primaryImage,
-        main_image: getMediaUrl(item.main_image) || getMediaUrl(item.image_url) || getRawMediaValue(item.main_image) || primaryImage,
-        media_url: getMediaUrl(item.media_url) || getMediaUrl(item.media_preview) || getRawMediaValue(item.media_url) || primaryImage,
+        image_url: firstRealImage(directImage, primaryImage) || primaryImage,
+        main_image: firstRealImage(getMediaUrl(item.main_image), directImage, getRawMediaValue(item.main_image), primaryImage) || primaryImage,
+        media_url: firstRealImage(getMediaUrl(item.media_url), getMediaUrl(item.media_preview), getRawMediaValue(item.media_url), primaryImage) || primaryImage,
         thumbnail_url: getMediaUrl(item.thumbnail_url) || getRawMediaValue(item.thumbnail_url) || primaryImage,
-        media_preview: getMediaUrl(item.media_preview) || getMediaUrl(item.image_url) || getRawMediaValue(item.media_preview) || primaryImage,
-        media_gallery: mediaGallery.length ? mediaGallery : (primaryImage ? [primaryImage] : []),
+        media_preview: firstRealImage(getMediaUrl(item.media_preview), directImage, getRawMediaValue(item.media_preview), primaryImage) || primaryImage,
+        media_gallery: mediaGallery.filter((entry) => !isPlaceholderImage(entry)).length ? mediaGallery.filter((entry) => !isPlaceholderImage(entry)) : (primaryImage ? [primaryImage] : []),
         profile_picture: getMediaUrl(item.profile_picture),
         variants: Array.isArray(variants)
             ? variants.map((variant) => ({

@@ -29,6 +29,8 @@ type UploadContentMediaProps = {
     alt: string;
     blurred?: boolean;
     autoPlayVideo?: boolean;
+    autoPlayMuted?: boolean;
+    onPreviewProgress?: (currentTime: number) => void;
     onPreviewComplete?: () => void;
     onAspectRatioChange?: (ratio: number) => void;
 };
@@ -47,6 +49,8 @@ export default function UploadContentMedia({
     alt,
     blurred = false,
     autoPlayVideo = false,
+    autoPlayMuted = true,
+    onPreviewProgress,
     onPreviewComplete,
     onAspectRatioChange,
 }: UploadContentMediaProps) {
@@ -265,7 +269,7 @@ export default function UploadContentMedia({
                     ref={videoRef}
                     src={videoSource}
                     poster={resolvedThumbnailUrl || undefined}
-                    muted
+                    muted={autoPlayMuted}
                     autoPlay={(autoPreview && !!resolvedPreviewUrl) || autoPlayVideo}
                     loop={autoPlayVideo && !autoPreview && previewDuration <= 0}
                     playsInline
@@ -288,9 +292,11 @@ export default function UploadContentMedia({
                         }
                     }}
                     onTimeUpdate={(event) => {
+                        if (autoPlayVideo) onPreviewProgress?.(event.currentTarget.currentTime || 0);
                         if (previewDuration > 0 && autoPlayVideo && event.currentTarget.currentTime >= trimStart + previewDuration) {
                             event.currentTarget.pause();
                             event.currentTarget.removeAttribute("autoplay");
+                            onPreviewProgress?.(event.currentTarget.currentTime || trimStart + previewDuration);
                             if (!previewCompleteRef.current) {
                                 previewCompleteRef.current = true;
                                 onPreviewComplete?.();

@@ -54,6 +54,21 @@ const normalizeUploadPath = (src: any) => {
     : value;
 };
 
+const isPlaceholderProductImage = (src: any) => {
+  const value = String(src || "").trim().toLowerCase();
+  return !value || value.includes("/assets/images/googer.png") || value.includes("/assets/images/rupeer");
+};
+
+const pickProductImage = (...values: any[]) => {
+  for (const value of values.flat()) {
+    const candidate = typeof value === "string"
+      ? value
+      : value?.url || value?.image_url || value?.image || value?.src;
+    if (!isPlaceholderProductImage(candidate)) return candidate;
+  }
+  return "";
+};
+
 const safeParseArray = (value: any): any[] => {
   if (Array.isArray(value)) return value;
   if (typeof value !== "string") return [];
@@ -95,17 +110,16 @@ export function normalizeProductAd(rawItem: any): NormalizedProductAd {
   const sourceMediaGallery = safeParseArray(source.media_gallery);
   const activeStartTime = source.active_start_time || source.activeStartTime || source.started_at || source.startedAt || null;
   const createdAt = activeStartTime || source.created_at || source.createdAt;
-  const primaryImageCandidate =
-    source.image_url ||
-    source.main_image ||
-    source.media_url ||
-    source.thumbnail_url ||
-    source.media_preview ||
-    sourceImages[0] ||
-    sourceMediaGallery[0] ||
-    sourceVariants[0]?.image_url ||
-    sourceVariants[0]?.url ||
-    sourceVariants[0]?.image;
+  const primaryImageCandidate = pickProductImage(
+    source.image_url,
+    source.main_image,
+    source.media_url,
+    source.thumbnail_url,
+    source.media_preview,
+    sourceImages,
+    sourceMediaGallery,
+    sourceVariants.map((variant: any) => variant?.image_url || variant?.url || variant?.image),
+  );
 
   // Handle shop products
   if (source.title && source.price !== undefined) {
@@ -131,7 +145,7 @@ export function normalizeProductAd(rawItem: any): NormalizedProductAd {
         ...sourceImages.map((img: any) => (typeof img === "string" ? img : img?.url || img?.image_url || img?.image)),
         ...sourceMediaGallery.map((img: any) => (typeof img === "string" ? img : img?.url || img?.image_url || img?.image)),
         ...variants.map((v: any) => v.url || v.image_url).filter(Boolean),
-      ].map(normalizeUploadPath).filter(Boolean),
+      ].filter((img) => !isPlaceholderProductImage(img)).map(normalizeUploadPath).filter(Boolean),
       seller: source.user?.username || source.username || source.owner_username || "Seller",
       profileImage: normalizeUploadPath(source.user?.profile_picture || source.profile_picture),
       isAd: source.is_sponsored || source.campaign_type === "Product Promote",
@@ -205,7 +219,7 @@ export function normalizeProductAd(rawItem: any): NormalizedProductAd {
       ...sourceImages.map((img: any) => typeof img === "string" ? img : img?.url || img?.image_url || img?.image).filter(Boolean),
       ...mediaGallery.map((img: any) => typeof img === "string" ? img : img?.url || img?.image_url || img?.image).filter(Boolean),
       ...variants.map((v: any) => v.url || v.image_url).filter(Boolean),
-    ].map(normalizeUploadPath).filter(Boolean),
+    ].filter((img) => !isPlaceholderProductImage(img)).map(normalizeUploadPath).filter(Boolean),
     seller: source.user?.username || source.username || source.owner_username || "Advertiser",
     profileImage: normalizeUploadPath(source.user?.profile_picture || source.profile_picture || source.profileImage),
     isAd: true,

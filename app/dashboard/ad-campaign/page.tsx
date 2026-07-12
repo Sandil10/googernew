@@ -8,7 +8,7 @@ export default function AdCampaignPage() {
     const router = useRouter();
 
     useEffect(() => {
-        router.replace("/dashboard/ad-campaign/photo-video");
+        router.replace("/ad-campaign/photo-video");
     }, [router]);
 
     return (

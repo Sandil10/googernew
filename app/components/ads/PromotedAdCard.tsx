@@ -17,6 +17,7 @@ type PromotedAdCardProps = {
   onCloseMenu?: () => void;
   onOpenSecondView?: (ad: any) => void;
   onProductClick?: (product: any) => void;
+  onContentClick?: (content: any) => void;
   onAddToBagClick?: (product: any) => void;
   onProfileClick?: (ad: any) => void;
   onToggleLike?: (ad: any) => void | Promise<void>;
@@ -56,6 +57,7 @@ export function PromotedAdCard({
   onCloseMenu,
   onOpenSecondView,
   onProductClick,
+  onContentClick,
   onAddToBagClick,
   onProfileClick,
   onToggleLike,
@@ -289,9 +291,11 @@ export function PromotedAdCard({
       <SharedProfilePromoteAdCard
         ad={merged}
         onProductClick={(product) => onProductClick?.(product)}
+        onContentClick={(content) => onContentClick?.(content)}
         onProfileClick={() => onProfileClick?.(actionAd)}
         onCollectCoin={onCollectCoin}
         canShowCollectCoin={guardedCanShowCollectCoin}
+        compact={compact}
       />
     );
   }

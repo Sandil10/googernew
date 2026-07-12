@@ -218,9 +218,18 @@ export const authService = {
             const result = await safeJson(response);
 
             if (!response.ok) {
-                console.error('API Error Response:', result);
-                const errorMessage = result?.error || result?.message || `Status: ${response.status}`;
-                throw new Error(errorMessage);
+                const retryAfter = response.headers.get("retry-after");
+                const errorMessage = buildErrorMessage(result, response);
+                if (response.status !== 429) {
+                    console.error('Login API error:', {
+                        status: response.status,
+                        message: errorMessage,
+                    });
+                }
+                const suffix = response.status === 429 && retryAfter
+                    ? ` Please try again in ${retryAfter} seconds.`
+                    : "";
+                throw new Error(`${errorMessage}${suffix}`);
             }
 
             if (result?.token) {
@@ -230,7 +239,9 @@ export const authService = {
             }
             return result;
         } catch (error: any) {
-            console.error('Login error detail:', error);
+            if (!String(error?.message || "").toLowerCase().includes("too many")) {
+                console.error('Login error detail:', error);
+            }
             throw error;
         }
     },

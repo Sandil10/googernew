@@ -102,7 +102,7 @@ export async function promoteProductAdAgain({
         hasPromoCodeAdded: false,
     }));
 
-    router.push(`/dashboard/ad-campaign/product-promote?productId=${encodeURIComponent(String(linkedProductId))}`);
+    router.push(`/ad-campaign/product-promote?productId=${encodeURIComponent(String(linkedProductId))}`);
 }
 
 export async function promotePhotoVideoAdAgain({
@@ -188,5 +188,5 @@ export async function promotePhotoVideoAdAgain({
         imageName: mediaType === "video" ? "Uploaded video" : "Uploaded media",
     }));
 
-    router.push("/dashboard/ad-campaign/photo-video");
+    router.push("/ad-campaign/photo-video");
 }

@@ -234,6 +234,18 @@ const normalizeFeedMediaList = (...sources) => {
     return output;
 };
 
+const isPlaceholderImage = (value) => {
+    const text = String(value || '').trim().toLowerCase();
+    return !text || text.includes('/assets/images/googer.png') || text.includes('/assets/images/rupeer');
+};
+
+const firstRealImage = (...values) => {
+    for (const value of values.flat()) {
+        if (!isPlaceholderImage(value)) return value;
+    }
+    return '';
+};
+
 const stripFeedMediaPayload = (item) => {
     if (!item) return item;
     const variants = safeJsonParse(item.variants, item.variants);
@@ -260,17 +272,18 @@ const stripFeedMediaPayload = (item) => {
         item.images,
         variantImages,
     );
-    const primaryImage = mediaGallery[0] || dataUrlFallback || '/assets/images/googer.png';
+    const primaryImage = firstRealImage(mediaGallery, dataUrlFallback) || '/assets/images/googer.png';
+    const cleanGallery = mediaGallery.filter((entry) => !isPlaceholderImage(entry));
 
     return {
         ...item,
-        image_url: getMediaUrl(item.image_url) || getRawMediaValue(item.image_url) || primaryImage,
-        main_image: getMediaUrl(item.main_image) || getMediaUrl(item.image_url) || getRawMediaValue(item.main_image) || primaryImage,
-        media_url: getMediaUrl(item.media_url) || getMediaUrl(item.media_preview) || getRawMediaValue(item.media_url) || primaryImage,
+        image_url: firstRealImage(getMediaUrl(item.image_url), getRawMediaValue(item.image_url), primaryImage) || primaryImage,
+        main_image: firstRealImage(getMediaUrl(item.main_image), getMediaUrl(item.image_url), getRawMediaValue(item.main_image), primaryImage) || primaryImage,
+        media_url: firstRealImage(getMediaUrl(item.media_url), getMediaUrl(item.media_preview), getRawMediaValue(item.media_url), primaryImage) || primaryImage,
         thumbnail_url: getMediaUrl(item.thumbnail_url) || getRawMediaValue(item.thumbnail_url) || primaryImage,
-        media_preview: getMediaUrl(item.media_preview) || getMediaUrl(item.image_url) || getRawMediaValue(item.media_preview) || primaryImage,
-        media_gallery: mediaGallery,
-        images: mediaGallery.length ? mediaGallery : (dataUrlFallback ? [dataUrlFallback] : []),
+        media_preview: firstRealImage(getMediaUrl(item.media_preview), getMediaUrl(item.image_url), getRawMediaValue(item.media_preview), primaryImage) || primaryImage,
+        media_gallery: cleanGallery,
+        images: cleanGallery.length ? cleanGallery : (dataUrlFallback && !isPlaceholderImage(dataUrlFallback) ? [dataUrlFallback] : []),
         profile_picture: getMediaUrl(item.profile_picture),
         variants: Array.isArray(variants)
             ? variants.map((variant) => ({
@@ -1374,6 +1387,41 @@ const normalizeProductPromotePriceFields = (linkedProduct, fallbackAd = {}) => {
     };
 };
 
+const pickProductPromoteImageFields = (linkedProduct = {}, fallbackAd = {}) => {
+    const variants = Array.isArray(linkedProduct.variants) ? linkedProduct.variants : safeJsonParse(linkedProduct.variants, []);
+    const linkedGallery = normalizeFeedMediaList(linkedProduct.media_gallery, linkedProduct.images);
+    const variantImages = Array.isArray(variants)
+        ? variants.flatMap((variant) => [variant?.image_url, variant?.url, variant?.image])
+        : [];
+    const fallbackGallery = normalizeFeedMediaList(fallbackAd.media_gallery, fallbackAd.images);
+    const candidates = [
+        getMediaUrl(linkedProduct.image_url) || getRawMediaValue(linkedProduct.image_url),
+        getMediaUrl(linkedProduct.main_image) || getRawMediaValue(linkedProduct.main_image),
+        ...linkedGallery,
+        ...variantImages.map((value) => getMediaUrl(value) || getRawMediaValue(value)),
+        getMediaUrl(fallbackAd.image_url) || getRawMediaValue(fallbackAd.image_url),
+        getMediaUrl(fallbackAd.media_preview) || getRawMediaValue(fallbackAd.media_preview),
+        ...fallbackGallery,
+    ];
+    const primaryImage = firstRealImage(candidates) || '/assets/images/googer.png';
+    const gallery = [
+        primaryImage,
+        ...linkedGallery,
+        ...variantImages.map((value) => getMediaUrl(value) || getRawMediaValue(value)),
+        ...fallbackGallery,
+    ].filter((value, index, array) => !isPlaceholderImage(value) && array.indexOf(value) === index);
+
+    return {
+        image_url: primaryImage,
+        main_image: primaryImage,
+        media_url: primaryImage,
+        thumbnail_url: primaryImage,
+        media_preview: primaryImage,
+        images: gallery.length ? gallery : [primaryImage],
+        media_gallery: gallery.length ? gallery : [primaryImage],
+    };
+};
+
 const deriveVariantSizes = (variants) => {
     if (!Array.isArray(variants)) return [];
     return Array.from(new Set(variants.map((variant) => String(variant?.size || variant?.value || variant?.label || "").trim()).filter(Boolean)));
@@ -2114,7 +2162,7 @@ exports.getMarketProducts = async (req, res) => {
 
                 const linkedResult = await pool.query(
                     `SELECT m.id, m.user_id, m.username, m.title, m.description, m.price, m.promo_price,
-                            m.category, m.sub_category, m.manual_category, m.stock, m.image_url, m.status,
+                            m.category, m.sub_category, m.manual_category, m.stock, m.image_url, NULL::jsonb AS media_gallery, m.status,
                             m.likes_count, m.comments_count, m.shares_count, m.views_count,
                             m.variants, m.shipping_info, m.payment_methods, m.commission_info, m.created_at, m.product_code,
                             u.username AS owner_username, u.profile_picture,
@@ -2154,8 +2202,10 @@ exports.getMarketProducts = async (req, res) => {
                     const linkedVariants = Array.isArray(linked.variants) ? linked.variants : [];
                     const sizes = Array.isArray(linked.sizes) ? linked.sizes : deriveVariantSizes(linkedVariants);
                     const colors = Array.isArray(linked.colors) ? linked.colors : deriveVariantColors(linkedVariants);
+                    const imageFields = pickProductPromoteImageFields(linked, ad);
                     return {
                         ...linked,
+                        ...imageFields,
                         id: ad.id,
                         adId: ad.adId,
                         ad_id: ad.adId,
@@ -2605,7 +2655,7 @@ exports.getMarketItems = async (req, res) => {
                     if (linkedIds.length > 0 || linkedCodes.length > 0) {
                         const linkedResult = await pool.query(
                             `SELECT m.id, m.user_id, m.username, m.title, m.description, m.price, m.promo_price,
-                                    m.category, m.sub_category, m.manual_category, m.stock, m.image_url, m.status,
+                                    m.category, m.sub_category, m.manual_category, m.stock, m.image_url, NULL::jsonb AS media_gallery, m.status,
                                     m.likes_count, m.comments_count, m.shares_count, m.views_count,
                                     m.variants, m.shipping_info, m.payment_methods, m.commission_info, m.created_at, m.product_code,
                                     u.username AS owner_username, u.profile_picture,
@@ -2644,8 +2694,10 @@ exports.getMarketItems = async (req, res) => {
                             const linkedVariants = Array.isArray(linked.variants) ? linked.variants : [];
                             const sizes = Array.isArray(linked.sizes) ? linked.sizes : deriveVariantSizes(linkedVariants);
                             const colors = Array.isArray(linked.colors) ? linked.colors : deriveVariantColors(linkedVariants);
+                            const imageFields = pickProductPromoteImageFields(linked, ad);
                             return {
                                 ...ad,
+                                ...imageFields,
                                 // Overlay real product fields so the card renders as a normal product.
                                 id: Number(linked.id),
                                 user_id: linked.user_id,
@@ -2668,12 +2720,6 @@ exports.getMarketItems = async (req, res) => {
                                 promo_price,
                                 sizes,
                                 colors,
-                                image_url: linked.image_url || ad.image_url,
-                                main_image: linked.image_url || ad.image_url,
-                                media_url: linked.image_url || ad.media_preview || ad.image_url,
-                                thumbnail_url: linked.image_url || ad.media_preview || ad.image_url,
-                                images: normalizeFeedMediaList(linked.image_url, linked.variants, ad.media_gallery),
-                                media_preview: linked.image_url || ad.media_preview,
                                 status: 'approved',
                                 likes_count: Number(linked.likes_count || 0),
                                 comments_count: Number(linked.comments_count || 0),

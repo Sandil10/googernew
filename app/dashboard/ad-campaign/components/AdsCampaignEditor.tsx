@@ -8,6 +8,7 @@ import { authService } from "@/services/authService";
 import { walletService } from "@/services/walletService";
 import { adsService } from "@/services/adsService";
 import { marketService } from "@/services/marketService";
+import { uploadContentService } from "@/services/uploadContentService";
 import { subscriptionService } from "@/services/subscriptionService";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { addAdWalletRefund, getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
@@ -386,13 +387,24 @@ function getDefaultLinkTitle(value: string) {
 }
 
 function getProductImageSrc(product: any) {
+    const googUser = product?.user || {};
+    const googPreview = typeof product?.text === "string" ? product.text.match(/(https?:\/\/[^\s]+|www\.[^\s]+)/i)?.[0] || "" : "";
+    const isPlaceholderImage = (value: any) => {
+        const text = String(value || "").trim().toLowerCase();
+        return !text || text.includes("/assets/images/googer.png") || text.includes("/assets/images/rupeer");
+    };
     const imageArray = Array.isArray(product?.images) ? product.images : [];
     const galleryArray = Array.isArray(product?.media_gallery) ? product.media_gallery : [];
     const variantArray = Array.isArray(product?.variants) ? product.variants : [];
     const candidates = [
         product?.image_url,
         product?.main_image,
+        product?.thumbnail_url,
+        product?.preview_url,
         product?.media_preview,
+        product?.profile_picture,
+        googUser?.img,
+        googPreview,
         ...imageArray.map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
         ...galleryArray.map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
         ...variantArray.map((value: any) => value?.image_url || value?.url || value?.image),
@@ -403,12 +415,36 @@ function getProductImageSrc(product: any) {
         ...(Array.isArray(product?.raw?.media_gallery) ? product.raw.media_gallery : []).map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
     ]
         .map((value) => String(value || "").trim())
-        .filter(Boolean);
+        .filter((value) => !isPlaceholderImage(value));
     const selected = candidates[0] || "https://picsum.photos/400/400";
     if (selected.startsWith("/uploads/") || /^https?:\/\//i.test(selected) || selected.startsWith("data:")) return selected;
     return selected.includes("uploads") || selected.includes("\\")
         ? `/uploads/${selected.split(/[\\/]/).pop()}`
         : selected;
+}
+
+function getProfilePromoteItemType(item: any) {
+    return item?.__profilePromoteType || (item?.content_type || item?.media_preview || item?.thumbnail_url ? "upload" : "product");
+}
+
+function getProfilePromoteItemKey(item: any) {
+    return `${getProfilePromoteItemType(item)}:${String(item?.id ?? item?.content_id ?? item?.contentId ?? "")}`;
+}
+
+function getProfilePromoteItemTitle(item: any) {
+    if (getProfilePromoteItemType(item) === "upload") {
+        return String(item?.description || item?.topic || `${item?.content_type === "flash" ? "Flash" : "Vault"} content`);
+    }
+    return String(item?.title || item?.name || "Product");
+}
+
+function getProfilePromoteItemMeta(item: any) {
+    if (getProfilePromoteItemType(item) === "upload") {
+        const type = String(item?.content_type || "vault").toLowerCase() === "flash" ? "Flash" : "Vault";
+        const price = Number(item?.price || 0);
+        return price > 0 ? `${type} - ${price.toLocaleString()}` : type;
+    }
+    return Number(item?.promo_price || item?.price || 0).toLocaleString();
 }
 
 function getProductShareTarget(rawLink: string) {
@@ -503,27 +539,28 @@ function getPastedProductSearchValue(event: React.ClipboardEvent<HTMLInputElemen
 function getProfileUsernameFromLink(rawLink: string) {
     const trimmed = rawLink.trim();
     if (!trimmed) return "";
+    const cleanValue = (value: string) => decodeURIComponent(String(value || "").trim()).replace(/^@+/, "");
 
     try {
         const parsed = new URL(normalizeUrl(trimmed));
         const segments = parsed.pathname.split("/").filter(Boolean);
         const first = (segments[0] || "").toLowerCase();
         const dashboardSection = (segments[1] || "").toLowerCase();
-        const queryUsername = parsed.searchParams.get("user");
+        const queryUsername = parsed.searchParams.get("user") || parsed.searchParams.get("username");
         const queryId = parsed.searchParams.get("id");
 
         if (first === "dashboard" && dashboardSection === "profile") {
-            return (queryUsername || queryId || "").trim();
+            return cleanValue(queryUsername || queryId || "");
         }
-        if (first === "u" || first === "profile") return (segments[1] || "").trim();
+        if (first === "u" || first === "profile") return cleanValue(segments[1] || queryUsername || queryId || "");
         if (first && !["dashboard", "share", "product", "shop", "register", "login"].includes(first.toLowerCase())) {
-            return (segments[0] || "").trim();
+            return cleanValue(segments[0] || "");
         }
     } catch {
         // Fall back to treating a bare value as a username.
     }
 
-    return trimmed.replace(/^@/, "").replace(/^\/+|\/+$/g, "").split("/").filter(Boolean).pop() || "";
+    return cleanValue(trimmed.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean).pop() || "");
 }
 
 function getFlagEmoji(countryCode: string) {
@@ -660,6 +697,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [profilePromoteUser, setProfilePromoteUser] = useState<any | null>(null);
     const [profilePromoteProducts, setProfilePromoteProducts] = useState<any[]>([]);
     const [profilePromoteAvailable, setProfilePromoteAvailable] = useState<any[]>([]);
+    const [profilePromoteSource, setProfilePromoteSource] = useState<"products" | "contents">("products");
     const [profilePromoteSlideIndex, setProfilePromoteSlideIndex] = useState(0);
     const [profilePromoteAvailableSlideIndex, setProfilePromoteAvailableSlideIndex] = useState(0);
     const [profileLinkCopied, setProfileLinkCopied] = useState(false);
@@ -1488,12 +1526,12 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             promoCode: hasPromoCodeAdded && promoCode ? promoCode : null,
             promoDiscount: hasPromoCodeAdded && promoDiscount?.discount_type === "reach" ? promoDiscount.discount_value : null,
             status: "Under Review",
-            campaignPath:
-                campaignType === "Product Promote"
-                    ? "/dashboard/ad-campaign/product-promote"
-                    : campaignType === "Profile Promote"
-                        ? "/dashboard/ad-campaign/profile-promote"
-                        : "/dashboard/ad-campaign/photo-video",
+                campaignPath:
+                    campaignType === "Product Promote"
+                        ? "/ad-campaign/product-promote"
+                        : campaignType === "Profile Promote"
+                            ? "/ad-campaign/profile-promote"
+                        : "/ad-campaign/photo-video",
             editDraft: {
                 editingAdId: nextAdId,
                 promoteAgain: isPromoteAgain,
@@ -1533,7 +1571,17 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 ...(isProfilePromote ? {
                 profileUsername: promotedProfile?.username || profileUsername,
                 profileLink: activeLink || profileLink,
-                featuredProductIds: profilePromoteProducts.map((p) => p.id),
+                featuredProductIds: profilePromoteProducts
+                    .filter((p) => getProfilePromoteItemType(p) === "product")
+                    .map((p) => p.id),
+                featuredItems: profilePromoteProducts.map((p) => ({
+                    type: getProfilePromoteItemType(p),
+                    id: p.id,
+                    title: getProfilePromoteItemTitle(p),
+                    image: getProductImageSrc(p),
+                    meta: getProfilePromoteItemMeta(p),
+                    contentType: p.content_type || null,
+                })),
                 promotedProfileUserId: promotedProfile?.id ?? promotedProfile?.user_id ?? null,
             } : {}),
                 ...(isProductPromote && linkedProduct ? {
@@ -1806,9 +1854,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             }
 
             try {
-                const profile = /^\d+$/.test(username)
-                    ? await authService.getUserProfile(username).catch(() => authService.getUserByUsername(username))
-                    : await authService.getUserByUsername(username);
+                const profile = await authService.getUserByUsername(username)
+                    .catch(() => authService.getUserProfile(username))
+                    .catch(() => (/^\d+$/.test(username) ? authService.getUserProfile(Number(username)) : null));
                 if (!profile?.username && !profile?.id && !profile?.user_id) {
                     showPopupError("That profile link could not be found.");
                     return;
@@ -2480,10 +2528,23 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             try {
                 const ownerId = promotedProfile?.id ?? promotedProfile?._id ?? promotedProfile?.user_id;
                 if (!ownerId) return;
-                const items = await marketService.getItems({ user_id: ownerId, status: "active,approved" });
+                const [items, uploadContents] = await Promise.all([
+                    marketService.getItems({ user_id: ownerId, status: "active,approved" }).catch(() => []),
+                    uploadContentService.getPublicApprovedByUser(ownerId).catch(() => []),
+                ]);
                 if (cancelled) return;
-                const visible = (Array.isArray(items) ? items : [])
-                    .filter((item: any) => !item?.is_sponsored);
+                const visibleProducts = (Array.isArray(items) ? items : [])
+                    .filter((item: any) => !item?.is_sponsored)
+                    .map((item: any) => ({ ...item, __profilePromoteType: "product" }));
+                const visibleUploads = (Array.isArray(uploadContents) ? uploadContents : [])
+                    .filter((item: any) => String(item?.status || "Approved") === "Approved")
+                    .map((item: any) => ({
+                        ...item,
+                        __profilePromoteType: "upload",
+                        title: item?.description || item?.topic || `${item?.content_type === "flash" ? "Flash" : "Vault"} content`,
+                        promo_price: item?.price,
+                    }));
+                const visible = [...visibleProducts, ...visibleUploads];
                 setProfilePromoteAvailable(visible);
             } catch {
                 if (!cancelled) setProfilePromoteAvailable([]);
@@ -2497,15 +2558,26 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
     const toggleProfilePromoteProduct = (product: any) => {
         setProfilePromoteProducts((current) => {
-            const exists = current.some((p) => String(p.id) === String(product.id));
-            if (exists) return current.filter((p) => String(p.id) !== String(product.id));
+            const key = getProfilePromoteItemKey(product);
+            const exists = current.some((p) => getProfilePromoteItemKey(p) === key);
+            if (exists) return current.filter((p) => getProfilePromoteItemKey(p) !== key);
             if (current.length >= PROFILE_PROMOTE_FEATURED_LIMIT) {
-                showPopupError(`You can select up to ${PROFILE_PROMOTE_FEATURED_LIMIT} products.`);
+                showPopupError(`You can select up to ${PROFILE_PROMOTE_FEATURED_LIMIT} featured items.`);
                 return current;
             }
             return [...current, product];
         });
     };
+
+    const profilePromoteAvailableItems = profilePromoteAvailable.filter((item) =>
+        profilePromoteSource === "contents"
+            ? getProfilePromoteItemType(item) === "upload"
+            : getProfilePromoteItemType(item) === "product",
+    );
+    const profilePromoteSourceTitle = profilePromoteSource === "contents" ? "Featured Contents" : "Featured Products";
+    const profilePromoteSourceDescription = profilePromoteSource === "contents"
+        ? `Select any 3 flash contents or vault contents to feature in this ad. (${profilePromoteProducts.length}/${PROFILE_PROMOTE_FEATURED_LIMIT})`
+        : `Select any 3 products to feature in this ad. (${profilePromoteProducts.length}/${PROFILE_PROMOTE_FEATURED_LIMIT})`;
 
     const slideProfilePromoteProducts = (direction: -1 | 1) => {
         setProfilePromoteSlideIndex((current) => {
@@ -2520,14 +2592,18 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
     const slideProfilePromoteAvailableProducts = (direction: -1 | 1) => {
         setProfilePromoteAvailableSlideIndex((current) => {
-            const maxIndex = Math.max(0, profilePromoteAvailable.length - PROFILE_PROMOTE_PICKER_VISIBLE_COUNT);
+            const maxIndex = Math.max(0, profilePromoteAvailableItems.length - PROFILE_PROMOTE_PICKER_VISIBLE_COUNT);
             return clamp(current + direction, 0, maxIndex);
         });
     };
 
     useEffect(() => {
-        setProfilePromoteAvailableSlideIndex((current) => Math.min(current, Math.max(0, profilePromoteAvailable.length - PROFILE_PROMOTE_PICKER_VISIBLE_COUNT)));
-    }, [profilePromoteAvailable.length]);
+        setProfilePromoteAvailableSlideIndex((current) => Math.min(current, Math.max(0, profilePromoteAvailableItems.length - PROFILE_PROMOTE_PICKER_VISIBLE_COUNT)));
+    }, [profilePromoteAvailableItems.length]);
+
+    useEffect(() => {
+        setProfilePromoteAvailableSlideIndex(0);
+    }, [profilePromoteSource]);
 
     const renderCreative = (context: "mobile" | "desktop") => {
         const iconSize = context === "mobile" ? "text-3xl" : "text-4xl";
@@ -3203,10 +3279,44 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             {hasLink && (
                                 <div>
                                     <div className="mb-2 flex items-center justify-between gap-3">
-                                        <div>
-                                            <p className="text-sm font-bold text-white">Featured Products</p>
+                                        <div className="min-w-0 flex-1">
+                                            <div className="inline-flex max-w-full flex-wrap items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setProfilePromoteSource("products")}
+                                                    className={`min-h-8 rounded-xl px-3 py-1.5 text-sm font-bold transition ${profilePromoteSource === "products"
+                                                        ? "text-white"
+                                                        : "border border-white/12 bg-white/[0.05] text-white/65 hover:bg-white/[0.1] hover:text-white"
+                                                        }`}
+                                                    aria-pressed={profilePromoteSource === "products"}
+                                                >
+                                                    Featured Products
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setProfilePromoteSource((current) => current === "products" ? "contents" : "products")}
+                                                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/18 bg-white/[0.04] text-white transition hover:bg-white/[0.1] active:scale-[0.98]"
+                                                    aria-label={profilePromoteSource === "contents" ? "Show featured products" : "Show featured contents"}
+                                                >
+                                                    <div className="relative h-4 w-4">
+                                                        <IonIcon name="arrow-back-outline" className="absolute bottom-[-1px] left-[-3px] text-[11px] text-white" />
+                                                        <IonIcon name="arrow-forward-outline" className="absolute right-[-3px] top-[-1px] text-[11px] text-white" />
+                                                    </div>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setProfilePromoteSource("contents")}
+                                                    className={`min-h-8 rounded-xl px-3 py-1.5 text-sm font-bold transition ${profilePromoteSource === "contents"
+                                                        ? "text-white"
+                                                        : "border border-white/12 bg-white/[0.05] text-white/65 hover:bg-white/[0.1] hover:text-white"
+                                                        }`}
+                                                    aria-pressed={profilePromoteSource === "contents"}
+                                                >
+                                                    Featured Contents
+                                                </button>
+                                            </div>
                                             <p className="mt-1 text-xs text-white/45">
-                                                Select up to 3 products to feature in this ad. ({profilePromoteProducts.length}/{PROFILE_PROMOTE_FEATURED_LIMIT})
+                                                {profilePromoteSourceDescription}
                                             </p>
                                         </div>
                                         {profilePromoteProducts.length > 0 && (
@@ -3220,13 +3330,15 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                         )}
                                     </div>
 
-                                    {profilePromoteAvailable.length === 0 ? (
-                                        <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.025] px-4 py-6 text-center text-[11px] font-bold text-white/40">
-                                            You have no public products yet. Add products to your marketplace first.
-                                        </div>
-                                    ) : (
+                                            {profilePromoteAvailableItems.length === 0 ? (
+                                                <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.025] px-4 py-6 text-center text-[11px] font-bold text-white/40">
+                                            {profilePromoteSource === "contents"
+                                                ? "No public flash contents or vault contents were found for this profile."
+                                                : "No public products were found for this profile."}
+                                                </div>
+                                            ) : (
                                         <div className="relative overflow-hidden">
-                                            {profilePromoteAvailable.length > PROFILE_PROMOTE_PICKER_VISIBLE_COUNT && (
+                                            {profilePromoteAvailableItems.length > PROFILE_PROMOTE_PICKER_VISIBLE_COUNT && (
                                                 <div className="absolute right-2 top-2 z-10 flex gap-1">
                                                     <button
                                                         type="button"
@@ -3240,9 +3352,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                     <button
                                                         type="button"
                                                         onClick={() => slideProfilePromoteAvailableProducts(1)}
-                                                        disabled={profilePromoteAvailableSlideIndex >= profilePromoteAvailable.length - PROFILE_PROMOTE_PICKER_VISIBLE_COUNT}
+                                                        disabled={profilePromoteAvailableSlideIndex >= profilePromoteAvailableItems.length - PROFILE_PROMOTE_PICKER_VISIBLE_COUNT}
                                                         className="flex h-6 w-6 items-center justify-center rounded-full bg-black/65 text-[10px] font-black text-white transition hover:bg-black disabled:opacity-35"
-                                                        aria-label="Next available products"
+                                                        aria-label={`Next available ${profilePromoteSource}`}
                                                     >
                                                         &gt;
                                                     </button>
@@ -3253,21 +3365,28 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                     className="flex gap-1.5 transition-transform duration-300 ease-out"
                                                     style={{ transform: `translateX(calc(-${profilePromoteAvailableSlideIndex * 20}% - ${profilePromoteAvailableSlideIndex * 0.3}rem))` }}
                                                 >
-                                                    {profilePromoteAvailable.map((product) => {
-                                                        const selected = profilePromoteProducts.some((p) => String(p.id) === String(product.id));
-                                                        const selectionIndex = profilePromoteProducts.findIndex((p) => String(p.id) === String(product.id));
+                                                    {profilePromoteAvailableItems.map((product) => {
+                                                        const itemKey = getProfilePromoteItemKey(product);
+                                                        const itemType = getProfilePromoteItemType(product);
+                                                        const selected = profilePromoteProducts.some((p) => getProfilePromoteItemKey(p) === itemKey);
+                                                        const selectionIndex = profilePromoteProducts.findIndex((p) => getProfilePromoteItemKey(p) === itemKey);
                                                         const img = getProductImageSrc(product);
-                                                        const price = product?.promo_price || product?.price;
+                                                        const title = getProfilePromoteItemTitle(product);
+                                                        const meta = getProfilePromoteItemMeta(product);
                                                         return (
                                                             <button
-                                                                key={`profile-promote-pick-${product.id}`}
+                                                                key={`profile-promote-pick-${itemKey}`}
                                                                 type="button"
                                                                 onClick={() => toggleProfilePromoteProduct(product)}
                                                                 className={`relative w-[calc((100%-1.5rem)/5)] shrink-0 overflow-hidden rounded-lg border text-left transition active:scale-[0.99] ${selected ? "border-white/80 bg-white/[0.06] shadow-[0_6px_18px_rgba(255,255,255,0.06)]" : "border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.05]"}`}
                                                             >
                                                                 <div className="relative aspect-square w-full overflow-hidden bg-black">
-                                                                    {img ? (
-                                                                        <Image src={img} alt={product.title || "Product"} fill className="object-cover" unoptimized />
+                                                                    {itemType === "goog" ? (
+                                                                        <div className="flex h-full w-full items-center bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))] px-2 py-2">
+                                                                            <p className="line-clamp-5 text-[8px] font-bold leading-3 text-white/80">{title || "Goog"}</p>
+                                                                        </div>
+                                                                    ) : img ? (
+                                                                        <Image src={img} alt={title || "Featured item"} fill className="object-cover" unoptimized />
                                                                     ) : (
                                                                         <div className="flex h-full w-full items-center justify-center bg-white/[0.04]">
                                                                             <IonIcon name="image-outline" className="text-sm text-white/30" />
@@ -3280,9 +3399,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                                     )}
                                                                 </div>
                                                                 <div className="px-1.5 py-1">
-                                                                    <p className="truncate text-[8px] font-black text-white">{product.title || "Item"}</p>
+                                                                    <p className="truncate text-[8px] font-black text-white">{title || "Item"}</p>
                                                                     <p className="truncate text-[7px] font-bold text-white/45">
-                                                                        {Number(price || 0).toLocaleString()}
+                                                                        {meta}
                                                                     </p>
                                                                 </div>
                                                             </button>
@@ -4207,14 +4326,21 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                     >
                                                         {profilePromoteProducts.map((product) => {
                                                             const img = getProductImageSrc(product);
+                                                            const itemType = getProfilePromoteItemType(product);
+                                                            const title = getProfilePromoteItemTitle(product);
+                                                            const meta = getProfilePromoteItemMeta(product);
                                                             return (
                                                                 <div
-                                                                    key={`profile-promote-product-${product.id}`}
+                                                                    key={`profile-promote-product-${getProfilePromoteItemKey(product)}`}
                                                                     className="w-1/3 shrink-0 overflow-hidden rounded-[0.5rem] border border-white/8 bg-[#0e1014]"
                                                                 >
                                                                     <div className="relative aspect-square w-full overflow-hidden bg-black">
-                                                                        {img ? (
-                                                                            <Image src={img} alt={product.title || ""} fill className="object-cover" unoptimized />
+                                                                        {itemType === "goog" ? (
+                                                                            <div className="flex h-full w-full items-center bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))] px-2 py-2">
+                                                                                <p className="line-clamp-5 text-[7px] font-bold leading-3 text-white/80">{title || "Goog"}</p>
+                                                                            </div>
+                                                                        ) : img ? (
+                                                                            <Image src={img} alt={title || ""} fill className="object-cover" unoptimized />
                                                                         ) : (
                                                                             <div className="flex h-full w-full items-center justify-center bg-white/[0.04]">
                                                                                 <IonIcon name="image-outline" className="text-[10px] text-white/30" />
@@ -4222,9 +4348,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                                         )}
                                                                     </div>
                                                                     <div className="px-1 py-1">
-                                                                        <p className="truncate text-[7px] font-black text-white/85">{product.title || "Item"}</p>
+                                                                        <p className="truncate text-[7px] font-black text-white/85">{title || "Item"}</p>
                                                                         <p className="truncate text-[7px] font-bold text-white/45">
-                                                                            {Number(product.promo_price || product.price || 0).toLocaleString()}
+                                                                            {meta}
                                                                         </p>
                                                                     </div>
                                                                 </div>
@@ -4240,7 +4366,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
                                         {profilePromoteProducts.length === 0 && (
                                             <p className="px-3 pb-3 text-center text-[9px] font-semibold text-white/35">
-                                                Add products to your marketplace to feature them here.
+                                                Add products, flash contents, vault contents, or Googs to feature them here.
                                             </p>
                                         )}
                                     </div>

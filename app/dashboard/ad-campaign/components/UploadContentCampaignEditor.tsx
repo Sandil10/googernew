@@ -2260,12 +2260,12 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             status: "Under Review",
             campaignPath:
                 campaignType === "Product Promote"
-                    ? "/dashboard/ad-campaign/product-promote"
+                    ? "/ad-campaign/product-promote"
                     : campaignType === "Profile Promote"
-                        ? "/dashboard/ad-campaign/profile-promote"
+                        ? "/ad-campaign/profile-promote"
                         : isUploadContent
-                            ? (isFlashContent ? "/dashboard/ad-campaign/flash-content" : "/dashboard/ad-campaign/upload-content")
-                            : "/dashboard/ad-campaign/photo-video",
+                            ? (isFlashContent ? "/ad-campaign/flash-content" : "/ad-campaign/upload-content")
+                            : "/ad-campaign/photo-video",
             editDraft: {
                 editingAdId: nextAdId,
                 promoteAgain: isPromoteAgain,
@@ -3848,7 +3848,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
     if (publishedAd) {
         const publishedIsUploadContent = publishedAd.campaignPath === "/dashboard/ad-campaign/upload-content"
-            || publishedAd.campaignPath === "/dashboard/ad-campaign/flash-content";
+            || publishedAd.campaignPath === "/dashboard/ad-campaign/flash-content"
+            || publishedAd.campaignPath === "/ad-campaign/upload-content"
+            || publishedAd.campaignPath === "/ad-campaign/flash-content";
         const publishedIsActive = publishedAd.status === "Active";
         const reviewTypeLabel = publishedIsUploadContent ? "Content Review" : "Ad Review";
         const reviewTitle = publishedIsActive
@@ -4225,7 +4227,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         {isUploadContent ? (
                             <button
                                 type="button"
-                                onClick={() => router.push(isFlashContent ? "/dashboard/ad-campaign/upload-content" : "/dashboard/ad-campaign/flash-content")}
+                                onClick={() => router.push(isFlashContent ? "/ad-campaign/upload-content" : "/ad-campaign/flash-content")}
                                 className="inline-flex min-h-8 items-center gap-2 rounded-xl border border-white/12 bg-white/[0.05] px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-white/78 transition hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
                             >
                                 <IonIcon name={isFlashContent ? "cloud-upload-outline" : "flash-outline"} className="text-sm" />

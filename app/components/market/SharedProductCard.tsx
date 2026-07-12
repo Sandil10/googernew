@@ -60,6 +60,36 @@ export interface SharedProductCardProps {
 
 const EMPTY_OBJECT = {};
 
+const isPlaceholderProductImage = (src: any) => {
+  const value = String(src || "").trim().toLowerCase();
+  return !value || value.includes("/assets/images/googer.png") || value.includes("/assets/images/rupeer");
+};
+
+const getProductImageCandidate = (value: any) => (
+  typeof value === "string"
+    ? value
+    : value?.url || value?.image_url || value?.image || value?.src || ""
+);
+
+const pickProductImage = (product: any) => {
+  const candidates = [
+    product.image_url,
+    product.main_image,
+    ...(Array.isArray(product.images) ? product.images : []),
+    ...(Array.isArray(product.media_gallery) ? product.media_gallery : []),
+    product.media_url,
+    product.thumbnail_url,
+    product.media_preview,
+    ...(Array.isArray(product.variants)
+      ? product.variants.map((variant: any) => variant?.image_url || variant?.url || variant?.image)
+      : []),
+  ];
+
+  return candidates
+    .map(getProductImageCandidate)
+    .find((candidate) => !isPlaceholderProductImage(candidate)) || "";
+};
+
 export const SharedProductCard = memo(({
   product,
   isAd = false,
@@ -125,13 +155,7 @@ export const SharedProductCard = memo(({
   const sellerImage = getItemProfilePicture(product);
   const sellerId = getItemUserId(product);
 
-  const primaryImage =
-    product.image_url ||
-    product.main_image ||
-    (Array.isArray(product.images) ? product.images[0] : undefined) ||
-    product.media_url ||
-    product.thumbnail_url ||
-    product.media_preview;
+  const primaryImage = pickProductImage(product);
   const img = normalizeMediaSrc(primaryImage);
   
   const showAdCoinButton = isAd && !!canShowCollectCoin?.(mergedForCallback) && !displayCoinCollected;

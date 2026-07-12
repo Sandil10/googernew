@@ -8,7 +8,7 @@ export const getPublicProfileHref = (
     }
 
     const normalizedUserId = String(fallbackUserId ?? "").trim();
-    return normalizedUserId ? `/dashboard/profile?id=${encodeURIComponent(normalizedUserId)}` : "/dashboard/profile";
+    return normalizedUserId ? `/profile?id=${encodeURIComponent(normalizedUserId)}` : "/profile";
 };
 
 export const getPublicChatHref = (

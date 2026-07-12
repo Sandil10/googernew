@@ -134,15 +134,25 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
     const effectiveShareType = shareType || (isUploadShareItem ? "upload" : undefined);
     const canShowResellFlow = !shareOnly && !!product && !isSponsoredAd && !isGoogShareItem;
     const resellFlowMode = resellMode === "repost" ? "repost" : "resell";
-    const flowActionLabel = isUploadShareItem ? "Share" : (resellFlowMode === "repost" ? "Repost" : "Resell");
+    const flowActionLabel = isUploadShareItem
+        ? (resellFlowMode === "repost" ? "Repost" : "Share")
+        : (resellFlowMode === "repost" ? "Repost" : "Resell");
     const flowActionLabelLower = flowActionLabel.toLowerCase();
-    const flowEarnLabel = isUploadShareItem ? "Share & Earn" : (resellFlowMode === "repost" ? "Repost & Earn" : "Resell & Earn");
-    const flowTitle = isUploadShareItem ? "Share Link" : (resellFlowMode === "repost" ? "Repost Link" : "Resell Link");
+    const flowEarnLabel = isUploadShareItem
+        ? (resellFlowMode === "repost" ? "Repost & Earn" : "Share & Earn")
+        : (resellFlowMode === "repost" ? "Repost & Earn" : "Resell & Earn");
+    const flowTitle = isUploadShareItem
+        ? "Share Link"
+        : (resellFlowMode === "repost" ? "Repost Link" : "Resell Link");
     const flowSubtitle = isUploadShareItem
         ? "Share this content and earn when eligible viewers watch through your link"
         : (resellFlowMode === "repost" ? "Create your repost link and earn on every sale" : "Earn commission on every sale");
-    const flowCommissionTitle = isUploadShareItem ? "Share Commission" : (resellFlowMode === "repost" ? "Repost Commission" : "Resell Commission");
-    const flowReadyLabel = isUploadShareItem ? "Share link ready" : (resellFlowMode === "repost" ? "Repost link ready" : "Resell link ready");
+    const flowCommissionTitle = isUploadShareItem
+        ? (resellFlowMode === "repost" ? "Repost Commission" : "Share Commission")
+        : (resellFlowMode === "repost" ? "Repost Commission" : "Resell Commission");
+    const flowReadyLabel = isUploadShareItem
+        ? (resellFlowMode === "repost" ? "Repost link ready" : "Share link ready")
+        : (resellFlowMode === "repost" ? "Repost link ready" : "Resell link ready");
     const flowGeneratedLabel = `Your ${flowActionLabel} Link`;
     const flowCopyButtonLabel = `Copy ${flowActionLabel} Link`;
     const flowSharePrompt = `Share your ${flowActionLabelLower} link`;
@@ -356,10 +366,6 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
             action: () => window.open(`https://twitter.com/intent/tweet?url=${encodeURIComponent(resellLink)}&text=${encodeURIComponent(title)}`, "_blank"),
         },
     ];
-
-    if (forceResellOnly && resellFlowMode === "repost") {
-        return null;
-    }
 
     return (
         <div

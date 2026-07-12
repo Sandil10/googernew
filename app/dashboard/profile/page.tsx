@@ -1154,29 +1154,6 @@ export default function ProfilePage() {
         return result;
     }, [currentUser?.full_name, currentUser?.id, currentUser?.user_id, currentUser?.username]);
 
-    const handleUploadContentRepostFlow = useCallback((item: UploadContentRecord) => {
-        if (!authService.isAuthenticated() || !currentUser?.id) {
-            openLoginRequired({ message: "Please log in to repost content." });
-            return;
-        }
-        if (String(item.user_id || "") === String(currentUser.id || "")) {
-            setNotification({ type: "error", title: "Not allowed", message: "You cannot repost your own content." });
-            return;
-        }
-        flushSync(() => {
-            setShareProduct({
-                ...item,
-                title: item.topic || "Upload content",
-                image_url: item.media_preview || item.thumbnail_url || item.media_gallery?.[0] || "",
-            });
-            setShareUrlOverride(getShareUrlForItem(item, "upload"));
-            setInitialShareView("resell");
-            setShareResellMode("repost");
-            setShareForceResellOnly(true);
-            setShowShareModal(true);
-        });
-    }, [currentUser?.id]);
-
     const handleUploadContentPin = useCallback(async (item: UploadContentRecord) => {
         if (!authService.isAuthenticated() || !currentUser?.id) {
             openLoginRequired({ message: "Please log in to pin content." });
@@ -1214,7 +1191,7 @@ export default function ProfilePage() {
                 mediaType: item.media_type || "",
             }));
         } catch {}
-        router.push("/dashboard/ad-campaign/photo-video");
+        router.push("/ad-campaign/photo-video");
     }, [router]);
 
     const handleUploadContentDelete = useCallback(async (item: UploadContentRecord) => {
@@ -1322,7 +1299,7 @@ export default function ProfilePage() {
             };
             window.localStorage.setItem(draftKey, JSON.stringify(draftPayload));
         } catch {}
-        router.push(item.content_type === "flash" ? "/dashboard/ad-campaign/flash-content" : "/dashboard/ad-campaign/upload-content");
+        router.push(item.content_type === "flash" ? "/ad-campaign/flash-content" : "/ad-campaign/upload-content");
     }, [router]);
 
     const handleUploadContentView = useCallback(async (item: UploadContentRecord) => {
@@ -2617,7 +2594,6 @@ export default function ProfilePage() {
                                             onShare={handleUploadContentShare}
                                             onRepost={handleUploadContentRepost}
                                             onRemoveRepost={handleUploadContentRemoveRepost}
-                                            onOpenRepostFlow={handleUploadContentRepostFlow}
                                             onLogView={handleUploadContentView}
                                             onEdit={isOwnProfile ? handleEditUploadContent : undefined}
                                             onPin={handleUploadContentPin}

@@ -49,6 +49,10 @@ const skipReadOnlyRequests = (req) => (
     || ['GET', 'HEAD', 'OPTIONS'].includes(req.method)
 );
 
+const isAuthEntryRoute = (req) => (
+    /^\/(?:api\/)?auth\/(?:login|register)(?:\/|$)/i.test(req.path || '')
+);
+
 // Security Middleware
 app.use(helmet({
     contentSecurityPolicy: false,
@@ -73,7 +77,7 @@ const limiter = rateLimit({
     standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
     legacyHeaders: false, // Disable the `X-RateLimit-*` headers
     keyGenerator: (req) => ipKeyGenerator(getRawClientIp(req)),
-    skip: skipReadOnlyRequests,
+    skip: (req) => skipReadOnlyRequests(req) || isAuthEntryRoute(req),
 });
 app.use('/api/', limiter);
 

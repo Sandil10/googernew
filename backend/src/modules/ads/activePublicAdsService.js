@@ -204,10 +204,25 @@ const getActiveAdsPublic = async (req, res) => {
             return null;
         }
 
-        const productImage = activePublicAdsRepository.getMediaUrl(linked.image_url) || activePublicAdsRepository.getMediaUrl(ad.media_preview) || '/assets/images/googer.png';
         const price = Number(linked.price || ad.price || 0);
         const promoPrice = linked.promo_price ?? ad.promo_price ?? null;
         const linkedVariants = Array.isArray(linked.variants) ? linked.variants : [];
+        const linkedGallery = Array.isArray(linked.media_gallery) ? linked.media_gallery : [];
+        const linkedVariantImages = linkedVariants
+            .map((variant) => variant?.image_url || variant?.url || variant?.image)
+            .filter(Boolean);
+        const isPlaceholderImage = (value) => {
+            const text = String(value || '').trim().toLowerCase();
+            return !text || text.includes('/assets/images/googer.png') || text.includes('/assets/images/rupeer');
+        };
+        const productImageCandidates = [
+            activePublicAdsRepository.getMediaUrl(linked.image_url) || activePublicAdsRepository.getRawMediaValue(linked.image_url),
+            ...linkedGallery.map((item) => activePublicAdsRepository.getMediaUrl(item) || activePublicAdsRepository.getRawMediaValue(item)),
+            ...linkedVariantImages.map((item) => activePublicAdsRepository.getMediaUrl(item) || activePublicAdsRepository.getRawMediaValue(item)),
+            activePublicAdsRepository.getMediaUrl(ad.media_preview) || activePublicAdsRepository.getRawMediaValue(ad.media_preview),
+            activePublicAdsRepository.getMediaUrl(ad.image_url) || activePublicAdsRepository.getRawMediaValue(ad.image_url),
+        ];
+        const productImage = productImageCandidates.find((item) => !isPlaceholderImage(item)) || '/assets/images/googer.png';
         const sizes = Array.isArray(linked.sizes) ? linked.sizes : activePublicAdsRepository.deriveVariantSizes(linkedVariants);
         const colors = Array.isArray(linked.colors) ? linked.colors : activePublicAdsRepository.deriveVariantColors(linkedVariants);
         return {
@@ -235,8 +250,8 @@ const getActiveAdsPublic = async (req, res) => {
             media_url: productImage,
             thumbnail_url: productImage,
             media_preview: productImage,
-            images: activePublicAdsRepository.normalizeMediaGallery([productImage, ...(Array.isArray(linked.media_gallery) ? linked.media_gallery : []), ...(Array.isArray(ad.media_gallery) ? ad.media_gallery : [])]),
-            media_gallery: activePublicAdsRepository.normalizeMediaGallery([productImage, ...(Array.isArray(linked.media_gallery) ? linked.media_gallery : []), ...(Array.isArray(ad.media_gallery) ? ad.media_gallery : [])]),
+            images: activePublicAdsRepository.normalizeMediaGallery([productImage, ...linkedGallery, ...linkedVariantImages, ...(Array.isArray(ad.media_gallery) ? ad.media_gallery : [])]),
+            media_gallery: activePublicAdsRepository.normalizeMediaGallery([productImage, ...linkedGallery, ...linkedVariantImages, ...(Array.isArray(ad.media_gallery) ? ad.media_gallery : [])]),
             variants: linked.variants || [],
             shipping_info: linked.shipping_info || null,
             payment_methods: linked.payment_methods || null,

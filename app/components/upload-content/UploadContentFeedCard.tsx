@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import IonIcon from "@/app/components/IonIcon";
 import { InteractionButton } from "@/app/components/InteractionButton";
@@ -127,7 +127,6 @@ export default function UploadContentFeedCard({
     onShare,
     onRepost,
     onRemoveRepost,
-    onOpenRepostFlow,
     onLogView,
     onPin,
     onReport,
@@ -141,6 +140,8 @@ export default function UploadContentFeedCard({
     showStatusMeta = false,
     maxWidthClassName,
     articleClassName = "",
+    autoOpenWatchKey,
+    onFullViewClose,
 }: {
     item: UploadContentRecord;
     currentUser: any;
@@ -150,7 +151,6 @@ export default function UploadContentFeedCard({
     onShare: (item: UploadContentRecord) => void;
     onRepost: (item: UploadContentRecord) => void | Promise<void | { reposts_count?: number; repostCount?: number }>;
     onRemoveRepost?: (item: UploadContentRecord) => void | Promise<void | { reposts_count?: number; repostCount?: number }>;
-    onOpenRepostFlow?: (item: UploadContentRecord) => void;
     onLogView: (item: UploadContentRecord) => void;
     onPin: (item: UploadContentRecord) => void;
     onReport: (item: UploadContentRecord) => void;
@@ -164,6 +164,8 @@ export default function UploadContentFeedCard({
     showStatusMeta?: boolean;
     maxWidthClassName?: string;
     articleClassName?: string;
+    autoOpenWatchKey?: string | number | null;
+    onFullViewClose?: () => void;
 }) {
     const router = useRouter();
     const media = item.media_preview || item.media_gallery?.[0] || item.thumbnail_url;
@@ -194,6 +196,8 @@ export default function UploadContentFeedCard({
     const serverRepostsCount = Number(item.reposts_count ?? item.repostCount ?? 0);
     const repostedByName = item.reposted_by_username || item.reposted_by_full_name || "";
     const repostedByUserId = String(item.reposted_by_user_id || "").trim();
+    const repostResellerRef = !isFlashContent && repostedByUserId ? repostedByUserId : null;
+    const purchaseResellerRef = isFlashContent ? null : (item.reseller_ref || item.resell_ref || repostResellerRef);
     const serverUserReposted = !!(item.user_reposted ?? item.userReposted)
         || String(item.reposted_by_user_id || "") === String(currentUser?.id || currentUser?.user_id || "")
         || (!!item.reposted_by_username && String(item.reposted_by_username).toLowerCase() === String(currentUser?.username || "").toLowerCase())
@@ -222,11 +226,13 @@ export default function UploadContentFeedCard({
     const [showRemoveRepostPrompt, setShowRemoveRepostPrompt] = useState(false);
     const [showConfirmRepostPrompt, setShowConfirmRepostPrompt] = useState(false);
     const [flashPreviewComplete, setFlashPreviewComplete] = useState(false);
+    const [flashPreviewStoppedAt, setFlashPreviewStoppedAt] = useState(0);
     const [localPurchaseExpiresAt, setLocalPurchaseExpiresAt] = useState<string | null>(item.user_purchase_expires_at || null);
     const [mediaAspectRatio, setMediaAspectRatio] = useState(1);
     const [currentImageIndex, setCurrentImageIndex] = useState(0);
     const [optimisticReposted, setOptimisticReposted] = useState(serverUserReposted);
     const [optimisticRepostsCount, setOptimisticRepostsCount] = useState(serverRepostsCount);
+    const lastAutoOpenWatchKeyRef = useRef<string | number | null>(null);
     const selectedSubscriptionPlan = subscriptionPackages.find((plan) => String(plan.id) === selectedSubscriptionPlanId) || subscriptionPackages[0] || null;
     const isOwnContent = isUploadOwnedByViewer(item, currentUser);
     const canViewInsights = isOwnContent || canModerateUploadInsights(currentUser);
@@ -347,7 +353,7 @@ export default function UploadContentFeedCard({
             }
             const result = await uploadContentService.purchaseVaultContent(
                 item.id,
-                item.reseller_ref || item.resell_ref || null,
+                purchaseResellerRef,
             );
             setWatchConfirmBalance(result.walletBalance);
             setLocalPurchaseExpiresAt(result.purchase?.expires_at || null);
@@ -423,6 +429,13 @@ export default function UploadContentFeedCard({
         }
         continueWatchNow();
     };
+    useEffect(() => {
+        if (autoOpenWatchKey === null || autoOpenWatchKey === undefined) return;
+        if (lastAutoOpenWatchKeyRef.current === autoOpenWatchKey) return;
+        lastAutoOpenWatchKeyRef.current = autoOpenWatchKey;
+        window.setTimeout(() => handleWatchNow(), 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [autoOpenWatchKey]);
     const handleConfirmWatch = async () => {
         await purchaseVaultAndWatch();
     };
@@ -447,7 +460,7 @@ export default function UploadContentFeedCard({
             await uploadContentService.purchaseCreatorSubscription(
                 item.id,
                 String(selectedSubscriptionPlan.id),
-                item.reseller_ref || item.resell_ref || null,
+                purchaseResellerRef,
             );
             setSubscriptionPurchaseMessage("Subscription active. You can now watch this creator's content.");
             window.dispatchEvent(new Event("wallet:changed"));
@@ -484,9 +497,6 @@ export default function UploadContentFeedCard({
                 const nextCount = Number(result?.reposts_count ?? result?.repostCount);
                 setOptimisticReposted(true);
                 setOptimisticRepostsCount((previous) => Number.isFinite(nextCount) ? nextCount : (userReposted ? previous : Math.max(previous + 1, 1)));
-                if (isFlashContent && onOpenRepostFlow) {
-                    onOpenRepostFlow(item);
-                }
                 setRepostNotice("Content reposted on your profile.");
         } catch (error) {
             const message = error instanceof Error ? error.message : "Could not repost content.";
@@ -596,7 +606,7 @@ export default function UploadContentFeedCard({
             <div className="w-full max-w-[260px] rounded-3xl border border-white/10 bg-[#151515] p-4 text-center shadow-[0_20px_60px_rgba(0,0,0,0.55)]" onClick={(event) => event.stopPropagation()}>
                 <p className="text-[11px] font-black text-white">Repost this content?</p>
                 <p className="mt-1 text-[9px] font-semibold text-white/45">
-                    {isFlashContent ? "Continue to create your repost link." : "This will add it to your profile."}
+                    This will add it to your profile.
                 </p>
                 <div className="mt-4 flex gap-2">
                     <button
@@ -710,8 +720,8 @@ export default function UploadContentFeedCard({
 
     return (
         <>
-        <article className={`px-4 py-4 transition-colors sm:px-7 ${articleClassName}`.trim()} onClick={() => isMenuOpen && setIsMenuOpen(false)}>
-            <div className={`relative group mx-auto flex w-full min-w-0 flex-col rounded-[1.7rem] border border-white/5 bg-[#1a1a1a] transition-all duration-500 md:rounded-[2.3rem] ${showFullVideo ? "max-w-[860px] overflow-hidden bg-black pb-0" : `${maxWidthClassName || "max-w-[360px]"} pb-3`}`}>
+        <article className={`max-w-full overflow-hidden px-1 py-4 transition-colors sm:px-7 ${articleClassName}`.trim()} onClick={() => isMenuOpen && setIsMenuOpen(false)}>
+            <div className={`relative group mx-auto flex w-full min-w-0 flex-col overflow-hidden rounded-[1.35rem] border border-white/5 bg-[#1a1a1a] transition-all duration-500 sm:rounded-[1.7rem] md:rounded-[2.3rem] ${showFullVideo ? "max-w-[860px] bg-black pb-0" : `${maxWidthClassName || "max-w-[360px]"} pb-3`}`}>
                 <header className="flex items-center justify-between gap-2 p-3">
                     <div className="flex min-w-0 items-center gap-2">
                         <button
@@ -842,7 +852,7 @@ export default function UploadContentFeedCard({
                                         mediaType: item.media_type || "",
                                     }));
                                 } catch {}
-                                window.location.href = "/dashboard/ad-campaign/photo-video";
+                                window.location.href = "/ad-campaign/photo-video";
                             }}
                             className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-2.5 text-left text-[11px] font-bold text-white hover:bg-white/5"
                         >
@@ -875,18 +885,22 @@ export default function UploadContentFeedCard({
                             mediaType={item.media_type}
                             lockedPrice={isFlashContent ? Number(item.price || 0) : null}
                             autoPlay={!isFlashContent || flashContentAutoPlay}
+                            initialTimeSeconds={isFlashContent ? flashPreviewStoppedAt : 0}
                             videoTrimStartSeconds={videoTrimStartSeconds}
                             videoTrimEndSeconds={videoTrimEndSeconds}
-                            onClose={() => setShowFullVideo(false)}
+                            onClose={() => {
+                                setShowFullVideo(false);
+                                onFullViewClose?.();
+                            }}
                             actionRail={watchActionRail}
                         />
                         {repostFeedback}
                     </div>
                 ) : (
                 <>
-                <div className="px-3">
+                <div className="px-1 sm:px-3">
                     <div
-                        className="relative overflow-hidden rounded-[1.6rem] border border-white/5 bg-black shadow-inner"
+                        className="relative overflow-hidden rounded-[1.25rem] border border-white/5 bg-black shadow-inner sm:rounded-[1.6rem]"
                         style={mediaFrameStyle}
                     >
                         <div className="absolute left-3 top-3 z-10 rounded-full border border-white/10 bg-black/55 px-3 py-1 text-[9px] font-black uppercase tracking-[0.16em] text-white">
@@ -912,7 +926,12 @@ export default function UploadContentFeedCard({
                             alt={item.description || item.topic || "Upload content"}
                             blurred={showBlur}
                             autoPlayVideo={shouldAutoPlayFeedVideo}
-                            onPreviewComplete={() => setFlashPreviewComplete(true)}
+                            autoPlayMuted={false}
+                            onPreviewProgress={(currentTime) => setFlashPreviewStoppedAt(currentTime)}
+                            onPreviewComplete={() => {
+                                setFlashPreviewStoppedAt((current) => current || videoTrimStartSeconds + normalizedFlashPreviewSeconds);
+                                setFlashPreviewComplete(true);
+                            }}
                             onAspectRatioChange={setMediaAspectRatio}
                         />
                         {showBlur && (

@@ -19,6 +19,17 @@ const normalizeText = (value: unknown) =>
 const normalizeCode = (value: unknown) =>
   String(value ?? "").trim().toUpperCase();
 
+const normalizeCampaignType = (value: unknown) =>
+  normalizeText(value).replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+
+const isProfilePromoteAd = (ad: any) => {
+  const campaignType = normalizeCampaignType(ad?.campaign_type || ad?.campaignType);
+  const mediaType = normalizeCampaignType(ad?.media_type || ad?.mediaType);
+  return campaignType === "profile promote"
+    || campaignType === "profile promote ad"
+    || mediaType === "profile";
+};
+
 const safeParse = (value: any) => {
   if (!value) return null;
   if (typeof value !== "string") return value;
@@ -184,10 +195,12 @@ const getAgeMax = (ad: any) => {
 
 export function canViewerSeeAd(ad: any, viewer: ViewerProfile | null | undefined) {
   if (!ad || !viewer) return true;
+  if (isProfilePromoteAd(ad)) return true;
 
   const targetLocations = getTargetLocationCodes(ad);
   if (targetLocations.length > 0) {
     const viewerCountries = getViewerCountryCandidates(viewer);
+    if (viewerCountries.size === 0) return true;
     const hasLocationMatch = targetLocations.some((code) => viewerCountries.has(normalizeText(code)));
     if (!hasLocationMatch) return false;
   }
@@ -207,7 +220,7 @@ export function canViewerSeeAd(ad: any, viewer: ViewerProfile | null | undefined
 
   if (hasRealAgeRestriction) {
     const viewerAge = getViewerAge(viewer);
-    if (viewerAge === null) return false;
+    if (viewerAge === null) return true;
     if (ageMin !== null && viewerAge < ageMin) return false;
     if (ageMax !== null && viewerAge > ageMax) return false;
   }

@@ -9,6 +9,7 @@ import { marketService } from "@/services/marketService";
 type ProfilePromoteCarouselProps = {
   ads: any[];
   onProductClick: (product: any) => void;
+  onContentClick?: (content: any) => void;
   onProfileClick: (ad: any) => void;
   className?: string;
   cardsPerView?: 2 | 3 | 4;
@@ -17,6 +18,7 @@ type ProfilePromoteCarouselProps = {
 export function ProfilePromoteCarousel({
   ads,
   onProductClick,
+  onContentClick,
   onProfileClick,
   className = "px-4 py-4 transition-colors sm:px-7",
   cardsPerView = 3,
@@ -101,14 +103,14 @@ export function ProfilePromoteCarousel({
 
   return (
     <article ref={containerRef} className={className}>
-      <div className="mx-auto w-full max-w-[1120px]">
-        <div className="mb-3 flex items-center justify-end gap-2">
+      <div className="mx-auto w-full max-w-[1120px] overflow-hidden">
+        <div className="mb-2 flex min-h-7 items-center justify-end gap-2 sm:mb-3">
           {canSlide && (
             <>
               <button
                 type="button"
                 onClick={() => setProfilePromoteIndex((current) => (current - 1 + ads.length) % ads.length)}
-                className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 text-sm font-black text-white transition hover:bg-white/10 active:scale-95"
+                className="flex h-7 w-7 items-center justify-center rounded-full border border-white/15 bg-black/45 text-xs font-black text-white shadow-lg shadow-black/30 transition hover:bg-white/10 active:scale-95 sm:h-8 sm:w-8 sm:text-sm"
                 aria-label="Previous profile promote ads"
               >
                 &lt;
@@ -116,7 +118,7 @@ export function ProfilePromoteCarousel({
               <button
                 type="button"
                 onClick={() => setProfilePromoteIndex((current) => (current + 1) % ads.length)}
-                className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 text-sm font-black text-white transition hover:bg-white/10 active:scale-95"
+                className="flex h-7 w-7 items-center justify-center rounded-full border border-white/15 bg-black/45 text-xs font-black text-white shadow-lg shadow-black/30 transition hover:bg-white/10 active:scale-95 sm:h-8 sm:w-8 sm:text-sm"
                 aria-label="Next profile promote ads"
               >
                 &gt;
@@ -125,12 +127,14 @@ export function ProfilePromoteCarousel({
           )}
         </div>
         <div className="overflow-hidden">
-          <div className={`grid gap-4 ${visibleCount === 2 ? "grid-cols-2" : visibleCount === 4 ? "grid-cols-4" : "grid-cols-3"}`}>
+          <div className={`grid gap-2 sm:gap-4 ${visibleCount === 2 ? "grid-cols-2" : visibleCount === 4 ? "grid-cols-2 md:grid-cols-4" : "grid-cols-2 md:grid-cols-3"}`}>
             {visibleAds.map((profileAd) => (
-              <div key={`profile-promote-${profileAd.id}`} className="min-w-0">
+              <div key={`profile-promote-${profileAd.id}`} className="min-w-0 overflow-hidden rounded-[1.1rem]">
                 <PromotedAdCard
                   ad={profileAd}
+                  compact={visibleCount === 2}
                   onProductClick={onProductClick}
+                  onContentClick={onContentClick}
                   onProfileClick={(clickedAd) => {
                     if (clickedAd) {
                       onProfileClick(clickedAd);

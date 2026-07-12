@@ -64,7 +64,8 @@ export default function ReelSharePage() {
                     setItem(null);
                     return;
                 }
-                const nextItem = resellerRef ? {
+                const isVaultContent = String(match.content_type || "").toLowerCase() !== "flash";
+                const nextItem = resellerRef && isVaultContent ? {
                     ...match,
                     reseller_ref: resellerRef,
                     resell_ref: resellerRef,
@@ -175,20 +176,6 @@ export default function ReelSharePage() {
         }
     };
 
-    const handleRepostFlow = (target: UploadContentRecord) => {
-        if (!authService.isAuthenticated() || !currentUser?.id) {
-            openLoginRequired({ message: "Please log in to repost content." });
-            return;
-        }
-        if (String(target.user_id || "") === String(currentUser.id || "")) {
-            return;
-        }
-        setShareInitialView("resell");
-        setShareFlowMode("repost");
-        setForceResellOnly(true);
-        setShowShareModal(true);
-    };
-
     const handleLogView = async (target: UploadContentRecord) => {
         try {
             const result = await uploadContentService.logView(target.id);
@@ -276,7 +263,6 @@ export default function ReelSharePage() {
                     }}
                     onShare={handleShare}
                     onRepost={handleRepost}
-                    onOpenRepostFlow={handleRepostFlow}
                     onLogView={handleLogView}
                     onPin={() => {}}
                     onReport={() => {}}

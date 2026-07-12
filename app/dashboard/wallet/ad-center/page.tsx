@@ -83,9 +83,9 @@ function supportsRemainingBudgetRefund(campaignType: string) {
 
 function getCampaignEditorPath(campaignType: string) {
     const normalized = campaignType.trim().toLowerCase();
-    if (normalized === "product promote") return "/dashboard/ad-campaign/product-promote";
-    if (normalized === "profile promote") return "/dashboard/ad-campaign/profile-promote";
-    return "/dashboard/ad-campaign/photo-video";
+    if (normalized === "product promote") return "/ad-campaign/product-promote";
+    if (normalized === "profile promote") return "/ad-campaign/profile-promote";
+    return "/ad-campaign/photo-video";
 }
 
 function normalizeStatus(status: unknown): AdStatus {

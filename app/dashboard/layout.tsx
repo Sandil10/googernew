@@ -36,7 +36,7 @@ export default function DashboardLayout({
 }) {
     const router = useRouter();
     const pathname = usePathname();
-    const isAdCampaignRoute = pathname?.startsWith("/dashboard/ad-campaign") ?? false;
+    const isAdCampaignRoute = pathname?.startsWith("/dashboard/ad-campaign") || pathname?.startsWith("/ad-campaign") || false;
     const isPublicProfileRoute = pathname?.startsWith("/@") || pathname?.startsWith("/profile/");
     const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
     const [isCreateActionMenuOpen, setIsCreateActionMenuOpen] = useState(false);
@@ -56,11 +56,11 @@ export default function DashboardLayout({
     const isCartLocked = isGoogerPaymentCartLocked;
     const isSuspendedWalletPath = (path: string | null) => path === "/wallet/my-wallet";
     const prefetchAdCampaignRoutes = useCallback(() => {
-        router.prefetch("/dashboard/ad-campaign/photo-video");
-        router.prefetch("/dashboard/ad-campaign/product-promote");
-        router.prefetch("/dashboard/ad-campaign/profile-promote");
-        router.prefetch("/dashboard/ad-campaign/upload-content");
-        router.prefetch("/dashboard/ad-campaign/flash-content");
+        router.prefetch("/ad-campaign/photo-video");
+        router.prefetch("/ad-campaign/product-promote");
+        router.prefetch("/ad-campaign/profile-promote");
+        router.prefetch("/ad-campaign/upload-content");
+        router.prefetch("/ad-campaign/flash-content");
     }, [router]);
     const shouldRedirectSuspendedUser = useCallback((user: any) => {
         if (!user?.is_deactivated) return false;
@@ -309,7 +309,7 @@ export default function DashboardLayout({
             ["photo-and-video", "product-promote", "profile-promote", "upload-content", "vault-content", "flash-content"].forEach((type) => {
                 window.localStorage.removeItem(`googer-ad-draft-${type}`);
             });
-            router.push(action === "upload-content" ? "/dashboard/ad-campaign/upload-content" : "/dashboard/ad-campaign/photo-video");
+            router.push(action === "upload-content" ? "/ad-campaign/upload-content" : "/ad-campaign/photo-video");
             return;
         }
 

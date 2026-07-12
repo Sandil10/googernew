@@ -70,6 +70,7 @@ function SystemVideoPlayer({
     poster,
     autoPlay,
     autoPauseOnLeave,
+    initialTimeSeconds = 0,
     trimStartSeconds = 0,
     trimEndSeconds = 0,
 }: {
@@ -77,6 +78,7 @@ function SystemVideoPlayer({
     poster?: string;
     autoPlay: boolean;
     autoPauseOnLeave: boolean;
+    initialTimeSeconds?: number;
     trimStartSeconds?: number;
     trimEndSeconds?: number;
 }) {
@@ -94,7 +96,11 @@ function SystemVideoPlayer({
     const cycleSpeed = () => setPlaybackRate((rate) => SPEEDS[(SPEEDS.indexOf(rate) + 1) % SPEEDS.length]);
     const trimStart = Math.max(0, Number(trimStartSeconds || 0));
     const trimEnd = Math.max(0, Number(trimEndSeconds || 0));
+    const requestedInitialTime = Math.max(0, Number(initialTimeSeconds || 0));
     const hasTrim = trimEnd > trimStart;
+    const startTime = hasTrim
+        ? Math.min(Math.max(trimStart, requestedInitialTime || trimStart), Math.max(trimStart, trimEnd - 0.05))
+        : requestedInitialTime;
     const displayCurrentTime = hasTrim ? Math.max(0, currentTime - trimStart) : currentTime;
     const displayDuration = hasTrim ? Math.max(0, trimEnd - trimStart) : duration;
     const progress = displayDuration > 0 ? Math.min(100, (displayCurrentTime / displayDuration) * 100) : 0;
@@ -137,11 +143,11 @@ function SystemVideoPlayer({
     useEffect(() => {
         const video = videoRef.current;
         if (!video || !autoPlay) return;
-        if (hasTrim && (video.currentTime < trimStart || video.currentTime >= trimEnd)) {
-            video.currentTime = trimStart;
+        if ((hasTrim && (video.currentTime < trimStart || video.currentTime >= trimEnd)) || startTime > 0) {
+            video.currentTime = startTime;
         }
         void video.play().then(() => setPaused(false)).catch(() => setPaused(true));
-    }, [autoPlay, hasTrim, src, trimEnd, trimStart]);
+    }, [autoPlay, hasTrim, src, startTime, trimEnd, trimStart]);
 
     useEffect(() => {
         if (!autoPauseOnLeave || !frameRef.current) return;
@@ -175,8 +181,8 @@ function SystemVideoPlayer({
         if (!video) return;
         if (video.paused) {
             if (hasTrim && (video.currentTime < trimStart || video.currentTime >= trimEnd)) {
-                video.currentTime = trimStart;
-                setCurrentTime(trimStart);
+                video.currentTime = startTime;
+                setCurrentTime(startTime);
             }
             void video.play().then(() => setPaused(false)).catch(() => setPaused(true));
         } else {
@@ -225,9 +231,9 @@ function SystemVideoPlayer({
                 onLoadedMetadata={(event) => {
                     const nativeDuration = Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0;
                     setDuration(hasTrim ? Math.max(0, trimEnd - trimStart) : nativeDuration);
-                    if (hasTrim) {
-                        event.currentTarget.currentTime = trimStart;
-                        setCurrentTime(trimStart);
+                    if (hasTrim || startTime > 0) {
+                        event.currentTarget.currentTime = startTime;
+                        setCurrentTime(startTime);
                     } else {
                         setCurrentTime(event.currentTarget.currentTime || 0);
                     }
@@ -358,6 +364,7 @@ export default function UploadContentWatchModal({
     inline = false,
     videoTrimStartSeconds = 0,
     videoTrimEndSeconds = 0,
+    initialTimeSeconds = 0,
     onClose,
 }: {
     open: boolean;
@@ -373,6 +380,7 @@ export default function UploadContentWatchModal({
     inline?: boolean;
     videoTrimStartSeconds?: number;
     videoTrimEndSeconds?: number;
+    initialTimeSeconds?: number;
     onClose: () => void;
 }) {
     const [galleryIndex, setGalleryIndex] = useState(0);
@@ -560,6 +568,7 @@ export default function UploadContentWatchModal({
                         poster={posterSource || undefined}
                         autoPlay={autoPlay}
                         autoPauseOnLeave={inline}
+                        initialTimeSeconds={initialTimeSeconds}
                         trimStartSeconds={videoTrimStartSeconds}
                         trimEndSeconds={videoTrimEndSeconds}
                     />

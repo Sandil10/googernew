@@ -2,6 +2,8 @@ tunnel: 70dad40c-325d-41c2-a3c7-ccf45815a215
 credentials-file: D:/googer-recovery-code/googernew-main/.cloudflared/70dad40c-325d-41c2-a3c7-ccf45815a215.json
 
 ingress:
+  - hostname: expo.googer.site
+    service: http://127.0.0.1:8081
   - hostname: admin.googer.site
     service: http://127.0.0.1:6001
   - hostname: googer.site

@@ -9,6 +9,7 @@ const DEFAULT_SETTINGS = {
     flash_preview_seconds: 5,
     flash_auto_play: false,
     flash_commission_percentage: 0,
+    flash_commission_tiers: [],
     default_topic: 'Technology',
     default_content_access_mode: 'unblurred',
     normal_user_video_limit_seconds: 60,
@@ -31,6 +32,7 @@ const ensureTable = async () => {
             flash_preview_seconds INTEGER NOT NULL DEFAULT 5,
             flash_auto_play BOOLEAN NOT NULL DEFAULT false,
             flash_commission_percentage NUMERIC(8, 2) NOT NULL DEFAULT 0,
+            flash_commission_tiers JSONB NOT NULL DEFAULT '[]'::jsonb,
             default_topic VARCHAR(80) NOT NULL DEFAULT 'Technology',
             default_content_access_mode VARCHAR(20) NOT NULL DEFAULT 'unblurred',
             normal_user_video_limit_seconds INTEGER NOT NULL DEFAULT 60,
@@ -53,6 +55,7 @@ const ensureTable = async () => {
     await pool.query(`ALTER TABLE upload_control_settings ADD COLUMN IF NOT EXISTS flash_preview_seconds INTEGER NOT NULL DEFAULT 5`);
     await pool.query(`ALTER TABLE upload_control_settings ADD COLUMN IF NOT EXISTS flash_auto_play BOOLEAN NOT NULL DEFAULT false`);
     await pool.query(`ALTER TABLE upload_control_settings ADD COLUMN IF NOT EXISTS flash_commission_percentage NUMERIC(8, 2) NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE upload_control_settings ADD COLUMN IF NOT EXISTS flash_commission_tiers JSONB NOT NULL DEFAULT '[]'::jsonb`);
 
     await pool.query(`
         ALTER TABLE upload_control_settings
@@ -100,6 +103,7 @@ const normalizeRow = (row) => ({
     flash_preview_seconds: Number(row?.flash_preview_seconds ?? DEFAULT_SETTINGS.flash_preview_seconds),
     flash_auto_play: Boolean(row?.flash_auto_play ?? DEFAULT_SETTINGS.flash_auto_play),
     flash_commission_percentage: Number(row?.flash_commission_percentage ?? row?.flashCommissionPercentage ?? DEFAULT_SETTINGS.flash_commission_percentage),
+    flash_commission_tiers: Array.isArray(row?.flash_commission_tiers ?? row?.flashCommissionTiers) ? (row.flash_commission_tiers ?? row.flashCommissionTiers) : DEFAULT_SETTINGS.flash_commission_tiers,
     default_topic: String(row?.default_topic || DEFAULT_SETTINGS.default_topic),
     default_content_access_mode: row?.default_content_access_mode === 'blurred' ? 'blurred' : 'unblurred',
     normal_user_video_limit_seconds: Number(row?.normal_user_video_limit_seconds ?? DEFAULT_SETTINGS.normal_user_video_limit_seconds),
@@ -174,8 +178,18 @@ exports.update = async (req, res) => {
         ).trim();
         const rawCommissionTiers = req.body?.commission_tiers ?? req.body?.commissionTiers ?? currentSettings.commission_tiers;
         const rawSubscriptionCommissionTiers = req.body?.subscription_commission_tiers ?? req.body?.subscriptionCommissionTiers ?? currentSettings.subscription_commission_tiers;
+        const rawFlashCommissionTiers = req.body?.flash_commission_tiers ?? req.body?.flashCommissionTiers ?? currentSettings.flash_commission_tiers;
         const commissionTiers = Array.isArray(rawCommissionTiers)
             ? rawCommissionTiers
+                .map((tier) => ({
+                    min: Number(tier?.min ?? 0),
+                    max: Number(tier?.max ?? 0),
+                    commission: Number(tier?.commission ?? 0),
+                }))
+                .filter((tier) => Number.isFinite(tier.min) && Number.isFinite(tier.max) && Number.isFinite(tier.commission) && tier.min >= 0 && tier.max >= tier.min && tier.commission >= 0 && tier.commission <= 100)
+            : [];
+        const flashCommissionTiers = Array.isArray(rawFlashCommissionTiers)
+            ? rawFlashCommissionTiers
                 .map((tier) => ({
                     min: Number(tier?.min ?? 0),
                     max: Number(tier?.max ?? 0),
@@ -249,6 +263,7 @@ exports.update = async (req, res) => {
                 subscribed_user_video_limit_seconds = $10,
                 commission_tiers = $11::jsonb,
                 subscription_commission_tiers = $12::jsonb,
+                flash_commission_tiers = $13::jsonb,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = (
                 SELECT id
@@ -270,6 +285,7 @@ exports.update = async (req, res) => {
             subscribedUserVideoLimitSeconds,
             JSON.stringify(commissionTiers),
             JSON.stringify(subscriptionCommissionTiers),
+            JSON.stringify(flashCommissionTiers),
         ]);
 
         return res.json({ success: true, settings: normalizeRow(rows[0]) });

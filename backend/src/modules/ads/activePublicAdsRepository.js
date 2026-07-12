@@ -237,7 +237,7 @@ const findLinkedProducts = async (productIds, productCodes) => {
 
     const linkedResult = await pool.query(
         `SELECT m.id, m.user_id, m.username, m.title, m.description, m.price, m.promo_price,
-                m.category, m.sub_category, m.manual_category, m.stock, m.image_url, m.status,
+                m.category, m.sub_category, m.manual_category, m.stock, m.image_url, NULL::jsonb AS media_gallery, m.status,
                 m.likes_count, m.comments_count, m.shares_count, m.views_count,
                 m.variants, m.shipping_info, m.payment_methods, m.commission_info, m.created_at, m.product_code,
                 u.username AS owner_username, u.profile_picture

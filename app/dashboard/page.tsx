@@ -2,9 +2,8 @@
 
 import Image from "next/image";
 import React, { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createPortal } from "react-dom";
 import IonIcon from "@/app/components/IonIcon";
 import { authService } from "@/services/authService";
 import { marketService } from "@/services/marketService";
@@ -57,6 +56,37 @@ import {
 
 type SheetType = "likes" | "comments" | "shares" | "views";
 const VAULT_QUICK_UNLOCK_KEY = "googer-vault-watch-quick-unlock-v1";
+const GOOG_CATEGORY_PAGE_SIZE = 10;
+const GOOG_DESKTOP_CATEGORY_PAGE_SIZE = 18;
+const HOME_GOOG_CATEGORIES = [
+    "All",
+    "Subscriptions",
+    "Comedy",
+    "Music",
+    "Gaming",
+    "Food & Cooking",
+    "Technology",
+    "News",
+    "Travel",
+    "Sports",
+    "Entertainment",
+    "Business",
+    "Finance",
+    "Health",
+    "Science",
+    "AI",
+    "Programming",
+    "Lifestyle",
+    "Agriculture",
+    "Education",
+    "Real Estate",
+    "Automotive",
+    "Marketing",
+    "Beauty & Fashion",
+    "Pets & Animals",
+    "Kids & Family",
+    "Films & Animation",
+];
 
 type FixedPostMenu = {
     post: WritePost;
@@ -563,102 +593,161 @@ function interleaveHomeOrganicItemsWithAds<T extends { type: string }>(
 }
 
 function isHomeProfilePromoteAd(ad: any) {
-    return String(ad?.campaign_type || ad?.campaignType || "").trim().toLowerCase() === "profile promote";
+    const campaignType = String(ad?.campaign_type || ad?.campaignType || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ");
+    const mediaType = String(ad?.media_type || ad?.mediaType || "").trim().toLowerCase();
+    return campaignType === "profile promote"
+        || campaignType === "profile promote ad"
+        || mediaType === "profile"
+        || Boolean(ad?.profile_id || ad?.profileId || ad?.is_profile_ad);
 }
 
-function insertHomeProfilePromoteRows<T extends { type: string }>(items: T[], profilePromoteAds: any[]) {
+function hasHomeSearchMatch(normalizedSearch: string, ...values: any[]) {
+    if (!normalizedSearch) return true;
+    const stack = [...values];
+
+    while (stack.length) {
+        const value = stack.shift();
+        if (Array.isArray(value)) {
+            stack.push(...value);
+            continue;
+        }
+        if (value && typeof value === "object") {
+            stack.push(...Object.values(value));
+            continue;
+        }
+        if (String(value || "").toLowerCase().includes(normalizedSearch)) return true;
+    }
+
+    return false;
+}
+
+function matchesHomeAdSearch(ad: any, normalizedSearch: string) {
+    const raw = ad?.raw || {};
+    return hasHomeSearchMatch(
+        normalizedSearch,
+        ad?.title,
+        ad?.description,
+        ad?.campaign_type,
+        ad?.campaignType,
+        ad?.category,
+        ad?.topic,
+        ad?.active_link,
+        ad?.user?.name,
+        ad?.user?.username,
+        ad?.username,
+        ad?.full_name,
+        raw,
+    );
+}
+
+function matchesHomeUploadSearch(item: UploadContentRecord, normalizedSearch: string) {
+    const upload = item as any;
+    return hasHomeSearchMatch(
+        normalizedSearch,
+        upload.topic,
+        upload.description,
+        upload.content_type,
+        upload.media_type,
+        upload.visibility,
+        upload.username,
+        upload.full_name,
+        upload.reposted_by_username,
+        upload.reposted_by_full_name,
+        upload.hashtags,
+    );
+}
+
+function insertHomeProfilePromoteRows<T extends { type: string }>(items: T[], profilePromoteAds: any[], shuffleSeed: string) {
     if (!profilePromoteAds.length) return items;
+    const getShuffledProfileAds = (carouselIndex: number) => shuffleItemsWithSeed(
+        profilePromoteAds,
+        `${shuffleSeed}:profile-promote:${carouselIndex}`,
+        (ad) => String(ad?.id || ad?.adId || ad?.ad_id || ad?.profile_id || ""),
+    );
+
     if (!items.length) {
         return [{
             type: "profilePromoteCarousel" as const,
             id: "home-profile-promote-carousel-1",
-            ads: profilePromoteAds,
+            ads: getShuffledProfileAds(1),
         }];
     }
 
-    const intervals = [4, 10];
-    let intervalIndex = 0;
-    let googsSinceProfileRow = 0;
+    let nextProfileInterval = 3;
+    let organicItemsSinceProfileRow = 0;
     let carouselCount = 0;
     const output: Array<T | { type: "profilePromoteCarousel"; id: string; ads: any[] }> = [];
 
     items.forEach((item) => {
         output.push(item);
-        if (item.type !== "write") return;
+        if (item.type !== "write" && item.type !== "uploadContent") return;
 
-        googsSinceProfileRow += 1;
-        if (googsSinceProfileRow === intervals[intervalIndex]) {
+        organicItemsSinceProfileRow += 1;
+        if (organicItemsSinceProfileRow === nextProfileInterval) {
             carouselCount += 1;
             output.push({
                 type: "profilePromoteCarousel",
                 id: `home-profile-promote-carousel-${carouselCount}`,
-                ads: profilePromoteAds,
+                ads: getShuffledProfileAds(carouselCount),
             });
-            googsSinceProfileRow = 0;
-            if (intervalIndex < intervals.length - 1) intervalIndex += 1;
+            organicItemsSinceProfileRow = 0;
+            nextProfileInterval = 8;
         }
     });
 
     return output;
 }
 
-function insertHomeUploadContentRows<T extends { type: string }>(items: T[], uploadContents: UploadContentRecord[]) {
-    if (!uploadContents.length) return items;
+function mixHomeOrganicItems(
+    posts: WritePost[],
+    uploadContents: UploadContentRecord[],
+    shuffleSeed: string,
+) {
+    const writeItems = posts.map((post) => ({ type: "write" as const, post }));
     const uploadItems = uploadContents.map((item, index) => ({
         type: "uploadContent" as const,
         id: `home-upload-content-${item.contentId || item.content_id || item.id || index}-${item.reposted_by_username || item.reposted_by_full_name || "original"}-${item.reposted_at || ""}`,
         item,
     }));
 
-    if (!items.length) return uploadItems;
-
-    const output: Array<T | (typeof uploadItems)[number]> = [];
-    let seenFeedCards = 0;
-    let uploadIndex = 0;
-
-    items.forEach((item) => {
-        output.push(item);
-        if (item.type === "profilePromoteCarousel") return;
-
-        seenFeedCards += 1;
-        if (seenFeedCards % 5 === 0 && uploadIndex < uploadItems.length) {
-            output.push(uploadItems[uploadIndex]);
-            uploadIndex += 1;
-        }
-    });
-
-    while (uploadIndex < uploadItems.length) {
-        output.push(uploadItems[uploadIndex]);
-        uploadIndex += 1;
-    }
-
-    return output;
+    return shuffleItemsWithSeed(
+        [...writeItems, ...uploadItems],
+        `${shuffleSeed}:mixed-organic`,
+        (entry) => entry.type === "write" ? `goog-${entry.post.id}` : entry.id,
+    );
 }
 
-function extractGoogCategories(posts: WritePost[]) {
-    return [
-        "All",
-        "Comedy",
-        "Food & Cooking",
-        "Education",
-        "Technology",
-        "Business",
-        "Finance",
-        "Health",
-        "Sports",
-        "Entertainment",
-        "Travel",
-        "Music",
-        "Gaming",
-    ];
+function extractGoogCategories() {
+    return HOME_GOOG_CATEGORIES;
 }
 
 function postMatchesGoogCategory(post: WritePost, category: string) {
-    if (category === "All") return true;
+    if (category === "All" || category === "Subscriptions") return true;
     const normalizedCategory = String(category || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, " ").trim();
     if (!normalizedCategory) return true;
     const normalizedText = String(post.text || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9#]+/g, " ").trim();
     return normalizedText.includes(normalizedCategory) || normalizedText.includes(`#${normalizedCategory.replace(/\s+/g, "")}`);
+}
+
+function uploadMatchesGoogCategory(item: UploadContentRecord, category: string) {
+    if (category === "All" || category === "Subscriptions") return true;
+    if ((item as any)?.reposted_by_user_id || (item as any)?.reposted_by_username || (item as any)?.reposted_by_full_name) return true;
+    const upload = item as any;
+    const normalizedCategory = String(category || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, " ").trim();
+    if (!normalizedCategory) return true;
+    const normalizedTopic = String(upload.topic || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9#]+/g, " ").trim();
+    const normalizedText = String(`${upload.description || ""} ${Array.isArray(upload.hashtags) ? upload.hashtags.join(" ") : upload.hashtags || ""}`)
+        .toLowerCase()
+        .replace(/&/g, "and")
+        .replace(/[^a-z0-9#]+/g, " ")
+        .trim();
+    return normalizedTopic.includes(normalizedCategory)
+        || normalizedText.includes(normalizedCategory)
+        || normalizedText.includes(`#${normalizedCategory.replace(/\s+/g, "")}`);
 }
 
 
@@ -775,6 +864,7 @@ export default function DashboardPage() {
     const [googSearchQuery, setGoogSearchQuery] = useState("");
     const [showGoogSuggestions, setShowGoogSuggestions] = useState(false);
     const [selectedGoogCategory, setSelectedGoogCategory] = useState("All");
+    const [googCategoryPage, setGoogCategoryPage] = useState(0);
     const [ads, setAds] = useState<any[]>([]);
     const [homeAdShuffleSeed] = useState(() => getPersistentClientSeed("googer-home-ad-pool-seed-v1"));
     const [homeGoogShuffleSeed] = useState(() => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
@@ -783,6 +873,13 @@ export default function DashboardPage() {
     const adStates = useAdStore((state) => state.adStates);
     const setViewerContext = useAdStore((state) => state.setViewerContext);
     const [isLoadingFeed, setIsLoadingFeed] = useState(true);
+    const initialFeedSourcesReadyRef = useRef({ ads: false, googs: false, uploads: false });
+    const markInitialFeedSourceReady = useCallback((source: "ads" | "googs" | "uploads") => {
+        initialFeedSourcesReadyRef.current[source] = true;
+        if (Object.values(initialFeedSourcesReadyRef.current).every(Boolean)) {
+            setIsLoadingFeed(false);
+        }
+    }, []);
     const [, setTick] = useState(0);
     const [openMenuAdId, setOpenMenuAdId] = useState<string | number | null>(null);
     const [openPostMenu, setOpenPostMenu] = useState<FixedPostMenu | null>(null);
@@ -802,6 +899,8 @@ export default function DashboardPage() {
     const [adPreviewModal, setAdPreviewModal] = useState<{ ad: any; kind: "image" | "video" | "embed" } | null>(null);
     const [productAdModal, setProductAdModal] = useState<any | null>(null);
     const [productAdSizeError, setProductAdSizeError] = useState(false);
+    const [profilePromoteUploadModal, setProfilePromoteUploadModal] = useState<UploadContentRecord | null>(null);
+    const [profilePromoteUploadAutoOpenKey, setProfilePromoteUploadAutoOpenKey] = useState<string | null>(null);
     const [notification, setNotification] = useState<{ type: "error" | "success"; message: string; title?: string } | null>(null);
     useEffect(() => {
         if (!notification) return;
@@ -827,6 +926,7 @@ export default function DashboardPage() {
     const [interactionPost, setInteractionPost] = useState<WritePost | null>(null);
     const [postSheetData, setPostSheetData] = useState<any[]>([]);
     const [currentUser, setCurrentUser] = useState<any>(null);
+    const [followedUserIds, setFollowedUserIds] = useState<Set<string>>(new Set());
     const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
     const [hiddenHomeAdIds, setHiddenHomeAdIds] = useState<Set<string>>(new Set());
     const [hiddenHomeGoogIds, setHiddenHomeGoogIds] = useState<Set<string>>(new Set());
@@ -899,6 +999,46 @@ export default function DashboardPage() {
 
     useEffect(() => {
         if (!currentUser?.id) {
+            setFollowedUserIds(new Set());
+            return;
+        }
+        let cancelled = false;
+        const loadFollowedUsers = async () => {
+            try {
+                const following = await authService.getFollowingUsers(currentUser.id);
+                if (cancelled) return;
+                setFollowedUserIds(new Set(
+                    (Array.isArray(following) ? following : [])
+                        .map((entry: any) => String(
+                            entry?.following_user_id ||
+                            entry?.following_id ||
+                            entry?.followed_user_id ||
+                            entry?.followed_id ||
+                            entry?.following?.id ||
+                            entry?.following?.user_id ||
+                            entry?.user?.id ||
+                            entry?.user?.user_id ||
+                            entry?.user_id ||
+                            entry?.id ||
+                            "",
+                        ))
+                        .filter(Boolean),
+                ));
+            } catch {
+                if (!cancelled) setFollowedUserIds(new Set());
+            }
+        };
+        void loadFollowedUsers();
+        const handleSubscriptionUpdated = () => { void loadFollowedUsers(); };
+        window.addEventListener("googer-subscription-updated", handleSubscriptionUpdated);
+        return () => {
+            cancelled = true;
+            window.removeEventListener("googer-subscription-updated", handleSubscriptionUpdated);
+        };
+    }, [currentUser?.id]);
+
+    useEffect(() => {
+        if (!currentUser?.id) {
             setHiddenHomeAdIds(new Set());
             setHiddenHomeGoogIds(new Set());
             setHiddenHomeUploadIds(new Set());
@@ -949,6 +1089,11 @@ export default function DashboardPage() {
         const ownerId = getBlockedOwnerId(item);
         return !!ownerId && blockedUserIds.has(ownerId);
     }, [blockedUserIds, getBlockedOwnerId]);
+    const isFollowedOwnerItem = useCallback((item: any) => {
+        if (!followedUserIds.size) return false;
+        const ownerId = getBlockedOwnerId(item);
+        return !!ownerId && followedUserIds.has(ownerId);
+    }, [followedUserIds, getBlockedOwnerId]);
     const getHomeLiveAd = useCallback((ad: any) => {
         if (!ad) return ad;
         const liveState = adStates[getAdInteractionId(ad)] || {};
@@ -999,42 +1144,92 @@ export default function DashboardPage() {
         [ads, getHomeLiveAd, hiddenHomeAdIds, isBlockedOwnerItem],
     );
     const googCategoryOptions = useMemo(
-        () => extractGoogCategories(posts),
-        [posts],
+        () => extractGoogCategories(),
+        [],
     );
+    const googCategoryPageCount = Math.max(1, Math.ceil(googCategoryOptions.length / GOOG_CATEGORY_PAGE_SIZE));
+    const desktopGoogCategoryPageCount = Math.max(1, Math.ceil(googCategoryOptions.length / GOOG_DESKTOP_CATEGORY_PAGE_SIZE));
+    const visibleGoogCategoryOptions = useMemo(
+        () => googCategoryOptions.slice(
+            googCategoryPage * GOOG_CATEGORY_PAGE_SIZE,
+            (googCategoryPage + 1) * GOOG_CATEGORY_PAGE_SIZE,
+        ),
+        [googCategoryOptions, googCategoryPage],
+    );
+    const visibleDesktopGoogCategoryOptions = useMemo(
+        () => googCategoryOptions.slice(
+            Math.min(googCategoryPage, desktopGoogCategoryPageCount - 1) * GOOG_DESKTOP_CATEGORY_PAGE_SIZE,
+            (Math.min(googCategoryPage, desktopGoogCategoryPageCount - 1) + 1) * GOOG_DESKTOP_CATEGORY_PAGE_SIZE,
+        ),
+        [desktopGoogCategoryPageCount, googCategoryOptions, googCategoryPage],
+    );
+    useEffect(() => {
+        setGoogCategoryPage((currentPage) => Math.min(currentPage, googCategoryPageCount - 1));
+    }, [googCategoryPageCount]);
     const googSearchSuggestions = useMemo(() => {
         const normalizedDraft = googSearchDraft.trim().toLowerCase();
         if (!normalizedDraft) return [];
         const seen = new Set<string>();
-        const suggestions: Array<{ label: string; value: string; hint: string }> = [];
+        const suggestions: Array<{
+            label: string;
+            value: string;
+            hint: string;
+            kind: "profile" | "goog";
+            avatarUrl?: string;
+            username?: string;
+            userId?: string | number;
+        }> = [];
+        const pushProfileSuggestion = (entry: { label: string; value: string; hint: string; avatarUrl?: string; username?: string; userId?: string | number }) => {
+            if (suggestions.length >= 6) return;
+            const value = String(entry.value || "").trim();
+            const label = String(entry.label || value).trim();
+            const username = String(entry.username || "").trim();
+            const lookupValue = value.toLowerCase();
+            const lookupLabel = label.toLowerCase();
+            const lookupUsername = username.toLowerCase();
+            if (!value || seen.has(lookupValue)) return;
+            if (!lookupValue.includes(normalizedDraft) && !lookupLabel.includes(normalizedDraft) && !lookupUsername.includes(normalizedDraft)) return;
+            seen.add(lookupValue);
+            suggestions.push({
+                label: label.length > 56 ? `${label.slice(0, 53)}...` : label,
+                value,
+                hint: entry.hint,
+                kind: "profile",
+                avatarUrl: entry.avatarUrl,
+                username: entry.username,
+                userId: entry.userId,
+            });
+        };
+
         posts.forEach((post) => {
             if (suggestions.length >= 6) return;
             if (hiddenHomeGoogIds.has(String(post.id)) || isBlockedOwnerItem(post)) return;
-            if (!postMatchesGoogCategory(post, selectedGoogCategory)) return;
-
             const userName = String(post.user?.name || "").trim();
             const username = String((post.user as any)?.username || "").trim();
-            const text = String(post.text || "").trim().replace(/\s+/g, " ");
-            const values = [
-                { label: userName, value: userName, hint: username ? `@${username}` : "Profile" },
-                { label: username ? `@${username}` : "", value: username, hint: userName || "Username" },
-                { label: text, value: text, hint: "Goog" },
-            ];
-
-            values.forEach((entry) => {
-                const value = entry.value.trim();
-                const lookup = value.toLowerCase();
-                if (!value || !lookup.includes(normalizedDraft) || seen.has(lookup) || suggestions.length >= 6) return;
-                seen.add(lookup);
-                suggestions.push({
-                    label: entry.label.length > 56 ? `${entry.label.slice(0, 53)}...` : entry.label,
-                    value,
-                    hint: entry.hint,
-                });
-            });
+            const userId = (post.user as any)?.id || (post.user as any)?.user_id || (post as any)?.user_id;
+            const avatarUrl = normalizeMediaSrc((post.user as any)?.profile_picture || post.user?.img || "");
+            pushProfileSuggestion({ label: userName || username, value: username || userName, hint: username ? `@${username}` : "Profile", avatarUrl, username, userId });
+        });
+        uploadContents.forEach((item) => {
+            if (suggestions.length >= 6) return;
+            if (hiddenHomeUploadIds.has(String(item.id)) || isBlockedOwnerItem(item)) return;
+            const upload = item as any;
+            const userName = String(upload.full_name || upload.name || "").trim();
+            const username = String(upload.username || "").trim();
+            const userId = upload.user_id || upload.owner_user_id || upload.userId;
+            const avatarUrl = normalizeMediaSrc(upload.profile_picture || upload.user_profile_picture || "");
+            pushProfileSuggestion({ label: userName || username, value: username || userName, hint: username ? `@${username}` : "Profile", avatarUrl, username, userId });
+        });
+        liveHomeAds.forEach((ad) => {
+            if (suggestions.length >= 6) return;
+            const userName = getItemUsername(ad, "").trim();
+            const username = String(ad?.username || ad?.user?.username || ad?.raw?.username || "").trim();
+            const userId = ad?.user_id || ad?.userId || ad?.user?.id || ad?.raw?.user_id;
+            const avatarUrl = normalizeMediaSrc(getItemProfilePicture(ad) || "");
+            pushProfileSuggestion({ label: userName || username, value: username || userName, hint: username ? `@${username}` : "Profile", avatarUrl, username, userId });
         });
         return suggestions;
-    }, [googSearchDraft, hiddenHomeGoogIds, isBlockedOwnerItem, posts, selectedGoogCategory]);
+    }, [googSearchDraft, hiddenHomeGoogIds, hiddenHomeUploadIds, isBlockedOwnerItem, liveHomeAds, posts, uploadContents]);
     const getRotatedAds = useCallback((sourceAds: any[], rotation: number) => {
         if (!sourceAds.length) return [];
         if (sourceAds.length === 1) return sourceAds;
@@ -1046,23 +1241,33 @@ export default function DashboardPage() {
     }, []);
 
     const normalizedGoogCategory = useMemo(() => {
-        if (selectedGoogCategory === "All") return "All";
+        if (selectedGoogCategory === "All" || selectedGoogCategory === "Subscriptions") return "All";
         return String(selectedGoogCategory || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, " ").trim();
     }, [selectedGoogCategory]);
 
     const homeFeedItems = useMemo(() => {
         const sourceAds = liveHomeAds.length > 0 ? liveHomeAds : dedupeAdsByIdentity(ads);
         const normalizedSearch = googSearchQuery.trim().toLowerCase();
-        const profilePromoteAds = normalizedSearch ? [] : sourceAds.filter(isHomeProfilePromoteAd);
-        const nonProfilePromoteAds = normalizedSearch ? [] : sourceAds.filter((ad) => !isHomeProfilePromoteAd(ad));
+        const isSubscriptionsFilter = selectedGoogCategory === "Subscriptions";
+        const searchableAds = normalizedSearch
+            ? sourceAds.filter((ad) => matchesHomeAdSearch(ad, normalizedSearch))
+            : sourceAds;
+        const filteredSearchableAds = isSubscriptionsFilter
+            ? searchableAds.filter((ad) => isFollowedOwnerItem(ad))
+            : searchableAds;
+        const profilePromoteAds = normalizedSearch ? [] : filteredSearchableAds.filter(isHomeProfilePromoteAd);
+        const nonProfilePromoteAds = normalizedSearch
+            ? filteredSearchableAds
+            : filteredSearchableAds.filter((ad) => !isHomeProfilePromoteAd(ad));
         const rotation = nonProfilePromoteAds.length > 0
             ? homeAdRotation % nonProfilePromoteAds.length
             : 0;
-        const rotatedAds = getRotatedAds(nonProfilePromoteAds, rotation);
+        const rotatedAds = normalizedSearch ? nonProfilePromoteAds : getRotatedAds(nonProfilePromoteAds, rotation);
         const searchablePosts = normalizedSearch
             ? posts.filter((post) => {
                 if (hiddenHomeGoogIds.has(String(post.id))) return false;
                 if (isBlockedOwnerItem(post)) return false;
+                if (isSubscriptionsFilter && !isFollowedOwnerItem(post)) return false;
                 const text = String(post.text || "").toLowerCase();
                 const name = String(post.user?.name || "").toLowerCase();
                 const username = String((post.user as any)?.username || "").toLowerCase();
@@ -1074,6 +1279,7 @@ export default function DashboardPage() {
             })
             : posts.filter((post) => {
                 if (hiddenHomeGoogIds.has(String(post.id)) || isBlockedOwnerItem(post)) return false;
+                if (isSubscriptionsFilter && !isFollowedOwnerItem(post)) return false;
                 if (normalizedGoogCategory === "All") return true;
                 const normalizedText = String(post.text || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9#]+/g, " ").trim();
                 return normalizedText.includes(normalizedGoogCategory) || normalizedText.includes(`#${normalizedGoogCategory.replace(/\s+/g, "")}`);
@@ -1083,15 +1289,28 @@ export default function DashboardPage() {
             homeGoogShuffleSeed,
             (post) => String(post.id),
         );
-        const visibleUploadContents = uploadContents.filter((item) => item.status === "Approved" && !hiddenHomeUploadIds.has(String(item.id)) && !isBlockedOwnerItem(item));
-        const writeItems = validPosts.map((post) => ({ type: "write" as const, post }));
-        const withUploads = normalizedSearch ? writeItems : insertHomeUploadContentRows(writeItems, visibleUploadContents);
-        const mixedItems = interleaveHomeOrganicItemsWithAds(withUploads, rotatedAds, "googer-home-ad-rotation-v1", { current: homeAdOrder }, 4, true);
-        return insertHomeProfilePromoteRows(mixedItems, profilePromoteAds);
-    }, [ads, getRotatedAds, googSearchQuery, hiddenHomeGoogIds, hiddenHomeUploadIds, homeAdOrder, homeAdRotation, homeGoogShuffleSeed, isBlockedOwnerItem, liveHomeAds, normalizedGoogCategory, posts, uploadContents]);
+        const visibleUploadContents = uploadContents.filter((item) => {
+            if (item.status !== "Approved" || hiddenHomeUploadIds.has(String(item.id)) || isBlockedOwnerItem(item)) return false;
+            if (isSubscriptionsFilter && !isFollowedOwnerItem(item)) return false;
+            if (!uploadMatchesGoogCategory(item, selectedGoogCategory)) return false;
+            return !normalizedSearch || matchesHomeUploadSearch(item, normalizedSearch);
+        });
+        const organicItems = mixHomeOrganicItems(validPosts, visibleUploadContents, homeGoogShuffleSeed);
+        // Profile Promote cadence counts only mixed Googs, vault uploads, and flash uploads:
+        // first after 3 organic cards, then after every additional 8 organic cards.
+        const organicItemsWithProfilePromotes = insertHomeProfilePromoteRows(organicItems, profilePromoteAds, homeGoogShuffleSeed);
+        return interleaveHomeOrganicItemsWithAds(
+            organicItemsWithProfilePromotes,
+            rotatedAds,
+            "googer-home-ad-rotation-v1",
+            { current: homeAdOrder },
+            4,
+            true,
+        );
+    }, [ads, getRotatedAds, googSearchQuery, hiddenHomeGoogIds, hiddenHomeUploadIds, homeAdOrder, homeAdRotation, homeGoogShuffleSeed, isBlockedOwnerItem, isFollowedOwnerItem, liveHomeAds, normalizedGoogCategory, posts, selectedGoogCategory, uploadContents]);
     const visibleHomeFeedItems = useMemo(
-        () => homeFeedItems.slice(0, visibleHomeFeedCount),
-        [homeFeedItems, visibleHomeFeedCount],
+        () => isLoadingFeed ? [] : homeFeedItems.slice(0, visibleHomeFeedCount),
+        [homeFeedItems, isLoadingFeed, visibleHomeFeedCount],
     );
     const trendingPosts = useMemo<TrendingPost[]>(() => {
         const adTrends = liveHomeAds.slice(0, 5).map((ad) => {
@@ -1216,12 +1435,12 @@ export default function DashboardPage() {
                 if (!mounted) return;
                 setAds(publicItems);
                 syncAds(publicItems);
-                setIsLoadingFeed(false);
+                markInitialFeedSourceReady("ads");
             } catch (error) {
                 console.error("Failed to load ads:", error);
                 if (mounted) {
                     setAds(publicItems);
-                    setIsLoadingFeed(false);
+                    markInitialFeedSourceReady("ads");
                 }
             }
         };
@@ -1239,7 +1458,7 @@ export default function DashboardPage() {
             window.removeEventListener("googer-ad-history-updated", refreshAds);
             window.removeEventListener("focus", refreshAds);
         };
-    }, [currentUser, homeAdShuffleSeed, syncAds]);
+    }, [currentUser, homeAdShuffleSeed, markInitialFeedSourceReady, syncAds]);
 
     useEffect(() => {
         let mounted = true;
@@ -1248,9 +1467,13 @@ export default function DashboardPage() {
                 const result = await uploadContentService.getPublicApproved();
                 if (!mounted) return;
                 setUploadContents(result.contents || []);
+                markInitialFeedSourceReady("uploads");
             } catch (error) {
                 console.error("Failed to load upload contents:", error);
-                if (mounted) setUploadContents([]);
+                if (mounted) {
+                    setUploadContents([]);
+                    markInitialFeedSourceReady("uploads");
+                }
             }
         };
 
@@ -1261,7 +1484,7 @@ export default function DashboardPage() {
             mounted = false;
             window.removeEventListener("focus", loadUploadContents);
         };
-    }, []);
+    }, [markInitialFeedSourceReady]);
 
     useEffect(() => {
         let mounted = true;
@@ -1378,11 +1601,11 @@ export default function DashboardPage() {
                         postsSignatureRef.current = nextSignature;
                         setPosts(nextPosts);
                     }
-                    setIsLoadingFeed(false);
+                    markInitialFeedSourceReady("googs");
                 }
             } catch (error) {
                 console.error("Failed to load Goog posts:", error);
-                if (mounted) setIsLoadingFeed(false);
+                if (mounted) markInitialFeedSourceReady("googs");
             }
         };
 
@@ -1404,7 +1627,7 @@ export default function DashboardPage() {
             mounted = false;
             window.clearInterval(interval);
         };
-    }, [normalizeWritePost]);
+    }, [markInitialFeedSourceReady, normalizeWritePost]);
 
     useEffect(() => {
         if (!isLoadingFeed) return;
@@ -1706,24 +1929,6 @@ export default function DashboardPage() {
         }
     }, [interactionUpload, updateUploadFeedItem]);
 
-    const handleUploadRepostFlow = useCallback((uploadItem: UploadContentRecord) => {
-        if (!authService.isAuthenticated() || !currentUser?.id) {
-            openLoginRequired({ message: "Please log in to repost content." });
-            return;
-        }
-        if (String(uploadItem.user_id || "") === String(currentUser.id || "")) {
-            addTopbarNotification({ type: "info", title: "Own Content", message: "You cannot repost your own content." });
-            return;
-        }
-        flushSync(() => {
-            setUploadShareInitialView("resell");
-            setUploadShareMode("repost");
-            setUploadShareForceResellOnly(true);
-            setShareUploadItem(uploadItem);
-            setShowUploadShareModal(true);
-        });
-    }, [currentUser?.id]);
-
     const handleOpenUploadInsights = useCallback((uploadItem: UploadContentRecord) => {
         flushSync(() => {
             setInsightsUpload(uploadItem);
@@ -1932,7 +2137,7 @@ export default function DashboardPage() {
         } catch (error) {
             console.error("Failed to prepare upload content edit draft:", error);
         }
-        router.push(uploadItem.content_type === "flash" ? "/dashboard/ad-campaign/flash-content" : "/dashboard/ad-campaign/upload-content");
+        router.push(uploadItem.content_type === "flash" ? "/ad-campaign/flash-content" : "/ad-campaign/upload-content");
     }, [router]);
 
     const handleUploadView = useCallback(async (uploadItem: UploadContentRecord) => {
@@ -2488,6 +2693,65 @@ export default function DashboardPage() {
         void viewFeedItem(product);
     };
 
+    const openProfilePromoteUploadContent = useCallback((content: any) => {
+        const lookupValues = new Set(
+            [
+                content?.id,
+                content?.content_id,
+                content?.contentId,
+                content?.upload_content_id,
+                content?.uploadContentId,
+            ]
+                .map((value) => String(value ?? "").trim())
+                .filter(Boolean),
+        );
+        const matched = uploadContents.find((item) => {
+            const candidates = [
+                item.id,
+                item.content_id,
+                item.contentId,
+            ]
+                .map((value) => String(value ?? "").trim())
+                .filter(Boolean);
+            return candidates.some((value) => lookupValues.has(value));
+        });
+        const source = matched ? { ...content, ...matched } : content;
+        const normalizedId = source?.id || source?.content_id || source?.contentId || source?.upload_content_id || source?.uploadContentId || "";
+        const numericNormalizedId = Number(normalizedId);
+        const normalized = {
+            ...source,
+            id: Number.isFinite(numericNormalizedId) && String(normalizedId).trim() !== "" ? numericNormalizedId : (normalizedId as any),
+            contentId: String(source?.contentId || source?.content_id || normalizedId || ""),
+            content_id: String(source?.content_id || source?.contentId || normalizedId || ""),
+            content_type: String(source?.content_type || source?.contentType || "vault").toLowerCase() === "flash" ? "flash" : "vault",
+            description: source?.description || source?.title || source?.topic || "",
+            topic: source?.topic || source?.title || source?.description || "Content",
+            price: Number(source?.price ?? source?.promo_price ?? 0),
+            affiliate_commission: Number(source?.affiliate_commission ?? source?.affiliateCommission ?? 0),
+            hashtags: Array.isArray(source?.hashtags) ? source.hashtags : [],
+            allow_comments: source?.allow_comments !== false,
+            show_link_on_home: !!source?.show_link_on_home,
+            external_link: source?.external_link || "",
+            media_type: source?.media_type || source?.mediaType || "",
+            media_preview: source?.media_preview || source?.preview_url || source?.media_url || source?.image || "",
+            media_gallery: Array.isArray(source?.media_gallery)
+                ? source.media_gallery
+                : Array.isArray(source?.images)
+                    ? source.images
+                    : [],
+            thumbnail_url: source?.thumbnail_url || source?.image_url || "",
+            content_access_mode: source?.content_access_mode || "unblurred",
+            visibility: source?.visibility || "public",
+            status: source?.status || "Approved",
+        } as UploadContentRecord;
+        if (!normalized.id) {
+            setNotification({ type: "error", title: "Content unavailable", message: "The promoted content could not be opened." });
+            return;
+        }
+        setProfilePromoteUploadModal(normalized);
+        setProfilePromoteUploadAutoOpenKey(`${normalized.id}-${Date.now()}`);
+    }, [uploadContents]);
+
     const openProductAdAddToBag = async (product: any) => {
         if (!product?.id) return;
         if (!authService.isAuthenticated() || !currentUser?.id) {
@@ -2560,114 +2824,277 @@ export default function DashboardPage() {
         }
     };
 
+    const googSearchPortalTarget = mounted && typeof document !== "undefined"
+        ? document.getElementById("shop-search-portal")
+        : null;
+    const mobileGoogSearchPortalTarget = mounted && typeof document !== "undefined"
+        ? document.getElementById("mobile-goog-search-portal")
+        : null;
+
     return (
         <>
-        {mounted &&
-            document.getElementById("shop-search-portal") &&
-            createPortal(
+        {mobileGoogSearchPortalTarget && createPortal(
+            <form
+                className="relative w-full min-w-0"
+                onSubmit={(event) => {
+                    event.preventDefault();
+                    setGoogSearchQuery(googSearchDraft.trim());
+                    setShowGoogSuggestions(false);
+                }}
+            >
+                <input
+                    type="text"
+                    value={googSearchDraft}
+                    onChange={(event) => {
+                        const nextQuery = event.target.value;
+                        setGoogSearchDraft(nextQuery);
+                        setShowGoogSuggestions(true);
+                    }}
+                    onFocus={() => setShowGoogSuggestions(true)}
+                    onBlur={() => {
+                        window.setTimeout(() => setShowGoogSuggestions(false), 120);
+                    }}
+                    placeholder="Search Googs"
+                    className="h-8 w-full rounded-full border border-white/10 bg-[#101012] pl-8 pr-7 text-[11px] font-bold text-white shadow-[0_12px_28px_rgba(0,0,0,0.25)] outline-none transition placeholder:text-white/35 focus:border-white/25 focus:bg-[#151515]"
+                />
+                <button
+                    type="submit"
+                    className="absolute left-0 top-0 flex h-8 items-center pl-3 pr-1 text-white/45 transition hover:text-white/80"
+                    aria-label="Search Googs"
+                >
+                    <IonIcon name="search-outline" className="text-sm" />
+                </button>
+                {(googSearchDraft || googSearchQuery) && (
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setGoogSearchDraft("");
+                            setGoogSearchQuery("");
+                        }}
+                        className="absolute right-0 top-0 flex h-8 items-center pl-1 pr-2.5 text-white/40 transition hover:text-white/80"
+                        aria-label="Clear Googs search"
+                    >
+                        <IonIcon name="close-circle" className="text-sm" />
+                    </button>
+                )}
+                {showGoogSuggestions && googSearchDraft.trim() && googSearchSuggestions.length > 0 && (
+                    <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 overflow-hidden rounded-2xl border border-white/10 bg-[#121212] shadow-[0_18px_40px_rgba(0,0,0,0.4)]">
+                        {googSearchSuggestions.map((suggestion, index) => (
+                            <button
+                                key={`${suggestion.value}-${index}`}
+                                type="button"
+                                onMouseDown={(event) => {
+                                    event.preventDefault();
+                                    setShowGoogSuggestions(false);
+                                    router.push(getPublicProfileHref(suggestion.username || suggestion.value, suggestion.userId));
+                                }}
+                                className="flex w-full items-center justify-between gap-3 border-b border-white/6 px-3 py-2 text-left transition last:border-b-0 hover:bg-white/[0.05]"
+                            >
+                                <span className="flex min-w-0 items-center gap-2.5">
+                                    <span className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10 text-white/55">
+                                        {suggestion.avatarUrl ? (
+                                            <Image
+                                                src={suggestion.avatarUrl}
+                                                alt={suggestion.label || "Profile"}
+                                                fill
+                                                sizes={AVATAR_IMAGE_SIZES}
+                                                className="object-cover"
+                                                unoptimized={shouldBypassNextImageOptimization(suggestion.avatarUrl)}
+                                            />
+                                        ) : (
+                                            <IonIcon name="person" className="text-sm" />
+                                        )}
+                                    </span>
+                                    <span className="min-w-0">
+                                        <span className="block truncate text-[11px] font-bold text-white">{suggestion.label}</span>
+                                        <span className="block truncate text-[9px] font-semibold uppercase tracking-[0.12em] text-white/35">{suggestion.hint}</span>
+                                    </span>
+                                </span>
+                                <IonIcon name="chevron-forward-outline" className="flex-shrink-0 text-[11px] text-white/25" />
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </form>,
+            mobileGoogSearchPortalTarget
+        )}
+        {googSearchPortalTarget && createPortal(
+            <div className="hidden flex-row-reverse items-center gap-1 overflow-visible md:flex">
                 <form
-                    className="flex w-full items-center"
+                    className="relative w-[150px] shrink-0 sm:w-[165px] md:w-[175px] lg:w-[190px]"
                     onSubmit={(event) => {
                         event.preventDefault();
                         setGoogSearchQuery(googSearchDraft.trim());
+                        setShowGoogSuggestions(false);
                     }}
                 >
-                    <div className="relative w-full">
-                        <input
-                            type="text"
-                            value={googSearchDraft}
-                            onChange={(event) => {
-                                setGoogSearchDraft(event.target.value);
-                                setShowGoogSuggestions(true);
-                            }}
-                            onFocus={() => setShowGoogSuggestions(true)}
-                            onBlur={() => {
-                                window.setTimeout(() => setShowGoogSuggestions(false), 120);
-                            }}
-                            placeholder="Search Googs"
-                            className="h-7 w-full rounded-full border border-white/10 bg-[#111] pl-8 pr-8 text-xs font-bold text-white outline-none transition placeholder:text-white/30 focus:border-white/25 focus:bg-[#151515]"
-                        />
-                        <button
-                            type="submit"
-                            className="absolute left-0 top-0 flex h-7 items-center pl-3 pr-1 text-white/35 transition hover:text-white/70"
-                            aria-label="Search Googs"
-                        >
-                            <IonIcon name="search-outline" className="text-xs" />
+                    <input
+                        type="text"
+                        value={googSearchDraft}
+                        onChange={(event) => {
+                            const nextQuery = event.target.value;
+                            setGoogSearchDraft(nextQuery);
+                            setShowGoogSuggestions(true);
+                        }}
+                        onFocus={() => setShowGoogSuggestions(true)}
+                        onBlur={() => {
+                            window.setTimeout(() => setShowGoogSuggestions(false), 120);
+                        }}
+                        placeholder="Search Googs"
+                        className="h-7 w-full rounded-full border border-white/10 bg-[#101012] pl-7 pr-6 text-[10px] font-bold text-white shadow-[0_10px_22px_rgba(0,0,0,0.22)] outline-none transition placeholder:text-white/35 focus:border-white/25 focus:bg-[#151515]"
+                    />
+                    <button type="submit" className="absolute left-0 top-0 flex h-7 items-center pl-2.5 pr-1 text-white/45 transition hover:text-white/80" aria-label="Search Googs">
+                        <IonIcon name="search-outline" className="text-xs" />
+                    </button>
+                    {(googSearchDraft || googSearchQuery) && (
+                        <button type="button" onClick={() => { setGoogSearchDraft(""); setGoogSearchQuery(""); }} className="absolute right-0 top-0 flex h-7 items-center pl-1 pr-2 text-white/40 transition hover:text-white/80" aria-label="Clear Googs search">
+                            <IonIcon name="close-circle" className="text-xs" />
                         </button>
-                        {(googSearchDraft || googSearchQuery) && (
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setGoogSearchDraft("");
-                                    setGoogSearchQuery("");
-                                }}
-                                className="absolute right-0 top-0 flex h-7 items-center pl-1 pr-3 text-white/35 transition hover:text-white/70"
-                                aria-label="Clear Googs search"
-                            >
-                                <IonIcon name="close-circle" className="text-sm" />
-                            </button>
-                        )}
-                        {showGoogSuggestions && googSearchDraft.trim() && googSearchSuggestions.length > 0 && (
-                            <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 overflow-hidden rounded-2xl border border-white/10 bg-[#121212] shadow-[0_18px_40px_rgba(0,0,0,0.4)]">
-                                {googSearchSuggestions.map((suggestion, index) => (
-                                    <button
-                                        key={`${suggestion.value}-${index}`}
-                                        type="button"
-                                        onMouseDown={(event) => {
-                                            event.preventDefault();
-                                            setGoogSearchDraft(suggestion.value);
-                                            setGoogSearchQuery(suggestion.value);
-                                            setShowGoogSuggestions(false);
-                                        }}
-                                        className="flex w-full items-center justify-between gap-3 border-b border-white/6 px-3 py-2 text-left transition last:border-b-0 hover:bg-white/[0.05]"
-                                    >
+                    )}
+                    {showGoogSuggestions && googSearchDraft.trim() && googSearchSuggestions.length > 0 && (
+                        <div className="absolute right-0 top-[calc(100%+0.35rem)] z-40 w-[260px] overflow-hidden rounded-2xl border border-white/10 bg-[#121212] shadow-[0_18px_40px_rgba(0,0,0,0.4)]">
+                            {googSearchSuggestions.map((suggestion, index) => (
+                                <button
+                                    key={`${suggestion.value}-${index}`}
+                                    type="button"
+                                    onMouseDown={(event) => {
+                                        event.preventDefault();
+                                        setShowGoogSuggestions(false);
+                                        router.push(getPublicProfileHref(suggestion.username || suggestion.value, suggestion.userId));
+                                    }}
+                                    className="flex w-full items-center justify-between gap-3 border-b border-white/6 px-3 py-2 text-left transition last:border-b-0 hover:bg-white/[0.05]"
+                                >
+                                    <span className="flex min-w-0 items-center gap-2.5">
+                                        <span className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10 text-white/55">
+                                            {suggestion.avatarUrl ? (
+                                                <Image
+                                                    src={suggestion.avatarUrl}
+                                                    alt={suggestion.label || "Profile"}
+                                                    fill
+                                                    sizes={AVATAR_IMAGE_SIZES}
+                                                    className="object-cover"
+                                                    unoptimized={shouldBypassNextImageOptimization(suggestion.avatarUrl)}
+                                                />
+                                            ) : (
+                                                <IonIcon name="person" className="text-sm" />
+                                            )}
+                                        </span>
                                         <span className="min-w-0">
                                             <span className="block truncate text-[11px] font-bold text-white">{suggestion.label}</span>
                                             <span className="block truncate text-[9px] font-semibold uppercase tracking-[0.12em] text-white/35">{suggestion.hint}</span>
                                         </span>
-                                        <IonIcon name="arrow-down-outline" className="flex-shrink-0 text-[11px] text-white/25" />
-                                    </button>
-                                ))}
-                            </div>
-                        )}
+                                    </span>
+                                    <IonIcon name="chevron-forward-outline" className="flex-shrink-0 text-[11px] text-white/25" />
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </form>
+                <div className="flex min-w-0 flex-1 items-center gap-1">
+                    {desktopGoogCategoryPageCount > 1 && (
+                        <button
+                            type="button"
+                            onClick={() => setGoogCategoryPage((page) => Math.max(0, page - 1))}
+                            disabled={googCategoryPage === 0}
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-white/10 text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
+                            aria-label="Previous categories"
+                        >
+                            <IonIcon name="chevron-back-outline" className="text-[10px]" />
+                        </button>
+                    )}
+                    <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                        {visibleDesktopGoogCategoryOptions.map((category) => {
+                            const isActive = selectedGoogCategory === category;
+                            return (
+                                <button
+                                    key={category}
+                                    type="button"
+                                    onClick={() => setSelectedGoogCategory(category)}
+                                    className={`shrink-0 rounded-full border px-2 py-1 text-[8px] font-black tracking-[0.01em] transition ${
+                                        isActive
+                                            ? "border-white bg-white text-black"
+                                            : "border-white/10 bg-white/[0.04] text-white/70 hover:bg-white/[0.08] hover:text-white"
+                                    }`}
+                                >
+                                    {category}
+                                </button>
+                            );
+                        })}
                     </div>
-                </form>,
-                document.getElementById("shop-search-portal")!,
-            )}
-
-        <main className="-mx-2 min-h-[calc(100vh-7rem)] bg-[#1c1917] px-2 py-0 text-white sm:-mx-4 sm:px-4 md:-mx-6 md:px-6 lg:min-h-[calc(100vh-5rem)] overflow-x-hidden">
-            <div className="mx-auto grid min-h-0 w-full max-w-[1400px] gap-6 py-3 md:gap-7 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start xl:grid-cols-[minmax(0,700px)_380px] xl:gap-8">
+                    {desktopGoogCategoryPageCount > 1 && (
+                        <button
+                            type="button"
+                            onClick={() => setGoogCategoryPage((page) => Math.min(desktopGoogCategoryPageCount - 1, page + 1))}
+                            disabled={googCategoryPage >= desktopGoogCategoryPageCount - 1}
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-white/10 text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
+                            aria-label="Next categories"
+                        >
+                            <IonIcon name="chevron-forward-outline" className="text-[10px]" />
+                        </button>
+                    )}
+                </div>
+            </div>,
+            googSearchPortalTarget
+        )}
+        <main className="-mx-2 min-h-[calc(100vh-7rem)] max-w-full overflow-x-hidden bg-[#1c1917] px-0 py-0 text-white sm:-mx-4 sm:px-4 md:-mx-6 md:px-6 lg:min-h-[calc(100vh-5rem)]">
+            <div className="mx-auto grid min-h-0 w-full max-w-full gap-5 pb-3 pt-3 md:gap-6 lg:max-w-[1400px] lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start xl:grid-cols-[minmax(0,700px)_380px] xl:gap-7">
                 <section ref={composeSectionRef} className="hidden" aria-hidden="true">
                     <textarea value={postText} onChange={(event) => setPostText(event.target.value)} />
                     <button type="button" onClick={publishWritePost}>Post</button>
                 </section>
 
-                <section className="min-h-0 overflow-hidden rounded-[2rem] border border-white/10 bg-[#211d1a] shadow-[0_18px_60px_rgba(0,0,0,0.24)]">
-                    <div className="scrollbar-dark min-h-0 overflow-y-auto rounded-[inherit] pb-20 lg:pb-10">
-                        <div className="border-b border-white/8 bg-[#211d1a] px-3 pb-2 pt-2 sm:px-4">
-                            <div className="overflow-x-auto px-1 pb-1 pt-1">
-                                <div className="flex min-w-max items-center gap-2">
-                                    {googCategoryOptions.map((category) => {
-                                        const isActive = selectedGoogCategory === category;
-                                        return (
-                                            <button
-                                                key={category}
-                                                type="button"
-                                                onClick={() => setSelectedGoogCategory(category)}
-                                                className={`rounded-full border px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] transition ${
-                                                    isActive
-                                                        ? "border-white bg-white text-black"
-                                                        : "border-white/10 bg-white/[0.04] text-white/70 hover:bg-white/[0.08] hover:text-white"
-                                                }`}
-                                            >
-                                                {category}
-                                            </button>
-                                        );
-                                    })}
-                                </div>
+                <div className="max-w-full overflow-hidden lg:col-span-2 lg:-mt-7 md:hidden">
+                    <div className="flex max-w-full items-center gap-1 px-1 sm:px-2">
+                        <div className="flex min-w-0 flex-1 items-center gap-1">
+                            {googCategoryPageCount > 1 && (
+                                <button
+                                    type="button"
+                                    onClick={() => setGoogCategoryPage((page) => Math.max(0, page - 1))}
+                                    disabled={googCategoryPage === 0}
+                                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-white/10 text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
+                                    aria-label="Previous categories"
+                                >
+                                    <IonIcon name="chevron-back-outline" className="text-[10px]" />
+                                </button>
+                            )}
+                            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                                {visibleGoogCategoryOptions.map((category) => {
+                                    const isActive = selectedGoogCategory === category;
+                                    return (
+                                        <button
+                                            key={category}
+                                            type="button"
+                                            onClick={() => setSelectedGoogCategory(category)}
+                                            className={`shrink-0 rounded-full border px-2 py-1 text-[8px] font-black tracking-[0.01em] transition ${
+                                                isActive
+                                                    ? "border-white bg-white text-black"
+                                                    : "border-white/10 bg-white/[0.04] text-white/70 hover:bg-white/[0.08] hover:text-white"
+                                            }`}
+                                        >
+                                            {category}
+                                        </button>
+                                    );
+                                })}
                             </div>
+                            {googCategoryPageCount > 1 && (
+                                <button
+                                    type="button"
+                                    onClick={() => setGoogCategoryPage((page) => Math.min(googCategoryPageCount - 1, page + 1))}
+                                    disabled={googCategoryPage === googCategoryPageCount - 1}
+                                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-white/10 text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
+                                    aria-label="Next categories"
+                                >
+                                    <IonIcon name="chevron-forward-outline" className="text-[10px]" />
+                                </button>
+                            )}
                         </div>
-                        {isLoadingFeed && homeFeedItems.length === 0 ? (
+                    </div>
+                </div>
+
+                <div className="min-h-0 min-w-0 max-w-full overflow-hidden">
+                    <section className="min-h-0 min-w-0 max-w-full overflow-hidden rounded-[1.25rem] border border-white/10 bg-[#211d1a] shadow-[0_18px_60px_rgba(0,0,0,0.24)] sm:rounded-[2rem]">
+                        <div className="scrollbar-dark min-h-0 overflow-x-hidden overflow-y-auto rounded-[inherit] pb-20 lg:pb-10">
+                        {isLoadingFeed ? (
                             <div className="flex items-center justify-center py-20">
                                 <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-white"></div>
                             </div>
@@ -2711,7 +3138,6 @@ export default function DashboardPage() {
                                                 onShare={handleUploadShare}
                                                 onRepost={handleUploadRepost}
                                                 onRemoveRepost={handleUploadRemoveRepost}
-                                                onOpenRepostFlow={handleUploadRepostFlow}
                                                 onLogView={handleUploadView}
                                                 onPin={handleUploadPin}
                                                 onReport={openUploadReportModal}
@@ -2743,7 +3169,7 @@ export default function DashboardPage() {
                                                 flashContentAutoPlay={flashContentAutoPlay}
                                                 flashPreviewSeconds={flashPreviewSeconds}
                                                 maxWidthClassName="max-w-[360px]"
-                                            articleClassName="w-full"
+                                            articleClassName="w-full max-w-full overflow-hidden px-2 sm:px-7 [&>div]:mx-0 sm:[&>div]:mx-auto"
                                             onOpenProfile={() => {
                                                 router.push(getPublicProfileHref(uploadItem.username, uploadItem.user_id));
                                             }}
@@ -2756,8 +3182,10 @@ export default function DashboardPage() {
                                             <ProfilePromoteCarousel
                                                 key={item.id}
                                                 ads={item.ads}
+                                                className="px-2 py-4 transition-colors sm:px-7"
                                                 cardsPerView={2}
                                                 onProductClick={openProductAdInShopSecondView}
+                                                onContentClick={openProfilePromoteUploadContent}
                                                 onProfileClick={(clickedAd) => {
                                                     router.push(getPublicProfileHref(getItemUsername(clickedAd, ""), clickedAd.user_id || clickedAd.userId));
                                                 }}
@@ -2787,6 +3215,7 @@ export default function DashboardPage() {
                                                         onCloseMenu={() => setOpenMenuAdId(null)}
                                                         onOpenSecondView={() => openAdInShop(ad, previewType)}
                                                         onProductClick={openProductAdInShopSecondView}
+                                                        onContentClick={openProfilePromoteUploadContent}
                                                         onAddToBagClick={openProductAdAddToBag}
                                                         onToggleLike={toggleFeedLike}
                                                         onOpenSheet={openMarketAdSheet}
@@ -2828,6 +3257,7 @@ export default function DashboardPage() {
                         </DashboardRenderBoundary>
                     </div>
                 </section>
+                </div>
 
                 <aside className="hidden lg:block">
                     <div className="sticky top-0 overflow-hidden rounded-[2rem] border border-white/10 bg-[#211d1a] shadow-[0_18px_60px_rgba(0,0,0,0.22)]">
@@ -3048,6 +3478,68 @@ export default function DashboardPage() {
                         setNotification({ type: "success", title: "Added to Bag", message: `${product.title} has been added to your shopping bag.` });
                     }}
                 />
+            )}
+
+            {profilePromoteUploadModal && mounted && createPortal(
+                <div className="fixed inset-0 z-[215] flex items-center justify-center bg-black/85 px-3 py-3 backdrop-blur-md" onClick={() => setProfilePromoteUploadModal(null)}>
+                    <div className="relative max-h-[82vh] w-full max-w-[390px] overflow-y-auto rounded-[1.7rem]" onClick={(event) => event.stopPropagation()}>
+                        <button
+                            type="button"
+                            onClick={() => setProfilePromoteUploadModal(null)}
+                            className="absolute right-2.5 top-2.5 z-30 flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-black/75 text-white/80 shadow-lg transition hover:bg-black hover:text-white"
+                            aria-label="Close promoted content"
+                        >
+                            <IonIcon name="close-outline" className="text-lg" />
+                        </button>
+                        <UploadContentFeedCard
+                            item={profilePromoteUploadModal}
+                            currentUser={currentUser}
+                            onToggleLike={handleUploadLike}
+                            onOpenSheet={openUploadSheet}
+                            onShare={handleUploadShare}
+                            onRepost={handleUploadRepost}
+                            onRemoveRepost={handleUploadRemoveRepost}
+                            onLogView={handleUploadView}
+                            onPin={handleUploadPin}
+                            onReport={openUploadReportModal}
+                            onNotInterested={handleUploadNotInterested}
+                            onInsights={handleOpenUploadInsights}
+                            onEdit={handleEditUploadContent}
+                            onAccessChanged={(changedItem, accessType = "content") => {
+                                const creatorId = String(changedItem.user_id || changedItem.owner_user_id || "");
+                                setUploadContents((currentItems) =>
+                                    currentItems.map((entry) => {
+                                        const entryLookupId = String(entry.content_id || entry.contentId || entry.id || "");
+                                        const changedLookupId = String(changedItem.content_id || changedItem.contentId || changedItem.id || "");
+                                        const entryCreatorId = String(entry.user_id || entry.owner_user_id || "");
+                                        const isSameCreator = accessType === "creator_subscription" && creatorId && entryCreatorId === creatorId;
+                                        const isSameContent = String(entry.id) === String(changedItem.id) || entryLookupId === changedLookupId;
+                                        return isSameCreator || isSameContent
+                                            ? {
+                                                ...entry,
+                                                user_purchased: isSameContent ? true : entry.user_purchased,
+                                                user_has_access: true,
+                                                user_purchase_expires_at: isSameContent
+                                                    ? changedItem.user_purchase_expires_at || entry.user_purchase_expires_at || null
+                                                    : entry.user_purchase_expires_at,
+                                            }
+                                            : entry;
+                                    })
+                                );
+                            }}
+                            flashContentAutoPlay={flashContentAutoPlay}
+                            flashPreviewSeconds={flashPreviewSeconds}
+                            maxWidthClassName="max-w-[360px]"
+                            articleClassName="w-full"
+                            autoOpenWatchKey={profilePromoteUploadAutoOpenKey}
+                            onFullViewClose={() => setProfilePromoteUploadModal(null)}
+                            onOpenProfile={() => {
+                                router.push(getPublicProfileHref(profilePromoteUploadModal.username, profilePromoteUploadModal.user_id));
+                            }}
+                        />
+                    </div>
+                </div>,
+                document.body,
             )}
 
             <AdExpiryWarning userId={currentUser?.id} />

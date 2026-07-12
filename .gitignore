@@ -23,6 +23,7 @@ backend/transaction-audits/
 
 # runtime media/uploads
 /public/uploads/
+/backend/public/uploads/
 /.cloudflared/
 cloudflared.exe
 *.log

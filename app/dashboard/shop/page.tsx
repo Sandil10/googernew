@@ -62,6 +62,15 @@ const SHOP_SORT_OPTIONS = [
   { id: "price-high-low", label: "Price high to low" },
 ] as const;
 
+const formatCategoryLabel = (value: any) => String(value || "")
+  .trim()
+  .toLowerCase()
+  .replace(/\b\w/g, (char) => char.toUpperCase())
+  .replace(/\bAi\b/g, "AI")
+  .replace(/\bTv\b/g, "TV")
+  .replace(/\bUsa\b/g, "USA")
+  .replace(/\bUk\b/g, "UK");
+
 const getSessionClientSeed = (storageKey: string) => {
   if (typeof window === "undefined") return storageKey;
   try {
@@ -4975,7 +4984,7 @@ export default function ShopPage() {
                 }}
                 className={`px-4 py-2 text-xs font-bold rounded-xl whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedCategory === cat.name ? "bg-white text-black border-white" : "bg-[#1a1a1a] border-white/5 hover:border-white/20 text-gray-400 hover:text-white"}`}
               >
-                {cat.name}
+                {formatCategoryLabel(cat.name)}
               </button>
             ))}
           </div>
@@ -4990,7 +4999,7 @@ export default function ShopPage() {
                   onClick={() => { setSelectedSubCategory(""); setSelectedLevel3(""); }}
                   className={`px-3 py-1.5 text-[11px] font-bold rounded-lg whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedSubCategory === "" ? "bg-white/15 text-white border-white/30" : "bg-[#1a1a1a] border-white/5 hover:border-white/15 text-gray-500 hover:text-white"}`}
                 >
-                  All {activeCat.name}
+                  All {formatCategoryLabel(activeCat.name)}
                 </button>
                 {activeCat.children.map((sub: any, i: number) => (
                   <button
@@ -5004,7 +5013,7 @@ export default function ShopPage() {
                     }}
                     className={`px-3 py-1.5 text-[11px] font-bold rounded-lg whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedSubCategory === sub.name ? "bg-white/15 text-white border-white/30" : "bg-[#1a1a1a] border-white/5 hover:border-white/15 text-gray-500 hover:text-white"}`}
                   >
-                    {sub.name}
+                    {formatCategoryLabel(sub.name)}
                   </button>
                 ))}
               </div>
@@ -5022,7 +5031,7 @@ export default function ShopPage() {
                   onClick={() => setSelectedLevel3("")}
                   className={`px-3 py-1 text-[10px] font-bold rounded-md whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedLevel3 === "" ? "bg-white/10 text-white/80 border-white/20" : "bg-[#1a1a1a] border-white/5 hover:border-white/12 text-gray-600 hover:text-white"}`}
                 >
-                  All {activeSub.name}
+                  All {formatCategoryLabel(activeSub.name)}
                 </button>
                 {activeSub.children.map((lvl3: any, i: number) => (
                   <button
@@ -5030,7 +5039,7 @@ export default function ShopPage() {
                     onClick={() => setSelectedLevel3(selectedLevel3 === lvl3.name ? "" : lvl3.name)}
                     className={`px-3 py-1 text-[10px] font-bold rounded-md whitespace-nowrap transition-all border active:scale-95 shrink-0 ${selectedLevel3 === lvl3.name ? "bg-white/10 text-white/80 border-white/20" : "bg-[#1a1a1a] border-white/5 hover:border-white/12 text-gray-600 hover:text-white"}`}
                   >
-                    {lvl3.name}
+                    {formatCategoryLabel(lvl3.name)}
                   </button>
                 ))}
               </div>

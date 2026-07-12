@@ -35,10 +35,14 @@ const DEFAULT_UPLOAD_CONTROL_SETTINGS = {
     min_upload_price: 100,
     max_upload_price: 10000,
     flash_commission_percentage: 0,
+    flash_commission_tiers: [],
     commission_tiers: [],
     subscription_commission_tiers: [],
 };
 const DEFAULT_RESELL_GOOGER_PERCENTAGE = 10;
+const ADMIN_PANEL_URL = (process.env.ADMIN_PANEL_URL || 'http://localhost:3002').replace(/\/$/, '');
+const trimOrigin = (value) => String(value || '').replace(/\/+$/, '');
+const uniqueUrls = (values) => values.filter(Boolean).filter((value, index, array) => array.indexOf(value) === index);
 const UPLOAD_CONTENT_PURCHASE_UNLOCK_MINUTES = Math.max(
     1,
     Math.round(Number(process.env.UPLOAD_CONTENT_PURCHASE_UNLOCK_MINUTES || 2)),
@@ -46,43 +50,97 @@ const UPLOAD_CONTENT_PURCHASE_UNLOCK_MINUTES = Math.max(
 
 let schemaReady = false;
 let schemaPromise = null;
+let adminUploadSettingsCache = { data: null, expiresAt: 0 };
 
 // Simple insights cache (content_id + range -> insights)
 const insightsCache = new Map();
 const INSIGHTS_CACHE_TTL = 30000; // 30 seconds
 
+const normalizeUploadControlSettings = (row = {}) => ({
+    min_upload_price: Number(row.min_upload_price ?? row.minUploadPrice ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.min_upload_price),
+    max_upload_price: Number(row.max_upload_price ?? row.maxUploadPrice ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.max_upload_price),
+    flash_commission_percentage: Number(row.flash_commission_percentage ?? row.flashCommissionPercentage ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.flash_commission_percentage),
+    flash_commission_tiers: Array.isArray(row.flash_commission_tiers ?? row.flashCommissionTiers)
+        ? (row.flash_commission_tiers ?? row.flashCommissionTiers)
+            .map((tier) => ({
+                min: Number(tier?.min ?? 0),
+                max: Number(tier?.max ?? 0),
+                commission: Number(tier?.commission ?? 0),
+            }))
+            .filter((tier) => Number.isFinite(tier.min) && Number.isFinite(tier.max) && Number.isFinite(tier.commission))
+        : DEFAULT_UPLOAD_CONTROL_SETTINGS.flash_commission_tiers,
+    commission_tiers: Array.isArray(row.commission_tiers ?? row.commissionTiers)
+        ? (row.commission_tiers ?? row.commissionTiers)
+            .map((tier) => ({
+                min: Number(tier?.min ?? 0),
+                max: Number(tier?.max ?? 0),
+                commission: Number(tier?.commission ?? 0),
+            }))
+            .filter((tier) => Number.isFinite(tier.min) && Number.isFinite(tier.max) && Number.isFinite(tier.commission))
+        : DEFAULT_UPLOAD_CONTROL_SETTINGS.commission_tiers,
+    subscription_commission_tiers: Array.isArray(row.subscription_commission_tiers ?? row.subscriptionCommissionTiers)
+        ? (row.subscription_commission_tiers ?? row.subscriptionCommissionTiers)
+            .map((tier) => ({
+                min: Number(tier?.min ?? 0),
+                max: Number(tier?.max ?? 0),
+                commission: Number(tier?.commission ?? 0),
+            }))
+            .filter((tier) => Number.isFinite(tier.min) && Number.isFinite(tier.max) && Number.isFinite(tier.commission))
+        : DEFAULT_UPLOAD_CONTROL_SETTINGS.subscription_commission_tiers,
+});
+
+const fetchAdminUploadControlSettings = async () => {
+    if (typeof fetch !== 'function') return null;
+    const now = Date.now();
+    if (adminUploadSettingsCache.data && adminUploadSettingsCache.expiresAt > now) {
+        return adminUploadSettingsCache.data;
+    }
+
+    const explicitUrl = process.env.ADMIN_UPLOAD_CONTROL_PUBLIC_URL;
+    const adminApiOrigin = trimOrigin(process.env.ADMIN_API_URL || process.env.NEXT_PUBLIC_ADMIN_API_URL);
+    const adminPanelOrigin = trimOrigin(process.env.ADMIN_PANEL_URL || process.env.NEXT_PUBLIC_ADMIN_PANEL_URL || ADMIN_PANEL_URL);
+    const adminBackendOrigin = trimOrigin(process.env.ADMIN_BACKEND_URL || process.env.NEXT_PUBLIC_ADMIN_BACKEND_URL);
+    const urls = uniqueUrls([
+        explicitUrl,
+        adminApiOrigin ? `${adminApiOrigin}/admin/customization/upload-control/public` : '',
+        adminApiOrigin ? `${adminApiOrigin}/api/admin/customization/upload-control/public` : '',
+        adminPanelOrigin ? `${adminPanelOrigin}/api/admin/customization/upload-control/public` : '',
+        adminPanelOrigin ? `${adminPanelOrigin}/admin/customization/upload-control/public` : '',
+        adminBackendOrigin ? `${adminBackendOrigin}/api/admin/customization/upload-control/public` : '',
+        adminBackendOrigin ? `${adminBackendOrigin}/admin/customization/upload-control/public` : '',
+    ]);
+
+    for (const url of urls) {
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: { Accept: 'application/json' },
+            });
+            if (!response.ok) continue;
+            const data = await response.json();
+            const normalized = normalizeUploadControlSettings(data?.settings || data || {});
+            adminUploadSettingsCache = { data: normalized, expiresAt: now + 15000 };
+            return normalized;
+        } catch (error) {
+            console.warn('[uploadContent] admin upload control settings fallback unavailable:', url, error.message);
+        }
+    }
+
+    return null;
+};
+
 const loadUploadControlSettings = async () => {
     try {
+        const adminSettings = await fetchAdminUploadControlSettings();
+        if (adminSettings) return adminSettings;
+
         const { rows } = await pool.query(`
             SELECT *
             FROM upload_control_settings
             ORDER BY id ASC
             LIMIT 1
         `);
-        const row = rows[0] || {};
-        return {
-            min_upload_price: Number(row.min_upload_price ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.min_upload_price),
-            max_upload_price: Number(row.max_upload_price ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.max_upload_price),
-            flash_commission_percentage: Number(row.flash_commission_percentage ?? row.flashCommissionPercentage ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.flash_commission_percentage),
-            commission_tiers: Array.isArray(row.commission_tiers)
-                ? row.commission_tiers
-                    .map((tier) => ({
-                        min: Number(tier?.min ?? 0),
-                        max: Number(tier?.max ?? 0),
-                        commission: Number(tier?.commission ?? 0),
-                    }))
-                    .filter((tier) => Number.isFinite(tier.min) && Number.isFinite(tier.max) && Number.isFinite(tier.commission))
-                : DEFAULT_UPLOAD_CONTROL_SETTINGS.commission_tiers,
-            subscription_commission_tiers: Array.isArray(row.subscription_commission_tiers)
-                ? row.subscription_commission_tiers
-                    .map((tier) => ({
-                        min: Number(tier?.min ?? 0),
-                        max: Number(tier?.max ?? 0),
-                        commission: Number(tier?.commission ?? 0),
-                    }))
-                    .filter((tier) => Number.isFinite(tier.min) && Number.isFinite(tier.max) && Number.isFinite(tier.commission))
-                : DEFAULT_UPLOAD_CONTROL_SETTINGS.subscription_commission_tiers,
-        };
+        return normalizeUploadControlSettings(rows[0] || {});
     } catch (error) {
         if (error && error.code === '42P01') {
             return DEFAULT_UPLOAD_CONTROL_SETTINGS;
@@ -477,7 +535,7 @@ const applyUploadResellPayout = async (client, {
             note: `${notePrefix} - Resell Googer commission`,
             commissionPercentage: googerPercentage,
             transferType: 'resell_googer_fee',
-            transferStatus: 'completed',
+            transferStatus: 'accepted',
             creditWallet: true,
         });
         googerTransferId = googerTransfer.walletTransferId;
@@ -708,6 +766,10 @@ const mapRow = (row) => {
         ? row.subscription_packages
         : parseJsonField(row.subscription_packages, []);
     const expansion = getUploadExpansionStage(row.views_count, row.likes_count, row.comments_count, row.shares_count);
+    const contentType = row.content_type === 'flash' ? 'flash' : 'vault';
+    const repostResellerRef = contentType === 'vault' && row.reposted_at && row.reposted_by_user_id
+        ? String(row.reposted_by_user_id)
+        : null;
     return {
         id: row.id,
         contentId: row.content_id,
@@ -715,7 +777,7 @@ const mapRow = (row) => {
         user_id: row.user_id,
         owner_user_id: row.owner_user_id || null,
         owner_username: row.owner_username || null,
-        content_type: row.content_type === 'flash' ? 'flash' : 'vault',
+        content_type: contentType,
         description: row.description || '',
         topic: row.topic || TOPIC_FALLBACK,
         price: Number(row.price || 0),
@@ -772,6 +834,8 @@ const mapRow = (row) => {
         user_purchased: !!row.user_purchased,
         user_has_access: !!row.user_has_access || !!row.user_purchased,
         user_purchase_expires_at: toUtcIso(row.user_purchase_expires_at),
+        reseller_ref: repostResellerRef,
+        resell_ref: repostResellerRef,
         pinned_at: toUtcIso(row.pinned_at),
         created_at: toUtcIso(row.created_at),
         updated_at: toUtcIso(row.updated_at),
@@ -1077,10 +1141,24 @@ const loadCurrentVaultCommissionForPrice = async (price) => {
     return Math.min(100, Math.max(0, Number(matchingTier.commission || 0)));
 };
 
-const loadCurrentFlashCommissionPercentage = async () => {
+const loadCurrentFlashCommissionPercentage = async (price) => {
     const settings = await loadUploadControlSettings();
+    const tiers = Array.isArray(settings.flash_commission_tiers)
+        ? settings.flash_commission_tiers
+        : [];
+    const matchingTier = tiers.find((tier) => price >= Number(tier.min) && price <= Number(tier.max));
+    if (matchingTier) {
+        const tierPercentage = Number(matchingTier.commission || 0);
+        return Number.isFinite(tierPercentage) ? Math.min(100, Math.max(0, tierPercentage)) : 0;
+    }
     const percentage = Number(settings.flash_commission_percentage ?? DEFAULT_UPLOAD_CONTROL_SETTINGS.flash_commission_percentage);
-    return Number.isFinite(percentage) ? Math.min(100, Math.max(0, percentage)) : 0;
+    if (Number.isFinite(percentage) && percentage > 0) {
+        return Math.min(100, Math.max(0, percentage));
+    }
+
+    // If flash-specific commission has not been configured, use the same upload
+    // commission tier table as vault content instead of silently paying Googer 0.
+    return loadCurrentVaultCommissionForPrice(price);
 };
 
 exports.createUploadContent = async (req, res) => {
@@ -1558,6 +1636,7 @@ exports.purchaseCreatorSubscription = async (req, res) => {
         const commissionPercentage = currentCommissionPercentage > 0 ? currentCommissionPercentage : 0;
         const commissionAmount = normalizeMoney((amount * commissionPercentage) / 100);
         const affiliatePercentage = Math.min(100, Math.max(0, Number(selectedPackage.affiliateCommission || 0)));
+        const resellGoogerPercentage = await loadCurrentUploadResellGoogerCommissionPercentage(client);
         const googerUserId = await resolveGoogerMainWalletUserId(client);
 
         if (!googerUserId) {
@@ -1572,12 +1651,16 @@ exports.purchaseCreatorSubscription = async (req, res) => {
 
         await lockWalletUsers(client, lockUserIds);
 
+        // The protected Googer wallet may only change during an explicitly authorized transaction.
+        await client.query(`SET LOCAL googer.allow_admin_wallet_capital = 'true'`);
+
         const resellPayout = await applyUploadResellPayout(client, {
             buyerId,
             creatorId,
             googerUserId,
             resellerRef: requestedResellerRef,
             resellPercentage: affiliatePercentage,
+            resellGoogerPercentage,
             amount,
             notePrefix: `Vault Creator Subscription - ${contentRow.content_id}`,
         });
@@ -1783,9 +1866,15 @@ exports.purchaseVaultContent = async (req, res) => {
         }
 
         const currentCommissionPercentage = isFlashContent
-            ? await loadCurrentFlashCommissionPercentage()
+            ? await loadCurrentFlashCommissionPercentage(amount)
             : await loadCurrentVaultCommissionForPrice(amount);
         const commissionPercentage = currentCommissionPercentage > 0 ? currentCommissionPercentage : 0;
+        if (isFlashContent && commissionPercentage <= 0) {
+            console.warn('[uploadContent] Flash content commission resolved to 0%; check upload-control flash commission settings.', {
+                contentId: contentRow.content_id,
+                amount,
+            });
+        }
         const commissionAmount = normalizeMoney((amount * commissionPercentage) / 100);
         const affiliatePercentage = isFlashContent ? 0 : Math.min(100, Math.max(0, Number(contentRow.affiliate_commission || 0)));
         const resellGoogerPercentage = isFlashContent ? 0 : await loadCurrentUploadResellGoogerCommissionPercentage(client);
@@ -1803,6 +1892,9 @@ exports.purchaseVaultContent = async (req, res) => {
         if (resellerUserId > 0 && !lockUserIds.includes(resellerUserId)) lockUserIds.push(resellerUserId);
 
         await lockWalletUsers(client, lockUserIds);
+
+        // Commission and resell shares are legitimate credits to the protected Googer wallet.
+        await client.query(`SET LOCAL googer.allow_admin_wallet_capital = 'true'`);
 
         const resellPayout = isFlashContent ? null : await applyUploadResellPayout(client, {
             buyerId,
@@ -2064,63 +2156,77 @@ exports.getApprovedUploadContentsPublic = async (req, res) => {
         );
 
         let rows = result.rows;
-        if ((!Number.isFinite(requestedUserId) || requestedUserId <= 0) && viewerId) {
-            const viewerReposts = await pool.query(
+        if (!Number.isFinite(requestedUserId) || requestedUserId <= 0) {
+            const viewerSqlId = viewerId ? Number(viewerId) : null;
+            const publicReposts = await pool.query(
                 `SELECT uc.*, u.full_name, u.username AS user_username, u.profile_picture, u.user_type,
                         requested_repost_user.username AS reposted_by_username,
                         requested_repost_user.id AS reposted_by_user_id,
                         requested_repost_user.full_name AS reposted_by_full_name,
                         requested_repost_user.profile_picture AS reposted_by_profile_picture,
                         requested_repost.created_at AS reposted_at,
-                        EXISTS (
+                        ${viewerSqlId ? `EXISTS (
                             SELECT 1 FROM upload_content_likes ucl
-                            WHERE ucl.content_id = uc.id AND ucl.user_id = $1
-                        ) AS user_liked,
-                        TRUE AS user_reposted,
-                        EXISTS (
+                            WHERE ucl.content_id = uc.id AND ucl.user_id = ${viewerSqlId}
+                        )` : 'FALSE'} AS user_liked,
+                        ${viewerSqlId ? `EXISTS (
+                            SELECT 1 FROM upload_content_reposts ucr_viewer
+                            WHERE ucr_viewer.content_id = uc.id AND ucr_viewer.user_id = ${viewerSqlId}
+                        )` : 'FALSE'} AS user_reposted,
+                        ${viewerSqlId ? `EXISTS (
                             SELECT 1 FROM upload_content_purchases ucp
-                            WHERE ucp.content_id = uc.id AND ucp.buyer_id = $1
+                            WHERE ucp.content_id = uc.id AND ucp.buyer_id = ${viewerSqlId}
                               AND ${activeUploadPurchaseSql('ucp')}
-                        ) AS user_purchased,
-                        (
+                        )` : 'FALSE'} AS user_purchased,
+                        ${viewerSqlId ? `(
                             SELECT MAX(${uploadPurchaseExpiresAtSql('ucp_exp')})
                             FROM upload_content_purchases ucp_exp
-                            WHERE ucp_exp.content_id = uc.id AND ucp_exp.buyer_id = $1
+                            WHERE ucp_exp.content_id = uc.id AND ucp_exp.buyer_id = ${viewerSqlId}
                               AND ${activeUploadPurchaseSql('ucp_exp')}
-                        ) AS user_purchase_expires_at,
-                        (
-                            uc.user_id = $1
+                        )` : 'NULL'} AS user_purchase_expires_at,
+                        ${viewerSqlId ? `(
+                            uc.user_id = ${viewerSqlId}
                             OR EXISTS (
                                 SELECT 1 FROM upload_content_purchases ucp2
-                                WHERE ucp2.content_id = uc.id AND ucp2.buyer_id = $1
+                                WHERE ucp2.content_id = uc.id AND ucp2.buyer_id = ${viewerSqlId}
                                   AND ${activeUploadPurchaseSql('ucp2')}
                             )
                             OR EXISTS (
                                 SELECT 1 FROM upload_content_subscriptions ucs
                                 WHERE ucs.creator_id = uc.user_id
-                                  AND ucs.buyer_id = $1
+                                  AND ucs.buyer_id = ${viewerSqlId}
                                   AND ucs.expires_at > NOW()
                             )
-                        ) AS user_has_access
+                        )` : 'FALSE'} AS user_has_access
                  FROM upload_content_reposts requested_repost
                 INNER JOIN upload_contents uc ON uc.id = requested_repost.content_id
                 INNER JOIN users u ON u.id = uc.user_id
                 INNER JOIN users requested_repost_user ON requested_repost_user.id = requested_repost.user_id
-                WHERE requested_repost.user_id = $1
-                  AND uc.status = 'Approved'
+                WHERE uc.status = 'Approved'
                   AND COALESCE(u.is_deactivated, false) = false
                   AND COALESCE(u.status, 'Active') <> 'Deactivated'
                   AND (uc.expires_at IS NULL OR uc.expires_at > NOW())
+                  AND (
+                    COALESCE(uc.visibility, 'public') = 'public'
+                    ${viewerSqlId ? `OR uc.user_id = ${viewerSqlId}
+                    OR (
+                        uc.visibility = 'subscribers_only'
+                        AND EXISTS (
+                            SELECT 1 FROM user_subscriptions us
+                            WHERE us.subscriber_id = ${viewerSqlId}
+                              AND us.subscribed_to_id = uc.user_id
+                        )
+                    )` : ''}
+                  )
                 ORDER BY requested_repost.created_at DESC
-                LIMIT 40`,
-                [Number(viewerId)]
+                LIMIT 80`
             );
             const existingRepostKeys = new Set(
                 rows
                     .filter((row) => row.reposted_at)
                     .map((row) => `${row.id}:${row.reposted_by_user_id || ''}`),
             );
-            const missingRepostRows = viewerReposts.rows.filter((row) => {
+            const missingRepostRows = publicReposts.rows.filter((row) => {
                 const key = `${row.id}:${row.reposted_by_user_id || ''}`;
                 if (existingRepostKeys.has(key)) return false;
                 existingRepostKeys.add(key);

@@ -311,8 +311,8 @@ export function GoogCard({
 
 
     return (
-        <article ref={articleRef} className="border-b border-white/10 last:border-b-0 px-5 py-5 transition-colors hover:bg-white/[0.025] sm:px-7">
-            <header className="flex items-start justify-between gap-4">
+        <article ref={articleRef} className="max-w-full overflow-hidden border-b border-white/10 px-3 py-4 transition-colors last:border-b-0 hover:bg-white/[0.025] sm:px-7 sm:py-5">
+            <header className="flex min-w-0 max-w-full items-start justify-between gap-2 sm:gap-4">
                 <div className="flex min-w-0 gap-3">
                     <button
                         type="button"
@@ -322,7 +322,7 @@ export function GoogCard({
                     >
                         <Image src={post.user.img} alt={authorDisplayName} fill className="object-cover" unoptimized />
                     </button>
-                    <div className="min-w-0">
+                    <div className="min-w-0 max-w-full">
                         <div className="flex min-w-0 items-center gap-2">
                             <button
                                 type="button"
@@ -349,7 +349,7 @@ export function GoogCard({
                             {renderGoogText(post.text)}
                         </div>
                         {preview && <GoogLinkPreviewCard preview={preview} />}
-                        <div className="mt-4 flex items-center gap-5 text-white/80">
+                        <div className="mt-4 flex max-w-full flex-wrap items-center gap-4 text-white/80 sm:gap-5">
                             <InteractionButton
                                 type="likes"
                                 icon="heart-outline"

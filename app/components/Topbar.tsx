@@ -24,17 +24,17 @@ export default function Topbar() {
     const router = useRouter();
     const pathname = usePathname();
     const searchParams = useSearchParams();
-    const isAdCampaignPage = pathname === "/dashboard/ad-campaign" || (pathname?.startsWith("/dashboard/ad-campaign/") ?? false);
-    const isUploadContentPage = pathname === "/dashboard/ad-campaign/upload-content" || pathname === "/dashboard/ad-campaign/flash-content";
-    const activeCampaignTab = pathname === "/dashboard/ad-campaign/photo-video"
+    const isAdCampaignPage = pathname === "/ad-campaign" || (pathname?.startsWith("/ad-campaign/") ?? false);
+    const isUploadContentPage = pathname === "/ad-campaign/upload-content" || pathname === "/ad-campaign/flash-content";
+    const activeCampaignTab = pathname === "/ad-campaign/photo-video"
         ? "photo-video"
-        : pathname === "/dashboard/ad-campaign/product-promote"
+        : pathname === "/ad-campaign/product-promote"
             ? "product-promote"
-            : pathname === "/dashboard/ad-campaign/profile-promote"
+            : pathname === "/ad-campaign/profile-promote"
                 ? "profile-promote"
-                : pathname === "/dashboard/ad-campaign/upload-content"
+                : pathname === "/ad-campaign/upload-content"
                     ? "upload-content"
-                    : pathname === "/dashboard/ad-campaign/flash-content"
+                    : pathname === "/ad-campaign/flash-content"
                         ? "flash-content"
                 : (searchParams?.get("tab") || "photo-video");
     const [user, setUser] = useState<any>(null);
@@ -43,11 +43,11 @@ export default function Topbar() {
     const { cartCount, setIsCartOpen, isCartOpen, isGoogerPaymentCartLocked } = useCart();
     const isCartLocked = isGoogerPaymentCartLocked;
     const prefetchAdCampaignRoutes = useCallback(() => {
-        router.prefetch("/dashboard/ad-campaign/photo-video");
-        router.prefetch("/dashboard/ad-campaign/product-promote");
-        router.prefetch("/dashboard/ad-campaign/profile-promote");
-        router.prefetch("/dashboard/ad-campaign/upload-content");
-        router.prefetch("/dashboard/ad-campaign/flash-content");
+        router.prefetch("/ad-campaign/photo-video");
+        router.prefetch("/ad-campaign/product-promote");
+        router.prefetch("/ad-campaign/profile-promote");
+        router.prefetch("/ad-campaign/upload-content");
+        router.prefetch("/ad-campaign/flash-content");
     }, [router]);
     const openProtectedArea = (href: string, label: string) => {
         if (!authService.isAuthenticated()) {
@@ -367,7 +367,7 @@ export default function Topbar() {
                     ) : (
                     <>
                         <Link
-                            href="/dashboard/ad-campaign/photo-video"
+                            href="/ad-campaign/photo-video"
                             className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all duration-300 group ${activeCampaignTab === "photo-video"
                                 ? "bg-white/10 text-white shadow-lg shadow-white/5"
                                 : "text-gray-400 hover:bg-white/5 hover:text-white"
@@ -379,7 +379,7 @@ export default function Topbar() {
                             <span className="font-bold text-[10px] uppercase tracking-widest">Photo and Video</span>
                         </Link>
                         <Link
-                            href="/dashboard/ad-campaign/product-promote"
+                            href="/ad-campaign/product-promote"
                             className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all duration-300 group ${activeCampaignTab === "product-promote"
                                 ? "bg-white/10 text-white shadow-lg shadow-white/5"
                                 : "text-gray-400 hover:bg-white/5 hover:text-white"
@@ -391,7 +391,7 @@ export default function Topbar() {
                             <span className="font-bold text-[10px] uppercase tracking-widest">Product Promote</span>
                         </Link>
                         <Link
-                            href="/dashboard/ad-campaign/profile-promote"
+                            href="/ad-campaign/profile-promote"
                             className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all duration-300 group ${activeCampaignTab === "profile-promote"
                                 ? "bg-white/10 text-white shadow-lg shadow-white/5"
                                 : "text-gray-400 hover:bg-white/5 hover:text-white"
@@ -412,15 +412,15 @@ export default function Topbar() {
                                 <Link
                                     key={item.name}
                                     href={item.href}
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all duration-300 group ${isActive
+                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl transition-all duration-300 group ${isActive
                                         ? "bg-white/10 text-white shadow-lg shadow-white/5"
                                         : "text-gray-400 hover:bg-white/5 hover:text-white"
                                         }`}
                                 >
-                                    <div className="text-xl flex items-center">
+                                    <div className="text-lg flex items-center">
                                         <IonIcon name={isActive ? item.icon : item.icon + "-outline"} />
                                     </div>
-                                    <span className="font-bold text-[10px] uppercase tracking-widest">{item.name}</span>
+                                    <span className="font-bold text-[9px] uppercase tracking-widest">{item.name}</span>
                                 </Link>
                             );
                         })}
@@ -432,11 +432,11 @@ export default function Topbar() {
                             onMouseEnter={prefetchAdCampaignRoutes}
                             onFocus={prefetchAdCampaignRoutes}
                             onTouchStart={prefetchAdCampaignRoutes}
-                            className="flex items-center justify-center w-12 h-10 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all duration-300 group mx-2 z-10"
+                            className="flex items-center justify-center w-10 h-9 rounded-xl text-gray-400 hover:bg-white/10 hover:text-white transition-all duration-300 group mx-1.5 z-10"
                             title="Create"
                             suppressHydrationWarning={true}
                         >
-                            <div className="text-3xl flex items-center group-hover:scale-110 transition-transform">
+                            <div className="text-2xl flex items-center group-hover:scale-110 transition-transform">
                                 <IonIcon name="add-circle" />
                             </div>
                         </button>
@@ -448,15 +448,15 @@ export default function Topbar() {
                                     key={item.name}
                                     type="button"
                                     onClick={() => openProtectedArea(item.href, item.name)}
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all duration-300 group ${isActive
+                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl transition-all duration-300 group ${isActive
                                         ? "bg-white/10 text-white shadow-lg shadow-white/5"
                                         : "text-gray-400 hover:bg-white/5 hover:text-white"
                                         }`}
                                 >
-                                    <div className="text-xl flex items-center">
+                                    <div className="text-lg flex items-center">
                                         <IonIcon name={isActive ? item.icon : item.icon + "-outline"} />
                                     </div>
-                                    <span className="font-bold text-[10px] uppercase tracking-widest">{item.name}</span>
+                                    <span className="font-bold text-[9px] uppercase tracking-widest">{item.name}</span>
                                 </button>
                             );
                         })}
@@ -473,7 +473,7 @@ export default function Topbar() {
                         ) : (
                         <>
                         <Link
-                            href="/dashboard/ad-campaign/photo-video"
+                            href="/ad-campaign/photo-video"
                             className={`flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 transition ${activeCampaignTab === "photo-video"
                                 ? "bg-white/10 text-white shadow-lg shadow-white/5"
                                 : "text-gray-300 hover:bg-white/5 hover:text-white"
@@ -483,7 +483,7 @@ export default function Topbar() {
                             <span className="whitespace-nowrap text-[9px] font-black uppercase tracking-widest">Photo & Video</span>
                         </Link>
                         <Link
-                            href="/dashboard/ad-campaign/product-promote"
+                            href="/ad-campaign/product-promote"
                             className={`flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 transition ${activeCampaignTab === "product-promote"
                                 ? "bg-white/10 text-white shadow-lg shadow-white/5"
                                 : "text-gray-300 hover:bg-white/5 hover:text-white"
@@ -493,7 +493,7 @@ export default function Topbar() {
                             <span className="whitespace-nowrap text-[9px] font-black uppercase tracking-widest">Product Promote</span>
                         </Link>
                         <Link
-                            href="/dashboard/ad-campaign/profile-promote"
+                            href="/ad-campaign/profile-promote"
                             className={`flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 transition ${activeCampaignTab === "profile-promote"
                                 ? "bg-white/10 text-white shadow-lg shadow-white/5"
                                 : "text-gray-300 hover:bg-white/5 hover:text-white"
@@ -507,11 +507,17 @@ export default function Topbar() {
                     </div>
                 </div>
             ) : (
-                <div id="shop-search-portal" className="absolute bottom-[-24px] left-1/2 w-[168px] -translate-x-1/2 sm:w-[220px] md:w-[min(320px,34vw)]"></div>
+                <>
+                    <div id="mobile-goog-search-portal" className="mx-2 min-w-0 flex-1 md:hidden"></div>
+                    <div
+                        id="shop-search-portal"
+                        className="absolute bottom-1 left-3 right-4 hidden sm:left-6 sm:right-6 md:block"
+                    ></div>
+                </>
             )}
 
             {/* Actions & Profile Menu */}
-            <div className="flex h-10 items-center gap-1 sm:gap-2">
+            <div className="flex h-10 shrink-0 items-center gap-1 sm:gap-2">
                 {/* Cart Icon - desktop only */}
                 <div className="relative hidden md:block">
                     <button

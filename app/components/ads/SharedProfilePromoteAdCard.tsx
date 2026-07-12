@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import type React from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import SubscribeButton from "@/app/components/SubscribeButton";
 import { marketService } from "@/services/marketService";
@@ -23,23 +23,79 @@ type SharedProfilePromoteAdCardProps = {
   ad: NormalizedAd;
   onProfileClick: (ad: any) => void;
   onProductClick: (product: any) => void;
+  onContentClick?: (content: any) => void;
   onCollectCoin?: (event: React.MouseEvent, ad: any) => void;
   canShowCollectCoin?: (ad: any) => boolean;
+  compact?: boolean;
+};
+
+const isPlaceholderProductImage = (src: any) => {
+  const value = String(src || "").trim().toLowerCase();
+  return !value || value.includes("/assets/images/googer.png") || value.includes("/assets/images/rupeer");
+};
+
+const getImageCandidate = (value: any) => (
+  typeof value === "string"
+    ? value
+    : value?.url || value?.image_url || value?.image || value?.src || ""
+);
+
+const pickFeaturedItemImage = (item: any) => {
+  const candidates = [
+    item.image,
+    item.image_url,
+    item.main_image,
+    ...(Array.isArray(item.images) ? item.images : []),
+    ...(Array.isArray(item.media_gallery) ? item.media_gallery : []),
+    item.thumbnail_url,
+    item.preview_url,
+    item.media_preview,
+    item.media_url,
+    ...(Array.isArray(item.variants)
+      ? item.variants.map((variant: any) => variant?.image_url || variant?.url || variant?.image)
+      : []),
+  ];
+  return candidates.map(getImageCandidate).find((candidate) => !isPlaceholderProductImage(candidate)) || "";
+};
+
+const isVideoPreview = (src: string) => /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(src);
+
+const isFeaturedUploadContent = (item: any) => {
+  const type = String(item?.__profilePromoteType || item?.type || item?.item_type || "").trim().toLowerCase();
+  const contentType = String(item?.content_type || item?.contentType || "").trim().toLowerCase();
+  return type === "upload" || type === "content" || type === "upload_content" || contentType === "flash" || contentType === "vault";
 };
 
 export function SharedProfilePromoteAdCard({
   ad,
   onProfileClick,
   onProductClick,
+  onContentClick,
   onCollectCoin,
   canShowCollectCoin,
+  compact = false,
 }: SharedProfilePromoteAdCardProps) {
   const [adProducts, setAdProducts] = useState<any[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const raw = ad.raw || {};
+  const draft = raw.editDraft || raw.edit_draft || {};
+  const featuredItems = useMemo(
+    () => Array.isArray(draft.featuredItems)
+      ? draft.featuredItems
+      : Array.isArray(draft.featured_items)
+        ? draft.featured_items
+        : [],
+    [draft.featuredItems, draft.featured_items],
+  );
 
 
   useEffect(() => {
+    if (featuredItems.length > 0) {
+      setAdProducts(featuredItems.slice(0, 3));
+      setLoadingProducts(false);
+      return;
+    }
+
     const ownerId = ad.userId;
     if (!ownerId) {
       setLoadingProducts(false);
@@ -65,7 +121,7 @@ export function SharedProfilePromoteAdCard({
     return () => {
       cancelled = true;
     };
-  }, [ad.userId]);
+  }, [ad.userId, featuredItems]);
 
   const profilePic = getItemProfilePicture(raw);
   const username = getItemUsername(raw, "Advertiser");
@@ -82,7 +138,7 @@ export function SharedProfilePromoteAdCard({
 
   return (
     <div
-      className="relative flex-shrink-0 w-[240px] sm:w-[260px] overflow-hidden rounded-2xl border border-white/10 bg-[#1a1a1a] shadow-[0_8px_28px_rgba(0,0,0,0.28)] transition hover:border-white/20"
+      className={`relative flex-shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-[#1a1a1a] shadow-[0_8px_28px_rgba(0,0,0,0.28)] transition hover:border-white/20 ${compact ? "w-full sm:w-[260px]" : "w-[240px] sm:w-[260px]"}`}
       style={{ scrollSnapAlign: "start" }}
     >
       {showAdCoinButton && onCollectCoin && (
@@ -158,13 +214,7 @@ export function SharedProfilePromoteAdCard({
       <div className="grid grid-cols-3 gap-1 p-1.5">
         {displayProducts.map((product: any) => {
           const isPlaceholder = !!product._placeholder;
-          const primaryPreview =
-            product.image_url ||
-            product.main_image ||
-            (Array.isArray(product.images) ? product.images[0] : undefined) ||
-            product.thumbnail_url ||
-            product.media_preview ||
-            product.media_url;
+          const primaryPreview = pickFeaturedItemImage(product);
           const img = normalizeMediaSrc(primaryPreview);
           const price = product.promo_price || product.price;
           return (
@@ -176,13 +226,25 @@ export function SharedProfilePromoteAdCard({
                 event.stopPropagation();
                 if (!isPlaceholder) {
                   trackAdClick();
+                  if (isFeaturedUploadContent(product) && onContentClick) {
+                    onContentClick(product);
+                    return;
+                  }
                   onProductClick(product);
                 }
               }}
               className="overflow-hidden rounded-lg border border-white/8 bg-[#0e1014] text-left transition hover:border-white/20 disabled:cursor-default disabled:opacity-50"
             >
               <div className="relative aspect-square w-full overflow-hidden bg-black">
-                {img ? (
+                {img && isVideoPreview(img) ? (
+                  <video
+                    src={img}
+                    className="h-full w-full object-cover"
+                    muted
+                    playsInline
+                    preload="metadata"
+                  />
+                ) : img ? (
                   <Image
                     src={img}
                     alt={product.title || "Product"}

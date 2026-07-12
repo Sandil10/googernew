@@ -10,9 +10,19 @@ const REACH_FIRST_CAMPAIGN_TYPES = new Set([
     'photo & video',
 ]);
 
+const normalizeCampaignType = (value) => normalizeText(value).replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+
 const isReachFirstCampaign = (adRow) => {
-    const type = normalizeText(adRow?.campaign_type || adRow?.campaignType || '');
+    const type = normalizeCampaignType(adRow?.campaign_type || adRow?.campaignType || '');
     return REACH_FIRST_CAMPAIGN_TYPES.has(type);
+};
+
+const isProfilePromoteCampaign = (adRow) => {
+    const campaignType = normalizeCampaignType(adRow?.campaign_type || adRow?.campaignType || '');
+    const mediaType = normalizeCampaignType(adRow?.media_type || adRow?.mediaType || '');
+    return campaignType === 'profile promote'
+        || campaignType === 'profile promote ad'
+        || mediaType === 'profile';
 };
 const DAY_MS = 24 * 60 * 60 * 1000;
 const getGraceIntervalSql = () => `((${getGraceDurationSeconds()}::text || ' seconds')::interval)`;
@@ -482,7 +492,7 @@ const adIsWithinDeliveryRules = (adRow) => {
 
     const budget = Number(adRow?.budget || 0);
     const remainingBudget = Number(adRow?.remaining_budget ?? adRow?.remainingBudget ?? budget);
-    if (budget > 0 && remainingBudget <= 0 && !adRow?.promo_code && !adRow?.promoCode) return false;
+    if (!isProfilePromoteCampaign(adRow) && budget > 0 && remainingBudget <= 0 && !adRow?.promo_code && !adRow?.promoCode) return false;
 
     return true;
 };
@@ -547,6 +557,7 @@ module.exports = {
     filterDeliverableAds,
     getAdTargeting,
     isReachFirstCampaign,
+    isProfilePromoteCampaign,
     loadViewerAdProfile,
     normalizeText,
     recordAdClick,

@@ -27,9 +27,9 @@ export default function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
     const [showUserMenu, setShowUserMenu] = useState(false);
     const [user, setUser] = useState<any>(() => getStoredUserSync());
     const prefetchAdCampaignRoutes = useCallback(() => {
-        router.prefetch("/dashboard/ad-campaign/photo-video");
-        router.prefetch("/dashboard/ad-campaign/product-promote");
-        router.prefetch("/dashboard/ad-campaign/profile-promote");
+        router.prefetch("/ad-campaign/photo-video");
+        router.prefetch("/ad-campaign/product-promote");
+        router.prefetch("/ad-campaign/profile-promote");
     }, [router]);
 
     useEffect(() => {
