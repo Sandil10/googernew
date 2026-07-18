@@ -4,6 +4,7 @@ const marketController = require('../controllers/marketController');
 const { interactionController, mutationController, productReadController, reportController, shareLookupController } = require('../modules/marketplace');
 const authenticateToken = require('../middleware/auth');
 const upload = require('../config/upload');
+const { createPublicResponseCache } = require('../middleware/publicResponseCache');
 
 const isSponsoredFeedItemId = (value) => typeof value === 'string' && value.startsWith('ad-');
 const isSponsoredCommentId = (value) => typeof value === 'string' && value.startsWith('ad-comment-');
@@ -17,7 +18,15 @@ const withSponsoredFallback = (marketHandler, sponsoredHandler, resolver = (req)
 
 // ─── Static / Non-ID Routes (must come FIRST) ───────────────────────────────
 // GET lightweight paginated market product cards
-router.get('/products', marketController.getMarketProducts);
+router.get(
+    '/products',
+    createPublicResponseCache({
+        ttlMs: Number(process.env.PUBLIC_SHOP_CACHE_TTL_MS || 15000),
+        keyPrefix: 'market-public-products',
+        anonymousOnly: true,
+    }),
+    marketController.getMarketProducts
+);
 
 // GET all market items
 router.get('/', marketController.getMarketItems);

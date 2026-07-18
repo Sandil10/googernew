@@ -43,6 +43,7 @@ type AdHistoryRow = {
     clicks?: number;
     spend?: number;
     remainingBudget?: number;
+    promoDiscount?: number | null;
     promoCode?: string | null;
     activeLink?: string;
     walletTransferId?: number | null;
@@ -143,6 +144,7 @@ function normalizeApiAds(input: any[]) {
             clicks: typeof data.clicks === "number" ? data.clicks : Number(data.clicks || 0),
             spend: typeof data.spend === "number" ? data.spend : Number(data.spend || 0),
             remainingBudget: typeof data.remainingBudget === "number" ? data.remainingBudget : Number(data.remainingBudget || 0),
+            promoDiscount: Number.isFinite(Number(data.promoDiscount ?? data.promo_discount)) ? Number(data.promoDiscount ?? data.promo_discount) : null,
             promoCode: typeof data.promoCode === "string" ? data.promoCode : (typeof data.promo_code === "string" ? data.promo_code : null),
             activeLink: typeof data.active_link === "string" ? data.active_link : "",
             walletTransferId: data.walletTransferId ?? data.wallet_transfer_id ?? null,
@@ -342,7 +344,43 @@ function formatCurrency(value?: number) {
 }
 
 function isPromoFreeAd(ad: AdHistoryRow) {
-    return !ad.walletTransferId;
+    const draft = ad.editDraft || {};
+    const budget = Number(ad.budget || 0);
+    const promoDiscount = Number(ad.promoDiscount ?? (draft as any).promoDiscount ?? (draft as any).promo_discount ?? 0);
+    const hasPromoCode = Boolean(ad.promoCode || (draft as any).promoCode || (draft as any).promo_code || (draft as any).hasPromoCodeAdded);
+    return budget <= 0
+        || Boolean((draft as any).isFreePromo || (draft as any).freeAd || (draft as any).free_ad)
+        || (hasPromoCode && promoDiscount >= 100)
+        || (hasPromoCode && !ad.walletTransferId);
+}
+
+function getPromoDiscountValue(value: any) {
+    const discount = typeof value === "string"
+        ? (() => {
+            try { return JSON.parse(value); } catch { return value; }
+        })()
+        : value;
+    if (discount == null || discount === "") return 0;
+    if (typeof discount === "number") return discount;
+    if (typeof discount === "string") {
+        const parsed = Number(discount);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+    const parsed = Number(discount.discount_value ?? discount.value ?? discount.amount ?? 0);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isFreeAdBudgetLocked(ad: AdHistoryRow) {
+    const draft = ad.editDraft || {};
+    const budget = Number(ad.budget || 0);
+    const promoDiscount = getPromoDiscountValue(ad.promoDiscount ?? (draft as any).promoDiscount ?? (draft as any).promo_discount);
+    return budget <= 0
+        || Boolean((draft as any).isFreePromo || (draft as any).freeAd || (draft as any).free_ad)
+        || promoDiscount >= 100;
+}
+
+function formatAdMoney(ad: AdHistoryRow, value?: number) {
+    return isPromoFreeAd(ad) ? "Free" : formatCurrency(value);
 }
 
 function formatReachCount(value: number) {
@@ -803,7 +841,7 @@ export default function AdCenterPage() {
                                         </div>
                                         <div className="text-right">
                                             <p className="text-[8px] font-black uppercase tracking-[0.12em] text-white/28">Total Budget</p>
-                                            <p className="mt-1 text-[1.2rem] font-black tracking-tight text-white sm:text-[1.35rem]">{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.budget)}</p>
+                                            <p className="mt-1 text-[1.2rem] font-black tracking-tight text-white sm:text-[1.35rem]">{formatAdMoney(ad, ad.budget)}</p>
                                         </div>
                                         <button
                                             type="button"
@@ -864,6 +902,19 @@ export default function AdCenterPage() {
                                                             : serverGallery.length > 0
                                                                 ? `${serverGallery.length} image${serverGallery.length > 1 ? "s" : ""} selected`
                                                                 : "";
+                                                        const draftPromoDiscount = draft.promoDiscount && typeof draft.promoDiscount === "object"
+                                                            ? draft.promoDiscount
+                                                            : (Number.isFinite(Number(ad.promoDiscount))
+                                                                ? { discount_type: "reach", discount_value: Number(ad.promoDiscount) }
+                                                                : null);
+                                                        const draftHasPromo = Boolean(
+                                                            draft.hasPromoCodeAdded
+                                                            || ad.promoCode
+                                                            || draft.promoCode
+                                                            || draftPromoDiscount
+                                                            || isPromoFreeAd(ad)
+                                                        );
+                                                        const isFreeBudgetLockedAdValue = isFreeAdBudgetLocked(ad);
                                                         window.localStorage.setItem(draftKey, JSON.stringify({
                                                             version: 1,
                                                             editingAdId: ad.adId,
@@ -885,7 +936,9 @@ export default function AdCenterPage() {
                                                             editingOriginalBudget: ad.budget ?? 0,
                                                             durationDays: draft.durationDays ?? ad.durationDays ?? 1,
                                                             promoCode: draft.promoCode ?? ad.promoCode ?? null,
-                                                            hasPromoCodeAdded: false,
+                                                            hasPromoCodeAdded: draftHasPromo,
+                                                            promoDiscount: draftPromoDiscount,
+                                                            freeAdBudgetLocked: isFreeBudgetLockedAdValue && !isProfilePromoteAd(ad),
                                                             mediaGallery: isProductPromote ? [] : serverGallery,
                                                             mediaType: isProductPromote ? "" : resolvedMediaType,
                                                             mediaPreview: isProductPromote ? "" : (ad.mediaPreview ?? serverGallery[0] ?? ""),
@@ -932,7 +985,7 @@ export default function AdCenterPage() {
                                             <div className="mt-2 grid gap-1 text-[9px] font-black text-white">
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Total Budget</span>
-                                                    <span>{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.budget)}</span>
+                                                    <span>{formatAdMoney(ad, ad.budget)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Duration</span>
@@ -992,15 +1045,15 @@ export default function AdCenterPage() {
                                             <div className="mt-2 grid gap-1 text-[9px] font-black text-white">
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Budget</span>
-                                                    <span>{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.budget)}</span>
+                                                    <span>{formatAdMoney(ad, ad.budget)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Spend</span>
-                                                    <span>{formatCurrency(ad.spend)}</span>
+                                                    <span>{formatAdMoney(ad, ad.spend)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="text-white/55">Remaining</span>
-                                                    <span>{isPromoFreeAd(ad) ? "Free" : formatCurrency(ad.remainingBudget)}</span>
+                                                    <span>{formatAdMoney(ad, ad.remainingBudget)}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between gap-2 border-t border-white/8 pt-1">
                                                     <span className="text-white/55">Status</span>
@@ -1129,7 +1182,7 @@ export default function AdCenterPage() {
                                             )}
                                         </div>
                                         <div className="text-right">
-                                            <p className="text-sm font-black text-white sm:text-base">{isPromoFreeAd(selectedAd) ? "Free" : formatCurrency(selectedAd.budget)}</p>
+                                            <p className="text-sm font-black text-white sm:text-base">{formatAdMoney(selectedAd, selectedAd.budget)}</p>
                                             <p className="mt-1 text-[9px] font-black text-white/35">+ {formatCurrency(0)} Delivery</p>
                                         </div>
                                     </div>
@@ -1142,15 +1195,15 @@ export default function AdCenterPage() {
                                     <div className="space-y-2 text-[10px] font-black sm:text-[11px]">
                                         <div className="flex items-center justify-between gap-4 text-white/68">
                                             <span>Total</span>
-                                            <span className="text-white">{isPromoFreeAd(selectedAd) ? "Free" : formatCurrency(selectedAd.budget)}</span>
+                                            <span className="text-white">{formatAdMoney(selectedAd, selectedAd.budget)}</span>
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
                                             <span>Spend</span>
-                                            <span className="text-white">{formatCurrency(selectedAd.spend)}</span>
+                                            <span className="text-white">{formatAdMoney(selectedAd, selectedAd.spend)}</span>
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
                                             <span>Remaining</span>
-                                            <span className="text-white">{isPromoFreeAd(selectedAd) ? "Free" : formatCurrency(selectedAd.remainingBudget)}</span>
+                                            <span className="text-white">{formatAdMoney(selectedAd, selectedAd.remainingBudget)}</span>
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-3 text-white/68">
                                             <span>Duration</span>
@@ -1190,7 +1243,7 @@ export default function AdCenterPage() {
                                         </div>
                                         <div className="flex items-center justify-between gap-4 border-t border-white/6 pt-4">
                                             <span className="text-[0.82rem] uppercase tracking-[0.1em] text-white/35">Grand Total</span>
-                                            <span className="text-[1.1rem] italic font-black text-white sm:text-[1.2rem]">{isPromoFreeAd(selectedAd) ? "Free" : formatCurrency(selectedAd.budget)}</span>
+                                            <span className="text-[1.1rem] italic font-black text-white sm:text-[1.2rem]">{formatAdMoney(selectedAd, selectedAd.budget)}</span>
                                         </div>
                                     </div>
                                 </div>

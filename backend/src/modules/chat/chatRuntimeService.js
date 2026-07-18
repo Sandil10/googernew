@@ -693,6 +693,7 @@ const pruneExpiredChatsForUser = async (userId) => {
         const features = await getUserSubscriptionFeatures(userId);
         const retentionMs = getChatRetentionMs(features.extra || {});
         if (!retentionMs) return;
+        const cutoff = new Date(Date.now() - retentionMs);
 
         await pool.query(
             `UPDATE chat_messages
@@ -703,8 +704,8 @@ const pruneExpiredChatsForUser = async (userId) => {
              WHERE (sender_id = $1 OR receiver_id = $1)
                AND deleted_for_everyone = FALSE
                AND NOT (deleted_for ? ($1::text))
-               AND created_at < NOW() - ($2::text || ' milliseconds')::interval`,
-            [userId, retentionMs]
+               AND created_at < $2`,
+            [userId, cutoff]
         );
     } catch (err) {
         console.error('[chat] pruneExpiredChatsForUser error:', err.message);

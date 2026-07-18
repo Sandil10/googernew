@@ -83,6 +83,7 @@ export function normalizeAdData(ad: any): NormalizedAd {
   if (!ad) {
     throw new Error("Cannot normalize null or undefined ad data");
   }
+  const sourceRaw = ad?.raw?.raw || ad?.raw || {};
 
   // Infer Type
   let type: AdType = "photo";
@@ -153,9 +154,42 @@ export function normalizeAdData(ad: any): NormalizedAd {
     ad.owner?.profile_picture,
     ad.owner?.profilePicture
   );
-  const activeStartRaw = firstPresent(ad.active_start_time, ad.activeStartTime, ad.started_at, ad.startedAt);
-  const createdAtRaw = firstPresent(ad.created_at, ad.createdAt, ad.created, ad.published_at, ad.updated_at);
+  const activeStartRaw = firstPresent(
+    ad.active_start_time,
+    ad.activeStartTime,
+    ad.started_at,
+    ad.startedAt,
+    ad.start_time,
+    ad.startTime,
+    sourceRaw.active_start_time,
+    sourceRaw.activeStartTime,
+    sourceRaw.started_at,
+    sourceRaw.startedAt,
+    sourceRaw.start_time,
+    sourceRaw.startTime,
+  );
+  const createdAtRaw = firstPresent(
+    ad.created_at,
+    ad.createdAt,
+    ad.created,
+    ad.published_at,
+    ad.publishedAt,
+    ad.approved_at,
+    ad.approvedAt,
+    ad.updated_at,
+    ad.updatedAt,
+    sourceRaw.created_at,
+    sourceRaw.createdAt,
+    sourceRaw.created,
+    sourceRaw.published_at,
+    sourceRaw.publishedAt,
+    sourceRaw.approved_at,
+    sourceRaw.approvedAt,
+    sourceRaw.updated_at,
+    sourceRaw.updatedAt,
+  );
   const createdAt = normalizeAdTimestamp(activeStartRaw || createdAtRaw) || activeStartRaw || createdAtRaw;
+  const activeStartTime = normalizeAdTimestamp(activeStartRaw) || activeStartRaw;
   const ctaTopic = firstPresent(ad.cta_topic, ad.ctaTopic);
   const ctaValue = firstPresent(ad.cta_value, ad.ctaValue);
   const draft = safeParse(ad.editDraft || ad.edit_draft) || {};
@@ -185,6 +219,8 @@ export function normalizeAdData(ad: any): NormalizedAd {
 
   return {
     id: interactionId,
+    adId: firstPresent(ad.adId, ad.ad_id, sourceRaw.adId, sourceRaw.ad_id, interactionId)?.toString().replace(/^ad-/, ""),
+    ad_id: firstPresent(ad.ad_id, ad.adId, sourceRaw.ad_id, sourceRaw.adId, interactionId)?.toString().replace(/^ad-/, ""),
     type,
     shareCode: String(ad.shareCode || ad.share_code || ad.product_code || targetId),
     targetId,
@@ -207,10 +243,25 @@ export function normalizeAdData(ad: any): NormalizedAd {
     },
     createdAt,
     created_at: createdAt,
+    activeStartTime,
+    active_start_time: activeStartTime,
+    startedAt: activeStartTime,
+    started_at: activeStartTime,
+    status: ad.status,
+    delivery_status: ad.delivery_status || ad.deliveryStatus,
     active_link: activeLink,
     cta_topic: ctaTopic,
     cta_value: ctaValue,
     media_type: normalizedMediaType,
+    media_preview: ad.media_preview || ad.mediaPreview || image,
+    mediaPreview: ad.mediaPreview || ad.media_preview || image,
+    media_gallery: ad.media_gallery || ad.mediaGallery,
+    mediaGallery: ad.mediaGallery || ad.media_gallery,
+    image_url: ad.image_url || image,
+    main_image: ad.main_image || image,
+    thumbnail_url: ad.thumbnail_url || image,
+    video_url: ad.video_url,
+    media_url: ad.media_url,
     title,
     description,
     image,
@@ -250,10 +301,25 @@ export function normalizeAdData(ad: any): NormalizedAd {
       profile_picture: profilePicture || ad.profile_picture,
       created_at: createdAt || ad.created_at,
       createdAt: createdAt || ad.createdAt,
+      active_start_time: activeStartTime || ad.active_start_time,
+      activeStartTime: activeStartTime || ad.activeStartTime,
+      started_at: activeStartTime || ad.started_at,
+      startedAt: activeStartTime || ad.startedAt,
+      status: ad.status,
+      delivery_status: ad.delivery_status || ad.deliveryStatus,
       active_link: activeLink || ad.active_link,
       cta_topic: ctaTopic || ad.cta_topic,
       cta_value: ctaValue || ad.cta_value,
       media_type: normalizedMediaType || ad.media_type,
+      media_preview: ad.media_preview || ad.mediaPreview || image,
+      mediaPreview: ad.mediaPreview || ad.media_preview || image,
+      media_gallery: ad.media_gallery || ad.mediaGallery,
+      mediaGallery: ad.mediaGallery || ad.media_gallery,
+      image_url: ad.image_url || image,
+      main_image: ad.main_image || image,
+      thumbnail_url: ad.thumbnail_url || image,
+      video_url: ad.video_url,
+      media_url: ad.media_url,
       title,
       description,
       likes_count: likeCount,

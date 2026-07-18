@@ -121,8 +121,21 @@ export default function ShareModal({ isOpen, onClose, title, url, shareUrl, desc
         return n === normalizeIdentifier(resellOwnUsername) || n === normalizeIdentifier(resellOwnUserId);
     };
     const providedUrl = shareUrl || url || "";
-    const isProductPromote = product?.campaign_type === "Product Promote";
-    const isSponsoredAd = !!product?.is_sponsored && !isProductPromote;
+    const rawProduct = product?.raw || {};
+    const productCampaignType = String(product?.campaign_type || product?.campaignType || rawProduct.campaign_type || rawProduct.campaignType || "").trim();
+    const isProductPromote = productCampaignType === "Product Promote";
+    const hasSponsoredAdIdentity = !!(
+        product?.is_sponsored ||
+        product?.isAd ||
+        product?.adId ||
+        product?.ad_id ||
+        rawProduct.is_sponsored ||
+        rawProduct.isAd ||
+        rawProduct.adId ||
+        rawProduct.ad_id ||
+        productCampaignType
+    );
+    const isSponsoredAd = shareType === "ad" || (hasSponsoredAdIdentity && !isProductPromote);
     const isGoogShareItem =
         String(product?.id || "").startsWith("goog-") ||
         (!product?.is_sponsored && !product?.campaign_type && typeof product?.text === "string");

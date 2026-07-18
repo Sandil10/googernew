@@ -17,12 +17,16 @@ type Props = {
 
 export default function SecurityActionPage({ panel, title, description }: Props) {
     const [currentEmail, setCurrentEmail] = useState("");
+    const [securityProfile, setSecurityProfile] = useState<any>(null);
 
     useEffect(() => {
         let cancelled = false;
         authService.getProfile()
             .then((profile) => {
-                if (!cancelled) setCurrentEmail(profile?.email || "");
+                if (!cancelled) {
+                    setCurrentEmail(profile?.email || "");
+                    setSecurityProfile(profile || null);
+                }
             })
             .catch(() => {
                 if (!cancelled) setCurrentEmail("");
@@ -45,7 +49,13 @@ export default function SecurityActionPage({ panel, title, description }: Props)
                         <p className="mt-1 max-w-2xl text-xs leading-5 text-white/45">{description}</p>
                     </div>
                     <div className="space-y-4 px-5 py-5 min-[960px]:px-6">
-                        <SecurityActionPanel panel={panel} currentEmail={currentEmail} />
+                        <SecurityActionPanel
+                            panel={panel}
+                            currentEmail={currentEmail}
+                            currentPhone={securityProfile?.two_factor_phone_number || ""}
+                            currentPhoneDialCode={securityProfile?.two_factor_phone_dial_code || ""}
+                            preferredOtpDelivery={securityProfile?.otp_delivery_method || "email"}
+                        />
                     </div>
                 </section>
             </div>

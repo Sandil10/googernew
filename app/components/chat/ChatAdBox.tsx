@@ -29,6 +29,7 @@ type ChatAdBoxProps = {
     onOpenProductSecondView?: (ad: any) => void | Promise<void>;
     onPromoteAgain?: (ad: any) => void | Promise<void>;
     promoteAgainLabel?: string;
+    onDeleteAd?: (ad: any) => void | Promise<void>;
 };
 
 const EMPTY_STATE = {};
@@ -48,6 +49,7 @@ export function ChatAdBox({
     onOpenProductSecondView,
     onPromoteAgain,
     promoteAgainLabel = "Promote Again",
+    onDeleteAd,
 }: ChatAdBoxProps) {
     const [popupOpen, setPopupOpen] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
@@ -321,6 +323,19 @@ export function ChatAdBox({
                                     {promoteAgainLabel}
                                 </button>
                             )}
+                            {onDeleteAd && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        void onDeleteAd(mergedAd.raw || mergedAd);
+                                        setMenuOpen(false);
+                                    }}
+                                    className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-red-500 transition-colors hover:bg-white/5"
+                                >
+                                    <IonIcon name="trash-outline" className="text-lg" />
+                                    Delete Ad
+                                </button>
+                            )}
                             <button
                                 type="button"
                                 onClick={() => {
@@ -417,14 +432,14 @@ export function ChatAdBox({
                                         <span className="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
                                             <Image
                                                 src="/assets/images/rupee.png"
-                                                alt="Ruppier coin"
+                                                alt="Rupieer coin"
                                                 width={20}
                                                 height={20}
                                                 className="h-4 w-4 object-contain"
                                                 unoptimized
                                             />
                                         </span>
-                                        <span className="leading-none">Ruppier</span>
+                                        <span className="leading-none">Rupieer</span>
                                     </button>
                                 )}
                                 <button

@@ -26,6 +26,7 @@ export default function Topbar() {
     const searchParams = useSearchParams();
     const isAdCampaignPage = pathname === "/ad-campaign" || (pathname?.startsWith("/ad-campaign/") ?? false);
     const isUploadContentPage = pathname === "/ad-campaign/upload-content" || pathname === "/ad-campaign/flash-content";
+    const isShopPage = pathname === "/shop" || pathname === "/dashboard/shop";
     const activeCampaignTab = pathname === "/ad-campaign/photo-video"
         ? "photo-video"
         : pathname === "/ad-campaign/product-promote"
@@ -346,6 +347,7 @@ export default function Topbar() {
                         src="/assets/images/googer.png"
                         alt="Googer Logo"
                         fill
+                        priority
                         className="object-contain"
                     />
                 </div>
@@ -508,7 +510,10 @@ export default function Topbar() {
                 </div>
             ) : (
                 <>
-                    <div id="mobile-goog-search-portal" className="mx-2 min-w-0 flex-1 md:hidden"></div>
+                    <div
+                        id={isShopPage ? "mobile-shop-search-portal" : "mobile-goog-search-portal"}
+                        className="mx-2 min-w-0 flex-1 md:hidden"
+                    ></div>
                     <div
                         id="shop-search-portal"
                         className="absolute bottom-1 left-3 right-4 hidden sm:left-6 sm:right-6 md:block"
@@ -518,6 +523,32 @@ export default function Topbar() {
 
             {/* Actions & Profile Menu */}
             <div className="flex h-10 shrink-0 items-center gap-1 sm:gap-2">
+                {/* Cart Icon - mobile topbar */}
+                {!isAdCampaignPage && (
+                    <div className="relative md:hidden">
+                        <button
+                            onClick={() => {
+                                if (isCartLocked) {
+                                    return;
+                                }
+                                setIsCartOpen(!isCartOpen);
+                            }}
+                            className={`flex h-8 w-8 items-center justify-center rounded-full transition-all duration-300 group
+                            ${isCartLocked ? 'opacity-50 cursor-not-allowed' : ''}
+                            ${isCartOpen ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-gray-300 hover:bg-white/5 hover:text-white'}`}
+                            title="Cart"
+                            suppressHydrationWarning={true}
+                        >
+                            <IonIcon name={isCartOpen ? "cart" : "cart-outline"} className="text-lg group-hover:scale-110 transition-transform" />
+                            {cartCount > 0 && (
+                                <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full border-2 border-[#18181b] bg-blue-500 px-1 text-[8px] font-black leading-none text-white">
+                                    {cartCount > 99 ? "99+" : cartCount}
+                                </span>
+                            )}
+                        </button>
+                    </div>
+                )}
+
                 {/* Cart Icon - desktop only */}
                 <div className="relative hidden md:block">
                     <button
@@ -744,7 +775,7 @@ export default function Topbar() {
                         <div className="relative w-9 h-9">
                             <Link
                                 href="/profile"
-                                className="block w-9 h-9 rounded-full overflow-hidden border-2 border-white/10 hover:border-purple-500/50 transition-all active:scale-95 group"
+                                className="relative block w-9 h-9 rounded-full overflow-hidden border-2 border-white/10 hover:border-purple-500/50 transition-all active:scale-95 group"
                             >
                                 <Image
                                     src={profileImage}

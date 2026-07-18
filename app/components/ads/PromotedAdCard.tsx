@@ -1,6 +1,7 @@
 "use client";
 
 import type React from "react";
+import { memo } from "react";
 import { SharedPhotoVideoAdCard } from "@/app/components/ads/SharedPhotoVideoAdCard";
 import { SharedProfilePromoteAdCard } from "@/app/components/ads/SharedProfilePromoteAdCard";
 import { SharedProductPromoteAdCard } from "@/app/components/ads/SharedProductPromoteAdCard";
@@ -26,6 +27,7 @@ type PromotedAdCardProps = {
   onLogView?: (ad: any, item?: any) => void;
   onReport?: (ad: any) => void;
   onNotInterested?: (id: string | number) => void;
+  onDeleteAd?: (ad: any) => void | Promise<void>;
   onPromoteAgain?: (ad: any) => void | Promise<void>;
   onCollectCoin?: (event: React.MouseEvent, ad: any) => void;
   onNavigateToProfile?: (event: React.MouseEvent, ad: any) => void;
@@ -49,7 +51,7 @@ function isActivePhotoVideoStatus(status: string) {
   return status === "active" || status === "running" || status === "approved";
 }
 
-export function PromotedAdCard({
+export const PromotedAdCard = memo(function PromotedAdCard({
   ad,
   source,
   isMenuOpen = false,
@@ -66,6 +68,7 @@ export function PromotedAdCard({
   onLogView,
   onReport,
   onNotInterested,
+  onDeleteAd,
   onPromoteAgain,
   onCollectCoin,
   onNavigateToProfile,
@@ -280,6 +283,7 @@ export function PromotedAdCard({
         onNavigateToProfile={(event) => onNavigateToProfile?.(event, actionAd.user_id)}
         onPromoteAgain={canPromoteProductAgain ? onPromoteAgain : undefined}
         promoteAgainLabel={promoteAgainLabel}
+        onDeleteAd={isAdOwner ? onDeleteAd : undefined}
         currentUser={currentUser}
         compact={compact}
       />
@@ -312,6 +316,7 @@ export function PromotedAdCard({
       onShare={onShare || (() => {})}
       onReport={onReport || (() => {})}
       onNotInterested={onNotInterested || (() => {})}
+      onDeleteAd={isAdOwner ? onDeleteAd : undefined}
       onPromoteAgain={canPromotePhotoVideoAgain ? onPromoteAgain : undefined}
       promoteAgainLabel={promoteAgainLabel}
       onCollectCoin={onCollectCoin || (() => {})}
@@ -324,4 +329,6 @@ export function PromotedAdCard({
       showExpiryWarning={showExpiryWarning}
     />
   );
-}
+});
+
+PromotedAdCard.displayName = "PromotedAdCard";

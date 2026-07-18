@@ -96,8 +96,24 @@ export const getGoogShareCode = (post: any) => {
 };
 
 export const getAdShareCode = (ad: any) => {
+  const isProductPromoteAd = String(ad?.campaign_type || ad?.campaignType || ad?.raw?.campaign_type || ad?.raw?.campaignType || "").trim().toLowerCase() === "product promote";
+  const storedCode = firstCanonicalCode(
+    ad?.canonical_share_code,
+    ad?.adShareCode,
+    ad?.ad_share_code,
+    ad?.raw?.canonical_share_code,
+    ad?.raw?.adShareCode,
+    ad?.raw?.ad_share_code,
+    isProductPromoteAd ? "" : ad?.share_code,
+    isProductPromoteAd ? "" : ad?.shareCode,
+    isProductPromoteAd ? "" : ad?.raw?.share_code,
+    isProductPromoteAd ? "" : ad?.raw?.shareCode,
+  );
+  if (storedCode) return storedCode;
+
   const rawId = String(ad?.adId ?? ad?.ad_id ?? ad?.id ?? "").trim();
-  const id = stripPrefix(rawId, "ad-");
+  const rawFallbackId = String(ad?.raw?.adId ?? ad?.raw?.ad_id ?? "").trim();
+  const id = stripPrefix(rawFallbackId || rawId, "ad-");
   return id ? toShareCode("a", id) : "";
 };
 
@@ -162,7 +178,7 @@ export const getShareUrlForItem = (item: any, type?: "goog" | "ad" | "product" |
   const shareCode = getShareCodeForItem(item, type);
   if (!shareCode) return "";
   const isGoogLike = type === "goog" || String(item?.id ?? "").startsWith("goog-") || typeof item?.text === "string";
-  const isAdLike = type === "ad" || (!!item?.is_sponsored && item?.campaign_type !== "Product Promote");
+  const isAdLike = type === "ad" || !!item?.adId || !!item?.ad_id || String(item?.id ?? "").startsWith("ad-") || (!!item?.is_sponsored && item?.campaign_type !== "Product Promote");
   const isProductLike =
     type === "product" ||
     (
@@ -200,6 +216,9 @@ export const getShareUrlForItem = (item: any, type?: "goog" | "ad" | "product" |
       )
     );
 
+  if (isAdLike) {
+    return buildPublicUrl(`/share/${encodeURIComponent(shareCode)}`);
+  }
   if (isProductLike) {
     return buildPublicUrl(`/product/${encodeURIComponent(shareCode)}`);
   }

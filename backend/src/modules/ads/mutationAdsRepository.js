@@ -44,6 +44,45 @@ const supportsRemainingBudgetRefund = (campaignType) => {
         || normalized === 'photo & video';
 };
 
+const parseMaybeJson = (value) => {
+    if (!value || typeof value !== 'string') return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return value;
+    }
+};
+
+const isFreePromoDiscount = (value) => {
+    const discount = parseMaybeJson(value);
+    if (discount == null || discount === '') return false;
+    if (typeof discount === 'number') return discount >= 100;
+    if (typeof discount === 'string') {
+        const parsed = Number(discount);
+        return Number.isFinite(parsed) && parsed >= 100;
+    }
+    const type = String(discount.discount_type || discount.type || '').trim().toLowerCase();
+    const amount = Number(discount.discount_value ?? discount.value ?? discount.amount ?? 0);
+    return Number.isFinite(amount) && amount >= 100 && (type === 'reach' || type === 'percent' || type === 'percentage' || type === 'free');
+};
+
+const isFreeBudgetLockedAd = (row) => {
+    if (!supportsRemainingBudgetRefund(row?.campaign_type || row?.campaignType)) return false;
+    const draft = row?.edit_draft || row?.editDraft || {};
+    const hasFreeMarker = Boolean(
+        row?.is_free_promo
+        || row?.isFreePromo
+        || draft?.isFreePromo
+        || draft?.freeAd
+        || draft?.free_ad
+        || isFreePromoDiscount(row?.promo_discount)
+        || isFreePromoDiscount(row?.promoDiscount)
+        || isFreePromoDiscount(draft?.promoDiscount)
+        || isFreePromoDiscount(draft?.promo_discount)
+    );
+    return Number(row?.budget || 0) <= 0 || (!Number(row?.wallet_transfer_id || row?.walletTransferId || 0) && hasFreeMarker);
+};
+
 const toDateOrNull = (value) => {
     if (!value) return null;
     if (value instanceof Date) return value;
@@ -267,14 +306,6 @@ const resolveGoogerMainWalletUserId = async (client) => {
         }
     }
 
-    const adminResult = await client.query(
-        `SELECT id FROM users
-         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
-         ORDER BY id ASC
-         LIMIT 1`
-    );
-    if (adminResult.rows.length > 0) return adminResult.rows[0].id;
-
     const googerResult = await client.query(
         `SELECT id FROM users
          WHERE LOWER(username) = 'googer'
@@ -282,6 +313,14 @@ const resolveGoogerMainWalletUserId = async (client) => {
          LIMIT 1`
     );
     if (googerResult.rows.length > 0) return googerResult.rows[0].id;
+
+    const adminResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+    if (adminResult.rows.length > 0) return adminResult.rows[0].id;
 
     const fallbackResult = await client.query(
         `SELECT id FROM users
@@ -304,6 +343,14 @@ const findSponsor = async (userId) => {
     const result = await pool.query(
         'SELECT user_id, username FROM users WHERE id = $1 LIMIT 1',
         [userId]
+    );
+    return result.rows[0] || null;
+};
+
+const findAdRowByAdId = async (adId) => {
+    const result = await pool.query(
+        'SELECT * FROM ads WHERE ad_id = $1 LIMIT 1',
+        [adId]
     );
     return result.rows[0] || null;
 };
@@ -344,9 +391,11 @@ module.exports = {
     connect,
     createAdRow,
     ensureAdsTable: readAdsRepository.ensureAdsTable,
+    findAdRowByAdId,
     findSponsor,
     hasOwn,
     isPhotoVideoCampaign,
+    isFreeBudgetLockedAd,
     isRawUploadedPhotoVideoAd,
     mapRow: savedAdsRepository.mapRow,
     normalizePayload,

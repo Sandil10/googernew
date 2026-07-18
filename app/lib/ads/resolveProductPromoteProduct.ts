@@ -95,6 +95,25 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
     ...source,
     ...realProduct,
   };
+  const variants = Array.isArray(realProduct?.variants)
+    ? realProduct.variants
+    : Array.isArray(source?.variants)
+      ? source.variants
+      : [];
+  const sizes = Array.isArray(realProduct?.sizes)
+    ? realProduct.sizes
+    : Array.isArray(source?.sizes)
+      ? source.sizes
+      : [];
+  const images = Array.isArray(realProduct?.images)
+    ? realProduct.images
+    : Array.isArray(realProduct?.media_gallery)
+      ? realProduct.media_gallery
+      : Array.isArray(source?.images)
+        ? source.images
+        : Array.isArray(source?.media_gallery)
+          ? source.media_gallery
+          : [];
 
   const resolvedProduct = normalizeProductAd({
     ...productFirstSource,
@@ -103,6 +122,10 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
     linked_product_id: productFirstSource?.linked_product_id ?? realProduct?.linked_product_id ?? resolvedId,
     linked_product_share_code: productFirstSource?.linked_product_share_code ?? realProduct?.product_code ?? source?.linked_product_share_code,
     linked_product_code: productFirstSource?.linked_product_code ?? realProduct?.product_code ?? source?.linked_product_code,
+    variants,
+    sizes,
+    images,
+    media_gallery: Array.isArray(productFirstSource?.media_gallery) ? productFirstSource.media_gallery : images,
     shareCode: shareCode || productShareCode || resolvedId,
     share_code: shareCode || productShareCode || resolvedId,
     is_sponsored: true,
@@ -124,6 +147,10 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
       linked_product_id: realProduct?.id ?? resolvedId,
       linked_product_share_code: realProduct?.product_code ?? source?.linked_product_share_code,
       linked_product_code: realProduct?.product_code ?? source?.linked_product_code,
+      variants,
+      sizes,
+      images,
+      media_gallery: Array.isArray(realProduct?.media_gallery) ? realProduct.media_gallery : images,
       shareCode: shareCode || productShareCode || resolvedId,
       share_code: shareCode || productShareCode || resolvedId,
       is_sponsored: true,
@@ -154,6 +181,10 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
     ad_owner_user_id: source?.ad_owner_user_id || source?.advertiser_id || source?.user_id || source?.userId,
     advertiser_id: source?.advertiser_id || source?.ad_owner_user_id || source?.user_id || source?.userId,
     campaign_type: campaignType,
+    status: source?.status ?? promotedProduct.status,
+    ad_status: source?.status ?? source?.delivery_status ?? source?.deliveryStatus ?? null,
+    delivery_status: source?.delivery_status ?? source?.deliveryStatus ?? source?.status ?? null,
+    product_status: realProduct?.status ?? promotedProduct.status,
     is_sponsored: true,
     isAd: true,
     isProductPromoteSecondView: true,

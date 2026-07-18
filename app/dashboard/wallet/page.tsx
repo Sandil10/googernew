@@ -244,7 +244,7 @@ export default function WalletPage() {
         {
             id: 2,
             title: "Top Up",
-            description: "Recharge your wallet with Rupier coins",
+            description: "Recharge your wallet with Rupieer coins",
             icon: "add-circle-outline",
             href: "/wallet/topup",
             bgColor: "border border-white/10 bg-black/20",
@@ -332,7 +332,7 @@ export default function WalletPage() {
 
                     <div className="flex flex-row items-center gap-3 justify-center mb-2">
                         <div className="relative w-12 h-6 md:w-16 md:h-10 shrink-0">
-                            <Image src="/assets/images/rupee.png" alt="Rupee" fill className="object-contain" priority />
+                            <Image src="/assets/images/rupee.png" alt="Rupieer" fill className="object-contain" priority />
                         </div>
                         <h2 className="text-3xl md:text-5xl font-bold text-white tracking-tight leading-none whitespace-nowrap">
                             {balanceDisplay}

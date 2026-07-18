@@ -2,6 +2,22 @@ import { API_URL } from './apiConfig';
 
 const getStoredToken = () => (typeof window !== 'undefined' ? (window.sessionStorage.getItem('token') || window.localStorage.getItem('token')) : null);
 const VIEWER_KEY_STORAGE_KEY = 'googer-viewer-key';
+const DEFAULT_AD_COIN_SETTINGS = {
+    user_reward_amount: 1,
+    googer_commission_amount: 0.25,
+    advertiser_charge_amount: 1.25,
+    required_watch_seconds: 5,
+};
+
+let cachedAdCoinSettings: any = DEFAULT_AD_COIN_SETTINGS;
+let adCoinSettingsRetryAfter = 0;
+const passiveRetryAfterByKey = new Map<string, number>();
+const likeInflight = new Map<string, Promise<boolean>>();
+
+const isPassiveFetchCoolingDown = (key: string) => Date.now() < (passiveRetryAfterByKey.get(key) || 0);
+const coolDownPassiveFetch = (key: string, ms = 30000) => {
+    passiveRetryAfterByKey.set(key, Date.now() + ms);
+};
 
 const getViewerKey = () => {
     if (typeof localStorage === 'undefined') return '';
@@ -283,7 +299,10 @@ export const marketService = {
     // Engagement Features
     toggleLike: async (id: string | number) => {
         const numericId = String(id);
-        try {
+        const inflight = likeInflight.get(numericId);
+        if (inflight) return inflight;
+        const request = (async () => {
+            try {
             const response = await fetch(`${API_URL}/market/${numericId}/like`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
@@ -291,11 +310,17 @@ export const marketService = {
             const data = await response.json();
             if (!response.ok) throw buildApiError(response, data, 'Failed to like item');
             return data.liked;
-        } catch (error) {
+            } catch (error) {
             // Locked errors are handled gracefully upstream — don't pollute the console
-            if (!(error as any)?.locked) console.error('Error liking market item:', error);
-            throw error;
-        }
+                if (!(error as any)?.locked) console.error('Error liking market item:', error);
+                throw error;
+            } finally {
+                likeInflight.delete(numericId);
+            }
+        })();
+
+        likeInflight.set(numericId, request);
+        return request;
     },
 
     collectAdCoin: async (id: string | number | Record<string, any>) => {
@@ -341,17 +366,27 @@ export const marketService = {
     },
 
     getAdCoinSettingsPublic: async () => {
+        if (Date.now() < adCoinSettingsRetryAfter) {
+            return cachedAdCoinSettings || DEFAULT_AD_COIN_SETTINGS;
+        }
+
         try {
             const response = await fetch(`${API_URL}/admin/customization/ad-coin-settings/public`, {
                 method: 'GET',
                 cache: 'no-store',
             });
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.message || 'Failed to fetch ad coin settings');
-            return data.settings || null;
-        } catch (error) {
-            console.error('Error fetching ad coin settings:', error);
-            throw error;
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                adCoinSettingsRetryAfter = Date.now() + 30000;
+                return cachedAdCoinSettings || DEFAULT_AD_COIN_SETTINGS;
+            }
+
+            cachedAdCoinSettings = data.settings || DEFAULT_AD_COIN_SETTINGS;
+            adCoinSettingsRetryAfter = 0;
+            return cachedAdCoinSettings;
+        } catch {
+            adCoinSettingsRetryAfter = Date.now() + 30000;
+            return cachedAdCoinSettings || DEFAULT_AD_COIN_SETTINGS;
         }
     },
 
@@ -457,14 +492,25 @@ export const marketService = {
 
     logView: async (id: string | number) => {
         const engagementId = String(id);
+        const passiveKey = `market-view:${engagementId}`;
+        if (isPassiveFetchCoolingDown(passiveKey)) {
+            return { success: false, skipped: true };
+        }
+
         try {
             const response = await fetch(`${API_URL}/market/${engagementId}/view`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
             });
-            return await response.json();
-        } catch (error) {
-            console.error('Error logging view:', error);
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                coolDownPassiveFetch(passiveKey);
+                return { success: false, skipped: true, status: response.status, ...data };
+            }
+            return data;
+        } catch {
+            coolDownPassiveFetch(passiveKey);
+            return { success: false, skipped: true };
         }
     },
 

@@ -29,9 +29,8 @@ type Props = {
     onSubscriptionPackagesChange: (packages: UploadContentSubscriptionPackage[]) => void;
 };
 
-const PACKAGE_PRESET_STORAGE_KEY = "googer-upload-content-subscription-packages-v1";
+const PACKAGE_PRESET_STORAGE_KEY = "googer-upload-content-subscription-packages-v2";
 const MAX_SUBSCRIPTION_PACKAGES = 3;
-const SUBSCRIPTION_MINUTE_OPTIONS = Array.from({ length: 30 }, (_, index) => index + 1);
 
 const createPackageId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -45,11 +44,11 @@ const sanitizePackages = (packages: UploadContentSubscriptionPackage[]) =>
         .map((item) => ({
             id: item.id || createPackageId(),
             price: Number.isFinite(Number(item.price)) && Number(item.price) > 0 ? Number(item.price) : null,
-            days: Number.isFinite(Number(item.minutes ?? item.days)) && Number(item.minutes ?? item.days) > 0
-                ? Math.min(30, Number(item.minutes ?? item.days))
+            days: Number.isFinite(Number(item.days ?? item.minutes)) && Number(item.days ?? item.minutes) > 0
+                ? Math.max(1, Math.round(Number(item.days ?? item.minutes)))
                 : null,
-            minutes: Number.isFinite(Number(item.minutes ?? item.days)) && Number(item.minutes ?? item.days) > 0
-                ? Math.min(30, Number(item.minutes ?? item.days))
+            minutes: Number.isFinite(Number(item.days ?? item.minutes)) && Number(item.days ?? item.minutes) > 0
+                ? Math.max(1, Math.round(Number(item.days ?? item.minutes)))
                 : null,
             affiliateCommission: Number.isFinite(Number(item.affiliateCommission)) && Number(item.affiliateCommission) >= 0
                 ? Math.min(100, Math.max(0, Number(item.affiliateCommission)))
@@ -180,8 +179,8 @@ export default function UploadContentSettingsSection({
     const updateDraftPackage = (id: string, field: "price" | "days", value: string) => {
         const normalizedValue = field === "days"
             ? (() => {
-                const parsed = Number(value);
-                return Number.isFinite(parsed) && parsed >= 1 ? Math.min(30, parsed) : null;
+                const parsed = Number(value.replace(/[^0-9]/g, ""));
+                return Number.isFinite(parsed) && parsed >= 1 ? Math.max(1, Math.round(parsed)) : null;
             })()
             : sanitizePackageNumber(value);
         setDraftPackages((current) =>
@@ -265,8 +264,8 @@ export default function UploadContentSettingsSection({
                             </label>
                         </div>
                         <div className="mt-2 flex items-center justify-between gap-2 text-[9px] font-black text-white/38">
-                            <span>Min Rupier {Number(adminMinPriceValue || 0).toLocaleString()}</span>
-                            <span>Max Rupier {Number(adminMaxPriceValue || 0).toLocaleString()}</span>
+                            <span>Min Rupieer {Number(adminMinPriceValue || 0).toLocaleString()}</span>
+                            <span>Max Rupieer {Number(adminMaxPriceValue || 0).toLocaleString()}</span>
                         </div>
 
                         {appliedPackages.length > 0 && (
@@ -278,7 +277,7 @@ export default function UploadContentSettingsSection({
                                     {appliedPackages.map((item, index) => (
                                         <div key={item.id} className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-[10px] font-bold text-white/75">
                                             <span>Package {index + 1}</span>
-                                            <span>Rupier {Number(item.price || 0).toLocaleString()} / {formatPlanDuration(item.days)} / {Number(item.affiliateCommission || 0)}%</span>
+                                            <span>Rupieer {Number(item.price || 0).toLocaleString()} / {formatPlanDuration(item.minutes ?? item.days)} / {Number(item.affiliateCommission || 0)}%</span>
                                         </div>
                                     ))}
                                 </div>
@@ -418,18 +417,15 @@ export default function UploadContentSettingsSection({
                                             </label>
                                             <label className="block rounded-xl border border-white/10 bg-black/20 px-3 py-2.5">
                                                 <p className="mb-1 text-[8px] font-black uppercase tracking-[0.12em] text-white/35">Minutes</p>
-                                                <select
+                                                <input
+                                                    type="text"
+                                                    inputMode="numeric"
+                                                    min={1}
                                                     value={item.days === null ? "" : String(item.days)}
                                                     onChange={(event) => updateDraftPackage(item.id, "days", event.target.value)}
-                                                    className="h-5 w-full bg-transparent p-0 text-[11px] font-black text-white outline-none"
-                                                >
-                                                    <option value="" className="bg-[#111216] text-white/35">Select minutes</option>
-                                                    {SUBSCRIPTION_MINUTE_OPTIONS.map((minute) => (
-                                                        <option key={minute} value={minute} className="bg-[#111216] text-white">
-                                                            {minute}
-                                                        </option>
-                                                    ))}
-                                                </select>
+                                                    placeholder="10"
+                                                    className="h-5 w-full bg-transparent p-0 text-[11px] font-black text-white outline-none placeholder:text-white/18"
+                                                />
                                             </label>
                                         </div>
                                     </div>

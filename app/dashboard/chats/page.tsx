@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
 import { authService } from "@/services/authService";
+import { adsService } from "@/services/adsService";
 import IonIcon from "@/app/components/IonIcon";
 import { walletService } from "@/services/walletService";
 import { chatService } from "@/services/chatService";
@@ -593,6 +594,12 @@ export default function ChatsPage() {
     const [chatAdPendingCoin, setChatAdPendingCoin] = useState<any>(null);
     const [chatProductAdModal, setChatProductAdModal] = useState<any>(null);
     const updateAdState = useAdStore((state) => state.updateAdState);
+
+    useEffect(() => {
+        if (!chatAdNotification) return;
+        const timeoutId = window.setTimeout(() => setChatAdNotification(null), 2000);
+        return () => window.clearTimeout(timeoutId);
+    }, [chatAdNotification]);
 
     const callStartTimeRef = useRef<number | null>(null);
     const longPressTimerRef = useRef<number | null>(null);
@@ -2092,10 +2099,10 @@ export default function ChatsPage() {
             void openChatAdSheet(type, item.raw || item);
         },
         onCoinCollected: (_ad, _collectionId, result) => {
+            const collectedAmount = Number(result?.amount ?? result?.coin_value ?? result?.ad_coin_value ?? 1);
             setChatAdNotification({
                 type: "success",
-                title: "Coin Collected",
-                message: `Ruppier ${Number(result?.coin_value || result?.ad_coin_value || 1).toFixed(2)} added to your wallet.`,
+                message: "Coin collected",
             });
             setChatAdPendingCoin(null);
             if (typeof window !== "undefined") window.dispatchEvent(new Event("googer-wallet-updated"));
@@ -2303,6 +2310,30 @@ export default function ChatsPage() {
         });
         setChatAds((currentAds) => currentAds.filter((ad) => getAdInteractionId(ad) !== interactionId));
     }, [chatAds, currentUser?.id]);
+
+    const handleChatAdDelete = useCallback(async (ad: any) => {
+        if (!isCurrentUserChatAdOwner(ad)) return;
+
+        try {
+            const deletedAd = await adsService.deleteAd(ad);
+            const adId = String(deletedAd?.adId || deletedAd?.ad_id || ad?.adId || ad?.ad_id || ad?.raw?.adId || ad?.raw?.ad_id || "").replace(/^ad-/, "");
+            const isSameAd = (candidate: any) => {
+                const candidateRaw = candidate?.raw?.raw || candidate?.raw || candidate || {};
+                const candidateId = String(candidateRaw.ad_id || candidateRaw.adId || candidate?.ad_id || candidate?.adId || candidateRaw.id || candidate?.id || "").replace(/^ad-/, "");
+                return candidateId === adId;
+            };
+            setChatAds((currentAds) => currentAds.filter((item) => !isSameAd(item)));
+            adPlacementAssignmentsRef.current = {};
+            setChatAdNotification({ type: "success", title: "Deleted", message: "Ad removed from feeds." });
+            window.dispatchEvent(new Event("googer-ad-history-updated"));
+        } catch (error) {
+            setChatAdNotification({
+                type: "error",
+                title: "Delete failed",
+                message: error instanceof Error ? error.message : "Could not delete this ad.",
+            });
+        }
+    }, [isCurrentUserChatAdOwner]);
 
     type ChatAdPlacementState = { ad: any };
     const adThresholdsRef = useRef<Record<string, number[]>>({});
@@ -5347,6 +5378,7 @@ export default function ChatsPage() {
                                                         onOpenProductSecondView={openChatProductPromoteSecondView}
                                                         onPromoteAgain={canPromoteChatAd(placement.ad) ? handleChatAdPromoteAgain : undefined}
                                                         promoteAgainLabel={isCurrentUserChatAdOwner(placement.ad) ? "Promote Again" : "Promote"}
+                                                        onDeleteAd={isCurrentUserChatAdOwner(placement.ad) ? handleChatAdDelete : undefined}
                                                     />
                                                 );
                                             }
@@ -6615,25 +6647,25 @@ export default function ChatsPage() {
         {/* ── Chat Ad: Toast notification ── */}
         {chatAdNotification && (
             <div
-                className={`fixed bottom-6 left-1/2 z-[200] -translate-x-1/2 flex items-center gap-3 rounded-2xl border px-4 py-3 shadow-2xl backdrop-blur-md transition-all ${
+                className={`fixed bottom-24 right-5 z-[200] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border px-3 py-2 shadow-2xl transition-all ${
                     chatAdNotification.type === "success"
-                        ? "border-emerald-500/30 bg-emerald-900/70 text-emerald-200"
-                        : "border-red-500/30 bg-red-900/70 text-red-200"
+                        ? "border-black/10 bg-white text-neutral-900"
+                        : "border-red-200 bg-white text-red-700"
                 }`}
-                onClick={() => setChatAdNotification(null)}
             >
                 <IonIcon
-                    name={chatAdNotification.type === "success" ? "checkmark-circle" : "alert-circle"}
-                    className="text-xl shrink-0"
+                    name={chatAdNotification.type === "success" ? "checkmark-circle-outline" : "alert-circle-outline"}
+                    className={`shrink-0 text-base ${chatAdNotification.type === "success" ? "text-neutral-700" : "text-red-600"}`}
                 />
-                <div>
-                    {chatAdNotification.title && (
-                        <div className="text-[9px] font-black uppercase tracking-widest mb-0.5">
-                            {chatAdNotification.title}
-                        </div>
-                    )}
-                    <div className="text-[10px] font-bold">{chatAdNotification.message}</div>
-                </div>
+                <span className="text-xs font-bold tracking-tight">{chatAdNotification.message}</span>
+                <button
+                    type="button"
+                    onClick={() => setChatAdNotification(null)}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-neutral-500 transition hover:bg-black/5 hover:text-neutral-900"
+                    aria-label="Dismiss coin notification"
+                >
+                    <IonIcon name="close" className="text-sm" />
+                </button>
             </div>
         )}
         {copiedMessageNotice && (

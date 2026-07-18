@@ -1,5 +1,10 @@
 const crypto = require('crypto');
 const pool = require('../../config/database');
+const {
+    buildHomeReachGateSql,
+    buildHomeReachMetricsSql,
+    buildHomeReachOrderSql,
+} = require('../../shared/feed/homeReachAlgorithm');
 
 let schemaReady = false;
 let googShareCodesReady = false;
@@ -288,6 +293,19 @@ const ensureSavedGoogsSchema = async () => {
     savedGoogsReady = true;
 };
 
+const googHomeReachMetricsSql = buildHomeReachMetricsSql({
+    targetAlias: 'gp',
+    viewsTable: 'goog_views',
+    viewTargetColumn: 'goog_id',
+    likesTable: 'goog_likes',
+    likeTargetColumn: 'goog_id',
+    ageDays: 3,
+    initialWindowMinutes: 5,
+    stageSize: 8,
+    requiredLikes: 3,
+    viewTimestampColumn: 'last_viewed_at',
+});
+
 const selectPostsSql = `
     SELECT
         gp.*,
@@ -295,6 +313,15 @@ const selectPostsSql = `
         u.full_name,
         u.user_type,
         u.profile_picture,
+        COALESCE(home_reach.unique_reach_count, 0)::int AS home_unique_reach_count,
+        COALESCE(home_reach.stage_200_likes, 0)::int AS home_stage_200_likes,
+        COALESCE(home_reach.stage_500_new_likes, 0)::int AS home_stage_500_new_likes,
+        COALESCE(home_reach.stage_2000_new_likes, 0)::int AS home_stage_2000_new_likes,
+        COALESCE(home_reach.stage_10000_new_likes, 0)::int AS home_stage_10000_new_likes,
+        COALESCE(home_reach.stage_50000_new_likes, 0)::int AS home_stage_50000_new_likes,
+        home_reach.home_reach_stage,
+        home_reach.home_reach_cap,
+        COALESCE(home_reach.home_can_reach, false) AS home_can_reach,
         CASE WHEN $1::INTEGER IS NULL THEN FALSE
              ELSE EXISTS (
                 SELECT 1 FROM goog_likes gl
@@ -303,6 +330,7 @@ const selectPostsSql = `
         END AS user_liked
     FROM goog_posts gp
     JOIN users u ON u.id = gp.user_id
+    ${googHomeReachMetricsSql}
     WHERE gp.is_active = true
       AND COALESCE(u.is_deactivated, false) = false
       AND COALESCE(u.status, 'Active') <> 'Deactivated'
@@ -310,36 +338,9 @@ const selectPostsSql = `
 
 const fetchPosts = async (userId) => pool.query(
     `${selectPostsSql}
-      AND (
-        gp.views_count < 200
-        OR (gp.likes_count >= 50 AND gp.views_count < 500)
-        OR ((${GOOG_HOME_SCORE_SQL} >= 60 OR (gp.views_count >= 500 AND gp.likes_count >= 100)) AND gp.views_count < 2000)
-        OR ((${GOOG_HOME_SCORE_SQL} >= 100 OR (gp.views_count >= 2000 AND gp.likes_count >= 250)) AND gp.views_count < 10000)
-        OR ((${GOOG_HOME_SCORE_SQL} > 200 OR (gp.views_count >= 10000 AND gp.likes_count >= 1000)) AND gp.views_count < 50000)
-        OR (gp.views_count >= 50000 AND gp.likes_count >= 5000)
-        OR (
-            $1::INTEGER IS NOT NULL
-            AND (
-                gp.user_id = $1
-                OR EXISTS (
-                    SELECT 1
-                    FROM user_subscriptions us
-                    WHERE us.subscriber_id = $1
-                      AND us.subscribed_to_id = gp.user_id
-                )
-            )
-        )
-      )
+      AND ${buildHomeReachGateSql('home_reach')}
      ORDER BY
-        CASE
-            WHEN gp.views_count >= 50000 AND gp.likes_count >= 5000 THEN 6
-            WHEN ${GOOG_HOME_SCORE_SQL} > 200 OR gp.likes_count >= 1000 THEN 5
-            WHEN ${GOOG_HOME_SCORE_SQL} >= 100 OR gp.likes_count >= 250 THEN 4
-            WHEN ${GOOG_HOME_SCORE_SQL} >= 60 OR gp.likes_count >= 100 THEN 3
-            WHEN gp.likes_count >= 50 THEN 2
-            ELSE 1
-        END DESC,
-        ${GOOG_HOME_SCORE_SQL} DESC,
+        ${buildHomeReachOrderSql('home_reach')},
         gp.likes_count DESC,
         gp.comments_count DESC,
         gp.shares_count DESC,

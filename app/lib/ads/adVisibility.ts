@@ -19,17 +19,6 @@ const normalizeText = (value: unknown) =>
 const normalizeCode = (value: unknown) =>
   String(value ?? "").trim().toUpperCase();
 
-const normalizeCampaignType = (value: unknown) =>
-  normalizeText(value).replace(/[_-]+/g, " ").replace(/\s+/g, " ");
-
-const isProfilePromoteAd = (ad: any) => {
-  const campaignType = normalizeCampaignType(ad?.campaign_type || ad?.campaignType);
-  const mediaType = normalizeCampaignType(ad?.media_type || ad?.mediaType);
-  return campaignType === "profile promote"
-    || campaignType === "profile promote ad"
-    || mediaType === "profile";
-};
-
 const safeParse = (value: any) => {
   if (!value) return null;
   if (typeof value !== "string") return value;
@@ -49,13 +38,16 @@ const getRegionNameToCodeMap = () => {
 
   try {
     const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
-    const supportedRegions = typeof Intl.supportedValuesOf === "function"
-      ? (Intl.supportedValuesOf as ((key: string) => string[]))("region")
-      : Array.from({ length: 26 * 26 }, (_, index) => {
-          const first = String.fromCharCode(65 + Math.floor(index / 26));
-          const second = String.fromCharCode(65 + (index % 26));
-          return `${first}${second}`;
-        });
+    // NOTE: Intl.supportedValuesOf does NOT support "region" — calling it with
+    // that key throws "RangeError: Invalid key". Always enumerate the ISO 3166-1
+    // alpha-2 space (AA–ZZ) instead, mirroring the backend country-alias map, so
+    // country NAMES (e.g. "Sri Lanka") map to CODES (e.g. "LK"). Without this the
+    // map is empty and every country-targeted ad is hidden from name-format users.
+    const supportedRegions = Array.from({ length: 26 * 26 }, (_, index) => {
+      const first = String.fromCharCode(65 + Math.floor(index / 26));
+      const second = String.fromCharCode(65 + (index % 26));
+      return `${first}${second}`;
+    });
 
     for (const code of supportedRegions) {
       const normalizedCode = normalizeCode(code);
@@ -146,6 +138,22 @@ const getAdDraft = (ad: any) => {
 const getTargetLocationCodes = (ad: any) => {
   const draft = getAdDraft(ad);
   const raw = ad?.raw?.raw || ad?.raw || {};
+  const toArray = (bucket: any) => {
+    if (Array.isArray(bucket)) return bucket;
+    if (typeof bucket === "string") return bucket.split(",").map((part) => part.trim()).filter(Boolean);
+    return bucket ? [bucket] : [];
+  };
+  const getLocationToken = (value: any) => {
+    if (!value || typeof value !== "object") return value;
+    return value.code
+      || value.countryCode
+      || value.country_code
+      || value.value
+      || value.label
+      || value.name
+      || value.country
+      || "";
+  };
   const valueBuckets = [
     ad?.selectedLocationCodes,
     ad?.selected_location_codes,
@@ -153,34 +161,108 @@ const getTargetLocationCodes = (ad: any) => {
     ad?.location_codes,
     ad?.targetLocationCodes,
     ad?.target_location_codes,
+    ad?.targetCountries,
+    ad?.target_countries,
+    ad?.countries,
+    ad?.country,
+    ad?.locations,
+    ad?.selectedLocations,
+    ad?.selected_locations,
+    ad?.selectedLocationNames,
+    ad?.selected_location_names,
     raw?.selectedLocationCodes,
     raw?.selected_location_codes,
     raw?.locationCodes,
     raw?.location_codes,
     raw?.targetLocationCodes,
     raw?.target_location_codes,
+    raw?.targetCountries,
+    raw?.target_countries,
+    raw?.countries,
+    raw?.country,
+    raw?.locations,
+    raw?.selectedLocations,
+    raw?.selected_locations,
+    raw?.selectedLocationNames,
+    raw?.selected_location_names,
     draft?.selectedLocationCodes,
     draft?.selected_location_codes,
     draft?.locationCodes,
     draft?.location_codes,
+    draft?.targetLocationCodes,
+    draft?.target_location_codes,
+    draft?.targetCountries,
+    draft?.target_countries,
+    draft?.countries,
+    draft?.country,
+    draft?.locations,
+    draft?.selectedLocations,
+    draft?.selected_locations,
+    draft?.selectedLocationNames,
+    draft?.selected_location_names,
   ];
 
   return valueBuckets
-    .flatMap((bucket) => Array.isArray(bucket) ? bucket : [])
-    .map((value) => normalizeCode(value))
-    .filter(Boolean);
+    .flatMap(toArray)
+    .map(getLocationToken)
+    .flatMap((value) => {
+      const normalizedValue = normalizeText(value);
+      const normalizedCode = normalizeCode(value);
+      const mappedCode = getRegionNameToCodeMap().get(normalizedValue);
+      return [normalizedValue, normalizeText(normalizedCode), normalizeText(mappedCode)].filter(Boolean);
+    });
 };
 
 const getGenderTarget = (ad: any) => {
   const draft = getAdDraft(ad);
   const raw = ad?.raw?.raw || ad?.raw || {};
-  return String(ad?.genderTarget || ad?.gender_target || raw?.genderTarget || raw?.gender_target || draft?.genderTarget || draft?.gender_target || "All").trim();
+  return String(
+    ad?.genderTarget
+      || ad?.gender_target
+      || ad?.targetGender
+      || ad?.target_gender
+      || ad?.selectedGender
+      || ad?.selected_gender
+      || ad?.gender
+      || raw?.genderTarget
+      || raw?.gender_target
+      || raw?.targetGender
+      || raw?.target_gender
+      || raw?.selectedGender
+      || raw?.selected_gender
+      || raw?.gender
+      || draft?.genderTarget
+      || draft?.gender_target
+      || draft?.targetGender
+      || draft?.target_gender
+      || draft?.selectedGender
+      || draft?.selected_gender
+      || draft?.gender
+      || "All"
+  ).trim();
 };
 
 const getAgeMin = (ad: any) => {
   const draft = getAdDraft(ad);
   const raw = ad?.raw?.raw || ad?.raw || {};
-  const value = ad?.ageMin ?? ad?.age_min ?? raw?.ageMin ?? raw?.age_min ?? draft?.ageMin ?? draft?.age_min;
+  const value = ad?.ageMin
+    ?? ad?.age_min
+    ?? ad?.targetAgeMin
+    ?? ad?.target_age_min
+    ?? ad?.ageRange?.min
+    ?? ad?.age_range?.min
+    ?? raw?.ageMin
+    ?? raw?.age_min
+    ?? raw?.targetAgeMin
+    ?? raw?.target_age_min
+    ?? raw?.ageRange?.min
+    ?? raw?.age_range?.min
+    ?? draft?.ageMin
+    ?? draft?.age_min
+    ?? draft?.targetAgeMin
+    ?? draft?.target_age_min
+    ?? draft?.ageRange?.min
+    ?? draft?.age_range?.min;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
@@ -188,14 +270,30 @@ const getAgeMin = (ad: any) => {
 const getAgeMax = (ad: any) => {
   const draft = getAdDraft(ad);
   const raw = ad?.raw?.raw || ad?.raw || {};
-  const value = ad?.ageMax ?? ad?.age_max ?? raw?.ageMax ?? raw?.age_max ?? draft?.ageMax ?? draft?.age_max;
+  const value = ad?.ageMax
+    ?? ad?.age_max
+    ?? ad?.targetAgeMax
+    ?? ad?.target_age_max
+    ?? ad?.ageRange?.max
+    ?? ad?.age_range?.max
+    ?? raw?.ageMax
+    ?? raw?.age_max
+    ?? raw?.targetAgeMax
+    ?? raw?.target_age_max
+    ?? raw?.ageRange?.max
+    ?? raw?.age_range?.max
+    ?? draft?.ageMax
+    ?? draft?.age_max
+    ?? draft?.targetAgeMax
+    ?? draft?.target_age_max
+    ?? draft?.ageRange?.max
+    ?? draft?.age_range?.max;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
 
 export function canViewerSeeAd(ad: any, viewer: ViewerProfile | null | undefined) {
   if (!ad || !viewer) return true;
-  if (isProfilePromoteAd(ad)) return true;
 
   const targetLocations = getTargetLocationCodes(ad);
   if (targetLocations.length > 0) {

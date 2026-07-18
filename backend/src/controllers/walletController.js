@@ -1,6 +1,6 @@
 const pool = require('../config/database');
 const { distributeProductDiscountCommission } = require('../utils/referralCommission');
-const { resolveGoogerMainWalletUserId } = require('../../../../shared/utils/financeBoundary');
+const { resolveGoogerMainWalletUserId, getLockedGoogerPooledState } = require('../../../../shared/utils/financeBoundary');
 const {
     reserveWalletFunds,
     refundHeldWalletFunds,
@@ -1036,6 +1036,76 @@ exports.recordPromoAd = async (req, res) => {
     } catch (error) {
         console.error('Record promo ad error:', error);
         return res.status(500).json({ success: false, message: 'Failed to record promo ad' });
+    }
+};
+
+// Reverse part of an ad budget while the ad is still under review.
+// This is used when a user edits an under-review Product/Photo&Video ad
+// and lowers the budget after previously increasing it.
+exports.refundAdBudgetEdit = async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const { adId, amount, note } = req.body || {};
+        const userId = req.user.id;
+        const refundAmount = Number(amount || 0);
+        const normalizedAdId = String(adId || '').trim().replace(/^ad-/i, '');
+
+        if (!normalizedAdId) {
+            return res.status(400).json({ success: false, message: 'adId is required' });
+        }
+
+        if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
+            return res.status(400).json({ success: false, message: 'Valid refund amount is required' });
+        }
+
+        await client.query('BEGIN');
+
+        const googerState = await getLockedGoogerPooledState(client);
+        const googerUserId = Number(googerState?.userId || 0);
+        if (!(googerUserId > 0)) {
+            await client.query('ROLLBACK');
+            return res.status(500).json({ success: false, message: 'Googer wallet account not found' });
+        }
+
+        const pooledBalance = Number(googerState?.pooledBalance || 0);
+        if (pooledBalance < refundAmount) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                message: `Googer main balance is too low to refund R ${refundAmount.toFixed(2)} right now.`,
+            });
+        }
+
+        const updatedUser = await creditWalletBalance(client, { userId, amount: refundAmount });
+
+        const transfer = await insertWalletTransfer(client, {
+            senderId: googerUserId,
+            receiverId: userId,
+            amount: refundAmount,
+            note: note || `Ad Budget Refund - ${normalizedAdId} - Budget Reduced During Review`,
+            type: 'ad_refund',
+            status: 'accepted',
+            commission: -refundAmount,
+            commissionPercentage: 0,
+        });
+
+        await client.query('COMMIT');
+
+        return res.status(200).json({
+            success: true,
+            message: 'Ad budget refund processed successfully.',
+            currentBalance: Number(updatedUser.walletBalance || 0),
+            transferId: transfer.id,
+        });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Refund ad budget edit error:', error);
+        return res.status(500).json({
+            success: false,
+            message: error?.message || 'Failed to refund ad budget edit',
+        });
+    } finally {
+        client.release();
     }
 };
 

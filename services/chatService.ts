@@ -56,6 +56,9 @@ export const chatService = {
     getConversations: async () =>
         request('/chat/conversations'),
 
+    getSupportAssignment: async () =>
+        request('/chat/support-assignment'),
+
     getMessages: async (
         participantId: number,
         markSeen: boolean = false,

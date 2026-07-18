@@ -39,9 +39,11 @@ The main app and admin system now share the same DB-backed ad coin settings.
 5. One transaction handles:
    - duplicate check with `ad_coin_collections`
    - advertiser wallet deduction
-   - clicked user wallet credit
-   - `wallet_transfers` insert with `commission`
+   - clicked user wallet credit for exactly `user_reward_amount`
+   - Googer wallet commission credit for exactly `googer_commission_amount`
+   - `wallet_transfers` insert for the ad coin reward
    - `ad_coin_collections` insert
+   - no product/wallet referral commission split is applied to ad coin rewards
 6. Successful collection returns `Coin collected successfully`.
 7. Duplicate collection returns `You already collected this coin`.
 8. Insufficient advertiser balance returns `Reward unavailable`.
@@ -55,4 +57,3 @@ SELECT SUM(commission)
 FROM wallet_transfers
 WHERE status = 'accepted';
 ```
-

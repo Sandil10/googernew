@@ -18,6 +18,7 @@ interface SharedProductPromoteAdCardProps {
   onNavigateToProfile?: (event: React.MouseEvent, userId: any) => void;
   onPromoteAgain?: (item: NormalizedProductAd) => void | Promise<void>;
   promoteAgainLabel?: string;
+  onDeleteAd?: (item: NormalizedProductAd) => void | Promise<void>;
   currentUser?: any;
   compact?: boolean;
 }
@@ -37,7 +38,9 @@ export function SharedProductPromoteAdCard({
   onNavigateToProfile,
   onPromoteAgain,
   promoteAgainLabel,
+  onDeleteAd,
   currentUser,
+  compact = false,
 }: SharedProductPromoteAdCardProps) {
   return (
     <SharedProductCard
@@ -57,6 +60,8 @@ export function SharedProductPromoteAdCard({
       onNavigateToProfile={onNavigateToProfile}
       onPromoteProduct={onPromoteAgain as any}
       promoteProductLabel={promoteAgainLabel}
+      onDeleteProduct={onDeleteAd as any}
+      compact={compact}
     />
   );
 }

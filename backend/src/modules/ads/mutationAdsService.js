@@ -1,6 +1,6 @@
 const { saveUploadedFiles } = require('../media');
 const { distributeReferralCommission } = require('../../utils/referralCommission');
-const { getUserPlanLimits, getUserSubscriptionFeatures } = require('../../utils/planLimits');
+const { getUserSubscriptionFeatures } = require('../../utils/planLimits');
 const { syncExpiredAds } = require('../../utils/adDelivery');
 const mutationAdsRepository = require('./mutationAdsRepository');
 
@@ -17,6 +17,29 @@ const parseBody = (req) => {
         if (typeof body.editDraft === 'string') try { body.editDraft = JSON.parse(body.editDraft); } catch (e) {}
     }
     return body;
+};
+
+const resolveRemainingRefundAmount = (ad) => {
+    const remaining = Number(ad?.remainingBudget ?? ad?.remaining_budget);
+    if (Number.isFinite(remaining) && remaining > 0) {
+        return Math.round(remaining * 100) / 100;
+    }
+
+    const budget = Number(ad?.budget || 0);
+    const spend = Number(ad?.spend || 0);
+    const fallback = Math.max(0, budget - Math.max(0, spend));
+    return Math.round(fallback * 100) / 100;
+};
+
+const debitGoogerMainForAdRefund = async (client, googerUserId, refundAmount) => {
+    if (!googerUserId || refundAmount <= 0) return;
+    await client.query(`SET LOCAL googer.allow_admin_wallet_capital = 'true'`);
+    await client.query(
+        `UPDATE users
+         SET wallet_balance = GREATEST(0, COALESCE(wallet_balance, 0) - $1)
+         WHERE id = $2`,
+        [refundAmount, googerUserId]
+    );
 };
 
 const createAd = async (req) => {
@@ -72,6 +95,13 @@ const createAd = async (req) => {
         throw error;
     }
 
+    const duplicateAd = await mutationAdsRepository.findAdRowByAdId(payload.adId);
+    if (duplicateAd) {
+        const error = new Error('Ad already exists. Please edit the existing ad instead of creating a new one.');
+        error.statusCode = 409;
+        throw error;
+    }
+
     const sponsor = await mutationAdsRepository.findSponsor(userId);
     if (!sponsor) {
         const error = new Error('User not found');
@@ -124,7 +154,7 @@ const updateAd = async (req) => {
     const client = await mutationAdsRepository.connect();
     try {
         await mutationAdsRepository.ensureAdsTable();
-        const { adId } = req.params;
+        const adId = String(req.params.adId || '').trim().replace(/^ad-/i, '');
         const userId = req.user.id;
         const isAdmin = await mutationAdsRepository.readAdsRepository.assertAdmin(userId);
         await syncExpiredAds(require('../../config/database'), adId);
@@ -183,6 +213,50 @@ const updateAd = async (req) => {
         ].some((field) => payload[field] !== existingAd[field])
             || JSON.stringify(payload.mediaGallery) !== JSON.stringify(existingAd.mediaGallery || [])
             || JSON.stringify(payload.editDraft || {}) !== JSON.stringify(existingAd.editDraft || {});
+        const isFreeBudgetLockedEdit = !isAdmin
+            && !isPromoteAgainRequest
+            && mutationAdsRepository.isFreeBudgetLockedAd(existingRow);
+        if (isFreeBudgetLockedEdit && Number(payload.budget || 0) !== Number(existingAd.budget || 0)) {
+            const error = new Error('Free ads cannot change budget after publish.');
+            error.statusCode = 400;
+            throw error;
+        }
+        if (isFreeBudgetLockedEdit) {
+            payload.budget = Number(existingAd.budget || 0);
+            payload.remainingBudget = Number(existingAd.remainingBudget || existingAd.remaining_budget || 0);
+            payload.walletTransferId = existingAd.walletTransferId ?? existingAd.wallet_transfer_id ?? null;
+            payload.promoCode = payload.promoCode || existingAd.promoCode || existingRow.promo_code || null;
+            payload.promoDiscount = payload.promoDiscount ?? existingAd.promoDiscount ?? existingRow.promo_discount ?? null;
+            payload.editDraft = {
+                ...(payload.editDraft || {}),
+                hasPromoCodeAdded: true,
+                freeAdBudgetLocked: true,
+                promoCode: payload.promoCode,
+                promoDiscount: payload.editDraft?.promoDiscount || existingAd.editDraft?.promoDiscount || existingRow.edit_draft?.promoDiscount || null,
+            };
+        }
+        const existingPromoCode = existingAd.promoCode || existingRow.promo_code || null;
+        const existingPromoDiscount = existingAd.promoDiscount ?? existingRow.promo_discount ?? null;
+        const incomingPromoCode = payload.promoCode || null;
+        const incomingPromoDiscount = payload.promoDiscount ?? null;
+        if (!isAdmin && !isPromoteAgainRequest && (
+            String(incomingPromoCode || '') !== String(existingPromoCode || '')
+            || String(incomingPromoDiscount ?? '') !== String(existingPromoDiscount ?? '')
+        )) {
+            const error = new Error('Promo codes cannot be changed while editing an existing ad.');
+            error.statusCode = 400;
+            throw error;
+        }
+        if (!isAdmin && !isPromoteAgainRequest) {
+            payload.promoCode = existingPromoCode;
+            payload.promoDiscount = existingPromoDiscount;
+            payload.editDraft = {
+                ...(payload.editDraft || {}),
+                promoCode: existingAd.editDraft?.promoCode || existingRow.edit_draft?.promoCode || existingPromoCode,
+                hasPromoCodeAdded: Boolean(existingAd.editDraft?.hasPromoCodeAdded || existingRow.edit_draft?.hasPromoCodeAdded || existingPromoCode || existingPromoDiscount != null),
+                promoDiscount: payload.editDraft?.promoDiscount || existingAd.editDraft?.promoDiscount || existingRow.edit_draft?.promoDiscount || null,
+            };
+        }
 
         if (!isAdmin) {
             if (isPromoteAgainRequest) {
@@ -209,7 +283,7 @@ const updateAd = async (req) => {
                 const canChangeStatus =
                     requestedStatus === currentStatus
                     || (requestedStatus === 'Cancelled' && ['Under Review', 'Active', 'Paused'].includes(currentStatus))
-                    || (requestedStatus === 'Removed' && ['Active', 'Paused'].includes(currentStatus))
+                    || (requestedStatus === 'Removed' && ['Under Review', 'Active', 'Paused', 'Completed', 'Cancelled', 'Rejected'].includes(currentStatus))
                     || (requestedStatus === 'Paused' && currentStatus === 'Active')
                     || (requestedStatus === 'Active' && currentStatus === 'Paused')
                     || (requestedStatus === 'Under Review' && currentStatus === 'Under Review');
@@ -219,22 +293,6 @@ const updateAd = async (req) => {
                     throw error;
                 }
             }
-        }
-
-        if (requestedStatus === 'Active' && existingAd.status === 'Paused' && (String(payload.campaignType || '').trim().toLowerCase() === 'photo and video' || String(payload.campaignType || '').trim().toLowerCase() === 'photo & video')) {
-            const limits = await getUserPlanLimits(userId);
-            if (limits.adsExpiryDays > 0) {
-                const ageDays = (Date.now() - new Date(existingAd.createdAt).getTime()) / (1000 * 60 * 60 * 24);
-                if (ageDays >= limits.adsExpiryDays) {
-                    const error = new Error('This ad has expired and cannot be resumed on your current plan. Please upgrade to a higher plan.');
-                    error.statusCode = 403;
-                    throw error;
-                }
-            }
-        }
-
-        if (payload.status === 'Cancelled' && ['Active', 'Paused'].includes(String(existingAd.status || ''))) {
-            payload.status = 'Removed';
         }
 
         await client.query('BEGIN');
@@ -256,7 +314,7 @@ const updateAd = async (req) => {
 
             if (transferResult.rows.length > 0) {
                 const transfer = transferResult.rows[0];
-                const refundAmount = Math.max(0, Number(existingAd.budget || 0) - Number(existingAd.spend || 0));
+                const refundAmount = resolveRemainingRefundAmount(existingAd);
                 const advertiserUserId = Number(transfer.sender_id || existingAd.userId);
                 const canonicalGoogerUserId = await mutationAdsRepository.resolveGoogerMainWalletUserId(client);
                 const googerUserId = Number(canonicalGoogerUserId || 0);
@@ -266,6 +324,7 @@ const updateAd = async (req) => {
 
                 if (refundAmount > 0 && advertiserUserId > 0 && googerUserId > 0 && transferStatus !== 'cancelled' && transferStatus !== 'refunded') {
                     await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [refundAmount, advertiserUserId]);
+                    await debitGoogerMainForAdRefund(client, googerUserId, refundAmount);
 
                     if (isLegacyAdHold) {
                         await client.query(
@@ -321,20 +380,21 @@ const updateAd = async (req) => {
             if (transferResult.rows.length > 0) {
                 const transfer = transferResult.rows[0];
                 const advertiserUserId = Number(transfer.sender_id || existingAd.userId);
-                const refundAmount = Math.max(0, Number(existingAd.budget || 0) - Number(existingAd.spend || 0));
+                const refundAmount = resolveRemainingRefundAmount(existingAd);
                 const transferStatus = String(transfer.status || '').toLowerCase();
                 const canonicalGoogerUserIdActive = await mutationAdsRepository.resolveGoogerMainWalletUserId(client);
                 const googerUserIdActive = Number(canonicalGoogerUserIdActive || 0);
 
                 if (refundAmount > 0 && advertiserUserId > 0 && googerUserIdActive > 0 && transferStatus === 'accepted') {
                     await client.query('UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2', [refundAmount, advertiserUserId]);
+                    await debitGoogerMainForAdRefund(client, googerUserIdActive, refundAmount);
                     await client.query(
                         `INSERT INTO wallet_transfers (
                             sender_id, receiver_id, amount, note, type, status, commission, commission_percentage, created_at, updated_at
                          )
                          VALUES ($1, $2, $3, $4, 'ad_refund', 'accepted', $5, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
                         [
-                            Number(transfer.receiver_id || 0) || advertiserUserId,
+                            googerUserIdActive,
                             advertiserUserId,
                             refundAmount,
                             `Ad Remaining Budget Refund - ${existingAd.adId} (${existingAd.campaignType}) - Cancelled After Activation`,

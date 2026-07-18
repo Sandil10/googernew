@@ -15,7 +15,10 @@ import { GoogCard, type WritePost } from "@/app/components/googs/GoogCard";
 import { SharedProductCard } from "@/app/components/market/SharedProductCard";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
+import { filterAdsForViewer } from "@/app/lib/ads/adVisibility";
 import { useAdStore } from "@/app/lib/ads/adStore";
+import { useAdActions } from "@/app/lib/ads/useAdActions";
+import { getAdInteractionId, matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { subscriptionService } from "@/services/subscriptionService";
 import { addTopbarNotification } from "@/app/lib/topbarNotifications";
 
@@ -179,6 +182,8 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
     const [savedGoogs, setSavedGoogs] = useState<WritePost[]>([]);
     const [savedIds, setSavedIds] = useState<Set<number>>(new Set());
     const [profileAds, setProfileAds] = useState<any[]>([]);
+    const [openProfileAdMenuId, setOpenProfileAdMenuId] = useState<string | null>(null);
+    const [currentViewer, setCurrentViewer] = useState<any>(null);
     const [loading, setLoading] = useState(false);
     const [isSubscribed, setIsSubscribed] = useState(!!initialUser.is_subscribed);
     const [subscriberCount, setSubscriberCount] = useState(Number(initialUser.subscriber_count || 0));
@@ -196,11 +201,53 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
     const [googSavedCount, setGoogSavedCount] = useState(0);
     const [googSaveLimit, setGoogSaveLimit] = useState<number | null>(null);
     const [openGoogMenu, setOpenGoogMenu] = useState<{ post: WritePost; top: number; left: number } | null>(null);
+    const [deleteGoogCandidate, setDeleteGoogCandidate] = useState<WritePost | null>(null);
 
     const profileUserId = Number(user.id || user.user_id || 0) || null;
     const isOwnProfile = !!(currentUserId && profileUserId && currentUserId === profileUserId);
 
+    useEffect(() => {
+        if (!currentUserId) {
+            setCurrentViewer(null);
+            return;
+        }
+        let cancelled = false;
+        authService.getProfile()
+            .then((profile) => {
+                if (!cancelled) setCurrentViewer(profile || null);
+            })
+            .catch(() => {
+                if (!cancelled) setCurrentViewer(null);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [currentUserId]);
+
     const getProfileAdId = useCallback((ad: any) => String(ad?.raw?.adId || ad?.raw?.ad_id || ad?.adId || ad?.ad_id || "").replace(/^ad-/, ""), []);
+    const getProfileAdMenuId = useCallback((ad: any) => {
+        return getAdInteractionId(ad?.raw || ad);
+    }, []);
+
+    const updateAdLocalState = useCallback((id: string | number, updates: any) => {
+        setProfileAds((prev) => prev.map((ad) => (
+            matchesAdIdentity(ad, id) || getAdInteractionId(ad?.raw || ad) === getAdInteractionId(id)
+                ? { ...ad, ...updates, raw: { ...(ad.raw || {}), ...updates } }
+                : ad
+        )));
+    }, []);
+
+    const adActions = useAdActions(null, {
+        currentUser: currentViewer,
+        onBeforeLike: (item, liked) => updateAdLocalState(item.id, { user_liked: liked }),
+        onLikeConfirmed: (item, liked) => updateAdLocalState(item.id, { user_liked: liked }),
+        onLikeReverted: (item, liked) => updateAdLocalState(item.id, { user_liked: liked }),
+        onNotify: (notification) => addTopbarNotification({
+            type: notification.type,
+            title: notification.title || (notification.type === "success" ? "Success" : "Error"),
+            message: notification.message,
+        }),
+    });
 
     const mergeActiveAdsWithSavedAds = useCallback((activeAds: any[], savedAds: any[]) => {
         const merged = new Map<string, any>();
@@ -264,7 +311,9 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
                 : mergeActiveAdsWithSavedAds(activeOwnerAds || [], getPublicCompletedSavedAds(savedAds || []));
 
             setPosts((userProducts || []).filter((p: any) => !p.is_sponsored && !p.campaign_type));
-            const normalizedAds = (ownerAds || []).map(normalizeAdData).filter((ad: any) => ad.type !== 'product');
+            const normalizedAds = filterAdsForViewer(ownerAds || [], currentViewer)
+                .map(normalizeAdData)
+                .filter((ad: any) => ad.type !== 'product');
             setProfileAds(normalizedAds);
             syncAds(normalizedAds);
             setGoogs(userGoogs || []);
@@ -272,7 +321,7 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
         } catch (error) {
             console.error("Error loading profile data:", error);
         }
-    }, [getPublicCompletedSavedAds, isOwnProfile, mergeActiveAdsWithSavedAds, profileUserId, syncAds]);
+    }, [currentViewer, getPublicCompletedSavedAds, isOwnProfile, mergeActiveAdsWithSavedAds, profileUserId, syncAds]);
 
     const loadSavedGoogs = useCallback(async () => {
         if (!isOwnProfile) return;
@@ -361,6 +410,39 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
         } catch { }
     };
 
+    const handleAdToggleLike = useCallback(async (item: any) => {
+        if (!item) return;
+        const target = item.raw || item;
+        const liveState = useAdStore.getState().getAdState(target);
+        const isLiked = !!(liveState.user_liked ?? item.user_liked ?? item.liked ?? item.raw?.user_liked);
+        const isLocked = !!(
+            liveState.ad_like_locked ||
+            liveState.ad_coin_collected ||
+            item.ad_like_locked ||
+            item.ad_coin_collected ||
+            item.coinCollected ||
+            item.raw?.ad_like_locked ||
+            item.raw?.ad_coin_collected
+        );
+
+        if (isLiked && isLocked) {
+            updateAdState(target, { user_liked: true, ad_like_locked: true });
+            addTopbarNotification({
+                type: "error",
+                title: "Like Locked",
+                message: "You already collected coins for this ad. You cannot unlike.",
+            });
+            return;
+        }
+
+        try {
+            await adActions.like(target);
+        } catch (error: any) {
+            if (error?.locked) return;
+            console.error("Ad like toggle failed:", error);
+        }
+    }, [adActions, updateAdState]);
+
     const handleGoogToggleLike = useCallback(async (goog: WritePost) => {
         const wasLiked = !!goog.liked;
         const willBeLiked = !wasLiked;
@@ -416,8 +498,30 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
         setGoogs(prev => prev.filter(g => g.id !== post.id));
         try { await googService.deletePost(post.id); } catch {
             setGoogs(prev => [post, ...prev]);
+        } finally {
+            setDeleteGoogCandidate(null);
         }
     };
+
+    const handleProfileAdShare = useCallback((ad: any) => {
+        setShareTitle("Share Ad");
+        setShareUrl(getShareUrlForItem(ad?.raw || ad, "ad"));
+        setShowShareModal(true);
+    }, []);
+
+    const handleProfileAdNotInterested = useCallback((adId: string | number) => {
+        const normalizedId = getAdInteractionId(adId);
+        if (!normalizedId) return;
+        setProfileAds((prev) => prev.filter((ad) => getProfileAdMenuId(ad) !== normalizedId));
+    }, [getProfileAdMenuId]);
+
+    const handleProfileAdReport = useCallback(() => {
+        addTopbarNotification({
+            type: "success",
+            title: "Report received",
+            message: "Thanks for helping keep Googer safe.",
+        });
+    }, []);
 
     useEffect(() => {
         if (!saveToast) return;
@@ -558,9 +662,9 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
                     {activeTab === "products" && (
                         posts.length > 0 ? (
                             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                                {posts.map((post) => (
+                                {posts.map((post, index) => (
                                     <SharedProductCard
-                                        key={post.id}
+                                        key={`public-profile-product-${post.id}-${index}`}
                                         product={post}
                                         currentUser={user}
                                         onProductClick={(product) => router.push(`/shop?id=${product.id}`)}
@@ -589,21 +693,37 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
                                 {googsFeed.map((item, index) => {
                                     if (item.type === 'ad') {
                                         const normalizedAd = normalizeAdData(item.data);
+                                        const adMenuId = getProfileAdMenuId(normalizedAd);
                                         return (
                                             <article key={`ad-${item.data.id}-${index}`} className="px-4 py-4 transition-colors sm:px-7">
                                                 <div className="mx-auto w-full max-w-[360px]">
                                                     <PromotedAdCard
                                                         ad={normalizedAd}
                                                         source="profile"
+                                                        isMenuOpen={!!adMenuId && openProfileAdMenuId === adMenuId}
+                                                        onToggleMenu={(targetId) => {
+                                                            const nextId = getAdInteractionId(targetId || normalizedAd);
+                                                            setOpenProfileAdMenuId((current) => current === nextId ? null : nextId);
+                                                        }}
+                                                        onCloseMenu={() => setOpenProfileAdMenuId(null)}
                                                         onProductClick={() => { }}
                                                         onAddToBagClick={() => { }}
                                                         onOpenSecondView={() => { }}
-                                                        onToggleLike={() => { }}
-                                                        onOpenSheet={() => { }}
-                                                        onShare={() => { }}
+                                                        onToggleLike={(ad) => handleAdToggleLike(ad)}
+                                                        onOpenSheet={(type, ad) => openBottomSheet(type, ad?.raw || ad)}
+                                                        onShare={(ad) => {
+                                                            setOpenProfileAdMenuId(null);
+                                                            handleProfileAdShare(ad);
+                                                        }}
                                                         onLogView={handleLogView}
-                                                        onReport={() => { }}
-                                                        onNotInterested={() => { }}
+                                                        onReport={() => {
+                                                            setOpenProfileAdMenuId(null);
+                                                            handleProfileAdReport();
+                                                        }}
+                                                        onNotInterested={(id) => {
+                                                            setOpenProfileAdMenuId(null);
+                                                            handleProfileAdNotInterested(id);
+                                                        }}
                                                         onCollectCoin={() => { }}
                                                         canShowCollectCoin={() => false}
                                                         onNavigateToProfile={(_, userId) => {
@@ -616,7 +736,7 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
                                     }
                                     return (
                                         <GoogCard
-                                            key={item.data.id}
+                                            key={`public-profile-goog-${item.data.id}-${index}`}
                                             post={item.data}
                                             showSubscribe={false}
                                             isSaved={savedIds.has(item.data.id)}
@@ -643,9 +763,9 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
                     {activeTab === "saved" && isOwnProfile && (
                         savedGoogs.length > 0 ? (
                             <div className="flex flex-col">
-                                {savedGoogs.map((g) => (
+                                {savedGoogs.map((g, index) => (
                                     <GoogCard
-                                        key={g.id}
+                                        key={`public-profile-saved-goog-${g.id}-${index}`}
                                         post={g}
                                         showSubscribe={false}
                                         isSaved={true}
@@ -702,7 +822,7 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
                                 </button>
                                 <button
                                     type="button"
-                                    onClick={() => handleDeleteGoog(openGoogMenu.post)}
+                                    onClick={() => { setDeleteGoogCandidate(openGoogMenu.post); setOpenGoogMenu(null); }}
                                     className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-red-400 hover:bg-white/5 transition-colors"
                                 >
                                     <IonIcon name="trash-outline" className="text-base" />
@@ -718,6 +838,26 @@ export function PublicProfileView({ user: initialUser, isPublic = true, currentU
                             <IonIcon name="share-social-outline" className="text-base text-green-400" />
                             Share
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {deleteGoogCandidate && (
+                <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={() => setDeleteGoogCandidate(null)}>
+                    <div className="w-full max-w-xs rounded-3xl border border-white/10 bg-[#151515] p-5 text-center shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-red-500/10 text-red-400">
+                            <IonIcon name="trash-outline" className="text-2xl" />
+                        </div>
+                        <h3 className="text-sm font-black uppercase tracking-widest text-white">Delete Goog?</h3>
+                        <p className="mt-2 text-xs font-medium text-white/50">This Goog will be removed from your profile.</p>
+                        <div className="mt-5 flex gap-2">
+                            <button type="button" onClick={() => setDeleteGoogCandidate(null)} className="flex-1 rounded-2xl border border-white/10 px-4 py-3 text-[11px] font-black uppercase tracking-widest text-white">
+                                Cancel
+                            </button>
+                            <button type="button" onClick={() => handleDeleteGoog(deleteGoogCandidate)} className="flex-1 rounded-2xl bg-red-500 px-4 py-3 text-[11px] font-black uppercase tracking-widest text-white">
+                                Delete
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

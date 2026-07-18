@@ -41,6 +41,26 @@ const authMiddleware = async (req, res, next) => {
             return error(res, 'Session has been invalidated. Please log in again.', 401);
         }
 
+        if (decoded.sessionId) {
+            try {
+                const sessionResult = await pool.query(
+                    `SELECT status, logout_at
+                     FROM auth_sessions
+                     WHERE id = $1 AND user_id = $2
+                     LIMIT 1`,
+                    [decoded.sessionId, decoded.id]
+                );
+                const session = sessionResult.rows[0];
+                if (!session || session.status !== 'active' || session.logout_at) {
+                    return error(res, 'Session has been invalidated. Please log in again.', 401);
+                }
+            } catch (sessionError) {
+                if (sessionError?.code !== '42P01') {
+                    throw sessionError;
+                }
+            }
+        }
+
         console.log('[AUTH] Token Decoded:', { id: decoded.id, userId: decoded.userId });
         req.user = decoded;
 

@@ -132,14 +132,14 @@ export function ProductSecondViewModal({
                     <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
                       <Image
                         src="/assets/images/rupee.png"
-                        alt="Ruppier coin"
+                        alt="Rupieer coin"
                         width={28}
                         height={28}
                         className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
                         unoptimized
                       />
                     </span>
-                    <span className="leading-none">Ruppier</span>
+                    <span className="leading-none">Rupieer</span>
                   </button>
                 )}
                 <button

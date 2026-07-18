@@ -2337,8 +2337,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         setPopupError("");
         try {
             if (isUploadContent) {
+                const hasNewUploadedVideo = hasUploadedVideo && uploadedFiles.length > 0;
                 let publishPreviewFile = autoPreviewFile;
-                if (uploadPreviewMode === "auto_preview" && hasUploadedVideo && !publishPreviewFile) {
+                if (uploadPreviewMode === "auto_preview" && hasNewUploadedVideo && !publishPreviewFile) {
                     publishPreviewFile = await generateThreeSecondPreview();
                     if (!publishPreviewFile) {
                         throw new Error("The three-second preview could not be created.");
@@ -2391,7 +2392,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         uploadFormData.append("images", file);
                     });
                 }
-                if (uploadPreviewMode === "auto_preview" && publishPreviewFile) {
+                if (uploadPreviewMode === "auto_preview" && hasNewUploadedVideo && publishPreviewFile) {
                     uploadFormData.append("preview", publishPreviewFile);
                 }
                 const savedContent = await uploadContentService.createContent(
@@ -4223,17 +4224,22 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 <div className="min-w-0 flex-1">
                     <p className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">{editorChromeLabel}</p>
                     <div className="mt-0.5 flex flex-wrap items-center gap-2">
-                        <h1 className="truncate text-xl font-black tracking-tight text-white">{campaignType}</h1>
                         {isUploadContent ? (
-                            <button
-                                type="button"
-                                onClick={() => router.push(isFlashContent ? "/ad-campaign/upload-content" : "/ad-campaign/flash-content")}
-                                className="inline-flex min-h-8 items-center gap-2 rounded-xl border border-white/12 bg-white/[0.05] px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-white/78 transition hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
-                            >
-                                <IonIcon name={isFlashContent ? "cloud-upload-outline" : "flash-outline"} className="text-sm" />
-                                <span>{isFlashContent ? "Vault Content" : "Flash Content"}</span>
-                            </button>
-                        ) : null}
+                            <div className="flex flex-wrap items-center gap-2">
+                                <h1 className={`truncate text-xl font-black tracking-tight transition ${isFlashContent ? "text-white" : "text-white/58"}`}>Flash Content</h1>
+                                <button
+                                    type="button"
+                                    onClick={() => router.push(isFlashContent ? "/ad-campaign/upload-content" : "/ad-campaign/flash-content")}
+                                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/12 bg-white/[0.05] text-white/82 transition hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
+                                    aria-label={isFlashContent ? "Switch to Vault Content" : "Switch to Flash Content"}
+                                >
+                                    <IonIcon name="swap-horizontal-outline" className="text-base" />
+                                </button>
+                                <h1 className={`truncate text-xl font-black tracking-tight transition ${!isFlashContent ? "text-white" : "text-white/58"}`}>Vault Content</h1>
+                            </div>
+                        ) : (
+                            <h1 className="truncate text-xl font-black tracking-tight text-white">{campaignType}</h1>
+                        )}
                     </div>
                 </div>
             </div>
@@ -5666,9 +5672,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     />
                                     <span className="text-[10px] font-bold leading-5 text-white/75">
                                         I agree to the <span className="underline underline-offset-2">terms and conditions</span>.
-                                        <span className="mt-2 block font-semibold text-white/45">
-                                            This content will be deleted from your profile after 30 days. Get a subscription package to keep it on your profile.
-                                        </span>
+                                        {userHasPaidSubscription === false && (
+                                            <span className="mt-2 block font-semibold text-white/45">
+                                                This content will be deleted from your profile after 30 days. Get a subscription package to keep it on your profile.
+                                            </span>
+                                        )}
                                     </span>
                                 </label>
                             </div>

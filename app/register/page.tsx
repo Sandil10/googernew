@@ -72,7 +72,8 @@ function RegisterContent() {
             const response = await authService.register(userData);
             console.log("Registration successful:", response);
 
-            router.push(redirectTo.startsWith("/") ? redirectTo : "/dashboard");
+            const safeRedirect = redirectTo.startsWith("/") ? redirectTo : "/dashboard";
+            router.replace(`/dashboard/settings?completeProfile=1&next=${encodeURIComponent(safeRedirect)}`);
         } catch (err: any) {
             setError(err.message || "Registration failed. Please try again.");
         } finally {

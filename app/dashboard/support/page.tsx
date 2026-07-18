@@ -1,7 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import IonIcon from "@/app/components/IonIcon";
+import { chatService } from "@/services/chatService";
 
 const supportTopics = [
     {
@@ -28,6 +30,27 @@ const supportTopics = [
 
 export default function SupportPage() {
     const router = useRouter();
+    const [openingChat, setOpeningChat] = useState(false);
+    const [chatError, setChatError] = useState("");
+
+    const openAssignedSupportChat = async () => {
+        setOpeningChat(true);
+        setChatError("");
+        try {
+            const data = await chatService.getSupportAssignment();
+            const admin = data?.assigned_admin;
+            if (!admin?.id) throw new Error("No support admin is assigned right now.");
+            const params = new URLSearchParams({
+                user: String(admin.id),
+                name: admin.username || admin.full_name || "Admin",
+            });
+            router.push(`/chats?${params.toString()}`);
+        } catch (error) {
+            setChatError(error instanceof Error ? error.message : "Unable to open support chat.");
+        } finally {
+            setOpeningChat(false);
+        }
+    };
 
     return (
         <div className="mx-auto max-w-4xl pb-10 text-white">
@@ -60,12 +83,18 @@ export default function SupportPage() {
                             </div>
                             <button
                                 type="button"
-                                onClick={() => router.push("/chats")}
-                                className="rounded-2xl bg-white px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-black transition hover:bg-zinc-200"
+                                onClick={openAssignedSupportChat}
+                                disabled={openingChat}
+                                className="rounded-2xl bg-white px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-black transition hover:bg-zinc-200 disabled:cursor-wait disabled:opacity-60"
                             >
-                                Open Chats
+                                {openingChat ? "Opening..." : "Open Chat"}
                             </button>
                         </div>
+                        {chatError && (
+                            <p className="mt-3 rounded-2xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-[11px] font-bold text-red-100">
+                                {chatError}
+                            </p>
+                        )}
                     </div>
 
                     <div className="grid gap-4 min-[860px]:grid-cols-2">

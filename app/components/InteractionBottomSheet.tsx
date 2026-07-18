@@ -132,6 +132,7 @@ export default function InteractionBottomSheet({
     const [reportReason, setReportReason] = useState<string>("");
     const inputRef = useRef<HTMLInputElement>(null);
     const longPressTimer = useRef<NodeJS.Timeout | null>(null);
+    const commentsDisabled = type === "comments" && (product?.allow_comments === false || product?.allowComments === false);
 
     const normalizeCommentId = (value: string | number | null | undefined) => {
         if (value === null || value === undefined) return "";
@@ -201,14 +202,14 @@ export default function InteractionBottomSheet({
 
     // Auto-focus comment input when comments tab is active
     useEffect(() => {
-        if (isOpen && type === "comments" && inputRef.current) {
+        if (isOpen && type === "comments" && !commentsDisabled && inputRef.current) {
             const t = setTimeout(() => inputRef.current?.focus(), 500);
             return () => clearTimeout(t);
         }
-    }, [isOpen, type]);
+    }, [commentsDisabled, isOpen, type]);
 
     useEffect(() => {
-        if (!isOpen || type !== "comments" || !onRefresh) return;
+        if (!isOpen || type !== "comments" || commentsDisabled || !onRefresh) return;
 
         const intervalId = window.setInterval(() => {
             if (document.hidden || sending) return;
@@ -216,7 +217,7 @@ export default function InteractionBottomSheet({
         }, refreshIntervalMs);
 
         return () => window.clearInterval(intervalId);
-    }, [isOpen, type, onRefresh, refreshIntervalMs, sending]);
+    }, [commentsDisabled, isOpen, type, onRefresh, refreshIntervalMs, sending]);
 
     if (!visible) return null;
 
@@ -242,7 +243,7 @@ export default function InteractionBottomSheet({
 
     const handleSend = async () => {
         const text = commentText.trim();
-        if (!text || sending) return;
+        if (!text || sending || commentsDisabled) return;
         setSending(true);
         try {
             const finalCommentText = text;
@@ -555,7 +556,15 @@ export default function InteractionBottomSheet({
                 </div>
 
                 {/* Comment Input */}
-                {type === "comments" && (
+                {type === "comments" && commentsDisabled && (
+                    <div className="shrink-0 border-t border-white/5 bg-[#0a0a0a] px-4 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+                        <div className="rounded-3xl border border-white/5 bg-white/[0.03] px-4 py-3 text-center text-[11px] font-bold uppercase tracking-[0.14em] text-white/45">
+                            Comments are turned off
+                        </div>
+                    </div>
+                )}
+
+                {type === "comments" && !commentsDisabled && (
                     <div className="shrink-0 px-4 py-3 border-t border-white/5 bg-[#0a0a0a] pb-[max(1rem,env(safe-area-inset-bottom))]">
                         
                         {/* Quick Reaction Emojis - Facebook Style */}

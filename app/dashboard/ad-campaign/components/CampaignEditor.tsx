@@ -1916,16 +1916,23 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const sponsorId = userProfile?.id ?? userProfile?._id ?? userProfile?.user_id;
         const sponsorPublicId = typeof userProfile?.user_id === "string" ? userProfile.user_id : String(userProfile?.user_id ?? "");
         const sponsorUsername = typeof userProfile?.username === "string" ? userProfile.username : "";
-        const existingReview = editingAdId ? await adsService.getAdById(editingAdId).catch(() => null) : null;
-        // Fall back to editingOriginalBudget from draft if the API fetch failed, so we never charge the full budget on an edit
+        const normalizedEditingAdId = String(editingAdId || "").trim();
+        const isEditingExistingAd = !isPromoteAgain && !isUploadContent && !!normalizedEditingAdId;
+        const existingReview = normalizedEditingAdId ? await adsService.getAdById(normalizedEditingAdId).catch(() => null) : null;
+        if (isEditingExistingAd && !existingReview) {
+            showPopupError("Could not load the ad being edited. Please reopen the ad and try again.");
+            return;
+        }
         const existingBudget = isPromoteAgain ? 0 : Number(existingReview?.budget ?? editingOriginalBudget ?? 0);
         const existingUploadContentId = !isPromoteAgain && isUploadContent && editingAdId
             ? String(editingAdId).trim()
             : "";
         const nextAdId = existingUploadContentId
-            || (!isPromoteAgain && existingReview?.adId && typeof existingReview.adId === "string"
-                ? existingReview.adId
-                : createNextAdId());
+            || (isEditingExistingAd
+                ? normalizedEditingAdId
+                : (!isPromoteAgain && existingReview?.adId && typeof existingReview.adId === "string"
+                    ? existingReview.adId
+                    : createNextAdId()));
         const carryOverViews = isPromoteAgain
             ? Number(existingReview?.views_count ?? existingReview?.viewCount ?? existingReview?.views ?? 0)
             : 0;
@@ -2026,6 +2033,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 durationDays,
                 promoCode,
                 hasPromoCodeAdded,
+                promoDiscount,
+                effectivePaymentAmount,
+                isFreePromoAd: hasPromoCodeAdded && effectivePaymentAmount === 0,
                 carryOverViews: Number.isFinite(carryOverViews) ? Math.max(0, carryOverViews) : 0,
                 sourceOwnerDbId: displayOwnerDbId,
                 sourceOwnerPublicId: displayOwnerPublicId,
@@ -2071,8 +2081,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         setPopupError("");
         try {
             if (isUploadContent) {
+                const hasNewUploadedVideo = hasUploadedVideo && uploadedFiles.length > 0;
                 let publishPreviewFile = autoPreviewFile;
-                if (uploadPreviewMode === "auto_preview" && hasUploadedVideo && !publishPreviewFile) {
+                if (uploadPreviewMode === "auto_preview" && hasNewUploadedVideo && !publishPreviewFile) {
                     publishPreviewFile = await generateThreeSecondPreview();
                     if (!publishPreviewFile) {
                         throw new Error("The three-second preview could not be created.");
@@ -2120,7 +2131,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         uploadFormData.append("images", file);
                     });
                 }
-                if (uploadPreviewMode === "auto_preview" && publishPreviewFile) {
+                if (uploadPreviewMode === "auto_preview" && hasNewUploadedVideo && publishPreviewFile) {
                     uploadFormData.append("preview", publishPreviewFile);
                 }
                 const savedContent = await uploadContentService.createContent(
@@ -2163,9 +2174,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 return publishBudget; // days promos: full budget charged, bonus is free
             })();
 
-            // isEditMode: editing an existing Under Review ad (not promote-again)
-            // Works even if the API fetch for existingReview failed, by falling back to editingOriginalBudget
-            const isEditMode = !isPromoteAgain && (!!existingReview || (!!editingAdId && editingOriginalBudget !== null));
+            const isEditMode = isEditingExistingAd && !!existingReview;
             const payAmount = isEditMode ? budgetDifference : discountedBudget;
             if ((isEditMode && budgetDifference > 0) || (!isEditMode && discountedBudget > 0)) {
                 if (isProfilePromote) {
@@ -2231,12 +2240,12 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 formData.set("data", JSON.stringify(uploadAdPayload));
             }
 
-            const savedAd = (existingReview && !isPromoteAgain)
+            const savedAd = isEditMode
                 ? await adsService.updateAd(reviewRecord.adId, payload as any)
                 : await adsService.createAd(payload as any);
 
             // Redeem promo AFTER ad is successfully created (increments uses_count)
-            if (hasPromoCodeAdded && promoCode && (!existingReview || isPromoteAgain)) {
+            if (hasPromoCodeAdded && promoCode && !isEditMode) {
                 try {
                     await adsService.redeemPromoCode(promoCode, getAdTypeForCampaign(), reviewRecord.adId);
                 } catch {

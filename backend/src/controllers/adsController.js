@@ -26,6 +26,29 @@ const { getGraceDurationSeconds } = require('../utils/subscriptionRenewal');
 // Define getGraceIntervalSql here before it's used in template strings below
 const getGraceIntervalSql = () => `((${getGraceDurationSeconds()}::text || ' seconds')::interval)`;
 
+const resolveRemainingRefundAmount = (ad) => {
+    const remaining = Number(ad?.remainingBudget ?? ad?.remaining_budget);
+    if (Number.isFinite(remaining) && remaining > 0) {
+        return Math.round(remaining * 100) / 100;
+    }
+
+    const budget = Number(ad?.budget || 0);
+    const spend = Number(ad?.spend || 0);
+    const fallback = Math.max(0, budget - Math.max(0, spend));
+    return Math.round(fallback * 100) / 100;
+};
+
+const debitGoogerMainForAdRefund = async (client, googerUserId, refundAmount) => {
+    if (!googerUserId || refundAmount <= 0) return;
+    await client.query(`SET LOCAL googer.allow_admin_wallet_capital = 'true'`);
+    await client.query(
+        `UPDATE users
+         SET wallet_balance = GREATEST(0, COALESCE(wallet_balance, 0) - $1)
+         WHERE id = $2`,
+        [refundAmount, googerUserId]
+    );
+};
+
 let adSavesTableReady = false;
 let adSavesSchemaPromise = null;
 const ensureAdSavesSchema = async () => {
@@ -87,10 +110,6 @@ const RAW_PHOTO_VIDEO_UPLOAD_SQL = `
 `;
 
 const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
-    CASE
-        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
-        ELSE NULL
-    END,
     (
         SELECT
             CASE
@@ -130,7 +149,11 @@ const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
         FROM subscription_plans sp
         WHERE sp.slug = 'basic' AND sp.is_active = TRUE
         LIMIT 1
-    )
+    ),
+    CASE
+        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
+        ELSE NULL
+    END
 )`;
 
 const RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL = `
@@ -375,6 +398,19 @@ const ensureAdEngagementTables = async () => {
     `);
 
     await pool.query(`
+        CREATE TABLE IF NOT EXISTS ad_impressions (
+            id SERIAL PRIMARY KEY,
+            ad_id VARCHAR(80) NOT NULL REFERENCES ads(ad_id) ON DELETE CASCADE,
+            user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+            viewer_key TEXT,
+            ip_address TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_ad_impressions_ad_id ON ad_impressions(ad_id);
+        CREATE INDEX IF NOT EXISTS idx_ad_impressions_created_at ON ad_impressions(created_at);
+    `);
+
+    await pool.query(`
         ALTER TABLE ad_coin_collections
             ADD COLUMN IF NOT EXISTS ad_type VARCHAR(80) NOT NULL DEFAULT 'Ads',
             ADD COLUMN IF NOT EXISTS reward_amount DECIMAL(10, 2) NOT NULL DEFAULT 1.00,
@@ -590,12 +626,19 @@ const supportsRemainingBudgetRefund = (campaignType) => {
 
 const mapRow = (row) => {
     const isProductPromote = String(row.campaign_type || '').trim().toLowerCase() === 'product promote';
+    const isProfilePromote = String(row.campaign_type || '').trim().toLowerCase() === 'profile promote';
     const originalProductId = row.original_product_id ?? row.linked_product_id ?? null;
     const originalProductCode = row.original_product_code ?? row.linked_product_share_code ?? null;
     const linkedProductId = row.linked_product_id ?? originalProductId ?? null;
     const linkedProductShareCode = row.linked_product_share_code ?? originalProductCode ?? null;
 
     const durationState = calculateAdDurationState(row);
+    const countedViews = Number(row.counted_views ?? row.reach_count ?? 0);
+    const rawImpressions = Number(row.impressions_count ?? row.impressions ?? 0);
+    const profileImpressions = Number(row.profile_impressions || 0);
+    const impressions = isProfilePromote
+        ? (profileImpressions > 0 ? Math.max(profileImpressions, countedViews) : (countedViews > 0 && rawImpressions > countedViews ? countedViews : rawImpressions))
+        : rawImpressions;
     return {
     id: row.id,
     adId: row.ad_id,
@@ -621,10 +664,12 @@ const mapRow = (row) => {
     genderTarget: row.gender_target,
     ageMin: row.age_min,
     ageMax: row.age_max,
-    reach: Number(row.reach_count ?? row.counted_views ?? 0),
-    impressions: Number(row.impressions_count ?? row.impressions ?? 0),
-    views_count: Number(row.counted_views ?? row.reach_count ?? 0),
-    viewCount: Number(row.counted_views ?? row.reach_count ?? 0),
+    reach: countedViews,
+    impressions,
+    impressions_count: impressions,
+    impressionsCount: impressions,
+    views_count: countedViews,
+    viewCount: countedViews,
     likes_count: Number(row.likes_count || 0),
     likeCount: Number(row.likes_count || 0),
     comments_count: Number(row.comments_count || 0),
@@ -952,17 +997,6 @@ async function resolveGoogerMainWalletUserId(client) {
         }
     }
 
-    const adminResult = await client.query(
-        `SELECT id FROM users
-         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
-         ORDER BY id ASC
-         LIMIT 1`
-    );
-
-    if (adminResult.rows.length > 0) {
-        return adminResult.rows[0].id;
-    }
-
     const googerResult = await client.query(
         `SELECT id FROM users
          WHERE LOWER(username) = 'googer'
@@ -972,6 +1006,17 @@ async function resolveGoogerMainWalletUserId(client) {
 
     if (googerResult.rows.length > 0) {
         return googerResult.rows[0].id;
+    }
+
+    const adminResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+
+    if (adminResult.rows.length > 0) {
+        return adminResult.rows[0].id;
     }
 
     const fallbackResult = await client.query(
@@ -1168,6 +1213,7 @@ exports.updateAd = async (req, res) => {
     const client = await pool.connect();
     try {
         await ensureAdsTable();
+        await ensureAdEngagementTables();
         const { adId } = req.params;
         const userId = req.user.id;
         const isAdmin = await assertAdmin(userId);
@@ -1290,23 +1336,6 @@ exports.updateAd = async (req, res) => {
             }
         }
 
-        if (requestedStatus === 'Active' && existingAd.status === 'Paused' && (String(payload.campaignType || '').trim().toLowerCase() === 'photo and video' || String(payload.campaignType || '').trim().toLowerCase() === 'photo & video')) {
-            const limits = await getUserPlanLimits(userId);
-            if (limits.adsExpiryDays > 0) {
-                const ageDays = (Date.now() - new Date(existingAd.createdAt).getTime()) / (1000 * 60 * 60 * 24);
-                if (ageDays >= limits.adsExpiryDays) {
-                    return res.status(403).json({ success: false, message: 'This ad has expired and cannot be resumed on your current plan. Please upgrade to a higher plan.' });
-                }
-            }
-        }
-
-        if (
-            payload.status === 'Cancelled'
-            && ['Active', 'Paused'].includes(String(existingAd.status || ''))
-        ) {
-            payload.status = 'Removed';
-        }
-
         await client.query('BEGIN');
 
         if (
@@ -1326,10 +1355,7 @@ exports.updateAd = async (req, res) => {
 
             if (transferResult.rows.length > 0) {
                 const transfer = transferResult.rows[0];
-                // Refund only the unspent portion: total budget minus whatever was already spent.
-                // For fresh Under Review ads spend=0, so this equals the full budget.
-                // If the ad ran previously before going back to Under Review, spend is subtracted.
-                const refundAmount = Math.max(0, Number(existingAd.budget || 0) - Number(existingAd.spend || 0));
+                const refundAmount = resolveRemainingRefundAmount(existingAd);
                 const advertiserUserId = Number(transfer.sender_id || existingAd.userId);
                 const canonicalGoogerUserId = await resolveGoogerMainWalletUserId(client);
                 const googerUserId = Number(canonicalGoogerUserId || 0);
@@ -1348,6 +1374,7 @@ exports.updateAd = async (req, res) => {
                         'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
                         [refundAmount, advertiserUserId]
                     );
+                    await debitGoogerMainForAdRefund(client, googerUserId, refundAmount);
 
                     if (isLegacyAdHold) {
                         await client.query(
@@ -1411,7 +1438,7 @@ exports.updateAd = async (req, res) => {
             if (transferResult.rows.length > 0) {
                 const transfer = transferResult.rows[0];
                 const advertiserUserId = Number(transfer.sender_id || existingAd.userId);
-                const refundAmount = Math.max(0, Number(existingAd.budget || 0) - Number(existingAd.spend || 0));
+                const refundAmount = resolveRemainingRefundAmount(existingAd);
                 const transferStatus = String(transfer.status || '').toLowerCase();
                 const canonicalGoogerUserIdActive = await resolveGoogerMainWalletUserId(client);
                 const googerUserIdActive = Number(canonicalGoogerUserIdActive || 0);
@@ -1426,6 +1453,7 @@ exports.updateAd = async (req, res) => {
                         'UPDATE users SET wallet_balance = wallet_balance + $1 WHERE id = $2',
                         [refundAmount, advertiserUserId]
                     );
+                    await debitGoogerMainForAdRefund(client, googerUserIdActive, refundAmount);
 
                     await client.query(
                         `INSERT INTO wallet_transfers (
@@ -1442,7 +1470,7 @@ exports.updateAd = async (req, res) => {
                          )
                          VALUES ($1, $2, $3, $4, 'ad_refund', 'accepted', $5, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
                         [
-                            Number(transfer.receiver_id || 0) || advertiserUserId,
+                            googerUserIdActive,
                             advertiserUserId,
                             refundAmount,
                             `Ad Remaining Budget Refund - ${existingAd.adId} (${existingAd.campaignType}) - Cancelled After Activation`,
@@ -1584,6 +1612,7 @@ exports.getMyAds = async (req, res) => {
         await syncAdsReachCaps();
         const result = await pool.query(
             `SELECT a.*,
+                    (SELECT COUNT(*)::int FROM ad_impressions ai WHERE ai.ad_id = a.ad_id) AS profile_impressions,
                     COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
                     COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
                     COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
@@ -1616,6 +1645,7 @@ exports.getMyAdById = async (req, res) => {
         await syncAdsReachCaps(req.params.adId);
         const result = await pool.query(
             `SELECT a.*,
+                    (SELECT COUNT(*)::int FROM ad_impressions ai WHERE ai.ad_id = a.ad_id) AS profile_impressions,
                     COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
                     COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
                     COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
@@ -1659,6 +1689,7 @@ exports.getAllAds = async (req, res) => {
         const approvalOnlyWhere = includeAll ? '' : "WHERE a.status IN ('Under Review', 'Pending Approval')";
         const result = await pool.query(
             `SELECT a.*,
+                    (SELECT COUNT(*)::int FROM ad_impressions ai WHERE ai.ad_id = a.ad_id) AS profile_impressions,
                     COALESCE(av.counted_views, 0) AS counted_views,
                     COALESCE(av.unique_reach, 0) AS reach_count,
                     COALESCE(click_stats.click_events, 0) AS click_events,
@@ -1759,7 +1790,9 @@ exports.getActiveAdsPublic = async (req, res) => {
             : '';
         const queryStartedAt = process.hrtime.bigint();
         const result = await pool.query(
-            `SELECT a.*, ${countViewsSelect}
+            `SELECT a.*,
+                    (SELECT COUNT(*)::int FROM ad_impressions ai WHERE ai.ad_id = a.ad_id) AS profile_impressions,
+                    ${countViewsSelect}
                     COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
                     COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
                     COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
@@ -2036,6 +2069,7 @@ exports.getAdPublic = async (req, res) => {
         const { adId } = req.params;
         const result = await pool.query(
             `SELECT a.*,
+                    (SELECT COUNT(*)::int FROM ad_impressions ai WHERE ai.ad_id = a.ad_id) AS profile_impressions,
                     COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
                     COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
                     COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
@@ -2092,6 +2126,7 @@ exports.updateAdReach = async (req, res) => {
 exports.getAdAnalytics = async (req, res) => {
     try {
         await ensureAdsTable();
+        await ensureAdEngagementTables();
         const { adId } = req.params;
         const userId = req.user.id;
 
@@ -2100,7 +2135,9 @@ exports.getAdAnalytics = async (req, res) => {
 
         // Verify ownership and grab the live ad row
         const ownerCheck = await pool.query(
-            'SELECT id, ad_id, campaign_type, gender_target, age_min, age_max, current_reach, impressions, clicks FROM ads WHERE ad_id = $1 AND user_id = $2 LIMIT 1',
+            `SELECT id, ad_id, campaign_type, gender_target, age_min, age_max, current_reach, impressions, clicks,
+                    (SELECT COUNT(*)::int FROM ad_impressions ai WHERE ai.ad_id = ads.ad_id) AS profile_impressions
+             FROM ads WHERE ad_id = $1 AND user_id = $2 LIMIT 1`,
             [adId, userId]
         );
         if (!ownerCheck.rows.length) {
@@ -2219,12 +2256,19 @@ exports.getAdAnalytics = async (req, res) => {
             [adId]
         );
 
-        // Use ads table as the single source of truth so analytics always matches
-        // the numbers displayed on the ad card in the dashboard.
+        const viewsCount = Number(viewTotals.rows[0]?.views || 0);
+        const reachCount = Number(viewTotals.rows[0]?.reach || 0);
+        const rawImpressionsCount = Number(adRow.impressions || 0);
+        const profileImpressionsCount = Number(adRow.profile_impressions || 0);
+        const analyticsImpressions = String(adRow.campaign_type || '').trim().toLowerCase() === 'profile promote'
+            ? (profileImpressionsCount > 0 ? Math.max(profileImpressionsCount, viewsCount) : (viewsCount > 0 && rawImpressionsCount > viewsCount ? viewsCount : rawImpressionsCount))
+            : rawImpressionsCount;
+
+        // Use the corrected table value so analytics matches the ad card.
         const totals = {
-            views: Number(viewTotals.rows[0]?.views || 0),
-            reach: Number(viewTotals.rows[0]?.reach || 0),
-            impressions: Number(adRow.impressions || 0),
+            views: viewsCount,
+            reach: reachCount,
+            impressions: analyticsImpressions,
             clicks: Number(clickTotals.rows[0]?.clicks || 0),
             likes: Number(likeTotals.rows[0]?.likes || 0),
         };
@@ -2394,6 +2438,7 @@ exports.getMySavedAds = async (req, res) => {
 
         const { rows } = await pool.query(
             `SELECT a.*,
+                    (SELECT COUNT(*)::int FROM ad_impressions ai WHERE ai.ad_id = a.ad_id) AS profile_impressions,
                     COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
                     COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
                     COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
@@ -2441,6 +2486,7 @@ exports.getPublicSavedAdsByUser = async (req, res) => {
 
         const { rows } = await pool.query(
             `SELECT a.*,
+                    (SELECT COUNT(*)::int FROM ad_impressions ai WHERE ai.ad_id = a.ad_id) AS profile_impressions,
                     COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
                     COALESCE(owner_u.user_id, sponsor_u.user_id) AS display_public_user_id,
                     COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
@@ -2460,6 +2506,8 @@ exports.getPublicSavedAdsByUser = async (req, res) => {
                AND a.user_id = $1
                AND LOWER(COALESCE(a.campaign_type, '')) IN ('photo and video', 'photo & video')
                AND LOWER(TRIM(REPLACE(REPLACE(COALESCE(a.status, ''), '_', ' '), '-', ' '))) = 'completed'
+               AND ${RAW_PHOTO_VIDEO_UPLOAD_SQL}
+               AND ${RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL}
              ORDER BY s.created_at DESC`,
             [profileUserId]
         );

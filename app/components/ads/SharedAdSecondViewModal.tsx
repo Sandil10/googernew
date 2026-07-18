@@ -8,7 +8,7 @@ import { RelativeTime } from "@/app/components/RelativeTime";
 import { AdInteractionButton, AdInteractionType } from "./AdInteractionButton";
 import {
     getAdPreviewImage,
-    getSponsoredAdImages,
+    getSponsoredUploadedAdImages,
     getSponsoredCallHref,
     getSponsoredCtaClassName,
     getSponsoredCtaHref,
@@ -31,6 +31,7 @@ export type AdSecondViewHandlers = {
     onShare: (ad: any) => void;
     onReport: (ad: any) => void;
     onNotInterested: (adId: string | number) => void;
+    onDeleteAd?: (ad: any) => void | Promise<void>;
     onCollectCoin: (event: React.MouseEvent, ad: any) => void;
     onNavigateToProfile: (event: React.MouseEvent, ad: any) => void;
     canShowCollectCoin: (ad: any) => boolean;
@@ -52,6 +53,11 @@ const normalizeMediaUrl = (value: string) => {
         : value;
 };
 
+const isRunningAdStatus = (value: unknown) => {
+    const status = String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+    return status === "active" || status === "running" || status === "approved";
+};
+
 export function SharedAdSecondViewModal({
     ad,
     kind,
@@ -62,6 +68,7 @@ export function SharedAdSecondViewModal({
     onShare,
     onReport,
     onNotInterested,
+    onDeleteAd,
     onCollectCoin,
     onNavigateToProfile,
     canShowCollectCoin,
@@ -79,9 +86,12 @@ export function SharedAdSecondViewModal({
     const advertiserId = normalizedAd?.userId || normalizedAd?.user_id || raw.user_id || raw.userId || raw.owner_user_id || raw.ownerUserId || raw.user?.id;
 
     const images = React.useMemo(() => {
-        const sourceImages = providedImages && providedImages.length
-            ? providedImages
-            : getSponsoredAdImages(normalizedAd, getAdPreviewImage(normalizedAd, "image"));
+        const uploadedImages = getSponsoredUploadedAdImages(normalizedAd);
+        const sourceImages = uploadedImages.length
+            ? uploadedImages
+            : providedImages && providedImages.length
+                ? providedImages
+                : [getAdPreviewImage(normalizedAd, "image")];
 
         const normalizedImages = sourceImages
             .map((item: any) => {
@@ -139,6 +149,7 @@ export function SharedAdSecondViewModal({
         };
     }, [liveState, normalizedAd]);
     const canShowCollectCoinButton = canShowCollectCoin(mergedAd);
+    const showRunningAdTag = isRunningAdStatus(mergedAd.status || raw.status || raw.delivery_status || raw.deliveryStatus);
     const safeRequiredWatchSeconds = Math.max(1, Math.floor(Number(requiredWatchSeconds || 5)));
     const trackAdClick = () => logSponsoredAdClick(mergedAd, "visit");
     const callHref = getSponsoredCallHref(raw);
@@ -257,8 +268,8 @@ export function SharedAdSecondViewModal({
                     className="absolute inset-0"
                     aria-label="Close sponsored media preview"
                 />
-                <div className="relative z-10 h-auto max-h-[82vh] w-full max-w-[560px] overflow-hidden rounded-[1.35rem] border border-white/10 bg-black shadow-[0_30px_90px_rgba(0,0,0,0.45)] md:max-w-[640px]">
-                    <div className="hidden">
+                <div className="relative z-10 w-full max-w-[760px] overflow-hidden rounded-[1.6rem] border border-white/10 bg-[#0f1013] shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
+                    <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
                         <div className="flex min-w-0 items-center gap-3">
                             <button
                                 type="button"
@@ -288,11 +299,13 @@ export function SharedAdSecondViewModal({
                                     {advertiserName}
                                 </button>
                                 <div className="mt-1 flex items-center gap-1.5">
-                                    <span className="text-[9px] font-bold tracking-widest text-white/45">Ad</span>
-                                    <div className="h-0.5 w-0.5 rounded-full bg-white/25" />
-                                    <span className="text-[9px] font-bold tracking-widest text-white/45">
-                                        <RelativeTime timestamp={normalizedAd?.activeStartTime || normalizedAd?.active_start_time || raw.active_start_time || raw.activeStartTime || normalizedAd?.createdAt || normalizedAd?.created_at} />
-                                    </span>
+                                    {showRunningAdTag ? (
+                                        <span className="text-[9px] font-bold tracking-widest text-white/45">Ad</span>
+                                    ) : (
+                                        <span className="text-[9px] font-bold tracking-widest text-white/45">
+                                            <RelativeTime timestamp={normalizedAd?.activeStartTime || normalizedAd?.active_start_time || normalizedAd?.startedAt || normalizedAd?.started_at || raw.active_start_time || raw.activeStartTime || raw.started_at || raw.startedAt || normalizedAd?.createdAt || normalizedAd?.created_at || raw.created_at || raw.createdAt || raw.approved_at || raw.approvedAt || raw.updated_at || raw.updatedAt} />
+                                        </span>
+                                    )}
                                 </div>
                             </div>
                             {mergedAd?.title && (
@@ -320,14 +333,14 @@ export function SharedAdSecondViewModal({
                                     <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
                                         <Image
                                             src="/assets/images/rupee.png"
-                                            alt="Ruppier coin"
+                                            alt="Rupieer coin"
                                             width={28}
                                             height={28}
                                             className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
                                             unoptimized
                                         />
                                     </span>
-                                    <span className="leading-none">Ruppier</span>
+                                    <span className="leading-none">Rupieer</span>
                                 </button>
                             )}
                             <button
@@ -339,7 +352,7 @@ export function SharedAdSecondViewModal({
                             </button>
                         </div>
                     </div>
-                    <div className="relative aspect-video max-h-[82vh] w-full overflow-hidden bg-black">
+                    <div className="relative h-[68vh] min-h-[360px] w-full bg-black">
                         {kind === "embed" && embedUrl ? (
                             <iframe
                                 src={embedUrl}
@@ -362,6 +375,8 @@ export function SharedAdSecondViewModal({
                                 <video
                                     src={videoUrl}
                                     controls
+                                    controlsList="nodownload"
+                                    disablePictureInPicture
                                     autoPlay
                                     playsInline
                                     onTimeUpdate={(event) => {
@@ -378,7 +393,7 @@ export function SharedAdSecondViewModal({
                         <button
                             type="button"
                             onClick={onClose}
-                            className="absolute left-3 top-3 z-30 flex h-10 w-10 items-center justify-center rounded-full bg-black/35 text-white shadow-[0_8px_28px_rgba(0,0,0,0.45)] backdrop-blur-md transition hover:bg-black/55"
+                            className="hidden"
                             aria-label="Close sponsored media preview"
                         >
                             <IonIcon name="close" className="text-xl" />
@@ -393,7 +408,7 @@ export function SharedAdSecondViewModal({
                         <button
                             type="button"
                             onClick={(e) => { trackAdClick(); onNavigateToProfile(e, mergedAd); }}
-                            className="absolute right-4 top-4 z-30 h-11 w-11 overflow-hidden rounded-full border-2 border-white/80 bg-black/45 shadow-[0_8px_28px_rgba(0,0,0,0.5)] transition hover:scale-105 md:h-12 md:w-12"
+                            className="hidden"
                             aria-label="Open advertiser profile"
                         >
                             {advertiserImage ? (
@@ -520,11 +535,13 @@ export function SharedAdSecondViewModal({
                                 {advertiserName}
                             </button>
                             <div className="mt-1 flex items-center gap-1.5">
-                                <span className="text-[9px] font-bold tracking-widest text-white/45">Ad</span>
-                                <div className="h-0.5 w-0.5 rounded-full bg-white/25" />
-                                <span className="text-[9px] font-bold tracking-widest text-white/45">
-                                    <RelativeTime timestamp={normalizedAd?.activeStartTime || normalizedAd?.active_start_time || raw.active_start_time || raw.activeStartTime || normalizedAd?.createdAt || normalizedAd?.created_at} />
-                                </span>
+                                {showRunningAdTag ? (
+                                    <span className="text-[9px] font-bold tracking-widest text-white/45">Ad</span>
+                                ) : (
+                                    <span className="text-[9px] font-bold tracking-widest text-white/45">
+                                        <RelativeTime timestamp={normalizedAd?.activeStartTime || normalizedAd?.active_start_time || normalizedAd?.startedAt || normalizedAd?.started_at || raw.active_start_time || raw.activeStartTime || raw.started_at || raw.startedAt || normalizedAd?.createdAt || normalizedAd?.created_at || raw.created_at || raw.createdAt || raw.approved_at || raw.approvedAt || raw.updated_at || raw.updatedAt} />
+                                    </span>
+                                )}
                             </div>
                         </div>
                         {advertiserId && (
@@ -545,14 +562,14 @@ export function SharedAdSecondViewModal({
                                 <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
                                     <Image
                                         src="/assets/images/rupee.png"
-                                        alt="Ruppier coin"
+                                        alt="Rupieer coin"
                                         width={28}
                                         height={28}
                                         className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
                                         unoptimized
                                     />
                                 </span>
-                                <span className="leading-none">Ruppier</span>
+                                <span className="leading-none">Rupieer</span>
                             </button>
                         )}
                         <div className="relative">
@@ -607,6 +624,19 @@ export function SharedAdSecondViewModal({
                                         <IonIcon name="eye-off-outline" className="text-lg text-slate-500" />
                                         Not Interested
                                     </button>
+                                    {onDeleteAd && (
+                                        <button
+                                            onClick={() => {
+                                                void onDeleteAd(ad);
+                                                setIsMenuOpen(false);
+                                                onClose();
+                                            }}
+                                            className="flex w-full items-center gap-3 border-t border-white/5 px-5 py-4 text-left text-[11px] font-bold text-red-300 transition-colors hover:bg-red-500/10"
+                                        >
+                                            <IonIcon name="trash-outline" className="text-lg text-red-400" />
+                                            Delete Ad
+                                        </button>
+                                    )}
                                 </div>
                             )}
                         </div>

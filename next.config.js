@@ -11,7 +11,7 @@ const nextConfig = {
   experimental: {
   },
   images: {
-    qualities: [55, 58, 75],
+    qualities: [55, 58, 60, 75],
     // Skip Next.js server-side optimization for all images. Profile pictures and
     // user-uploaded media are served via the /uploads/ rewrite to the backend; the
     // optimizer makes an extra server-side fetch that fails with "received null" when

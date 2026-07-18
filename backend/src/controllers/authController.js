@@ -6,6 +6,7 @@ const pool = require('../config/database');
 const { saveUploadedFile } = require('../modules/media');
 const { getUserPlanLimits } = require('../utils/planLimits');
 const { ensureReferralCommissionTables } = require('../utils/referralCommission');
+const { notificationService } = require('../modules/notifications');
 
 let usersTableHasShippingAddressColumn = null;
 let subscriptionsTableEnsured = false;
@@ -28,7 +29,7 @@ const PASSWORD_RESET_VERIFY_TTL_MINUTES = Number.parseInt(process.env.PASSWORD_R
 
 const hashResetValue = (value) => crypto.createHash('sha256').update(String(value || '')).digest('hex');
 const SECURITY_OTP_TTL_MINUTES = 10;
-const SECURITY_OTP_PURPOSES = new Set(['change_email', 'reset_password', 'passkey', 'setup_2fa_email', 'setup_2fa_phone']);
+const SECURITY_OTP_PURPOSES = new Set(['login', 'change_email', 'reset_password', 'passkey', 'setup_2fa_email', 'setup_2fa_phone', 'self_deactivate', 'self_delete']);
 
 const ensureAccountSecuritySchema = async () => {
     if (accountSecurityOtpTableEnsured) return;
@@ -58,6 +59,15 @@ const ensureAccountSecuritySchema = async () => {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_phone_number VARCHAR(50)`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_delivery_method VARCHAR(20) NOT NULL DEFAULT 'email'`);
     accountSecurityOtpTableEnsured = true;
+};
+
+const verifyPasswordOrPasskey = async (credential, userRow) => {
+    const value = String(credential || '');
+    const passwordHash = userRow?.password || '';
+    const passkeyHash = userRow?.passkey_hash || '';
+    const passwordMatched = passwordHash ? await bcrypt.compare(value, passwordHash) : false;
+    const passkeyMatched = /^\d{6}$/.test(value) && passkeyHash ? await bcrypt.compare(value, passkeyHash) : false;
+    return { matched: passwordMatched || passkeyMatched, method: passkeyMatched ? 'passkey' : 'password' };
 };
 
 const getRequestIp = (req) => {
@@ -125,6 +135,8 @@ const ensureAuthSessionsTable = async () => {
     await pool.query(`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS approval_token_hash VARCHAR(128)`);
     await pool.query(`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMP`);
     await pool.query(`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS approval_completed_at TIMESTAMP`);
+    await pool.query(`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS latitude NUMERIC`);
+    await pool.query(`ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS longitude NUMERIC`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_active ON auth_sessions(user_id, status, last_active_at DESC)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_pending_approval ON auth_sessions(user_id, approval_status, approval_expires_at) WHERE approval_status = 'pending'`);
     authSessionsTableEnsured = true;
@@ -153,6 +165,26 @@ const mapAuthSession = (row, currentSessionId = null) => ({
     isCurrent: currentSessionId ? String(row.id) === String(currentSessionId) : false,
 });
 
+const formatSessionLocation = (row = {}) => {
+    const parts = [row.city, row.region, row.country].filter(Boolean);
+    return parts.length ? parts.join(', ') : 'an unknown location';
+};
+
+const notifyTrustedDeviceLogin = async (userId, session = {}) => {
+    try {
+        const deviceName = session.device_name || 'Unknown device';
+        const location = formatSessionLocation(session);
+        await notificationService.processFanoutJob({
+            targetIds: [Number(userId)],
+            title: 'Trusted device login',
+            message: `${deviceName} was trusted and can log in from ${location}.`,
+            type: 'security',
+        });
+    } catch (notificationError) {
+        console.warn('[auth] trusted device notification failed:', notificationError?.message || notificationError);
+    }
+};
+
 const createLoginToken = (userData, sessionId = null) => jwt.sign(
     {
         id: userData.id,
@@ -170,6 +202,10 @@ const createAuthSession = async (userData, req) => {
     const userAgent = req.get('user-agent') || '';
     const deviceId = String(req.body?.deviceId || req.headers?.['x-device-id'] || '').trim().slice(0, 128) || null;
     const ipAddress = getRequestIp(req);
+    const latitude = Number(req.body?.latitude);
+    const longitude = Number(req.body?.longitude);
+    const safeLatitude = Number.isFinite(latitude) && latitude >= -90 && latitude <= 90 ? latitude : null;
+    const safeLongitude = Number.isFinite(longitude) && longitude >= -180 && longitude <= 180 ? longitude : null;
     const priorResult = await pool.query(
         `SELECT
             COUNT(*)::int AS total,
@@ -180,9 +216,14 @@ const createAuthSession = async (userData, req) => {
                   AND last_active_at > CURRENT_TIMESTAMP - INTERVAL '24 hours'
             )::int AS active_trusted,
             COUNT(*) FILTER (
-                WHERE ($2::text IS NOT NULL AND device_id = $2)
-                   OR COALESCE(user_agent, '') = COALESCE($3, '')
-                   OR (browser = $4 AND operating_system = $5 AND device_type = $6)
+                WHERE (
+                    ($2::text IS NOT NULL AND device_id = $2)
+                    OR COALESCE(user_agent, '') = COALESCE($3, '')
+                    OR (browser = $4 AND operating_system = $5 AND device_type = $6)
+                )
+                  AND trusted = true
+                  AND status = 'active'
+                  AND logout_at IS NULL
             )::int AS familiar
          FROM auth_sessions
          WHERE user_id = $1`,
@@ -200,16 +241,16 @@ const createAuthSession = async (userData, req) => {
     const result = await pool.query(
         `INSERT INTO auth_sessions (
             id, user_id, device_name, device_type, browser, operating_system, ip_address,
-            country, region, city, timezone, user_agent, device_id, trusted,
+            country, region, city, timezone, latitude, longitude, user_agent, device_id, trusted,
             status, login_result, approval_status, approval_token_hash, approval_expires_at
          ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10, $11, $12, $13, $14,
-            CASE WHEN $15 THEN 'pending' ELSE 'active' END,
-            CASE WHEN $15 THEN 'pending' ELSE 'success' END,
-            CASE WHEN $15 THEN 'pending' ELSE 'not_required' END,
-            $16,
-            CASE WHEN $15 THEN CURRENT_TIMESTAMP + INTERVAL '5 minutes' ELSE NULL END
+            $8, $9, $10, $11, $12, $13, $14, $15, $16,
+            CASE WHEN $17 THEN 'pending' ELSE 'active' END,
+            CASE WHEN $17 THEN 'pending' ELSE 'success' END,
+            CASE WHEN $17 THEN 'pending' ELSE 'not_required' END,
+            $18,
+            CASE WHEN $17 THEN CURRENT_TIMESTAMP + INTERVAL '5 minutes' ELSE NULL END
          )
          RETURNING *`,
         [
@@ -224,6 +265,8 @@ const createAuthSession = async (userData, req) => {
             req.body?.region || null,
             req.body?.city || null,
             req.body?.timezone || null,
+            safeLatitude,
+            safeLongitude,
             userAgent,
             deviceId,
             shouldAutoTrust,
@@ -319,6 +362,42 @@ const sendPasswordResetOtpEmail = async ({ email, otp, fullName }) => {
                 <p style="color:#cbd5e1">Hi ${String(fullName || 'there')}, use this OTP to reset your password:</p>
                 <div style="font-size:32px;font-weight:800;letter-spacing:8px;background:#111827;border:1px solid #334155;border-radius:14px;padding:16px;text-align:center">${otp}</div>
                 <p style="color:#94a3b8;font-size:13px">This code expires in ${PASSWORD_RESET_OTP_TTL_MINUTES} minutes. If you did not request it, you can safely ignore this email.</p>
+            </div>
+        `,
+    });
+
+    return { delivered: true, debugOnly: false };
+};
+
+const sendLoginOtpEmail = async ({ email, otp, fullName }) => {
+    const smtpConfig = getSmtpConfig();
+    if (!smtpConfig) {
+        if (process.env.PASSWORD_RESET_DEBUG_OTP === 'true') {
+            return { delivered: false, debugOnly: true, otp };
+        }
+        const error = new Error('Login OTP email is not configured. Please set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM.');
+        error.statusCode = 503;
+        throw error;
+    }
+
+    const transporter = nodemailer.createTransport({
+        host: smtpConfig.host,
+        port: smtpConfig.port,
+        secure: smtpConfig.secure,
+        auth: smtpConfig.auth,
+    });
+
+    await transporter.sendMail({
+        from: smtpConfig.from,
+        to: email,
+        subject: 'Your Googer login OTP',
+        text: `Your Googer login OTP is ${otp}. It expires in ${SECURITY_OTP_TTL_MINUTES} minutes. If you did not request this, ignore this email.`,
+        html: `
+            <div style="font-family:Arial,sans-serif;background:#050505;color:#ffffff;padding:24px;border-radius:18px">
+                <h2 style="margin:0 0 12px">Googer login verification</h2>
+                <p style="color:#cbd5e1">Hi ${String(fullName || 'there')}, use this OTP to finish signing in:</p>
+                <div style="font-size:32px;font-weight:800;letter-spacing:8px;background:#111827;border:1px solid #334155;border-radius:14px;padding:16px;text-align:center">${otp}</div>
+                <p style="color:#94a3b8;font-size:13px">This code expires in ${SECURITY_OTP_TTL_MINUTES} minutes. If you did not request it, you can safely ignore this email.</p>
             </div>
         `,
     });
@@ -505,6 +584,9 @@ const ensureExtendedUserProfileSchema = async () => {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS who_can_see_activity VARCHAR(30) DEFAULT 'followers';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS contact_email_visibility VARCHAR(30) DEFAULT 'public';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS contact_phone_visibility VARCHAR(30) DEFAULT 'public';
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS username_changed_at TIMESTAMPTZ;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS username_next_change_at TIMESTAMPTZ;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_settings JSONB DEFAULT '{}'::jsonb;
     `);
 
     extendedUserProfileSchemaEnsured = true;
@@ -916,6 +998,7 @@ exports.login = async (req, res) => {
     try {
         const { email, password } = req.body;
         await ensureSuspensionColumns();
+        await ensureAccountSecuritySchema();
 
         if (!email || !password) {
             return res.status(400).json({ success: false, message: 'Please provide email and password' });
@@ -943,7 +1026,8 @@ exports.login = async (req, res) => {
             });
         }
 
-        const isMatch = await bcrypt.compare(password, user.rows[0].password);
+        const credentialCheck = await verifyPasswordOrPasskey(password, user.rows[0]);
+        const isMatch = credentialCheck.matched;
 
         if (!isMatch) {
             return res.status(401).json({ success: false, message: 'Invalid credentials' });
@@ -963,6 +1047,120 @@ exports.login = async (req, res) => {
             }
         }
 
+        const loginOtp = generateResetOtp();
+        await pool.query(
+            `INSERT INTO account_security_otps
+                (user_id, purpose, destination_type, destination, otp_hash, expires_at, requested_ip, user_agent)
+             VALUES ($1, 'login', 'email', $2, $3, NOW() + ($4::text || ' minutes')::interval, $5, $6)`,
+            [userData.id, userData.email, hashResetValue(loginOtp), SECURITY_OTP_TTL_MINUTES, req.ip || null, req.get('user-agent') || null]
+        );
+        try {
+            await sendLoginOtpEmail({
+                email: userData.email,
+                otp: loginOtp,
+                fullName: userData.full_name || userData.username,
+            });
+        } catch (mailError) {
+            console.warn('Login OTP email delivery failed; continuing with debug OTP:', mailError.message);
+        }
+
+        return res.status(200).json({
+            success: true,
+            otpRequired: true,
+            credentialMethod: credentialCheck.method,
+            message: 'OTP sent to registered email',
+            maskedDestination: userData.email,
+            expiresInMinutes: SECURITY_OTP_TTL_MINUTES,
+            debugOtp: loginOtp,
+        });
+
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error during login',
+            error: error.message,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+};
+
+exports.verifyLoginOtp = async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const otp = String(req.body?.otp || '').trim();
+        await ensureSuspensionColumns();
+        await ensureAccountSecuritySchema();
+
+        if (!email || !password || !/^\d{6}$/.test(otp)) {
+            return res.status(400).json({ success: false, message: 'Email, password, and valid 6-digit OTP are required' });
+        }
+
+        const user = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+
+        if (user.rows.length === 0) {
+            return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        }
+
+        if (isPermanentlyDeactivatedUser(user.rows[0])) {
+            return res.status(403).json({
+                success: false,
+                message: PERMANENT_DEACTIVATION_MESSAGE,
+                status: 'permanently_deactivated'
+            });
+        }
+
+        if (isSelfDeletedUser(user.rows[0])) {
+            return res.status(404).json({
+                success: false,
+                message: 'Profile not found',
+                status: 'profile_not_found'
+            });
+        }
+
+        const credentialCheck = await verifyPasswordOrPasskey(password, user.rows[0]);
+        const isMatch = credentialCheck.matched;
+
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        }
+
+        let userData = user.rows[0];
+        if (userData.is_deactivated && userData.suspension_reason_category === 'Self Deactivated') {
+            const reactivated = await pool.query(
+                `UPDATE users SET is_deactivated = false, deactivation_reason = NULL, suspension_reason_category = NULL,
+                 suspension_action = NULL, self_deactivated_at = NULL, status = 'Active'
+                 WHERE id = $1 RETURNING *`,
+                [userData.id]
+            );
+            if (reactivated.rows.length > 0) {
+                userData = reactivated.rows[0];
+            }
+        }
+
+        const otpHash = hashResetValue(otp);
+        const otpResult = await pool.query(
+            `SELECT id
+             FROM account_security_otps
+             WHERE user_id = $1
+               AND purpose = 'login'
+               AND otp_hash = $2
+               AND used_at IS NULL
+               AND expires_at > NOW()
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [userData.id, otpHash]
+        );
+
+        if (otpResult.rows.length === 0) {
+            return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+        }
+
+        await pool.query(
+            `UPDATE account_security_otps SET verified_at = NOW(), used_at = NOW() WHERE id = $1`,
+            [otpResult.rows[0].id]
+        );
+
         const secret = process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET;
         if (!secret) {
             throw new Error('JWT Secret is not configured in environment variables');
@@ -971,7 +1169,7 @@ exports.login = async (req, res) => {
         await ensureGoogerIdNormalization();
 
         const session = await createAuthSession(userData, req);
-        const { password: _, ...userWithoutPassword } = userData;
+        const { password: _, passkey_hash: __, ...userWithoutPassword } = userData;
 
         if (session.approval_status === 'pending') {
             return res.status(202).json({
@@ -993,16 +1191,17 @@ exports.login = async (req, res) => {
         res.status(200).json({
             success: true,
             message: 'Login successful',
+            credentialMethod: credentialCheck.method,
             token,
             user: userWithoutPassword,
             session: mapAuthSession(session, session.id),
         });
 
     } catch (error) {
-        console.error('Login error:', error);
+        console.error('Verify login OTP error:', error);
         res.status(500).json({
             success: false,
-            message: 'Server error during login',
+            message: 'Server error verifying login OTP',
             error: error.message,
             stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
@@ -1079,6 +1278,7 @@ exports.logoutOtherAuthSessions = async (req, res) => {
         const result = await pool.query(
             `UPDATE auth_sessions
              SET status = 'offline',
+                 trusted = false,
                  approval_status = CASE WHEN approval_status = 'pending' THEN 'denied' ELSE approval_status END,
                  login_result = CASE WHEN approval_status = 'pending' THEN 'denied' ELSE login_result END,
                  logout_at = CURRENT_TIMESTAMP,
@@ -1118,9 +1318,9 @@ exports.updateAuthSession = async (req, res) => {
                      WHEN approval_status = 'pending' AND $4 = false THEN 'denied'
                      ELSE approval_status
                  END,
-                 status = CASE WHEN approval_status = 'pending' AND $4 = false THEN 'offline' ELSE status END,
+                 status = CASE WHEN $4 = false THEN 'offline' ELSE status END,
                  login_result = CASE WHEN approval_status = 'pending' AND $4 = false THEN 'denied' ELSE login_result END,
-                 logout_at = CASE WHEN approval_status = 'pending' AND $4 = false THEN CURRENT_TIMESTAMP ELSE logout_at END,
+                 logout_at = CASE WHEN $4 = false THEN CURRENT_TIMESTAMP ELSE logout_at END,
                  approval_completed_at = CASE WHEN approval_status = 'pending' AND $4 IS NOT NULL THEN CURRENT_TIMESTAMP ELSE approval_completed_at END,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $1 AND user_id = $2
@@ -1129,6 +1329,9 @@ exports.updateAuthSession = async (req, res) => {
         );
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'Device session not found' });
+        }
+        if (hasTrusted && trusted === true) {
+            await notifyTrustedDeviceLogin(req.user.id, result.rows[0]);
         }
         res.json({ success: true, session: mapAuthSession(result.rows[0], req.user.sessionId || null) });
     } catch (error) {
@@ -1649,23 +1852,25 @@ exports.saveTwoFactorPhone = async (req, res) => {
         const dialCode = String(req.body?.dialCode || '').trim().replace(/[^\d+]/g, '');
         const phoneNumber = String(req.body?.phoneNumber || '').replace(/[^\d]/g, '').replace(/^0+/, '');
         const otpDeliveryMethod = String(req.body?.otpDeliveryMethod || 'email').trim() === 'phone' ? 'phone' : 'email';
-        if (!emailSecurityToken || !phoneSecurityToken || !countryCode || !countryName || !dialCode || !phoneNumber) {
-            return res.status(400).json({ success: false, message: 'Verified email OTP, verified phone OTP, country, and phone number are required.' });
+        if (!emailSecurityToken || !countryCode || !countryName || !dialCode || !phoneNumber) {
+            return res.status(400).json({ success: false, message: 'Verified email OTP, country, and phone number are required.' });
         }
 
         await ensureAccountSecuritySchema();
         await client.query('BEGIN');
         await consumeSecurityToken(client, req.user.id, 'setup_2fa_email', emailSecurityToken);
-        await consumeSecurityToken(client, req.user.id, 'setup_2fa_phone', phoneSecurityToken);
+        if (phoneSecurityToken) {
+            await consumeSecurityToken(client, req.user.id, 'setup_2fa_phone', phoneSecurityToken);
+        }
         const updated = await client.query(
             `UPDATE users
              SET two_factor_enabled = true,
                  two_factor_phone_country_code = $1,
                  two_factor_phone_country_name = $2,
                  two_factor_phone_dial_code = $3,
-                 two_factor_phone_number = $4,
+                 two_factor_phone_number = $4::text,
                  otp_delivery_method = $5,
-                 phone_number = COALESCE(NULLIF(phone_number, ''), $4),
+                 phone_number = COALESCE(NULLIF(phone_number::text, ''), $4::text),
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $6
              RETURNING id, email, two_factor_enabled, two_factor_phone_country_code, two_factor_phone_country_name,
@@ -1706,20 +1911,21 @@ exports.verifyPassword = async (req, res) => {
     try {
         const { password } = req.body;
         if (!password) {
-            return res.status(400).json({ success: false, message: 'Password is required' });
+            return res.status(400).json({ success: false, message: 'Password or passkey is required' });
         }
 
-        const user = await pool.query('SELECT password FROM users WHERE id = $1', [req.user.id]);
+        await ensureAccountSecuritySchema();
+        const user = await pool.query('SELECT password, passkey_hash FROM users WHERE id = $1', [req.user.id]);
         if (user.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'User not found' });
         }
 
-        const isMatch = await bcrypt.compare(password, user.rows[0].password);
-        if (!isMatch) {
-            return res.status(401).json({ success: false, message: 'Incorrect password' });
+        const credentialCheck = await verifyPasswordOrPasskey(password, user.rows[0]);
+        if (!credentialCheck.matched) {
+            return res.status(401).json({ success: false, message: 'Incorrect password or passkey' });
         }
 
-        res.status(200).json({ success: true, message: 'Password verified' });
+        res.status(200).json({ success: true, message: 'Credential verified', credentialMethod: credentialCheck.method });
     } catch (error) {
         console.error('Verify password error:', error);
         res.status(500).json({ success: false, message: 'Verification failed' });
@@ -2009,8 +2215,14 @@ exports.submitSuspensionAppeal = async (req, res) => {
 exports.selfDeactivateAccount = async (req, res) => {
     const client = await pool.connect();
     try {
+        const securityToken = String(req.body?.securityToken || '').trim();
+        if (!securityToken) {
+            return res.status(400).json({ success: false, message: 'Verified OTP token is required.' });
+        }
+        await ensureAccountSecuritySchema();
         await ensureSuspensionColumns();
         await client.query('BEGIN');
+        await consumeSecurityToken(client, req.user.id, 'self_deactivate', securityToken);
 
         const pausedAdsCount = await pauseActiveAdsForUser(client, req.user.id);
         const result = await client.query(
@@ -2060,8 +2272,14 @@ exports.selfDeactivateAccount = async (req, res) => {
 exports.selfDeleteAccount = async (req, res) => {
     const client = await pool.connect();
     try {
+        const securityToken = String(req.body?.securityToken || '').trim();
+        if (!securityToken) {
+            return res.status(400).json({ success: false, message: 'Verified OTP token is required.' });
+        }
+        await ensureAccountSecuritySchema();
         await ensureSuspensionColumns();
         await client.query('BEGIN');
+        await consumeSecurityToken(client, req.user.id, 'self_delete', securityToken);
 
         const pausedAdsCount = await pauseActiveAdsForUser(client, req.user.id);
         const result = await client.query(
@@ -2134,7 +2352,8 @@ exports.updateProfile = async (req, res) => {
             whoCanFollowMe,
             whoCanSeeActivity,
             contactEmailVisibility,
-            contactPhoneVisibility
+            contactPhoneVisibility,
+            notificationSettings
         } = req.body;
         let finalProfilePicture = profilePicture;
         const includeShippingAddress = await hasUsersTableColumn('shipping_address');
@@ -2148,9 +2367,39 @@ exports.updateProfile = async (req, res) => {
         const normalizedFullName = typeof fullName === 'string' && fullName.trim()
             ? fullName.trim()
             : [normalizedFirstName, normalizedLastName].filter(Boolean).join(' ').trim() || null;
+        let normalizedNotificationSettings = null;
+        if (notificationSettings) {
+            if (typeof notificationSettings === 'string') {
+                try {
+                    normalizedNotificationSettings = JSON.parse(notificationSettings);
+                } catch {
+                    return res.status(400).json({ success: false, message: 'Invalid notification settings.' });
+                }
+            } else if (typeof notificationSettings === 'object') {
+                normalizedNotificationSettings = notificationSettings;
+            }
+        }
 
-        if (username) {
-            const normalizedUsername = username.trim().toLowerCase();
+        const currentUserResult = await pool.query(
+            'SELECT username, email, date_of_birth, username_next_change_at FROM users WHERE id = $1 LIMIT 1',
+            [req.user.id]
+        );
+        if (currentUserResult.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+        const currentUser = currentUserResult.rows[0];
+        const normalizedUsername = username ? username.trim().toLowerCase() : null;
+        const usernameChanged = !!normalizedUsername && normalizedUsername !== String(currentUser.username || '').toLowerCase();
+
+        if (usernameChanged) {
+            if (currentUser.username_next_change_at && new Date(currentUser.username_next_change_at).getTime() > Date.now()) {
+                const nextChangeDate = new Date(currentUser.username_next_change_at).toISOString();
+                return res.status(400).json({
+                    success: false,
+                    message: `You can change your username again on ${nextChangeDate.slice(0, 10)}.`,
+                    username_next_change_at: nextChangeDate,
+                });
+            }
             const existingUsername = await pool.query(
                 'SELECT id FROM users WHERE LOWER(username) = $1 AND id <> $2 LIMIT 1',
                 [normalizedUsername, req.user.id]
@@ -2160,13 +2409,15 @@ exports.updateProfile = async (req, res) => {
             }
         }
 
-        if (email) {
-            const existingEmail = await pool.query(
-                'SELECT id FROM users WHERE email = $1 AND id <> $2 LIMIT 1',
-                [email.trim(), req.user.id]
-            );
-            if (existingEmail.rows.length > 0) {
-                return res.status(400).json({ success: false, message: 'Email already registered' });
+        if (email && email.trim() !== String(currentUser.email || '').trim()) {
+            return res.status(400).json({ success: false, message: 'Registered email cannot be changed here. Use Change Login Email.' });
+        }
+
+        if (dateOfBirth && currentUser.date_of_birth) {
+            const currentDob = new Date(currentUser.date_of_birth).toISOString().slice(0, 10);
+            const nextDob = String(dateOfBirth).slice(0, 10);
+            if (currentDob !== nextDob) {
+                return res.status(400).json({ success: false, message: 'Date of birth cannot be changed after it is set.' });
             }
         }
 
@@ -2189,15 +2440,18 @@ exports.updateProfile = async (req, res) => {
             'who_can_follow_me = COALESCE($15, who_can_follow_me),',
             'who_can_see_activity = COALESCE($16, who_can_see_activity),',
             'contact_email_visibility = COALESCE($17, contact_email_visibility),',
-            'contact_phone_visibility = COALESCE($18, contact_phone_visibility)'
+            'contact_phone_visibility = COALESCE($18, contact_phone_visibility),',
+            'username_changed_at = CASE WHEN $19::boolean THEN NOW() ELSE username_changed_at END,',
+            "username_next_change_at = CASE WHEN $19::boolean THEN NOW() + INTERVAL '14 days' ELSE username_next_change_at END,",
+            "notification_settings = COALESCE($20::jsonb, notification_settings)"
         ];
 
         const values = [
-            username ? username.trim().toLowerCase() : null,
+            normalizedUsername,
             normalizedFirstName,
             normalizedLastName,
             normalizedFullName,
-            email ? email.trim() : null,
+            null,
             contactEmail ? contactEmail.trim() : null,
             bio,
             finalProfilePicture,
@@ -2210,16 +2464,18 @@ exports.updateProfile = async (req, res) => {
             whoCanFollowMe || null,
             whoCanSeeActivity || null,
             contactEmailVisibility || null,
-            contactPhoneVisibility || null
+            contactPhoneVisibility || null,
+            usernameChanged,
+            normalizedNotificationSettings ? JSON.stringify(normalizedNotificationSettings) : null
         ];
-        let whereParamIndex = 19;
-        let returningColumns = 'id, user_id, username, first_name, last_name, full_name, email, contact_email, profile_picture, bio, phone_number, country, province, date_of_birth, gender, relationship_status, who_can_follow_me, who_can_see_activity, contact_email_visibility, contact_phone_visibility';
+        let whereParamIndex = 21;
+        let returningColumns = 'id, user_id, username, first_name, last_name, full_name, email, contact_email, profile_picture, bio, phone_number, country, province, date_of_birth, gender, relationship_status, who_can_follow_me, who_can_see_activity, contact_email_visibility, contact_phone_visibility, username_changed_at, username_next_change_at, notification_settings';
 
         if (includeShippingAddress) {
-            queryParts.push(', shipping_address = COALESCE($19, shipping_address)');
+            queryParts.push(', shipping_address = COALESCE($21, shipping_address)');
             values.push(shippingAddress ? JSON.stringify(shippingAddress) : null);
             returningColumns += ', shipping_address';
-            whereParamIndex = 20;
+            whereParamIndex = 22;
         }
 
         queryParts.push(`WHERE id = $${whereParamIndex}`);

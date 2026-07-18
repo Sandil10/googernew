@@ -278,4 +278,5 @@ module.exports = {
     setCachedAnonymousPublicAds,
     shouldLogPublicAdsTiming,
     shuffleRowsWithSeed,
+    syncExpiredAds: readAdsRepository.syncExpiredAds,
 };

@@ -24,23 +24,41 @@ export const getUserDisplayName = (user: any, fallback = "User") => {
 export const getItemUsername = (item: any, fallback = "User") =>
   getUserDisplayName(
     {
-      ...item,
       ...getItemUser(item),
-      username: getItemUser(item)?.username || item?.username || item?.owner_username,
+      ...item,
+      username:
+        item?.owner_username ||
+        item?.ownerUsername ||
+        item?.username ||
+        getItemUser(item)?.username ||
+        getItemUser(item)?.name,
     },
     fallback
   );
 
 export const getItemProfilePicture = (item: any) =>
-  getItemUser(item)?.profile_picture || item?.profile_picture || item?.profileImage || "";
+  item?.profile_picture ||
+  item?.profilePicture ||
+  item?.owner_profile_picture ||
+  item?.ownerProfilePicture ||
+  item?.profileImage ||
+  getItemUser(item)?.profile_picture ||
+  getItemUser(item)?.profilePicture ||
+  "";
 
 export const getItemUserId = (item: any) =>
-  getItemUser(item)?.id || item?.user_id || item?.owner_user_id || item?.userId || null;
+  item?.user_id ||
+  item?.userId ||
+  item?.owner_user_id ||
+  item?.ownerUserId ||
+  getItemUser(item)?.id ||
+  getItemUser(item)?.user_id ||
+  null;
 
 export const formatGoogerId = (value: any) => {
   const raw = String(value ?? "").trim();
   if (!raw) return "N/A";
   const digits = raw.replace(/\D/g, "");
   if (!digits) return raw;
-  return `id - ${digits.padStart(6, "0").slice(-6)}`;
+  return digits.padStart(6, "0").slice(-6);
 };

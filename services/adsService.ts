@@ -16,6 +16,43 @@ const safeJson = async (response: Response) => {
     return null;
 };
 
+const resolveCanonicalAdId = (target: any): string => {
+    const raw = target?.raw?.raw || target?.raw || target || {};
+    const candidates = [
+        target?.ad_id,
+        target?.adId,
+        raw?.ad_id,
+        raw?.adId,
+        raw?.editDraft?.editingAdId,
+        raw?.edit_draft?.editingAdId,
+        raw?.editDraft?.adId,
+        raw?.edit_draft?.adId,
+        target?.id,
+        raw?.id,
+    ];
+
+    for (const candidate of candidates) {
+        const value = String(candidate ?? "").trim().replace(/^ad-/, "");
+        if (/^\d{6,}$/.test(value)) return value;
+    }
+
+    return "";
+};
+
+const isRunningAdStatus = (target: any) => {
+    const raw = target?.raw?.raw || target?.raw || target || {};
+    const status = String(
+        target?.status ||
+        target?.delivery_status ||
+        target?.deliveryStatus ||
+        raw?.status ||
+        raw?.delivery_status ||
+        raw?.deliveryStatus ||
+        ""
+    ).trim().toLowerCase();
+    return status === "active" || status === "running" || status === "paused";
+};
+
 const getHeaders = () => {
     const token = storage.get('token');
     return {
@@ -157,7 +194,8 @@ export const adsService = {
     },
 
     getAdById: async (adId: string) => {
-        const response = await fetch(`${API_URL}/ads/${encodeURIComponent(adId)}`, {
+        const normalizedAdId = String(adId || '').trim().replace(/^ad-/i, '');
+        const response = await fetch(`${API_URL}/ads/${encodeURIComponent(normalizedAdId)}`, {
             method: 'GET',
             headers: getHeaders(),
         });
@@ -198,6 +236,26 @@ export const adsService = {
         const result = await safeJson(response);
         if (!response.ok) throw new Error(result?.message || 'Failed to update ad');
         return result?.ad;
+    },
+
+    cancelAd: async (adId: string | number) => {
+        const normalizedAdId = String(adId).replace(/^ad-/, "");
+        return adsService.updateAd(normalizedAdId, { status: 'Cancelled' });
+    },
+
+    deleteAd: async (ad: any) => {
+        const adId = resolveCanonicalAdId(ad);
+        if (!adId) throw new Error('Ad ID not found');
+
+        const preferredStatus = isRunningAdStatus(ad) ? 'Cancelled' : 'Removed';
+        try {
+            return await adsService.updateAd(adId, { status: preferredStatus });
+        } catch (error) {
+            if (preferredStatus === 'Removed') {
+                return adsService.updateAd(adId, { status: 'Cancelled' });
+            }
+            throw error;
+        }
     },
 
     getAllAds: async () => {

@@ -172,6 +172,10 @@ export const getSponsoredCtaHref = (ctaTopic?: string, ctaValue?: string) => {
     if (trimmedValue.includes("@") && !/^https?:\/\//i.test(trimmedValue) && ctaTopic === "Contact Us") {
         return `mailto:${trimmedValue}`;
     }
+    if (ctaTopic === "Contact Us" && !/^https?:\/\//i.test(trimmedValue)) {
+        const digits = trimmedValue.replace(/[^\d+]/g, "");
+        if (digits.replace(/\D/g, "").length >= 7) return `tel:${digits}`;
+    }
     return normalizeExternalUrl(trimmedValue);
 };
 
@@ -225,6 +229,14 @@ const extractMediaValue = (item: any) => {
     return item.url || item.image_url || item.image || item.src || "";
 };
 
+const isUploadedImageMedia = (value: string) => {
+    const src = String(value || "").trim();
+    if (!src) return false;
+    if (/\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(src)) return false;
+    if (src.startsWith("/uploads/") || src.includes("/uploads/") || src.includes("\\uploads\\")) return true;
+    return /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(src) && !/^https?:\/\//i.test(src);
+};
+
 const getAdMediaGallery = (ad: any) => {
     const gallerySources = [
         ad?.mediaGallery,
@@ -245,6 +257,7 @@ const getAdMediaGallery = (ad: any) => {
 };
 
 export const getAdPreviewImage = (ad: any, previewType: string | null) => {
+    void previewType;
     const activeLink = normalizeExternalUrl(ad?.active_link || "");
     const linkPreviewImage = getSponsoredLinkPreviewImage(activeLink);
 
@@ -297,6 +310,30 @@ export const getSponsoredAdImages = (ad: any, fallbackImage?: string): string[] 
             ]
                 .map((item) => normalizeUploadPath(String(item || "").trim()))
                 .filter(Boolean) as string[],
+        ),
+    );
+};
+
+export const getSponsoredUploadedAdImages = (ad: any): string[] => {
+    const gallery = getAdMediaGallery(ad);
+    return Array.from(
+        new Set(
+            [
+                ad?.mediaPreview,
+                ad?.raw?.mediaPreview,
+                ad?.media_preview,
+                ad?.raw?.media_preview,
+                ...gallery.map(extractMediaValue),
+                ad?.image_url,
+                ad?.main_image,
+                ad?.thumbnail_url,
+                ad?.raw?.image_url,
+                ad?.raw?.main_image,
+                ad?.raw?.thumbnail_url,
+            ]
+                .map((item) => String(item || "").trim())
+                .filter(isUploadedImageMedia)
+                .map(normalizeUploadPath),
         ),
     );
 };

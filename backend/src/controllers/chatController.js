@@ -62,6 +62,7 @@ const pruneExpiredChatsForUser = async (userId) => {
         const features = await getUserSubscriptionFeatures(userId);
         const retentionMs = getChatRetentionMs(features.extra || {});
         if (!retentionMs) return;
+        const cutoff = new Date(Date.now() - retentionMs);
 
         await pool.query(
             `UPDATE chat_messages
@@ -72,8 +73,8 @@ const pruneExpiredChatsForUser = async (userId) => {
              WHERE (sender_id = $1 OR receiver_id = $1)
                AND deleted_for_everyone = FALSE
                AND NOT (deleted_for ? ($1::text))
-               AND created_at < NOW() - ($2::text || ' milliseconds')::interval`,
-            [userId, retentionMs]
+               AND created_at < $2`,
+            [userId, cutoff]
         );
     } catch (err) {
         console.error('[chat] pruneExpiredChatsForUser error:', err.message);
@@ -465,6 +466,41 @@ const getUserSummaryById = async (userId) => {
     );
 
     return result.rows[0] || null;
+};
+
+const ensureAdminCustomizationTable = async () => {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS admin_customization_settings (
+            setting_key TEXT PRIMARY KEY,
+            setting_value JSONB NOT NULL DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `);
+};
+
+const getAssignedSupportAdmin = async () => {
+    await ensureAdminCustomizationTable();
+    const assignmentResult = await pool.query(
+        `SELECT setting_value
+         FROM admin_customization_settings
+         WHERE setting_key = 'global_chat_assignment'
+         LIMIT 1`
+    );
+    const assignedAdminId = Number(assignmentResult.rows[0]?.setting_value?.assigned_admin_id || 0);
+
+    if (assignedAdminId) {
+        const assigned = await getUserSummaryById(assignedAdminId);
+        if (assigned && normalizeRole(assigned.user_type) === 'admin') return assigned;
+    }
+
+    const fallbackResult = await pool.query(
+        `SELECT id, username, full_name, profile_picture, user_type
+         FROM users
+         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+    return fallbackResult.rows[0] || null;
 };
 
 const mapParticipantUser = (row, fallbackRoleLabel = 'User') => {
@@ -1288,6 +1324,29 @@ exports.getConversations = async (req, res) => {
     } catch (err) {
         console.error('getConversations error:', err);
         return error(res, 'Server error fetching chat conversations', 500);
+    }
+};
+
+exports.getSupportAssignment = async (req, res) => {
+    try {
+        const assignedAdmin = await getAssignedSupportAdmin();
+        if (!assignedAdmin) {
+            return error(res, 'No support admin is assigned right now.', 404);
+        }
+
+        return success(res, {
+            assigned_admin: {
+                id: Number(assignedAdmin.id),
+                username: assignedAdmin.username || null,
+                full_name: assignedAdmin.full_name || null,
+                profile_picture: assignedAdmin.profile_picture || null,
+                user_type: assignedAdmin.user_type || 'admin',
+                name: assignedAdmin.username || assignedAdmin.full_name || 'Admin',
+            },
+        }, 'Support admin fetched');
+    } catch (err) {
+        console.error('getSupportAssignment error:', err);
+        return error(res, 'Server error fetching support admin', 500);
     }
 };
 

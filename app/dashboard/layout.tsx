@@ -29,6 +29,13 @@ const menuItems = [
     { name: "Chats", icon: "chatbubbles", href: "/chats" },
 ];
 
+const isProfileComplete = (user: any) => Boolean(
+    String(user?.first_name || "").trim()
+    && String(user?.date_of_birth || "").trim()
+    && String(user?.country || user?.shipping_address?.country || "").trim()
+    && String(user?.gender || "").trim()
+);
+
 export default function DashboardLayout({
     children,
 }: {
@@ -37,7 +44,9 @@ export default function DashboardLayout({
     const router = useRouter();
     const pathname = usePathname();
     const isAdCampaignRoute = pathname?.startsWith("/dashboard/ad-campaign") || pathname?.startsWith("/ad-campaign") || false;
+    const isHomeRoute = pathname === "/dashboard" || pathname === "/home";
     const isPublicProfileRoute = pathname?.startsWith("/@") || pathname?.startsWith("/profile/");
+    const isSettingsRoute = pathname === "/dashboard/settings" || pathname?.startsWith("/settings/");
     const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
     const [isCreateActionMenuOpen, setIsCreateActionMenuOpen] = useState(false);
     const [isWriteGoogsModalOpen, setIsWriteGoogsModalOpen] = useState(false);
@@ -221,10 +230,11 @@ export default function DashboardLayout({
                 .then((profile) => {
                     setCurrentUser(profile);
                     if (shouldRedirectSuspendedUser(profile)) router.replace("/suspended");
+                    else if (!isSettingsRoute && !isProfileComplete(profile)) router.replace(`/dashboard/settings?completeProfile=1&next=${encodeURIComponent(pathname || "/dashboard")}`);
                 })
                 .catch(() => {});
         }
-    }, [router, shouldRedirectSuspendedUser]);
+    }, [isSettingsRoute, pathname, router, shouldRedirectSuspendedUser]);
 
     useEffect(() => {
         if (typeof window === "undefined") return;
@@ -249,7 +259,10 @@ export default function DashboardLayout({
 
     useEffect(() => {
         if (shouldRedirectSuspendedUser(currentUser)) router.replace("/suspended");
-    }, [currentUser, router, shouldRedirectSuspendedUser]);
+        else if (currentUser?.id && !isSettingsRoute && !isProfileComplete(currentUser)) {
+            router.replace(`/dashboard/settings?completeProfile=1&next=${encodeURIComponent(pathname || "/dashboard")}`);
+        }
+    }, [currentUser, isSettingsRoute, pathname, router, shouldRedirectSuspendedUser]);
 
 
     useEffect(() => {
@@ -309,7 +322,7 @@ export default function DashboardLayout({
             ["photo-and-video", "product-promote", "profile-promote", "upload-content", "vault-content", "flash-content"].forEach((type) => {
                 window.localStorage.removeItem(`googer-ad-draft-${type}`);
             });
-            router.push(action === "upload-content" ? "/ad-campaign/upload-content" : "/ad-campaign/photo-video");
+            router.push(action === "upload-content" ? "/ad-campaign/flash-content" : "/ad-campaign/photo-video");
             return;
         }
 
@@ -390,18 +403,20 @@ export default function DashboardLayout({
             <Topbar />
 
             {/* Mobile Cart Floating Button â€” above bottom nav */}
-            <button
-                className="md:hidden fixed bottom-[4.5rem] right-4 z-[60] w-11 h-11 rounded-full bg-white/10 border border-white/15 backdrop-blur-md flex items-center justify-center text-white shadow-xl active:scale-95 transition-all"
-                onClick={() => { if (!isCartLocked) setIsCartOpen(!isCartOpen); }}
-                suppressHydrationWarning={true}
-            >
-                <IonIcon name={isCartOpen ? "cart" : "cart-outline"} className="text-lg" />
-                {cartCount > 0 && (
-                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 text-white text-[8px] font-black rounded-full flex items-center justify-center border border-zinc-900">
-                        {cartCount}
-                    </span>
-                )}
-            </button>
+            {!isHomeRoute && (
+                <button
+                    className="hidden fixed bottom-[4.5rem] right-4 z-[60] w-11 h-11 rounded-full bg-white/10 border border-white/15 backdrop-blur-md items-center justify-center text-white shadow-xl active:scale-95 transition-all"
+                    onClick={() => { if (!isCartLocked) setIsCartOpen(!isCartOpen); }}
+                    suppressHydrationWarning={true}
+                >
+                    <IonIcon name={isCartOpen ? "cart" : "cart-outline"} className="text-lg" />
+                    {cartCount > 0 && (
+                        <span className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 text-white text-[8px] font-black rounded-full flex items-center justify-center border border-zinc-900">
+                            {cartCount}
+                        </span>
+                    )}
+                </button>
+            )}
 
             {/* Mobile Bottom Nav */}
             <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-zinc-900 border-t border-zinc-800 flex items-center justify-around z-50 px-2 transition-all duration-300">
@@ -521,9 +536,9 @@ export default function DashboardLayout({
 
             {/* Main Content Area */}
             <main
-                className={`flex-1 bg-[#1c1917] transition-all duration-300 ${isAdCampaignRoute ? "overflow-visible pb-10 pt-[3.8rem]" : "overflow-y-auto pb-20 pt-20 md:pb-8 md:pt-24"}`}
+                className={`flex-1 bg-[#1c1917] transition-all duration-300 ${isAdCampaignRoute ? "overflow-visible pb-10 pt-[3.8rem]" : `overflow-y-auto pb-20 pt-20 md:pb-8 md:pt-24 ${isHomeRoute ? "[-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" : ""}`}`}
             >
-                <div className={`mx-auto w-full max-w-[1400px] px-2 sm:px-4 md:px-6 lg:px-8 xl:px-10 ${isAdCampaignRoute ? "py-2 sm:py-3" : "py-4 sm:py-5 md:py-6"}`}>
+                <div className={`mx-auto w-full max-w-[1400px] ${isHomeRoute ? "px-0 sm:px-4 md:px-6 lg:px-8 xl:px-10" : "px-2 sm:px-4 md:px-6 lg:px-8 xl:px-10"} ${isAdCampaignRoute ? "py-2 sm:py-3" : "py-4 sm:py-5 md:py-6"}`}>
                     {children}
                 </div>
             </main>

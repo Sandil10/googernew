@@ -2,10 +2,6 @@ const activePublicAdsRepository = require('./activePublicAdsRepository');
 
 const getGraceIntervalSql = () => `((${require('../../utils/subscriptionRenewal').getGraceDurationSeconds()}::text || ' seconds')::interval)`;
 const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
-    CASE
-        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
-        ELSE NULL
-    END,
     (
         SELECT
             CASE
@@ -45,7 +41,11 @@ const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
         FROM subscription_plans sp
         WHERE sp.slug = 'basic' AND sp.is_active = TRUE
         LIMIT 1
-    )
+    ),
+    CASE
+        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
+        ELSE NULL
+    END
 )`;
 const RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL = `
     a.active_start_time IS NOT NULL
@@ -59,6 +59,10 @@ const getActiveAdsPublic = async (req, res) => {
     const mark = (label, startedAt) => {
         timings[label] = Number(activePublicAdsRepository.readDurationMs(startedAt).toFixed(2));
     };
+
+    const syncExpiredStartedAt = process.hrtime.bigint();
+    await activePublicAdsRepository.syncExpiredAds(require('../../config/database'));
+    mark('syncExpiredMs', syncExpiredStartedAt);
 
     const viewerId = activePublicAdsRepository.getOptionalViewerId(req);
     const isAnonymousRequest = !viewerId;
@@ -225,14 +229,37 @@ const getActiveAdsPublic = async (req, res) => {
         const productImage = productImageCandidates.find((item) => !isPlaceholderImage(item)) || '/assets/images/googer.png';
         const sizes = Array.isArray(linked.sizes) ? linked.sizes : activePublicAdsRepository.deriveVariantSizes(linkedVariants);
         const colors = Array.isArray(linked.colors) ? linked.colors : activePublicAdsRepository.deriveVariantColors(linkedVariants);
+        const advertiserUserId = ad.user_id || ad.userId || ad.ad_owner_user_id || ad.adOwnerUserId || ad.advertiser_id || ad.advertiserId || null;
+        const advertiserPublicUserId = ad.owner_user_id || ad.ownerUserId || ad.user?.user_id || ad.user?.userId || null;
+        const advertiserUsername = ad.owner_username || ad.ownerUsername || ad.user?.username || ad.username || linked.owner_username || linked.username || null;
+        const advertiserProfilePicture = ad.profile_picture || ad.user?.profile_picture || linked.profile_picture || null;
+        const productOwnerUserId = linked.user_id || linked.userId || null;
+        const productOwnerUsername = linked.owner_username || linked.username || null;
         return {
             ...ad,
             ...linked,
             id: Number(linked.id),
             adId: ad.adId || ad.ad_id,
             ad_id: ad.ad_id || ad.adId,
-            ad_owner_user_id: ad.user_id || ad.userId,
-            advertiser_id: ad.user_id || ad.userId,
+            user_id: advertiserUserId,
+            userId: advertiserUserId,
+            owner_user_id: advertiserPublicUserId,
+            ownerUserId: advertiserPublicUserId,
+            ad_owner_user_id: advertiserUserId,
+            adOwnerUserId: advertiserUserId,
+            advertiser_id: advertiserUserId,
+            advertiserId: advertiserUserId,
+            product_owner_user_id: productOwnerUserId,
+            productOwnerUserId: productOwnerUserId,
+            product_owner_username: productOwnerUsername,
+            productOwnerUsername: productOwnerUsername,
+            seller_id: productOwnerUserId,
+            sellerId: productOwnerUserId,
+            seller_username: productOwnerUsername,
+            sellerUsername: productOwnerUsername,
+            username: advertiserUsername,
+            owner_username: advertiserUsername,
+            ownerUsername: advertiserUsername,
             title: linked.title || ad.title,
             description: linked.description || ad.description || '',
             category: linked.category || ad.category,
@@ -265,12 +292,15 @@ const getActiveAdsPublic = async (req, res) => {
             productId: linked.id,
             share_code: linked.product_code || ad.share_code || String(linked.id),
             shareCode: linked.product_code || ad.shareCode || String(linked.id),
-            profile_picture: linked.profile_picture || ad.profile_picture,
+            profile_picture: advertiserProfilePicture,
+            status: ad.status || 'Active',
             user: {
                 ...(ad.user || {}),
-                id: linked.user_id,
-                username: linked.owner_username || ad.user?.username || ad.username,
-                profile_picture: linked.profile_picture || ad.user?.profile_picture || ad.profile_picture || null,
+                id: advertiserUserId,
+                user_id: advertiserPublicUserId,
+                userId: advertiserPublicUserId,
+                username: advertiserUsername,
+                profile_picture: advertiserProfilePicture,
             },
             is_sponsored: true,
             isAd: true,

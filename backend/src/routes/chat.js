@@ -9,6 +9,7 @@ router.post('/presence', chatController.updatePresence);
 router.post('/typing', chatController.updateTyping);
 router.get('/typing/:participantId', chatController.getTyping);
 router.get('/conversations', chatController.getConversations);
+router.get('/support-assignment', chatController.getSupportAssignment);
 router.post('/conversations/hide', chatController.hideConversation);
 router.post('/conversations/unhide', chatController.unhideConversation);
 router.delete('/conversations/:participantId', chatController.deleteConversation);

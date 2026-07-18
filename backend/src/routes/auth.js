@@ -9,6 +9,7 @@ const authMiddleware = require('../middleware/auth');
 router.post('/register', authController.register);
 router.get('/username/:username', readController.getUserByUsername);
 router.post('/login', authController.login);
+router.post('/login/verify-otp', authController.verifyLoginOtp);
 router.post('/login/device-approval/status', authController.getDeviceApprovalStatus);
 router.post('/forgot-password/request-otp', authController.requestPasswordResetOtp);
 router.post('/forgot-password/verify-otp', authController.verifyPasswordResetOtp);

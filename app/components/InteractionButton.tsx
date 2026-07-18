@@ -46,6 +46,7 @@ export const InteractionButton = memo(({
 }: InteractionButtonProps) => {
   const timerRef = useRef<any>(null);
   const longPressedRef = useRef(false);
+  const lastClickAtRef = useRef(0);
 
   const handleStart = (e: React.PointerEvent) => {
     e.stopPropagation();
@@ -70,6 +71,9 @@ export const InteractionButton = memo(({
 
   const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
+    const now = Date.now();
+    if (now - lastClickAtRef.current < 250) return;
+    lastClickAtRef.current = now;
     if (longPressedRef.current) {
       longPressedRef.current = false;
       return;

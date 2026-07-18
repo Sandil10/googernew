@@ -365,14 +365,14 @@ export function ShopProductSecondViewModal({
                       <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
                         <Image
                           src="/assets/images/rupee.png"
-                          alt="Ruppier coin"
+                          alt="Rupieer coin"
                           width={28}
                           height={28}
                           className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
                           unoptimized
                         />
                       </span>
-                      <span className="leading-none">Ruppier</span>
+                      <span className="leading-none">Rupieer</span>
                     </button>
                   )}
                   <div className="relative flex items-center gap-1.5">
@@ -577,7 +577,7 @@ export function ShopProductSecondViewModal({
                 )}
 
                 <div className="mb-5 px-1">
-                  <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/50 mb-2">RUPIEER</p>
+                  <p className="mb-2 text-[9px] font-black tracking-[0.2em] text-white/50">Rupieer</p>
                   <div className="flex flex-wrap items-center gap-4 rounded-[1.5rem] border border-white/10 bg-white/[0.03] px-4 py-3 shadow-inner">
                     <div className="flex items-center gap-2.5 shrink-0">
                       <span className="text-[22px] font-black text-white leading-none">•</span>
@@ -770,7 +770,7 @@ export function ShopProductSecondViewModal({
                 </div>
               ) : (
                 <>
-                  <span className="text-[10px] font-black text-white uppercase tracking-[0.3em]">RUPIEER</span>
+                  <span className="text-[10px] font-black text-white tracking-[0.3em]">Rupieer</span>
                   <span className="text-[19px] font-black text-white tracking-widest leading-none">
                     {(parseFloat(activeVariant?.promo_price || activeVariant?.price || product.promo_price || product.price || 0) * quantity).toFixed(2)}
                   </span>

@@ -26,6 +26,15 @@ type SettingsUser = {
     country?: string;
     province?: string;
     date_of_birth?: string;
+    username_changed_at?: string;
+    username_next_change_at?: string;
+    two_factor_enabled?: boolean;
+    two_factor_phone_country_code?: string;
+    two_factor_phone_country_name?: string;
+    two_factor_phone_dial_code?: string;
+    two_factor_phone_number?: string;
+    otp_delivery_method?: "email" | "phone";
+    notification_settings?: Record<string, boolean>;
     gender?: string;
     relationship_status?: string;
     who_can_follow_me?: string;
@@ -68,7 +77,7 @@ type AuthSessionDevice = {
 
 const EDIT_TABS = [
     { key: "general", label: "General" },
-    { key: "password", label: "Password" },
+    { key: "notifications", label: "Notifications" },
     { key: "privacy", label: "Privacy" },
     { key: "security", label: "Security" },
 ] as const;
@@ -84,6 +93,26 @@ const MAX_PROFILE_IMAGE_DIMENSION = 1200;
 const MAX_BIO_LENGTH = 50;
 const MAX_BIO_LINKS = 2;
 const TODAY_DATE_STRING = new Date().toISOString().slice(0, 10);
+const MONTH_OPTIONS = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+];
+
+function formatFriendlyDate(value?: string) {
+    if (!value) return "";
+    const [year, month, day] = value.slice(0, 10).split("-").map(Number);
+    if (!year || !month || !day) return value;
+    return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+    });
+}
+
+function clampDateToToday(value: string) {
+    if (!value) return "";
+    return value > TODAY_DATE_STRING ? TODAY_DATE_STRING : value;
+}
 const SECURITY_PAGE_SIZE = 5;
 
 const formatDeviceDate = (value?: string) => {
@@ -191,6 +220,8 @@ export default function SettingsPage() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const isCompleteProfileMode = searchParams?.get("completeProfile") === "1";
+    const completeProfileNext = searchParams?.get("next") || "/dashboard";
 
     const [activeTab, setActiveTab] = useState<EditTabKey>("general");
     const [user, setUser] = useState<SettingsUser | null>(null);
@@ -199,7 +230,7 @@ export default function SettingsPage() {
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [savingGeneral, setSavingGeneral] = useState(false);
     const [savingPrivacy, setSavingPrivacy] = useState(false);
-    const [savingPassword, setSavingPassword] = useState(false);
+    const [savingNotifications, setSavingNotifications] = useState(false);
     const [notification, setNotification] = useState<{ type: "error" | "success"; message: string } | null>(null);
     const [generalForm, setGeneralForm] = useState({
         username: "",
@@ -220,6 +251,8 @@ export default function SettingsPage() {
     const [generalErrors, setGeneralErrors] = useState<{ firstName?: string; username?: string; country?: string; dateOfBirth?: string; gender?: string }>({});
     const [isCheckingUsername, setIsCheckingUsername] = useState(false);
     const [usernameError, setUsernameError] = useState("");
+    const [dobPickerOpen, setDobPickerOpen] = useState(false);
+    const [dobDraft, setDobDraft] = useState("");
     const [openPicker, setOpenPicker] = useState<null | "gender" | "relationship" | "country">(null);
     const [countries, setCountries] = useState<CountryOption[]>([]);
     const [countrySearch, setCountrySearch] = useState("");
@@ -230,15 +263,26 @@ export default function SettingsPage() {
         whoCanFollowMe: "everyone",
         whoCanSeeActivity: "followers",
     });
-    const [passwordForm, setPasswordForm] = useState({
-        currentPassword: "",
-        newPassword: "",
-        confirmPassword: "",
+    const [notificationForm, setNotificationForm] = useState({
+        webPush: true,
+        appPush: true,
+        email: true,
+        chats: true,
+        security: true,
+        orders: true,
+        googs: true,
+        promotions: false,
     });
     const [showDeleteModal, setShowDeleteModal] = useState(false);
     const [isDeletingAccount, setIsDeletingAccount] = useState(false);
     const [showDeactivateModal, setShowDeactivateModal] = useState(false);
     const [isDeactivatingAccount, setIsDeactivatingAccount] = useState(false);
+    const [dangerOtpDestination, setDangerOtpDestination] = useState<"email" | "phone">("email");
+    const [dangerOtp, setDangerOtp] = useState("");
+    const [dangerDebugOtp, setDangerDebugOtp] = useState("");
+    const [dangerSecurityToken, setDangerSecurityToken] = useState("");
+    const [dangerOtpStatus, setDangerOtpStatus] = useState("");
+    const [dangerOtpBusy, setDangerOtpBusy] = useState(false);
     const [authSessions, setAuthSessions] = useState<AuthSessionDevice[]>([]);
     const [loadingSessions, setLoadingSessions] = useState(false);
     const [selectedDevice, setSelectedDevice] = useState<AuthSessionDevice | null>(null);
@@ -248,15 +292,62 @@ export default function SettingsPage() {
 
     useEffect(() => {
         const tab = searchParams?.get("tab");
-        if (tab === "security" || tab === "privacy" || tab === "password" || tab === "general") {
+        if (tab === "security" || tab === "privacy" || tab === "notifications" || tab === "general") {
             setActiveTab(tab);
         }
     }, [searchParams]);
 
+    const currentTwoFactorPhone = String(user?.two_factor_phone_number || "").trim();
+    const currentTwoFactorDialCode = String(user?.two_factor_phone_dial_code || "").trim();
+    const canUsePhoneOtp = !!currentTwoFactorPhone && !!currentTwoFactorDialCode;
+
+    const resetDangerOtp = useCallback(() => {
+        setDangerOtpDestination("email");
+        setDangerOtp("");
+        setDangerDebugOtp("");
+        setDangerSecurityToken("");
+        setDangerOtpStatus("");
+    }, []);
+
+    const requestDangerOtp = async (purpose: "self_deactivate" | "self_delete") => {
+        try {
+            setDangerOtpBusy(true);
+            setNotification(null);
+            const result = await authService.requestAccountSecurityOtp({
+                purpose,
+                destinationType: dangerOtpDestination,
+            });
+            setDangerDebugOtp(result?.debugOtp || "");
+            setDangerOtpStatus(result?.message || (dangerOtpDestination === "phone" ? "OTP generated for phone." : "OTP sent to email."));
+        } catch (err: any) {
+            setNotification({ type: "error", message: err?.message || "Could not send OTP." });
+        } finally {
+            setDangerOtpBusy(false);
+        }
+    };
+
+    const verifyDangerOtp = async (purpose: "self_deactivate" | "self_delete") => {
+        try {
+            setDangerOtpBusy(true);
+            setNotification(null);
+            const result = await authService.verifyAccountSecurityOtp({ purpose, otp: dangerOtp });
+            setDangerSecurityToken(result?.securityToken || "");
+            setDangerOtpStatus("OTP verified. Continue below.");
+        } catch (err: any) {
+            setNotification({ type: "error", message: err?.message || "Could not verify OTP." });
+        } finally {
+            setDangerOtpBusy(false);
+        }
+    };
+
     const handleDeactivateAccount = async () => {
+        if (!dangerSecurityToken) {
+            setNotification({ type: "error", message: "Verify OTP before deactivating your account." });
+            return;
+        }
         try {
             setIsDeactivatingAccount(true);
-            await authService.selfDeactivateAccount();
+            await authService.selfDeactivateAccount(dangerSecurityToken);
             authService.logout();
         } catch (err: any) {
             setNotification({ type: "error", message: err?.message || "Could not deactivate your account." });
@@ -267,9 +358,13 @@ export default function SettingsPage() {
     };
 
     const handleDeleteAccount = async () => {
+        if (!dangerSecurityToken) {
+            setNotification({ type: "error", message: "Verify OTP before deleting your account." });
+            return;
+        }
         try {
             setIsDeletingAccount(true);
-            await authService.selfDeleteAccount();
+            await authService.selfDeleteAccount(dangerSecurityToken);
             router.replace("/");
         } catch (err: any) {
             setNotification({ type: "error", message: err?.message || "Could not delete your account." });
@@ -300,6 +395,10 @@ export default function SettingsPage() {
             whoCanFollowMe: profile.who_can_follow_me || "everyone",
             whoCanSeeActivity: profile.who_can_see_activity || "followers",
         });
+        setNotificationForm((prev) => ({
+            ...prev,
+            ...(profile.notification_settings || {}),
+        }));
     }, []);
 
     const fetchProfile = useCallback(async () => {
@@ -326,13 +425,17 @@ export default function SettingsPage() {
             const result = await authService.getAuthSessions();
             setAuthSessions(Array.isArray(result?.sessions) ? result.sessions : []);
         } catch (err: any) {
+            if (!authService.isAuthenticated()) {
+                router.replace("/");
+                return;
+            }
             if (!silent) {
                 setNotification({ type: "error", message: err?.message || "Could not load logged devices." });
             }
         } finally {
             if (!silent) setLoadingSessions(false);
         }
-    }, []);
+    }, [router]);
 
     useEffect(() => {
         if (activeTab !== "security" || !authService.isAuthenticated()) return;
@@ -373,7 +476,12 @@ export default function SettingsPage() {
 
     const toggleTrustedDevice = async (device: AuthSessionDevice) => {
         try {
-            await authService.updateAuthSession(device.id, { trusted: !device.trusted });
+            const result = await authService.updateAuthSession(device.id, { trusted: !device.trusted });
+            if (result?.session?.isCurrent && device.trusted) {
+                authService.clearSession();
+                router.replace("/");
+                return;
+            }
             setNotification({ type: "success", message: device.trusted ? "Device removed from trusted devices." : "Device added to trusted devices." });
             await loadAuthSessions(true);
         } catch (err: any) {
@@ -473,6 +581,34 @@ export default function SettingsPage() {
         const stripped = generalForm.bio.replace(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi, "").replace(/\s+/g, " ").trim();
         return stripped.length;
     }, [generalForm.bio]);
+    const usernameNextChangeDate = useMemo(() => {
+        const explicitDate = String(user?.username_next_change_at || "").slice(0, 10);
+        if (explicitDate) return explicitDate;
+        const changedAt = String(user?.username_changed_at || "").slice(0, 10);
+        if (!changedAt) return "";
+        const next = new Date(`${changedAt}T00:00:00Z`);
+        next.setUTCDate(next.getUTCDate() + 14);
+        return next.toISOString().slice(0, 10);
+    }, [user?.username_changed_at, user?.username_next_change_at]);
+    const usernameChangeLocked = !!usernameNextChangeDate && usernameNextChangeDate > TODAY_DATE_STRING;
+    const dateOfBirthLocked = !!user?.date_of_birth;
+    const usernameHelpText = useMemo(() => (
+        usernameChangeLocked
+            ? `Username can be changed again on ${formatFriendlyDate(usernameNextChangeDate)}.`
+            : usernameNextChangeDate
+            ? `After changing your username, you can change it again on ${formatFriendlyDate(usernameNextChangeDate)}.`
+            : "When you change your username, you can change it again after 14 days."
+    ), [usernameChangeLocked, usernameNextChangeDate]);
+    const dobPickerValue = dobDraft || generalForm.dateOfBirth || TODAY_DATE_STRING;
+    const [dobYear, dobMonth, dobDay] = dobPickerValue.split("-").map(Number);
+    const dobYearOptions = useMemo(() => {
+        const currentYear = new Date().getFullYear();
+        return Array.from({ length: currentYear - 1899 }, (_, index) => currentYear - index);
+    }, []);
+    const dobDaysInMonth = useMemo(() => {
+        if (!dobYear || !dobMonth) return 31;
+        return new Date(dobYear, dobMonth, 0).getDate();
+    }, [dobMonth, dobYear]);
     const displayName = useMemo(() => {
         const first = generalForm.firstName.trim();
         const last = generalForm.lastName.trim();
@@ -567,6 +703,14 @@ export default function SettingsPage() {
             setNotification({ type: "error", message: "Please choose a unique username." });
             return;
         }
+        if (usernameChangeLocked && generalForm.username.trim().toLowerCase() !== String(user?.username || "").toLowerCase()) {
+            setNotification({ type: "error", message: usernameHelpText });
+            return;
+        }
+        if (dateOfBirthLocked && generalForm.dateOfBirth !== String(user?.date_of_birth || "").slice(0, 10)) {
+            setNotification({ type: "error", message: "Date of birth cannot be changed after it is set." });
+            return;
+        }
         try {
             setSavingGeneral(true);
             const data = new FormData();
@@ -604,6 +748,10 @@ export default function SettingsPage() {
             setSelectedFile(null);
             setImagePreview(null);
             setNotification({ type: "success", message: "General profile details updated." });
+            if (isCompleteProfileMode) {
+                const nextPath = completeProfileNext.startsWith("/") ? completeProfileNext : "/dashboard";
+                window.setTimeout(() => router.replace(nextPath), 450);
+            }
         } catch (error: any) {
             setNotification({ type: "error", message: error?.message || "Failed to save profile." });
         } finally {
@@ -643,24 +791,21 @@ export default function SettingsPage() {
         }
     };
 
-    const handleChangePassword = async () => {
-        if (!passwordForm.currentPassword || !passwordForm.newPassword || !passwordForm.confirmPassword) {
-            setNotification({ type: "error", message: "Please fill in all password fields." });
-            return;
-        }
-        if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-            setNotification({ type: "error", message: "New passwords do not match." });
-            return;
-        }
+    const handleSaveNotifications = async () => {
         try {
-            setSavingPassword(true);
-            await authService.changePassword(passwordForm.currentPassword, passwordForm.newPassword);
-            setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
-            setNotification({ type: "success", message: "Password changed successfully." });
+            setSavingNotifications(true);
+            const data = new FormData();
+            data.append("notificationSettings", JSON.stringify(notificationForm));
+            const result = await authService.updateProfile(data);
+            const updatedUser = result?.user;
+            if (updatedUser) {
+                setUser((prev) => ({ ...prev, ...updatedUser }));
+            }
+            setNotification({ type: "success", message: "Notification settings updated." });
         } catch (error: any) {
-            setNotification({ type: "error", message: error?.message || "Failed to change password." });
+            setNotification({ type: "error", message: error?.message || "Failed to update notification settings." });
         } finally {
-            setSavingPassword(false);
+            setSavingNotifications(false);
         }
     };
 
@@ -697,6 +842,19 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="space-y-5 px-5 py-5 min-[960px]:px-6">
+                    {isCompleteProfileMode && (
+                        <div className="rounded-3xl border border-amber-400/25 bg-amber-400/10 px-4 py-3">
+                            <div className="flex items-start gap-3">
+                                <IonIcon name="lock-closed-outline" className="mt-0.5 text-lg text-amber-200" />
+                                <div>
+                                    <h2 className="text-sm font-black text-white">Complete your profile to continue</h2>
+                                    <p className="mt-1 text-xs leading-5 text-white/60">
+                                        First Name, Date of Birth, Country, and Gender are required before Home, Shop, Wallet, Chats, Profile, and other pages unlock.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                     <div className="flex flex-col gap-4 rounded-3xl border border-white/8 bg-white/[0.03] p-4 min-[900px]:flex-row min-[900px]:items-center min-[900px]:justify-between">
                         <div className="flex items-center gap-4">
                             <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-full border border-white/10 bg-white">
@@ -820,15 +978,74 @@ export default function SettingsPage() {
                                 <div className="mt-4 grid gap-4 min-[860px]:grid-cols-2">
                                     <label className="space-y-2">
                                         <span className="text-[11px] font-semibold uppercase tracking-widest text-white/35">Username <span className="text-red-400">*</span></span>
-                                        <input value={generalForm.username} onChange={(e) => setGeneralForm((prev) => ({ ...prev, username: e.target.value.toLowerCase() }))} className={`w-full rounded-2xl border bg-white/[0.05] px-4 py-3 text-sm text-white placeholder:text-white/15 focus:border-blue-500/50 focus:outline-none ${generalErrors.username || usernameError ? "border-red-500/60" : "border-white/[0.08]"}`} />
+                                        <input value={generalForm.username} disabled={usernameChangeLocked} onChange={(e) => setGeneralForm((prev) => ({ ...prev, username: e.target.value.toLowerCase() }))} className={`w-full rounded-2xl border px-4 py-3 text-sm placeholder:text-white/15 focus:border-blue-500/50 focus:outline-none disabled:cursor-not-allowed disabled:bg-white/[0.03] disabled:text-white/45 ${usernameChangeLocked ? "border-white/[0.08] bg-white/[0.03] text-white/55" : "bg-white/[0.05] text-white"} ${generalErrors.username || usernameError ? "border-red-500/60" : "border-white/[0.08]"}`} />
+                                        <p className="text-[10px] font-semibold leading-4 text-white/35">{usernameHelpText}</p>
                                         {isCheckingUsername && !usernameError && <p className="text-xs text-white/45">Checking username...</p>}
                                         {usernameError ? <p className="text-xs text-red-300">{usernameError}</p> : generalErrors.username ? <p className="text-xs text-red-300">{generalErrors.username}</p> : null}
                                     </label>
-                                    <label className="space-y-2">
+                                    <div className="relative space-y-2">
                                         <span className="text-[11px] font-semibold uppercase tracking-widest text-white/35">Date of Birth <span className="text-red-400">*</span></span>
-                                        <input type="date" max={TODAY_DATE_STRING} value={generalForm.dateOfBirth} onChange={(e) => setGeneralForm((prev) => ({ ...prev, dateOfBirth: e.target.value }))} className={`w-full rounded-2xl border bg-white/[0.05] px-4 py-3 text-sm text-white focus:border-blue-500/50 focus:outline-none ${generalErrors.dateOfBirth ? "border-red-500/60" : "border-white/[0.08]"}`} />
+                                        <button
+                                            type="button"
+                                            disabled={dateOfBirthLocked}
+                                            onClick={() => {
+                                                if (dateOfBirthLocked) return;
+                                                setDobDraft(generalForm.dateOfBirth || TODAY_DATE_STRING);
+                                                setDobPickerOpen((open) => !open);
+                                            }}
+                                            className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left text-sm focus:border-blue-500/50 focus:outline-none disabled:cursor-not-allowed disabled:bg-white/[0.03] disabled:text-white/45 ${dateOfBirthLocked ? "bg-white/[0.03] text-white/55" : "bg-white/[0.05] text-white"} ${generalErrors.dateOfBirth ? "border-red-500/60" : "border-white/[0.08]"}`}
+                                        >
+                                            <span>{generalForm.dateOfBirth ? formatFriendlyDate(generalForm.dateOfBirth) : "Select date of birth"}</span>
+                                            <IonIcon name="calendar-outline" className="text-lg text-white/75" />
+                                        </button>
+                                        {dateOfBirthLocked && <p className="text-[10px] font-semibold leading-4 text-white/35">Date of birth is locked after it is saved.</p>}
+                                        {dobPickerOpen && !dateOfBirthLocked && (
+                                            <div className="absolute z-30 mt-2 w-full rounded-2xl border border-white/10 bg-[#151515] p-3 shadow-2xl">
+                                                <div className="grid grid-cols-3 gap-2">
+                                                    <select
+                                                        value={dobMonth || 1}
+                                                        onChange={(event) => {
+                                                            const month = Number(event.target.value);
+                                                            const day = Math.min(dobDay || 1, new Date(dobYear || new Date().getFullYear(), month, 0).getDate());
+                                                            setDobDraft(clampDateToToday(`${dobYear || new Date().getFullYear()}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`));
+                                                        }}
+                                                        className="rounded-xl border border-white/10 bg-black/30 px-2 py-2 text-xs font-bold text-white outline-none"
+                                                    >
+                                                        {MONTH_OPTIONS.map((month, index) => <option key={month} value={index + 1}>{month}</option>)}
+                                                    </select>
+                                                    <select
+                                                        value={dobDay || 1}
+                                                        onChange={(event) => setDobDraft(clampDateToToday(`${dobYear || new Date().getFullYear()}-${String(dobMonth || 1).padStart(2, "0")}-${String(Number(event.target.value)).padStart(2, "0")}`))}
+                                                        className="rounded-xl border border-white/10 bg-black/30 px-2 py-2 text-xs font-bold text-white outline-none"
+                                                    >
+                                                        {Array.from({ length: dobDaysInMonth }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day}</option>)}
+                                                    </select>
+                                                    <select
+                                                        value={dobYear || new Date().getFullYear()}
+                                                        onChange={(event) => {
+                                                            const year = Number(event.target.value);
+                                                            const day = Math.min(dobDay || 1, new Date(year, dobMonth || 1, 0).getDate());
+                                                            setDobDraft(clampDateToToday(`${year}-${String(dobMonth || 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`));
+                                                        }}
+                                                        className="rounded-xl border border-white/10 bg-black/30 px-2 py-2 text-xs font-bold text-white outline-none"
+                                                    >
+                                                        {dobYearOptions.map((year) => <option key={year} value={year}>{year}</option>)}
+                                                    </select>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setGeneralForm((prev) => ({ ...prev, dateOfBirth: clampDateToToday(dobDraft || TODAY_DATE_STRING) }));
+                                                        setDobPickerOpen(false);
+                                                    }}
+                                                    className="mt-3 w-full rounded-xl bg-white px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.16em] text-black transition hover:bg-zinc-200"
+                                                >
+                                                    Save
+                                                </button>
+                                            </div>
+                                        )}
                                         {generalErrors.dateOfBirth && <p className="text-xs text-red-300">{generalErrors.dateOfBirth}</p>}
-                                    </label>
+                                    </div>
                                 </div>
 
                                 <div className="mt-4 grid gap-4 min-[860px]:grid-cols-2">
@@ -907,10 +1124,12 @@ export default function SettingsPage() {
                                     <label className="space-y-2">
                                         <span className="text-[11px] font-semibold uppercase tracking-widest text-white/35">Registered Email</span>
                                         <input type="email" value={generalForm.registeredEmail} readOnly className="w-full rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm text-white/70 focus:outline-none" />
+                                        <p className="text-[10px] font-semibold leading-4 text-white/35">Login email can only be changed from Security.</p>
                                     </label>
                                     <label className="space-y-2">
                                         <span className="text-[11px] font-semibold uppercase tracking-widest text-white/35">Googer ID</span>
                                         <input value={formatGoogerId(user?.user_id || user?.googer_id || user?.id)} readOnly className="w-full rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm text-white/70 focus:outline-none" />
+                                        <p className="text-[10px] font-semibold leading-4 text-white/35">Googer ID cannot be changed.</p>
                                     </label>
                                 </div>
 
@@ -1024,18 +1243,38 @@ export default function SettingsPage() {
                             </section>
                         )}
 
-                        {activeTab === "password" && (
+                        {activeTab === "notifications" && (
                             <section className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
                                 <div className="mb-4">
-                                    <h2 className="text-base font-black text-white">Password</h2>
-                                    <p className="mt-1 text-xs text-white/45">Change your account password.</p>
+                                    <h2 className="text-base font-black text-white">Notifications</h2>
+                                    <p className="mt-1 text-xs text-white/45">Choose alerts for web and iPhone app experiences.</p>
                                 </div>
-                                <div className="grid gap-4 min-[960px]:grid-cols-3">
-                                    <input type="password" placeholder="Current password" value={passwordForm.currentPassword} onChange={(e) => setPasswordForm((prev) => ({ ...prev, currentPassword: e.target.value }))} className="rounded-2xl border border-white/[0.08] bg-white/[0.05] px-4 py-3 text-sm text-white focus:border-blue-500/50 focus:outline-none" />
-                                    <input type="password" placeholder="New password" value={passwordForm.newPassword} onChange={(e) => setPasswordForm((prev) => ({ ...prev, newPassword: e.target.value }))} className="rounded-2xl border border-white/[0.08] bg-white/[0.05] px-4 py-3 text-sm text-white focus:border-blue-500/50 focus:outline-none" />
-                                    <input type="password" placeholder="Confirm password" value={passwordForm.confirmPassword} onChange={(e) => setPasswordForm((prev) => ({ ...prev, confirmPassword: e.target.value }))} className="rounded-2xl border border-white/[0.08] bg-white/[0.05] px-4 py-3 text-sm text-white focus:border-blue-500/50 focus:outline-none" />
+                                <div className="grid gap-3 min-[860px]:grid-cols-2">
+                                    {[
+                                        ["webPush", "Web notifications", "Browser alerts on desktop and mobile web."],
+                                        ["appPush", "iPhone app notifications", "Push alerts for the mobile app."],
+                                        ["email", "Email notifications", "Important account updates by email."],
+                                        ["chats", "Chats", "Messages, replies, and chat requests."],
+                                        ["security", "Security", "Login, OTP, device, and account alerts."],
+                                        ["orders", "Orders and wallet", "Purchases, wallet, coins, and payments."],
+                                        ["googs", "Googs and content", "Likes, comments, reposts, and upload activity."],
+                                        ["promotions", "Promotions", "Campaign tips, subscription offers, and product news."],
+                                    ].map(([key, title, subtitle]) => (
+                                        <label key={key} className="flex items-center justify-between gap-4 rounded-2xl border border-white/[0.08] bg-black/20 px-4 py-3">
+                                            <span>
+                                                <span className="block text-sm font-black text-white">{title}</span>
+                                                <span className="mt-1 block text-xs leading-5 text-white/40">{subtitle}</span>
+                                            </span>
+                                            <input
+                                                type="checkbox"
+                                                checked={Boolean(notificationForm[key as keyof typeof notificationForm])}
+                                                onChange={(event) => setNotificationForm((prev) => ({ ...prev, [key]: event.target.checked }))}
+                                                className="h-5 w-5 accent-white"
+                                            />
+                                        </label>
+                                    ))}
                                 </div>
-                                <button type="button" onClick={handleChangePassword} disabled={savingPassword} className="mt-4 rounded-2xl bg-white px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60">{savingPassword ? "Updating..." : "Change Password"}</button>
+                                <button type="button" onClick={handleSaveNotifications} disabled={savingNotifications} className="mt-4 rounded-2xl bg-white px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60">{savingNotifications ? "Saving..." : "Save Notifications"}</button>
                             </section>
                         )}
 
@@ -1265,8 +1504,8 @@ export default function SettingsPage() {
                                         <p className="mt-1 text-xs text-white/45">Deactivate or permanently delete your account.</p>
                                     </div>
                                     <div className="flex flex-col gap-3 min-[900px]:flex-row">
-                                        <button type="button" onClick={() => setShowDeactivateModal(true)} className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-amber-200 transition hover:bg-amber-500/15">Deactivate Account</button>
-                                        <button type="button" onClick={() => setShowDeleteModal(true)} className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-red-300 transition hover:bg-red-500/15">Delete Account</button>
+                                        <button type="button" onClick={() => { resetDangerOtp(); setShowDeactivateModal(true); }} className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-amber-200 transition hover:bg-amber-500/15">Deactivate Account</button>
+                                        <button type="button" onClick={() => { resetDangerOtp(); setShowDeleteModal(true); }} className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-red-300 transition hover:bg-red-500/15">Delete Account</button>
                                     </div>
                                 </div>
                             </section>
@@ -1280,13 +1519,32 @@ export default function SettingsPage() {
 
             {showDeactivateModal && (
                 <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
-                    <div className="absolute inset-0 bg-black/80" onClick={() => setShowDeactivateModal(false)} />
-                    <div className="relative w-full max-w-sm rounded-[2rem] border border-white/10 bg-[#141416] p-6 shadow-2xl">
-                        <h3 className="text-sm font-black uppercase tracking-[0.18em] text-white">Deactivate Account</h3>
-                        <p className="mt-3 text-xs leading-5 text-white/55">Your public profile, Googs, products, and running ads will be hidden. You can reactivate anytime by logging back in.</p>
-                        <div className="mt-5 flex gap-3">
-                            <button type="button" onClick={() => setShowDeactivateModal(false)} className="flex-1 rounded-2xl border border-white/10 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-white/60 transition hover:bg-white/5">Cancel</button>
-                            <button type="button" onClick={handleDeactivateAccount} disabled={isDeactivatingAccount} className="flex-1 rounded-2xl bg-amber-500 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-black transition hover:bg-amber-400 disabled:opacity-50">{isDeactivatingAccount ? "Deactivating..." : "Deactivate"}</button>
+                    <div className="absolute inset-0 bg-black/80" onClick={() => { setShowDeactivateModal(false); resetDangerOtp(); }} />
+                    <div className="relative w-full max-w-md rounded-[1.6rem] border border-white/10 bg-[#141416] p-5 shadow-2xl">
+                        <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white">Deactivate Account</h3>
+                        <p className="mt-2 text-[11px] leading-5 text-white/55">Your public profile, Googs, products, and running ads will be hidden. You can reactivate anytime by logging back in.</p>
+                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-3">
+                            <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/40">Verify OTP</p>
+                            {canUsePhoneOtp && (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                    {(["email", "phone"] as const).map((method) => (
+                                        <button key={`deactivate-${method}`} type="button" onClick={() => setDangerOtpDestination(method)} className={`rounded-xl px-3 py-2 text-[9px] font-black uppercase tracking-[0.14em] ${dangerOtpDestination === method ? "bg-white text-black" : "border border-white/10 text-white/60"}`}>
+                                            {method === "email" ? "Email" : `${currentTwoFactorDialCode}${currentTwoFactorPhone}`}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                            <div className="mt-3 grid grid-cols-[1fr_auto_auto] gap-2">
+                                <input value={dangerOtp} onChange={(event) => setDangerOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6-digit OTP" className="min-w-0 rounded-xl border border-white/10 bg-[#111114] px-3 py-2 text-xs text-white outline-none" />
+                                <button type="button" onClick={() => requestDangerOtp("self_deactivate")} disabled={dangerOtpBusy} className="rounded-xl bg-white px-3 py-2 text-[9px] font-black uppercase tracking-[0.14em] text-black disabled:opacity-50">Send</button>
+                                <button type="button" onClick={() => verifyDangerOtp("self_deactivate")} disabled={dangerOtpBusy || dangerOtp.length !== 6} className="rounded-xl border border-emerald-400/25 px-3 py-2 text-[9px] font-black uppercase tracking-[0.14em] text-emerald-200 disabled:opacity-50">Verify</button>
+                            </div>
+                            {dangerDebugOtp && <p className="mt-2 rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs font-bold text-amber-100">Debug OTP: {dangerDebugOtp}</p>}
+                            {dangerOtpStatus && <p className="mt-2 text-xs font-bold text-emerald-300">{dangerOtpStatus}</p>}
+                        </div>
+                        <div className="mt-4 flex gap-3">
+                            <button type="button" onClick={() => { setShowDeactivateModal(false); resetDangerOtp(); }} className="flex-1 rounded-2xl border border-white/10 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-white/60 transition hover:bg-white/5">Cancel</button>
+                            <button type="button" onClick={handleDeactivateAccount} disabled={isDeactivatingAccount || !dangerSecurityToken} className="flex-1 rounded-2xl bg-amber-500 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-black transition hover:bg-amber-400 disabled:opacity-50">{isDeactivatingAccount ? "Deactivating..." : "Deactivate"}</button>
                         </div>
                     </div>
                 </div>
@@ -1294,13 +1552,32 @@ export default function SettingsPage() {
 
             {showDeleteModal && (
                 <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
-                    <div className="absolute inset-0 bg-black/80" onClick={() => setShowDeleteModal(false)} />
-                    <div className="relative w-full max-w-sm rounded-[2rem] border border-white/10 bg-[#141416] p-6 shadow-2xl">
-                        <h3 className="text-sm font-black uppercase tracking-[0.18em] text-white">Delete Account</h3>
-                        <p className="mt-3 text-xs leading-5 text-white/55">This is permanent. All your data, Googs, products, and ads will be deleted and cannot be recovered.</p>
-                        <div className="mt-5 flex gap-3">
-                            <button type="button" onClick={() => setShowDeleteModal(false)} className="flex-1 rounded-2xl border border-white/10 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-white/60 transition hover:bg-white/5">Cancel</button>
-                            <button type="button" onClick={handleDeleteAccount} disabled={isDeletingAccount} className="flex-1 rounded-2xl bg-red-500 py-3 text-[11px] font-bold uppercase tracking-[0.18em] text-white transition hover:bg-red-600 disabled:opacity-50">{isDeletingAccount ? "Deleting..." : "Delete"}</button>
+                    <div className="absolute inset-0 bg-black/80" onClick={() => { setShowDeleteModal(false); resetDangerOtp(); }} />
+                    <div className="relative w-full max-w-md rounded-[1.6rem] border border-white/10 bg-[#141416] p-5 shadow-2xl">
+                        <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white">Delete Account</h3>
+                        <p className="mt-2 text-[11px] leading-5 text-white/55">This is permanent. All your data, Googs, products, and ads will be deleted and cannot be recovered.</p>
+                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-3">
+                            <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/40">Verify OTP</p>
+                            {canUsePhoneOtp && (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                    {(["email", "phone"] as const).map((method) => (
+                                        <button key={`delete-${method}`} type="button" onClick={() => setDangerOtpDestination(method)} className={`rounded-xl px-3 py-2 text-[9px] font-black uppercase tracking-[0.14em] ${dangerOtpDestination === method ? "bg-white text-black" : "border border-white/10 text-white/60"}`}>
+                                            {method === "email" ? "Email" : `${currentTwoFactorDialCode}${currentTwoFactorPhone}`}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                            <div className="mt-3 grid grid-cols-[1fr_auto_auto] gap-2">
+                                <input value={dangerOtp} onChange={(event) => setDangerOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6-digit OTP" className="min-w-0 rounded-xl border border-white/10 bg-[#111114] px-3 py-2 text-xs text-white outline-none" />
+                                <button type="button" onClick={() => requestDangerOtp("self_delete")} disabled={dangerOtpBusy} className="rounded-xl bg-white px-3 py-2 text-[9px] font-black uppercase tracking-[0.14em] text-black disabled:opacity-50">Send</button>
+                                <button type="button" onClick={() => verifyDangerOtp("self_delete")} disabled={dangerOtpBusy || dangerOtp.length !== 6} className="rounded-xl border border-emerald-400/25 px-3 py-2 text-[9px] font-black uppercase tracking-[0.14em] text-emerald-200 disabled:opacity-50">Verify</button>
+                            </div>
+                            {dangerDebugOtp && <p className="mt-2 rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs font-bold text-amber-100">Debug OTP: {dangerDebugOtp}</p>}
+                            {dangerOtpStatus && <p className="mt-2 text-xs font-bold text-emerald-300">{dangerOtpStatus}</p>}
+                        </div>
+                        <div className="mt-4 flex gap-3">
+                            <button type="button" onClick={() => { setShowDeleteModal(false); resetDangerOtp(); }} className="flex-1 rounded-2xl border border-white/10 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-white/60 transition hover:bg-white/5">Cancel</button>
+                            <button type="button" onClick={handleDeleteAccount} disabled={isDeletingAccount || !dangerSecurityToken} className="flex-1 rounded-2xl bg-red-500 py-3 text-[10px] font-bold uppercase tracking-[0.18em] text-white transition hover:bg-red-600 disabled:opacity-50">{isDeletingAccount ? "Deleting..." : "Delete"}</button>
                         </div>
                     </div>
                 </div>

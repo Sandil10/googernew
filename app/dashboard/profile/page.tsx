@@ -31,10 +31,11 @@ import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { useAdActions } from "@/app/lib/ads/useAdActions";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
 import { promotePhotoVideoAdAgain, promoteProductAdAgain } from "@/app/lib/ads/promoteAgain";
-import { matchesAdIdentity } from "@/app/lib/ads/adIdentity";
+import { getAdInteractionId, matchesAdIdentity } from "@/app/lib/ads/adIdentity";
+import { filterAdsForViewer } from "@/app/lib/ads/adVisibility";
 import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondViewModal";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
-import { getAdPreviewImage, getSponsoredAdImages, getSponsoredLinkPreviewType } from "@/app/components/ads/adHelpers";
+import { getSponsoredUploadedAdImages } from "@/app/components/ads/adHelpers";
 import { subscriptionService } from "@/services/subscriptionService";
 import { useThemePreference } from "@/app/lib/themeMode";
 import { addTopbarNotification } from "@/app/lib/topbarNotifications";
@@ -448,6 +449,9 @@ export default function ProfilePage() {
     const [adSaveCounts, setAdSaveCounts] = useState<{ photo: number; video: number }>({ photo: 0, video: 0 });
     const [adSaveLimits, setAdSaveLimits] = useState<{ photo: number | null; video: number | null }>({ photo: null, video: null });
     const [openGoogMenu, setOpenGoogMenu] = useState<{ post: WritePost; top: number; left: number } | null>(null);
+    const [deleteGoogCandidate, setDeleteGoogCandidate] = useState<WritePost | null>(null);
+    const [uploadContentDeleteCandidate, setUploadContentDeleteCandidate] = useState<UploadContentRecord | null>(null);
+    const [isDeletingUploadContent, setIsDeletingUploadContent] = useState(false);
 
     useEffect(() => {
         if (requestedTab === "googs") setActiveTab("replies");
@@ -482,7 +486,7 @@ export default function ProfilePage() {
         onBeforeLike: (item, liked) => updateAdLocalState(item.id, { user_liked: liked }),
         onLikeConfirmed: (item, liked) => updateAdLocalState(item.id, { user_liked: liked }),
         onLikeReverted: (item, liked) => updateAdLocalState(item.id, { user_liked: liked }),
-        onShare: (item) => handleShareClick(item.raw || item),
+        onShare: (item) => handleShareClick(item),
         onOpenSheet: (type, item) => openBottomSheet(type as any, item.raw || item),
         onCoinCollected: (item, collectionId) => {
             updateAdLocalState(collectionId, { ad_coin_collected: true, ad_like_locked: true });
@@ -500,22 +504,15 @@ export default function ProfilePage() {
     }, [router]);
     const getProfileAdSecondViewImages = useCallback((ad: any) => {
         const raw = ad?.raw || ad || {};
-        const previewType = String(raw?.media_type || ad?.media_type || "").toLowerCase().includes("video") ? "video" : "image";
-        return getSponsoredAdImages(raw, ad?.image || ad?.mediaPreview || ad?.media_preview || getAdPreviewImage(raw, previewType));
+        return getSponsoredUploadedAdImages(raw);
     }, []);
     const getProfileAdSecondViewKind = useCallback((ad: any): "image" | "video" | "embed" => {
         const raw = ad?.raw || ad || {};
-        const activeLink = String(raw.active_link || ad?.active_link || "").trim();
-        const previewType = getSponsoredLinkPreviewType(activeLink);
-        if (previewType === "embed") return "embed";
-        if (
-            previewType === "video" ||
-            String(ad?.type || raw?.media_type || ad?.media_type || "").toLowerCase().includes("video") ||
-            /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(String(raw.media_preview || raw.video_url || ad?.video || ""))
-        ) {
-            return "video";
-        }
-        return "image";
+        const mediaPreview = String(raw.media_preview || raw.video_url || ad?.media_preview || ad?.video_url || "").trim();
+        const hasUploadedVideo =
+            /video/i.test(String(raw.media_type || ad?.media_type || "")) ||
+            /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(mediaPreview);
+        return hasUploadedVideo ? "video" : "image";
     }, []);
 
     useEffect(() => {
@@ -670,8 +667,9 @@ export default function ProfilePage() {
                     ? mergeActiveAdsWithSavedCompletedAds(activeOwnerAds || [], savedAds || [])
                     : mergeActiveAdsWithCompletedAds(activeOwnerAds || [], getPublicCompletedSavedAds(savedAds || []));
                 const filtered = (userProducts || []).filter(isLiveMarketPost);
-                applyProfileCollections(filtered, userGoogs || [], ownerAds || []);
-                syncAds(ownerAds || []);
+                const visibleOwnerAds = filterAdsForViewer(ownerAds || [], nextUser);
+                applyProfileCollections(filtered, userGoogs || [], visibleOwnerAds);
+                syncAds(visibleOwnerAds);
                 if (viewingOwnProfile) setSavedAdIds(new Set((savedIds || []).map(String)));
             } else if (profileShareCode) {
                 const shared = await marketService.getUnifiedShareItem(profileShareCode);
@@ -699,8 +697,9 @@ export default function ProfilePage() {
                     ? mergeActiveAdsWithSavedCompletedAds(activeOwnerAds || [], savedAds || [])
                     : mergeActiveAdsWithCompletedAds(activeOwnerAds || [], getPublicCompletedSavedAds(savedAds || []));
                 const filtered = (userProducts || []).filter(isLiveMarketPost);
-                applyProfileCollections(filtered, userGoogs || [], ownerAds || []);
-                syncAds(ownerAds || []);
+                const visibleOwnerAds = filterAdsForViewer(ownerAds || [], nextUser);
+                applyProfileCollections(filtered, userGoogs || [], visibleOwnerAds);
+                syncAds(visibleOwnerAds);
                 if (viewingOwnProfile) setSavedAdIds(new Set((savedIds || []).map(String)));
             } else if (profileId) {
                 profileData = await authService.getUserProfile(profileId);
@@ -722,8 +721,9 @@ export default function ProfilePage() {
                     ? mergeActiveAdsWithSavedCompletedAds(activeOwnerAds || [], savedAds || [])
                     : mergeActiveAdsWithCompletedAds(activeOwnerAds || [], getPublicCompletedSavedAds(savedAds || []));
                 const filtered = (userProducts || []).filter(isLiveMarketPost);
-                applyProfileCollections(filtered, userGoogs || [], ownerAds || []);
-                syncAds(ownerAds || []);
+                const visibleOwnerAds = filterAdsForViewer(ownerAds || [], nextUser);
+                applyProfileCollections(filtered, userGoogs || [], visibleOwnerAds);
+                syncAds(visibleOwnerAds);
                 if (viewingOwnProfile) setSavedAdIds(new Set((savedIds || []).map(String)));
             } else {
                 if (!authService.isAuthenticated()) {
@@ -744,8 +744,9 @@ export default function ProfilePage() {
                 ]);
                 const ownerAds = mergeActiveAdsWithSavedCompletedAds(activeOwnerAds || [], savedAds || []);
                 const filtered = (myProducts || []).filter(isLiveMarketPost);
-                applyProfileCollections(filtered, myGoogs || [], ownerAds || []);
-                syncAds(ownerAds || []);
+                const visibleOwnerAds = filterAdsForViewer(ownerAds || [], profileData);
+                applyProfileCollections(filtered, myGoogs || [], visibleOwnerAds);
+                syncAds(visibleOwnerAds);
                 setSavedAdIds(new Set((savedIds || []).map(String)));
             }
             if (viewingOwnProfileForUploads && profileData?.id) {
@@ -1031,12 +1032,13 @@ export default function ProfilePage() {
         if (uploadLikeLocksRef.current.has(likeKey)) return;
         uploadLikeLocksRef.current.add(likeKey);
         const previousLiked = !!item.user_liked;
+        const previousLikesCount = Math.max(0, Number(item.likes_count ?? item.likeCount ?? 0));
         const optimisticLiked = !previousLiked;
         updateUploadContentLocal(item.id, (entry) => ({
             ...entry,
             user_liked: optimisticLiked,
-            likes_count: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (optimisticLiked ? 1 : -1)),
-            likeCount: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (optimisticLiked ? 1 : -1)),
+            likes_count: Math.max(0, previousLikesCount + (optimisticLiked ? 1 : -1)),
+            likeCount: Math.max(0, previousLikesCount + (optimisticLiked ? 1 : -1)),
         }));
         try {
             const result = await uploadContentService.toggleLike(item.id);
@@ -1053,8 +1055,8 @@ export default function ProfilePage() {
             updateUploadContentLocal(item.id, (entry) => ({
                 ...entry,
                 user_liked: previousLiked,
-                likes_count: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (previousLiked ? 1 : -1)),
-                likeCount: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (previousLiked ? 1 : -1)),
+                likes_count: previousLikesCount,
+                likeCount: previousLikesCount,
             }));
             if ((error as { status?: number } | null)?.status === 429) return;
             console.error("Failed to toggle upload content like:", error);
@@ -1171,11 +1173,6 @@ export default function ProfilePage() {
                 ...updated,
                 pinned_at: updated?.pinned_at || null,
             }));
-            setNotification({
-                type: "success",
-                title: updated?.pinned_at ? "Pinned" : "Unpinned",
-                message: updated?.pinned_at ? "Content pinned on your profile." : "Content removed from pinned position.",
-            });
         } catch (error) {
             console.error("Failed to update upload pin:", error);
             setNotification({ type: "error", title: "Pin failed", message: error instanceof Error ? error.message : "Could not update pin." });
@@ -1194,7 +1191,7 @@ export default function ProfilePage() {
         router.push("/ad-campaign/photo-video");
     }, [router]);
 
-    const handleUploadContentDelete = useCallback(async (item: UploadContentRecord) => {
+    const handleUploadContentDelete = useCallback((item: UploadContentRecord) => {
         if (!authService.isAuthenticated() || !currentUser?.id) {
             openLoginRequired({ message: "Please log in to delete content." });
             return;
@@ -1203,21 +1200,32 @@ export default function ProfilePage() {
             setNotification({ type: "error", title: "Not allowed", message: "Only the creator can delete this content." });
             return;
         }
-        const confirmed = typeof window === "undefined" ? true : window.confirm("Delete this upload content?");
-        if (!confirmed) return;
+        setUploadContentDeleteCandidate(item);
+    }, [currentUser?.id]);
+
+    const confirmUploadContentDelete = useCallback(async () => {
+        if (!uploadContentDeleteCandidate || isDeletingUploadContent) return;
+        const item = uploadContentDeleteCandidate;
+        setIsDeletingUploadContent(true);
+        setUploadContentDeleteCandidate(null);
         try {
             await uploadContentService.deleteContent(item.id);
-            setUploadContents((prev) => prev.filter((entry) => String(entry.id) !== String(item.id)));
+            setUploadContents((prev) => prev.filter((entry) => {
+                const entryIds = [entry.id, entry.content_id, (entry as any).contentId].map((value) => String(value || ""));
+                const targetIds = [item.id, item.content_id, (item as any).contentId].map((value) => String(value || ""));
+                return !entryIds.some((id) => targetIds.includes(id));
+            }));
             setNotification({ type: "success", title: "Deleted", message: "Upload content deleted." });
         } catch (error) {
             setNotification({ type: "error", title: "Delete failed", message: error instanceof Error ? error.message : "Could not delete content." });
+        } finally {
+            setIsDeletingUploadContent(false);
         }
-    }, [currentUser?.id]);
+    }, [isDeletingUploadContent, uploadContentDeleteCandidate]);
 
     const handleUploadContentNotInterested = useCallback((item: UploadContentRecord) => {
         const key = `upload-${item.id}`;
         setHiddenPostIds((prev) => prev.includes(key) ? prev : [...prev, key]);
-        setNotification({ type: "success", title: "Hidden", message: "This content was hidden from your profile feed." });
     }, []);
 
     const openUploadReportModal = useCallback((item: UploadContentRecord) => {
@@ -1302,9 +1310,9 @@ export default function ProfilePage() {
         router.push(item.content_type === "flash" ? "/ad-campaign/flash-content" : "/ad-campaign/upload-content");
     }, [router]);
 
-    const handleUploadContentView = useCallback(async (item: UploadContentRecord) => {
+    const handleUploadContentView = useCallback(async (item: UploadContentRecord, options: { force?: boolean } = {}) => {
         try {
-            const result = await uploadContentService.logView(item.id);
+            const result = await uploadContentService.logView(item.id, options);
             updateUploadContentLocal(item.id, (entry) => ({
                 ...entry,
                 views_count: Number(result.views_count || 0),
@@ -1326,6 +1334,34 @@ export default function ProfilePage() {
             raw.ad_id ||
             String(raw.id || item?.id || "").startsWith("ad-")
         );
+    };
+
+    const isCurrentUserAdOwner = (target: any) => {
+        const raw = target?.raw || target || {};
+        const currentIds = [
+            currentUser?.id,
+            currentUser?.user_id,
+            currentUser?.userId,
+            currentUser?.googer_id,
+            currentUser?.googerId,
+        ].filter((value) => value !== undefined && value !== null && value !== "");
+        const ownerIds = [
+            raw.user_id,
+            raw.userId,
+            raw.owner_user_id,
+            raw.ownerUserId,
+            raw.ad_owner_id,
+            raw.adOwnerId,
+            raw.googer_id,
+            raw.googerId,
+            target?.user_id,
+            target?.userId,
+            target?.owner_user_id,
+            target?.ownerUserId,
+            target?.googer_id,
+            target?.googerId,
+        ].filter((value) => value !== undefined && value !== null && value !== "");
+        return currentIds.some((currentId) => ownerIds.some((ownerId) => String(currentId) === String(ownerId)));
     };
 
     const handleAdToggleLike = async (item: any) => {
@@ -1361,6 +1397,30 @@ export default function ProfilePage() {
         }
     };
 
+    const deleteOwnedAdFromProfile = async (ad: any) => {
+        try {
+            const deletedAd = await adsService.deleteAd(ad);
+            const adId = String(deletedAd?.adId || deletedAd?.ad_id || ad?.adId || ad?.ad_id || ad?.raw?.adId || ad?.raw?.ad_id || "").replace(/^ad-/, "");
+            const isSameAd = (candidate: any) => {
+                const candidateRaw = candidate?.raw || candidate || {};
+                const candidateId = String(candidateRaw.ad_id || candidateRaw.adId || candidate?.ad_id || candidate?.adId || candidateRaw.id || candidate?.id || "").replace(/^ad-/, "");
+                return candidateId === adId;
+            };
+            setProfileAds((prev) => prev.filter((item) => !isSameAd(item)));
+            setPosts((prev) => prev.filter((item) => !isSameAd(item)));
+            setAdPreviewModal(null);
+            setOpenMenuAdId(null);
+            window.dispatchEvent(new Event("googer-ad-history-updated"));
+            setNotification({ type: "success", title: "Deleted", message: "Ad removed from feeds." });
+        } catch (error) {
+            setNotification({
+                type: "error",
+                title: "Delete failed",
+                message: error instanceof Error ? error.message : "Could not delete this ad.",
+            });
+        }
+    };
+
     const handleToggleLike = async (item: any) => {
         if (isPromotedAdTarget(item)) {
             await handleAdToggleLike(item);
@@ -1378,17 +1438,18 @@ export default function ProfilePage() {
 
         const wasLiked = !!currentPost.user_liked;
         const willBeLiked = !wasLiked;
-        setPosts((prev) => prev.map((p) => p.id === id ? { ...p, user_liked: willBeLiked, likes_count: Math.max(0, (p.likes_count || 0) + (willBeLiked ? 1 : -1)) } : p));
+        const previousLikesCount = Math.max(0, Number(currentPost.likes_count || 0));
+        setPosts((prev) => prev.map((p) => p.id === id ? { ...p, user_liked: willBeLiked, likes_count: Math.max(0, previousLikesCount + (willBeLiked ? 1 : -1)) } : p));
         try {
             const serverLiked = await marketService.toggleLike(id);
             if (serverLiked !== willBeLiked) {
-                setPosts((prev) => prev.map((p) => p.id === id ? { ...p, user_liked: serverLiked, likes_count: Math.max(0, (p.likes_count || 0) + (serverLiked ? 1 : -1)) } : p));
+                setPosts((prev) => prev.map((p) => p.id === id ? { ...p, user_liked: serverLiked, likes_count: Math.max(0, previousLikesCount + (serverLiked === wasLiked ? 0 : serverLiked ? 1 : -1)) } : p));
             }
             if (isBottomSheetOpen && bottomSheetType === "likes" && interactionProduct?.id === id) {
                 setBottomSheetData((await marketService.getLikes?.(id)) || []);
             }
         } catch {
-            setPosts((prev) => prev.map((p) => p.id === id ? { ...p, user_liked: wasLiked, likes_count: Math.max(0, (p.likes_count || 0) + (wasLiked ? 1 : -1)) } : p));
+            setPosts((prev) => prev.map((p) => p.id === id ? { ...p, user_liked: wasLiked, likes_count: previousLikesCount } : p));
         }
     };
 
@@ -1434,8 +1495,14 @@ export default function ProfilePage() {
     const handleDeleteGoog = async (post: WritePost) => {
         setOpenGoogMenu(null);
         setGoogs((prev) => prev.filter((g) => g.id !== post.id));
-        try { await googService.deletePost(post.id); } catch {
+        try {
+            await googService.deletePost(post.id);
+            setNotification({ type: "success", title: "Deleted", message: "Goog deleted." });
+        } catch (error) {
             setGoogs((prev) => [post, ...prev]);
+            setNotification({ type: "error", title: "Delete failed", message: error instanceof Error ? error.message : "Could not delete Goog." });
+        } finally {
+            setDeleteGoogCandidate(null);
         }
     };
 
@@ -1445,9 +1512,29 @@ export default function ProfilePage() {
         updateAdState(id, (prev) => ({ shares_count: (prev.shares_count || 0) + 1 }));
     };
 
+    const isSponsoredShareItem = (item: any) => {
+        const raw = item?.raw || {};
+        return !!(
+            item?.is_sponsored ||
+            item?.isAd ||
+            item?.campaign_type ||
+            item?.campaignType ||
+            item?.adId ||
+            item?.ad_id ||
+            raw.is_sponsored ||
+            raw.isAd ||
+            raw.campaign_type ||
+            raw.campaignType ||
+            raw.adId ||
+            raw.ad_id ||
+            String(item?.id || raw.id || "").startsWith("ad-")
+        );
+    };
+
     const handleShareClick = (product: any, view: "share" | "resell" = "share") => {
         if (!product) return;
         setShareUrlOverride(null);
+        const isSponsoredAdShare = isSponsoredShareItem(product);
         if (view === "resell") {
             let enabled = false;
             try {
@@ -1463,6 +1550,9 @@ export default function ProfilePage() {
         setShareResellMode("resell");
         setShareForceResellOnly(false);
         setShareProduct(product);
+        if (isSponsoredAdShare) {
+            setShareUrlOverride(getShareUrlForItem(product, "ad"));
+        }
         setShowShareModal(true);
         handleLogShare(product.id);
     };
@@ -1937,36 +2027,13 @@ export default function ProfilePage() {
 
     const handleSelfDeactivateClick = async () => {
         if (!isOwnProfile) return;
-        const confirmed = window.confirm("Deactivate your account? Your public profile, Googs, products, and running ads will be hidden.");
-        if (!confirmed) return;
-        try {
-            setShowMenu(false);
-            await authService.selfDeactivateAccount();
-            authService.logout();
-        } catch (error: any) {
-            setNotification({
-                type: "error",
-                title: "Deactivate failed",
-                message: error?.message || "Could not deactivate your account.",
-            });
-        }
+        setShowMenu(false);
+        router.push("/settings?tab=security");
     };
 
     const handleSelfDeleteConfirm = async () => {
-        try {
-            setIsDeletingAccount(true);
-            await authService.selfDeleteAccount();
-            router.replace("/login");
-        } catch (error: any) {
-            setNotification({
-                type: "error",
-                title: "Delete failed",
-                message: error?.message || "Could not delete your account.",
-            });
-        } finally {
-            setIsDeletingAccount(false);
-            setShowDeleteAccountModal(false);
-        }
+        setShowDeleteAccountModal(false);
+        router.push("/settings?tab=security");
     };
 
     const profileImage = useMemo(() => {
@@ -2038,49 +2105,31 @@ export default function ProfilePage() {
             const id = String(item.id || item.content_id || item.contentId || "");
             return (isOwnProfile || item.status === "Approved") && !hiddenPostIds.includes(`upload-${id}`);
         });
+        const getFeedItemTime = (item: FeedItem) => {
+            const data: any = item.data || {};
+            if (item.type === 'upload-content') {
+                return Date.parse(String(data.reposted_at || data.feed_sort_at || data.approved_at || data.created_at || data.updated_at || ""));
+            }
+            if (item.type === 'ad') {
+                return Date.parse(String(data.active_start_time || data.activeStartTime || data.started_at || data.startedAt || data.approved_at || data.approvedAt || data.created_at || data.createdAt || data.updated_at || data.updatedAt || ""));
+            }
+            return Date.parse(String(data.created_at || data.createdAt || data.updated_at || data.updatedAt || ""));
+        };
         const uploadItems = visibleUploadContents.map((item): FeedItem => ({ type: 'upload-content', data: item }));
-        const primaryItems = [
+        return [
             ...uploadItems,
             ...googs.map((g): FeedItem => ({ type: 'goog', data: g })),
+            ...visibleProfileAds.map((a): FeedItem => ({ type: 'ad', data: a })),
         ].sort((a, b) => {
             const aPinned = a.type === 'upload-content' ? Date.parse(String(a.data?.pinned_at || "")) : 0;
             const bPinned = b.type === 'upload-content' ? Date.parse(String(b.data?.pinned_at || "")) : 0;
             if ((Number.isFinite(aPinned) ? aPinned : 0) || (Number.isFinite(bPinned) ? bPinned : 0)) {
                 return (Number.isFinite(bPinned) ? bPinned : 0) - (Number.isFinite(aPinned) ? aPinned : 0);
             }
-            const aUpload = a.type === 'upload-content' ? (a.data as any) : null;
-            const bUpload = b.type === 'upload-content' ? (b.data as any) : null;
-            const aDate = Date.parse(String(
-                a.type === 'upload-content'
-                    ? (aUpload?.reposted_at || aUpload?.feed_sort_at || aUpload?.approved_at || aUpload?.created_at || aUpload?.updated_at || "")
-                    : (a.data?.created_at || a.data?.updated_at || "")
-            ));
-            const bDate = Date.parse(String(
-                b.type === 'upload-content'
-                    ? (bUpload?.reposted_at || bUpload?.feed_sort_at || bUpload?.approved_at || bUpload?.created_at || bUpload?.updated_at || "")
-                    : (b.data?.created_at || b.data?.updated_at || "")
-            ));
+            const aDate = getFeedItemTime(a);
+            const bDate = getFeedItemTime(b);
             return (Number.isFinite(bDate) ? bDate : 0) - (Number.isFinite(aDate) ? aDate : 0);
         });
-        if (!primaryItems.length) return visibleProfileAds.map((a): FeedItem => ({ type: 'ad', data: a }));
-        if (!visibleProfileAds.length) return primaryItems;
-        const result: FeedItem[] = [];
-        let adIndex = 0;
-        primaryItems.forEach((item, i) => {
-            result.push(item);
-            if ((i + 1) % 4 === 0) {
-                if (adIndex < visibleProfileAds.length) {
-                    result.push({ type: 'ad', data: visibleProfileAds[adIndex] });
-                }
-                adIndex++;
-            }
-        });
-        if (visibleProfileAds.length) {
-            visibleProfileAds.slice(adIndex).forEach((ad) => {
-                result.push({ type: 'ad', data: ad });
-            });
-        }
-        return result;
     }, [googs, hiddenPostIds, isOwnProfile, profileAds, uploadContents]);
 
     if (loading) return <div className="flex min-h-[60vh] items-center justify-center text-zinc-400">Loading profile</div>;
@@ -2459,8 +2508,11 @@ export default function ProfilePage() {
                                                 key={`${post.id}-${index}`}
                                                 ad={normalizedAd}
                                                 source="profile"
-                                                isMenuOpen={String(openMenuAdId) === String(normalizedAd.id)}
-                                                onToggleMenu={(adId) => setOpenMenuAdId(openMenuAdId === adId ? null : adId)}
+                                                isMenuOpen={String(openMenuAdId) === getAdInteractionId(normalizedAd)}
+                                                onToggleMenu={(adId) => {
+                                                    const nextId = getAdInteractionId(adId || normalizedAd);
+                                                    setOpenMenuAdId((current) => String(current) === nextId ? null : nextId);
+                                                }}
                                                 onCloseMenu={() => setOpenMenuAdId(null)}
                                                 onProductClick={(p) => setAdPreviewModal({ ad: p, type: "product" })}
                                                 onAddToBagClick={(p) => setAdPreviewModal({ ad: p, type: "product" })}
@@ -2477,6 +2529,7 @@ export default function ProfilePage() {
                                                 onReport={(p) => setReportingProduct(p)}
                                                 onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, String(id)])}
                                                 onPromoteAgain={handlePromoteAgain}
+                                                onDeleteAd={deleteOwnedAdFromProfile}
                                                 onCollectCoin={(event, p) => adActions.handleAdCoinClick(event, p)}
                                                 canShowCollectCoin={(p) => adActions.canShowCollectCoin(p)}
                                                 onNavigateToProfile={(event, userId) => {
@@ -2540,8 +2593,11 @@ export default function ProfilePage() {
                                                 <PromotedAdCard
                                                     ad={normalizedAd}
                                                     source="profile"
-                                                    isMenuOpen={String(openMenuAdId) === String(normalizedAd.id)}
-                                                    onToggleMenu={(adId) => setOpenMenuAdId(openMenuAdId === adId ? null : adId)}
+                                                    isMenuOpen={String(openMenuAdId) === getAdInteractionId(normalizedAd)}
+                                                    onToggleMenu={(adId) => {
+                                                        const nextId = getAdInteractionId(adId || normalizedAd);
+                                                        setOpenMenuAdId((current) => String(current) === nextId ? null : nextId);
+                                                    }}
                                                     onCloseMenu={() => setOpenMenuAdId(null)}
                                                     onProductClick={(p) => setAdPreviewModal({ ad: p, type: "product" })}
                                                     onAddToBagClick={(p) => setAdPreviewModal({ ad: p, type: "product" })}
@@ -2559,6 +2615,7 @@ export default function ProfilePage() {
                                                     onReport={(p) => setReportingProduct(p)}
                                                     onNotInterested={(id) => setHiddenPostIds((prev) => [...prev, String(id)])}
                                                     onPromoteAgain={handlePromoteAgain}
+                                                    onDeleteAd={deleteOwnedAdFromProfile}
                                                     onCollectCoin={(event, p) => {
                                                         if (!isOwnProfile) return;
                                                         adActions.handleAdCoinClick(event, p);
@@ -2618,6 +2675,12 @@ export default function ProfilePage() {
                                                                 user_purchase_expires_at: isSameContent
                                                                     ? changedItem.user_purchase_expires_at || entry.user_purchase_expires_at || null
                                                                     : entry.user_purchase_expires_at,
+                                                                views_count: isSameContent && changedItem.views_count !== undefined
+                                                                    ? Number(changedItem.views_count || 0)
+                                                                    : entry.views_count,
+                                                                viewCount: isSameContent && changedItem.viewCount !== undefined
+                                                                    ? Number(changedItem.viewCount || changedItem.views_count || 0)
+                                                                    : entry.viewCount,
                                                             }
                                                             : entry;
                                                     })
@@ -2636,7 +2699,7 @@ export default function ProfilePage() {
                                 }
                                 return (
                                     <GoogCard
-                                        key={item.data.id}
+                                        key={`profile-goog-${item.data.id}-${index}`}
                                         post={item.data}
                                         showSubscribe={false}
                                         onNavigateToProfile={(event, userId) => {
@@ -2689,7 +2752,7 @@ export default function ProfilePage() {
                                 </button>
                                 <button
                                     type="button"
-                                    onClick={() => handleDeleteGoog(openGoogMenu.post)}
+                                    onClick={() => { setDeleteGoogCandidate(openGoogMenu.post); setOpenGoogMenu(null); }}
                                     className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-red-500 transition-colors hover:bg-white/5"
                                 >
                                     <IonIcon name="trash-outline" className="text-lg" />
@@ -3206,6 +3269,46 @@ export default function ProfilePage() {
                 </div>
             )}
 
+            {deleteGoogCandidate && (
+                <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onClick={() => setDeleteGoogCandidate(null)}>
+                    <div className="w-full max-w-xs rounded-3xl border border-white/10 bg-[#151515] p-5 text-center shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-red-500/10 text-red-400">
+                            <IonIcon name="trash-outline" className="text-2xl" />
+                        </div>
+                        <h3 className="text-sm font-black uppercase tracking-widest text-white">Delete Goog?</h3>
+                        <p className="mt-2 text-xs font-medium text-white/50">This Goog will be removed from your profile.</p>
+                        <div className="mt-5 flex gap-2">
+                            <button type="button" onClick={() => setDeleteGoogCandidate(null)} className="flex-1 rounded-2xl border border-white/10 px-4 py-3 text-[11px] font-black uppercase tracking-widest text-white">
+                                Cancel
+                            </button>
+                            <button type="button" onClick={() => handleDeleteGoog(deleteGoogCandidate)} className="flex-1 rounded-2xl bg-red-500 px-4 py-3 text-[11px] font-black uppercase tracking-widest text-white">
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {uploadContentDeleteCandidate && (
+                <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onClick={() => !isDeletingUploadContent && setUploadContentDeleteCandidate(null)}>
+                    <div className="w-full max-w-xs rounded-3xl border border-white/10 bg-[#151515] p-5 text-center shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-red-500/10 text-red-400">
+                            <IonIcon name="trash-outline" className="text-2xl" />
+                        </div>
+                        <h3 className="text-sm font-black uppercase tracking-widest text-white">Delete Content?</h3>
+                        <p className="mt-2 text-xs font-medium text-white/50">This upload content will be removed from your profile.</p>
+                        <div className="mt-5 flex gap-2">
+                            <button type="button" disabled={isDeletingUploadContent} onClick={() => setUploadContentDeleteCandidate(null)} className="flex-1 rounded-2xl border border-white/10 px-4 py-3 text-[11px] font-black uppercase tracking-widest text-white disabled:opacity-50">
+                                Cancel
+                            </button>
+                            <button type="button" disabled={isDeletingUploadContent} onClick={confirmUploadContentDelete} className="flex-1 rounded-2xl bg-red-500 px-4 py-3 text-[11px] font-black uppercase tracking-widest text-white disabled:opacity-60">
+                                {isDeletingUploadContent ? "Deleting" : "Delete"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {insightsUpload && (
                 <UploadContentInsightsModal
                     contentId={insightsUpload.id}
@@ -3224,14 +3327,21 @@ export default function ProfilePage() {
                     setShareForceResellOnly(false);
                 }}
                 title={shareProduct?.title || "Check out this post"}
-                url={shareUrlOverride || (shareProduct ? getShareUrlForItem(shareProduct, (String(shareProduct?.id || "").startsWith("upload-") || shareProduct?.content_type) ? "upload" : "product") : "")}
+                url={shareUrlOverride || (shareProduct ? getShareUrlForItem(shareProduct, (String(shareProduct?.id || "").startsWith("upload-") || shareProduct?.content_type) ? "upload" : (isSponsoredShareItem(shareProduct) ? "ad" : "product")) : "")}
                 description={shareProduct?.description}
                 product={shareProduct}
                 initialView={initialShareView}
                 resellMode={shareResellMode}
                 forceResellOnly={shareForceResellOnly}
-                shareOnly={String(shareProduct?.content_type || "").toLowerCase() === "flash" && !shareForceResellOnly && shareResellMode !== "repost"}
-                shareType={String(shareProduct?.id || "").startsWith("upload-") || shareProduct?.content_type ? "upload" : undefined}
+                shareOnly={
+                    isSponsoredShareItem(shareProduct)
+                    || (String(shareProduct?.content_type || "").toLowerCase() === "flash" && !shareForceResellOnly && shareResellMode !== "repost")
+                }
+                shareType={
+                    isSponsoredShareItem(shareProduct)
+                        ? "ad"
+                        : (String(shareProduct?.id || "").startsWith("upload-") || shareProduct?.content_type ? "upload" : undefined)
+                }
             />
 
             <InteractionBottomSheet
@@ -3341,7 +3451,8 @@ export default function ProfilePage() {
                     images={adPreviewModal.images}
                     onToggleLike={(item) => handleAdToggleLike(item)}
                     onOpenSheet={openBottomSheet}
-                    onShare={(ad) => handleShareClick(ad.raw || ad)}
+                    onShare={(ad) => handleShareClick(ad)}
+                    onDeleteAd={isCurrentUserAdOwner(adPreviewModal.ad) ? deleteOwnedAdFromProfile : undefined}
                     onReport={() => {}}
                     onNotInterested={() => {}}
                     onCollectCoin={(e, target) => {

@@ -11,7 +11,7 @@ import { marketService } from "@/services/marketService";
 import { uploadContentService } from "@/services/uploadContentService";
 import { subscriptionService } from "@/services/subscriptionService";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
-import { addAdWalletRefund, getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
+import { getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
 import { calcReach, type ReachTier } from "@/utils/reachCalc";
 
 type PreviewMode = "mobile" | "desktop";
@@ -396,7 +396,17 @@ function getProductImageSrc(product: any) {
     const imageArray = Array.isArray(product?.images) ? product.images : [];
     const galleryArray = Array.isArray(product?.media_gallery) ? product.media_gallery : [];
     const variantArray = Array.isArray(product?.variants) ? product.variants : [];
-    const candidates = [
+    const isUploadItem = getProfilePromoteItemType(product) === "upload";
+    const uploadCandidates = [
+        product?.thumbnail_url,
+        product?.thumbnailUrl,
+        product?.preview_url,
+        product?.previewUrl,
+        product?.media_preview,
+        product?.mediaPreview,
+        ...galleryArray.map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
+    ];
+    const productCandidates = [
         product?.image_url,
         product?.main_image,
         product?.thumbnail_url,
@@ -413,7 +423,8 @@ function getProductImageSrc(product: any) {
         product?.raw?.media_preview,
         ...(Array.isArray(product?.raw?.images) ? product.raw.images : []).map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
         ...(Array.isArray(product?.raw?.media_gallery) ? product.raw.media_gallery : []).map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
-    ]
+    ];
+    const candidates = (isUploadItem ? [...uploadCandidates, ...productCandidates] : productCandidates)
         .map((value) => String(value || "").trim())
         .filter((value) => !isPlaceholderImage(value));
     const selected = candidates[0] || "https://picsum.photos/400/400";
@@ -687,6 +698,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [acceptedProfileNonRefundable, setAcceptedProfileNonRefundable] = useState(false);
     const [editingAdId, setEditingAdId] = useState("");
     const [editingOriginalBudget, setEditingOriginalBudget] = useState<number | null>(null);
+    const [isEditingFreeAdBudgetLocked, setIsEditingFreeAdBudgetLocked] = useState(false);
     const [carryOverViews, setCarryOverViews] = useState(0);
     const [isPromoteAgain, setIsPromoteAgain] = useState(false);
     const [sourceOwnerDbId, setSourceOwnerDbId] = useState<number | string | null>(null);
@@ -793,11 +805,13 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const isFreeProfilePromotePromo = isProfilePromote && hasPromoCodeAdded;
     const showProfileNonRefundableNotice = isProfilePromote && !hasPromoCodeAdded;
     const hasInsufficientBalance = walletBalanceLoaded && budget !== null && effectivePaymentAmount > walletBalance;
+    const isEditingExistingAd = !isPromoteAgain && !!String(editingAdId || "").trim();
     const isPromoLockingBudget = hasPromoCodeAdded && (
         isProfilePromote
             ? true  // Profile Promote: freeze packages the moment any promo is applied
             : budget !== null && (promoDiscount?.discount_type === "rupee" || promoDiscount?.discount_type === "reach")
     );
+    const isBudgetLocked = isEditingFreeAdBudgetLocked || (!isEditingExistingAd && isPromoLockingBudget);
     const filteredCountries = useMemo(() => {
         const query = countrySearch.trim().toLowerCase();
         if (!query) return countries;
@@ -1455,11 +1469,32 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const sponsorId = userProfile?.id ?? userProfile?._id ?? userProfile?.user_id;
         const sponsorPublicId = typeof userProfile?.user_id === "string" ? userProfile.user_id : String(userProfile?.user_id ?? "");
         const sponsorUsername = typeof userProfile?.username === "string" ? userProfile.username : "";
-        const existingReview = editingAdId ? await adsService.getAdById(editingAdId).catch(() => null) : null;
-        // Fall back to editingOriginalBudget from draft if the API fetch failed, so we never charge the full budget on an edit
+        const normalizedEditingAdId = String(editingAdId || "").trim();
+        let existingReview = normalizedEditingAdId ? await adsService.getAdById(normalizedEditingAdId).catch(() => null) : null;
+        if (isEditingExistingAd && !existingReview) {
+            const normalizedLookupId = normalizedEditingAdId.replace(/^ad-/i, "");
+            const myAds = await adsService.getMyAds().catch(() => []);
+            existingReview = Array.isArray(myAds)
+                ? myAds.find((item: any) => {
+                    const candidateIds = [
+                        item?.adId,
+                        item?.ad_id,
+                        item?.editDraft?.editingAdId,
+                        item?.edit_draft?.editingAdId,
+                        item?.id,
+                    ];
+                    return candidateIds.some((candidate) => String(candidate ?? "").trim().replace(/^ad-/i, "") === normalizedLookupId);
+                }) || null
+                : null;
+        }
+        if (isEditingExistingAd && !existingReview) {
+            showPopupError("Could not load the ad being edited. Please reopen the ad and try again.");
+            return;
+        }
+        const existingReviewAdId = String(existingReview?.adId || existingReview?.ad_id || "").trim();
         const existingBudget = isPromoteAgain ? 0 : Number(existingReview?.budget ?? editingOriginalBudget ?? 0);
-        const nextAdId = !isPromoteAgain && existingReview?.adId && typeof existingReview.adId === "string"
-            ? existingReview.adId
+        const nextAdId = isEditingExistingAd
+            ? (existingReviewAdId || normalizedEditingAdId)
             : createNextAdId();
         const carryOverViews = isPromoteAgain
             ? Number(existingReview?.views_count ?? existingReview?.viewCount ?? existingReview?.views ?? 0)
@@ -1467,6 +1502,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const selectedBudget = budget ?? 0;
         const publishBudget = effectiveBudget ?? selectedBudget;
         const budgetDifference = selectedBudget - existingBudget;
+        if (isEditingFreeAdBudgetLocked && !isPromoteAgain && selectedBudget !== existingBudget) {
+            showPopupError("Free ads cannot change budget after publish.");
+            setIsPublishing(false);
+            return;
+        }
         const normalizedCtaValue = ctaUsesCountryPhone(ctaTopic)
             ? buildInternationalPhoneValue(selectedCountry?.dialCode || "+1", ctaValue).fullNumber
             : ctaValue.trim();
@@ -1577,10 +1617,30 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 featuredItems: profilePromoteProducts.map((p) => ({
                     type: getProfilePromoteItemType(p),
                     id: p.id,
+                    content_id: p.content_id || p.contentId || null,
+                    contentId: p.contentId || p.content_id || null,
                     title: getProfilePromoteItemTitle(p),
                     image: getProductImageSrc(p),
+                    image_url: p.image_url || p.main_image || null,
+                    thumbnail_url: p.thumbnail_url || p.thumbnailUrl || null,
+                    thumbnailUrl: p.thumbnailUrl || p.thumbnail_url || null,
+                    media_preview: p.media_preview || p.mediaPreview || null,
+                    mediaPreview: p.mediaPreview || p.media_preview || null,
+                    preview_url: p.preview_url || p.previewUrl || null,
+                    previewUrl: p.previewUrl || p.preview_url || null,
+                    media_gallery: Array.isArray(p.media_gallery) ? p.media_gallery : Array.isArray(p.mediaGallery) ? p.mediaGallery : [],
+                    mediaGallery: Array.isArray(p.mediaGallery) ? p.mediaGallery : Array.isArray(p.media_gallery) ? p.media_gallery : [],
                     meta: getProfilePromoteItemMeta(p),
                     contentType: p.content_type || null,
+                    content_type: p.content_type || p.contentType || null,
+                    media_type: p.media_type || p.mediaType || null,
+                    mediaType: p.mediaType || p.media_type || null,
+                    content_access_mode: p.content_access_mode || p.contentAccessMode || null,
+                    contentAccessMode: p.contentAccessMode || p.content_access_mode || null,
+                    preview_mode: p.preview_mode || p.previewMode || null,
+                    previewMode: p.previewMode || p.preview_mode || null,
+                    blurred: p.content_access_mode === "blurred" || p.contentAccessMode === "blurred" || p.blurred === true || p.is_blurred === true || false,
+                    is_blurred: p.content_access_mode === "blurred" || p.contentAccessMode === "blurred" || p.blurred === true || p.is_blurred === true || false,
                 })),
                 promotedProfileUserId: promotedProfile?.id ?? promotedProfile?.user_id ?? null,
             } : {}),
@@ -1625,7 +1685,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
             // isEditMode: editing an existing Under Review ad (not promote-again)
             // Works even if the API fetch for existingReview failed, by falling back to editingOriginalBudget
-            const isEditMode = !isPromoteAgain && (!!existingReview || (!!editingAdId && editingOriginalBudget !== null));
+            const isEditMode = isEditingExistingAd;
             const payAmount = isEditMode ? budgetDifference : discountedBudget;
             if ((isEditMode && budgetDifference > 0) || (!isEditMode && discountedBudget > 0)) {
                 if (isProfilePromote) {
@@ -1641,8 +1701,17 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 }
             }
 
-            if (existingReview && isEditMode && budgetDifference < 0 && ownerKey) {
-                addAdWalletRefund(reviewRecord.adId, ownerKey, Math.abs(budgetDifference), `Ad Budget Refund - ${reviewRecord.adId}`);
+            if (existingReview && isEditMode && budgetDifference < 0) {
+                const refundAmount = Math.abs(budgetDifference);
+                const refundResult = await walletService.refundAdBudgetEdit(refundAmount, {
+                    adId: reviewRecord.adId,
+                    note: `Ad Budget Refund - ${reviewRecord.adId} - Budget Reduced During Review`,
+                    idempotencyKey: `ad-budget-refund:v2:${reviewRecord.adId}:${existingBudget}->${selectedBudget}`,
+                });
+                paymentResult = {
+                    ...(paymentResult || {}),
+                    currentBalance: refundResult?.currentBalance,
+                };
             }
 
             // Record a $0 wallet entry for free promo ads so they appear in transaction history
@@ -1657,8 +1726,6 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             const currentBalance = Number(paymentResult?.currentBalance);
             if (Number.isFinite(currentBalance)) {
                 setWalletBalance(getWalletBalanceWithAdAdjustments(currentBalance, ownerKey));
-            } else if (isEditMode && budgetDifference < 0) {
-                setWalletBalance((current) => current + Math.abs(budgetDifference));
             } else {
                 setWalletBalance((current) => Math.max(0, current - (isEditMode ? Math.max(0, budgetDifference) : discountedBudget)));
             }
@@ -1691,12 +1758,12 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 formData.set("data", JSON.stringify(uploadAdPayload));
             }
 
-            const savedAd = (existingReview && !isPromoteAgain)
+            const savedAd = isEditMode
                 ? await adsService.updateAd(reviewRecord.adId, payload as any)
                 : await adsService.createAd(payload as any);
 
             // Redeem promo AFTER ad is successfully created (increments uses_count)
-            if (hasPromoCodeAdded && promoCode && (!existingReview || isPromoteAgain)) {
+            if (hasPromoCodeAdded && promoCode && !isEditMode) {
                 try {
                     await adsService.redeemPromoCode(promoCode, getAdTypeForCampaign(), reviewRecord.adId);
                 } catch {
@@ -2103,6 +2170,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 if (typeof parsed.editingOriginalBudget === "number") {
                     setEditingOriginalBudget(parsed.editingOriginalBudget);
                 }
+                setIsEditingFreeAdBudgetLocked(parsed.freeAdBudgetLocked === true);
             }
             if (typeof parsed.carryOverViews === "number") {
                 setCarryOverViews(Math.max(0, parsed.carryOverViews));
@@ -2149,11 +2217,16 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 }
             }
             if (typeof parsed.budget === "number") {
-                // Only restore if it exactly matches a valid tier option
-                setBudget((prev) => {
-                    const validOption = reachTiers.find((t) => Number(t.budget_from) === parsed.budget);
-                    return validOption ? parsed.budget : prev;
-                });
+                if (typeof parsed.editingAdId === "string" && parsed.editingAdId.trim()) {
+                    setBudget(parsed.budget);
+                } else {
+                    // New ad drafts must still match a valid package. Edit drafts preserve
+                    // their stored budget even before reach tiers finish loading.
+                    setBudget((prev) => {
+                        const validOption = reachTiers.find((t) => Number(t.budget_from) === parsed.budget);
+                        return validOption ? parsed.budget : prev;
+                    });
+                }
             }
             if (typeof parsed.durationDays === "number") {
                 const durationLimit = parsed.hasPromoCodeAdded ? PROMO_DURATION_MAX : 30;
@@ -2204,6 +2277,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             window.localStorage.setItem(draftStorageKey, JSON.stringify({
                 version: AD_DRAFT_VERSION,
                 editingAdId,
+                freeAdBudgetLocked: isEditingFreeAdBudgetLocked,
                 promoteAgain: isPromoteAgain,
                 carryOverViews,
                 sourceOwnerDbId,
@@ -2235,7 +2309,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         }, 250);
 
         return () => window.clearTimeout(timeoutId);
-    }, [activeLink, ageMax, ageMin, budget, carryOverViews, ctaTopic, ctaValue, description, draftStorageKey, durationDays, editingAdId, genderTarget, hasPromoCodeAdded, historyMediaPreview, imageName, isPromoteAgain, persistedImageGallery, linkInput, promoCode, publishedAd, selectedCountryCode, selectedInterestTopics, selectedLocationCodes, selectedPlacements, sourceOwnerDbId, sourceOwnerProfilePicture, sourceOwnerPublicId, sourceOwnerUsername, uploadedMediaType]);
+    }, [activeLink, ageMax, ageMin, budget, carryOverViews, ctaTopic, ctaValue, description, draftStorageKey, durationDays, editingAdId, genderTarget, hasPromoCodeAdded, historyMediaPreview, imageName, isEditingFreeAdBudgetLocked, isPromoteAgain, persistedImageGallery, linkInput, promoCode, publishedAd, selectedCountryCode, selectedInterestTopics, selectedLocationCodes, selectedPlacements, sourceOwnerDbId, sourceOwnerProfilePicture, sourceOwnerPublicId, sourceOwnerUsername, uploadedMediaType]);
 
     useEffect(() => {
         const justCrossedIntoInsufficientBalance = hasInsufficientBalance && !wasInsufficientBalanceRef.current;
@@ -3737,14 +3811,14 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                 <button
                                                     type="button"
                                                     onClick={() => {
-                                                        if (isPromoLockingBudget) return;
+                                                        if (isBudgetLocked) return;
                                                         if (isBudgetEditing) { closeBudgetEditor(); return; }
                                                         setBudgetInput(budget !== null ? String(budget) : "");
                                                         setIsBudgetEditing(true);
                                                     }}
                                                     className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/[0.06] text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                                                     aria-label="Edit budget amount"
-                                                    disabled={isPromoLockingBudget}
+                                                    disabled={isBudgetLocked}
                                                 >
                                                     <IonIcon name={isBudgetEditing ? "checkmark-outline" : "create-outline"} className="text-sm" />
                                                 </button>
@@ -3760,7 +3834,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                 onKeyDown={(event) => { if (event.key === "Enter") closeBudgetEditor(); }}
                                                 maxLength={6}
                                                 className="min-h-8 w-32 rounded-lg border border-white/10 bg-black/20 px-2 text-[10px] font-black text-white outline-none transition focus:border-white/30 focus:bg-white/[0.08]"
-                                                disabled={isPromoLockingBudget}
+                                                disabled={isBudgetLocked}
                                                 autoFocus
                                             />
                                         )}
@@ -3772,14 +3846,16 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                     type="text"
                                                     value={promoCode}
                                                     onChange={(event) => {
+                                                        if (isEditingExistingAd) return;
                                                         setPromoCode(sanitizePromoCode(event.target.value));
                                                         if (promoError) setPromoError("");
                                                     }}
                                                     onKeyDown={(event) => {
+                                                        if (isEditingExistingAd) return;
                                                         if (event.key === "Enter") addPromoCode();
                                                     }}
                                                     maxLength={15}
-                                                    disabled={hasPromoCodeAdded && !isPromoEditing}
+                                                    disabled={isEditingExistingAd || (hasPromoCodeAdded && !isPromoEditing)}
                                                     placeholder="Promo Code"
                                                     className="h-7 w-32 bg-transparent px-2 text-[10px] font-black uppercase tracking-[0.08em] text-white outline-none placeholder:text-white/40 disabled:cursor-default disabled:opacity-100"
                                                 />
@@ -3787,13 +3863,15 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                     <button
                                                         type="button"
                                                         onClick={() => {
+                                                            if (isEditingExistingAd || isEditingFreeAdBudgetLocked) return;
                                                             setPromoCode("");
                                                             setHasPromoCodeAdded(false);
                                                             setIsPromoEditing(true);
                                                             setPromoDiscount(null);
                                                             setPromoError("");
                                                         }}
-                                                        className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-500/15 text-red-400 transition hover:bg-red-500/25 hover:text-red-300"
+                                                        disabled={isEditingExistingAd || isEditingFreeAdBudgetLocked}
+                                                        className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-500/15 text-red-400 transition hover:bg-red-500/25 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
                                                         aria-label="Remove promo code"
                                                     >
                                                         <IonIcon name="close-outline" className="text-base" />
@@ -3803,7 +3881,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                         type="button"
                                                         onClick={addPromoCode}
                                                         className="flex h-7 min-w-10 items-center justify-center rounded-lg bg-rose-500 px-2 text-[9px] font-black uppercase tracking-[0.08em] text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
-                                                        disabled={(!promoCode.trim() && !hasPromoCodeAdded) || isValidatingPromo}
+                                                        disabled={isEditingExistingAd || (!promoCode.trim() && !hasPromoCodeAdded) || isValidatingPromo}
                                                     >
                                                         {isValidatingPromo ? (
                                                             <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
@@ -3828,14 +3906,14 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 </div>
                                 {/* Budget slider — full width, photo/video & product only */}
                                 {!isProfileAd && tiersLoaded && (
-                                    <div className={`transition-opacity ${isPromoLockingBudget ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
+                                    <div className={`transition-opacity ${isBudgetLocked ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
                                         <input
                                             type="range"
                                             min={globalBudgetMin}
                                             max={globalBudgetMax}
                                             step={1}
                                             value={budget ?? globalBudgetMin}
-                                            disabled={isPromoLockingBudget}
+                                            disabled={isBudgetLocked}
                                             onChange={(event) => {
                                                 const val = Number(event.target.value);
                                                 setBudget(val);
@@ -3860,7 +3938,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                         No budget packages available right now.
                                     </p>
                                 ) : (
-                                    <div className={`mt-3 flex flex-wrap gap-2 transition-opacity ${isPromoLockingBudget ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
+                                    <div className={`mt-3 flex flex-wrap gap-2 transition-opacity ${isBudgetLocked ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
                                         {budgetOptions.map((opt) => (
                                             <button
                                                 key={opt.value}

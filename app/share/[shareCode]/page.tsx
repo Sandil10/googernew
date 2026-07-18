@@ -7,6 +7,7 @@ import IonIcon from "@/app/components/IonIcon";
 import { marketService } from "@/services/marketService";
 import { googService } from "@/services/googService";
 import { authService } from "@/services/authService";
+import { adsService } from "@/services/adsService";
 import { GoogCard } from "@/app/components/googs/GoogCard";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { SharedAdSecondViewModal, AdSecondViewKind } from "@/app/components/ads/SharedAdSecondViewModal";
@@ -17,24 +18,19 @@ import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
 import { getShareUrlForItem } from "@/app/lib/shareLinks";
 import { useCart } from "@/app/context/CartContext";
 import {
-    getSponsoredLinkPreviewType,
-    normalizeExternalUrl,
+    getSponsoredUploadedAdImages,
 } from "@/app/components/ads/adHelpers";
 import { useAdActions } from "@/app/lib/ads/useAdActions";
 import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
-import { matchesAdIdentity } from "@/app/lib/ads/adIdentity";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { getPublicProfileHref } from "@/app/lib/profileRoute";
 
 const getAdSecondViewKind = (ad: any): AdSecondViewKind => {
-    const link = normalizeExternalUrl(ad?.active_link || "");
-    const previewType = getSponsoredLinkPreviewType(link);
-    const mediaPreview = String(ad?.media_preview || ad?.video_url || "").trim();
+    const mediaPreview = String(ad?.media_preview || ad?.mediaPreview || ad?.media_url || ad?.mediaUrl || ad?.video_url || ad?.videoUrl || "").trim();
     const hasUploadedVideo =
         /video/i.test(String(ad?.media_type || "")) ||
         /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(mediaPreview);
-    if (previewType === "embed") return "embed";
-    if (previewType === "video" || hasUploadedVideo) return "video";
+    if (hasUploadedVideo) return "video";
     return "image";
 };
 
@@ -112,6 +108,7 @@ export default function UnifiedSharePage() {
 
     const [previewModal, setPreviewModal] = useState<any>(null);
     const [showShareModal, setShowShareModal] = useState(false);
+    const [openMenuAdId, setOpenMenuAdId] = useState<string | number | null>(null);
     const [isSheetOpen, setIsSheetOpen] = useState(false);
     const [sheetType, setSheetType] = useState<any>("comments");
     const [sheetData, setSheetData] = useState<any[]>([]);
@@ -407,6 +404,54 @@ export default function UnifiedSharePage() {
         adActions.handleAdCoinClick(event, target);
     };
 
+    const isCurrentUserAdOwner = (target: any) => {
+        const raw = target?.raw || target || {};
+        const currentIds = [
+            currentUser?.id,
+            currentUser?.user_id,
+            currentUser?.userId,
+            currentUser?.googer_id,
+            currentUser?.googerId,
+        ].filter((value) => value !== undefined && value !== null && value !== "");
+        const ownerIds = [
+            raw.user_id,
+            raw.userId,
+            raw.owner_user_id,
+            raw.ownerUserId,
+            raw.ad_owner_id,
+            raw.adOwnerId,
+            raw.googer_id,
+            raw.googerId,
+            target?.user_id,
+            target?.userId,
+            target?.owner_user_id,
+            target?.ownerUserId,
+            target?.googer_id,
+            target?.googerId,
+        ].filter((value) => value !== undefined && value !== null && value !== "");
+        return currentIds.some((currentId) => ownerIds.some((ownerId) => String(currentId) === String(ownerId)));
+    };
+
+    const deleteOwnedSharedAd = async (target: any) => {
+        if (!isCurrentUserAdOwner(target)) return;
+
+        try {
+            await adsService.deleteAd(target);
+            setOpenMenuAdId(null);
+            setPreviewModal(null);
+            setNotFound(true);
+            setItem(null);
+            window.dispatchEvent(new Event("googer-ad-history-updated"));
+            setNotification({ type: "success", title: "Deleted", message: "Ad removed from feeds." });
+        } catch (error) {
+            setNotification({
+                type: "error",
+                title: "Delete failed",
+                message: error instanceof Error ? error.message : "Could not delete this ad.",
+            });
+        }
+    };
+
     const sheetProduct = useMemo(() => {
         if (!item) return null;
         if (type === "goog") return { ...item, id: `goog-${item.id}`, title: "Goog post", image_url: item.user?.img };
@@ -594,14 +639,24 @@ export default function UnifiedSharePage() {
                             <PromotedAdCard
                                 ad={normalizeAdData(item)}
                                 source="home"
+                                isMenuOpen={String(openMenuAdId) === String(normalizeAdData(item).id)}
+                                onToggleMenu={(adId) => setOpenMenuAdId(String(openMenuAdId) === String(adId) ? null : adId)}
+                                onCloseMenu={() => setOpenMenuAdId(null)}
                                 onProductClick={(product) => setPreviewModal({ ad: product, type: "product" })}
                                 onToggleLike={(id) => handleToggleLike(id)}
                                 onOpenSheet={openSheet}
                                 onShare={(ad) => handleShare(ad)}
                                 onCollectCoin={handleCollectCoin}
                                 canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}
+                                currentUser={currentUser}
+                                onDeleteAd={deleteOwnedSharedAd}
                                 onProfileClick={(profileAd) => router.push(getPublicProfileHref(profileAd.user?.username || profileAd.owner_username || profileAd.username, profileAd.user_id))}
-                                onOpenSecondView={(targetAd) => setPreviewModal({ ad: targetAd, type: "ad", kind: getAdSecondViewKind(targetAd) })}
+                                onOpenSecondView={(targetAd) => setPreviewModal({
+                                    ad: targetAd,
+                                    type: "ad",
+                                    kind: getAdSecondViewKind(targetAd),
+                                    images: getSponsoredUploadedAdImages(targetAd),
+                                })}
                                 onReport={() => { }}
                                 onNotInterested={() => { }}
                                 onNavigateToProfile={() => router.push(getPublicProfileHref(item.user?.username || item.owner_username || item.username, item.owner_user_id || item.user_id))}
@@ -633,11 +688,13 @@ export default function UnifiedSharePage() {
                     onClose={() => setPreviewModal(null)}
                     ad={previewModal.ad}
                     kind={previewModal.kind || getAdSecondViewKind(previewModal.ad)}
+                    images={previewModal.images}
                     onToggleLike={(id) => handleToggleLike(id)}
                     onOpenSheet={openSheet}
                     onShare={(ad) => handleShare(ad)}
                     onReport={() => { }}
                     onNotInterested={() => { }}
+                    onDeleteAd={isCurrentUserAdOwner(previewModal.ad) ? deleteOwnedSharedAd : undefined}
                     onCollectCoin={handleCollectCoin}
                     onNavigateToProfile={() => router.push(getPublicProfileHref(item.user?.username || item.owner_username || item.username, item.owner_user_id || item.user_id))}
                     canShowCollectCoin={(target) => adActions.canShowCollectCoin(target)}

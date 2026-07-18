@@ -271,7 +271,7 @@ const syncExpiredAds = async (pool, adId = null) => {
                  ad_id,
                  CASE
                      WHEN status = 'Removed' THEN plan_interval
-                     ELSE COALESCE(duration_interval, plan_interval)
+                     ELSE COALESCE(plan_interval, duration_interval)
                  END AS expiry_interval
              FROM raw_ads
          )
@@ -466,12 +466,39 @@ const matchesAnyText = (targets, values) => {
     )));
 };
 
+let countryAliases = null;
+const getCountryAliases = () => {
+    if (countryAliases) return countryAliases;
+    countryAliases = new Map();
+    try {
+        const names = new Intl.DisplayNames(['en'], { type: 'region' });
+        for (let first = 65; first <= 90; first += 1) {
+            for (let second = 65; second <= 90; second += 1) {
+                const code = String.fromCharCode(first, second);
+                const name = names.of(code);
+                if (!name || name === code || name.toLowerCase().includes('unknown region')) continue;
+                countryAliases.set(normalizeText(code), normalizeText(name));
+                countryAliases.set(normalizeText(name), normalizeText(code));
+            }
+        }
+    } catch {}
+    return countryAliases;
+};
+
+const expandCountryValues = (values) => {
+    const aliases = getCountryAliases();
+    return uniqueTexts(values).flatMap((value) => {
+        const normalized = normalizeText(value);
+        return aliases.has(normalized) ? [value, aliases.get(normalized)] : [value];
+    });
+};
+
 const adMatchesViewer = (adRow, viewerProfile) => {
     if (viewerProfile?.isAnonymous) return true;
 
     const targeting = getAdTargeting(adRow);
     if (!matchesGender(targeting.gender, viewerProfile?.gender)) return false;
-    if (!matchesAnyText(targeting.countries, viewerProfile?.countries || [])) return false;
+    if (!matchesAnyText(expandCountryValues(targeting.countries), expandCountryValues(viewerProfile?.countries || []))) return false;
     if (!matchesAnyText(targeting.interests, viewerProfile?.interests || [])) return false;
     return true;
 };

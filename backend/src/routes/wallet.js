@@ -17,6 +17,7 @@ router.post('/transfer', withIdempotency('wallet.direct-transfer'), walletContro
 router.post('/pay-order', withIdempotency('wallet.pay-order'), walletController.payOrder);
 router.post('/pay-profile-promote', withIdempotency('wallet.pay-profile-promote'), walletController.payProfilePromote);
 router.post('/record-promo-ad', withIdempotency('wallet.record-promo-ad'), walletController.recordPromoAd);
+router.post('/refund-ad-budget-edit', withIdempotency('wallet.refund-ad-budget-edit'), walletController.refundAdBudgetEdit);
 router.post('/admin/add-capital', withIdempotency('wallet.admin-add-capital'), walletController.addAdminCapital);
 router.get('/history', walletController.getTransactionHistory);
 

@@ -94,7 +94,15 @@ const getCanonicalGoogShareCode = (row) => {
 
 const normalizePost = (row) => ({
     ...(() => {
-        const stage = getGoogExpansionStage(row.views_count, row.likes_count, row.comments_count, row.shares_count);
+        const stage = row.home_reach_stage
+            ? {
+                stage: row.home_reach_stage,
+                cap: row.home_reach_cap === null || row.home_reach_cap === undefined ? null : Number(row.home_reach_cap),
+                minLikes: 3,
+                score: Number(row.home_unique_reach_count || 0),
+                canExpand: !!row.home_can_reach,
+            }
+            : getGoogExpansionStage(row.views_count, row.likes_count, row.comments_count, row.shares_count);
         return {
             home_expansion_stage: stage.stage,
             homeExpansionStage: stage.stage,
@@ -106,6 +114,18 @@ const normalizePost = (row) => ({
             homeExpansionMinLikes: stage.minLikes,
             home_can_expand: stage.canExpand,
             homeCanExpand: stage.canExpand,
+            home_unique_reach_count: Number(row.home_unique_reach_count || 0),
+            homeUniqueReachCount: Number(row.home_unique_reach_count || 0),
+            home_stage_200_likes: Number(row.home_stage_200_likes || 0),
+            homeStage200Likes: Number(row.home_stage_200_likes || 0),
+            home_stage_500_new_likes: Number(row.home_stage_500_new_likes || 0),
+            homeStage500NewLikes: Number(row.home_stage_500_new_likes || 0),
+            home_stage_2000_new_likes: Number(row.home_stage_2000_new_likes || 0),
+            homeStage2000NewLikes: Number(row.home_stage_2000_new_likes || 0),
+            home_stage_10000_new_likes: Number(row.home_stage_10000_new_likes || 0),
+            homeStage10000NewLikes: Number(row.home_stage_10000_new_likes || 0),
+            home_stage_50000_new_likes: Number(row.home_stage_50000_new_likes || 0),
+            homeStage50000NewLikes: Number(row.home_stage_50000_new_likes || 0),
         };
     })(),
     id: Number(row.id),

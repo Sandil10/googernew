@@ -418,6 +418,8 @@ const hydrateProductPromoteAds = async (ads) => {
         const dataUrlFallback = getDataUrlFallback(linked.image_url, linked.variants, ad.media_gallery, ad.image_url, ad.media_preview);
         const primaryImage = getMediaUrl(linked.image_url) || gallery[0] || getMediaUrl(ad.image_url) || dataUrlFallback || '/assets/images/googer.png';
         const { price, promo_price } = normalizeProductPromotePriceFields(linked, ad);
+        const advertiserUsername = ad.owner_username || ad.ownerUsername || ad.username || ad.user?.username || linked.owner_username || ad.title;
+        const advertiserProfilePicture = ad.profile_picture || ad.user?.profile_picture || linked.profile_picture || null;
 
         return {
             ...ad,
@@ -443,9 +445,17 @@ const hydrateProductPromoteAds = async (ads) => {
             product_id: linked.id,
             linked_product_id: linked.id,
             linked_product_code: linked.product_code,
-            owner_username: linked.owner_username || ad.owner_username,
-            username: linked.owner_username || ad.username,
-            profile_picture: stripDataUrl(linked.profile_picture) || ad.profile_picture,
+            product_owner_username: linked.owner_username || null,
+            productOwnerUsername: linked.owner_username || null,
+            owner_username: advertiserUsername,
+            ownerUsername: advertiserUsername,
+            username: advertiserUsername,
+            profile_picture: stripDataUrl(advertiserProfilePicture),
+            user: {
+                ...(ad.user || {}),
+                username: advertiserUsername,
+                profile_picture: stripDataUrl(advertiserProfilePicture),
+            },
         };
     }).filter(Boolean);
 };

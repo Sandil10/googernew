@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import { RelativeTime } from "@/app/components/RelativeTime";
 import SubscribeButton from "@/app/components/SubscribeButton";
@@ -34,6 +34,8 @@ export type WritePost = {
     home_expansion_stage?: string;
     homeCanExpand?: boolean;
     home_can_expand?: boolean;
+    topic?: string;
+    category?: string;
 };
 
 type GoogLinkPreview = {
@@ -194,6 +196,7 @@ const InteractionButton = ({
 }: any) => {
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const didLongPressRef = useRef(false);
+    const lastClickAtRef = useRef(0);
 
     const handlePointerDown = () => {
         didLongPressRef.current = false;
@@ -214,6 +217,9 @@ const InteractionButton = ({
     const handleClick = (event: React.MouseEvent) => {
         event.stopPropagation();
         cancelTimer();
+        const now = Date.now();
+        if (now - lastClickAtRef.current < 250) return;
+        lastClickAtRef.current = now;
         if (!didLongPressRef.current) {
             onSingleClick?.();
         }
@@ -262,7 +268,7 @@ interface GoogCardProps {
     showSubscribe?: boolean;
 }
 
-export function GoogCard({
+export const GoogCard = memo(function GoogCard({
     post,
     onNavigateToProfile,
     onToggleLike,
@@ -278,7 +284,9 @@ export function GoogCard({
     const preview = getGoogLinkPreview(post.text);
     const articleRef = useRef<HTMLElement>(null);
     const viewedRef = useRef(false);
-    const showSuggestedLabel = Number(post.views || post.views_count || 0) >= 200;
+    const reachStage = String(post.homeExpansionStage || post.home_expansion_stage || "").trim();
+    const showSuggestedLabel = Boolean(post.homeCanExpand ?? post.home_can_expand ?? reachStage);
+    const suggestedTopic = String(post.topic || post.category || reachStage || "Suggested").trim();
     const authorDisplayName = getUserDisplayName(post.user, post.user.name || "User");
 
     useEffect(() => {
@@ -311,7 +319,7 @@ export function GoogCard({
 
 
     return (
-        <article ref={articleRef} className="max-w-full overflow-hidden border-b border-white/10 px-3 py-4 transition-colors last:border-b-0 hover:bg-white/[0.025] sm:px-7 sm:py-5">
+        <article ref={articleRef} className="max-w-full overflow-hidden border-b border-white/10 px-2 py-4 transition-colors last:border-b-0 hover:bg-white/[0.025] sm:px-7 sm:py-5">
             <header className="flex min-w-0 max-w-full items-start justify-between gap-2 sm:gap-4">
                 <div className="flex min-w-0 gap-3">
                     <button
@@ -331,17 +339,18 @@ export function GoogCard({
                             >
                                 {authorDisplayName}
                             </button>
-                            {showSuggestedLabel && (
-                                <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.08em] text-white/45">
-                                    Suggested
-                                </span>
-                            )}
                             {post.user.badge_color && <BadgeSvg color={post.user.badge_color} tickColor={post.user.badge_tick_color} size={12} />}
                             {!post.user.badge_color && post.user.id && <UserVerifiedBadge userId={post.user.id} size={12} />}
                             <span className="text-xs text-white/35">
                                 <RelativeTime timestamp={post.createdAt || (post as any).created_at} />
                             </span>
                         </div>
+                        {showSuggestedLabel && (
+                            <div className="mt-0.5 inline-flex max-w-full items-center gap-1 text-[7px] font-black uppercase tracking-[0.12em] text-yellow-300/80">
+                                <IonIcon name="trending-up-outline" className="text-[8px]" />
+                                <span className="truncate">Suggested · {suggestedTopic}</span>
+                            </div>
+                        )}
                         <div
                             className="mt-1.5 whitespace-pre-wrap break-words text-[14px] leading-6"
                             style={{ color: post.textColor || "var(--theme-text)" }}
@@ -428,4 +437,6 @@ export function GoogCard({
             </header>
         </article>
     );
-}
+});
+
+GoogCard.displayName = "GoogCard";

@@ -20,6 +20,8 @@ import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { ProfilePromoteCarousel } from "@/app/components/ads/ProfilePromoteCarousel";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { SharedProductCard } from "@/app/components/market/SharedProductCard";
+import UploadContentFeedCard, { type UploadContentSheetType } from "@/app/components/upload-content/UploadContentFeedCard";
+import { uploadContentService, type UploadContentRecord } from "@/services/uploadContentService";
 import { normalizeAdData, resolveAdDisplayTitle } from "@/app/lib/ads/adNormalizer";
 import { adsService } from "@/services/adsService";
 import { categoryService } from "@/services/categoryService";
@@ -1469,7 +1471,7 @@ function getShuffledShopAdCycle(
   const uniqueAds = Array.from(
     ads.reduce<Map<string, any>>((map, ad) => {
       const key = getShopAdRotationKey(ad);
-      if (key && !map.has(key)) map.set(key, ad);
+      if (key && (!map.has(key) || shouldPreferShopAdCandidate(map.get(key), ad))) map.set(key, ad);
       return map;
     }, new Map<string, any>()).values(),
   );
@@ -1552,7 +1554,7 @@ function interleaveShopProductsWithAds(
       .filter((ad) => ad?.is_sponsored)
       .reduce((map, ad) => {
         const key = getShopAdRotationKey(ad);
-        if (key && !map.has(key)) map.set(key, ad);
+        if (key && (!map.has(key) || shouldPreferShopAdCandidate(map.get(key), ad))) map.set(key, ad);
         return map;
       }, new Map<string, any>())
       .values(),
@@ -1717,6 +1719,74 @@ const getCampaignType = (item: any) => String(item?.campaign_type || item?.campa
 const isProductPromoteItem = (item: any) => getCampaignType(item).toLowerCase() === "product promote";
 const isProfilePromoteItem = (item: any) => getCampaignType(item).toLowerCase() === "profile promote" || item?.media_type === "profile";
 
+const getShopProfilePromoteDraft = (ad: any) => (
+  safeParse(
+    ad?.editDraft ||
+    ad?.edit_draft ||
+    ad?.raw?.editDraft ||
+    ad?.raw?.edit_draft,
+  ) || {}
+);
+
+const getShopProfileFeaturedCount = (ad: any) => {
+  const draft = getShopProfilePromoteDraft(ad);
+  const featuredItems = Array.isArray(draft.featuredItems)
+    ? draft.featuredItems
+    : Array.isArray(draft.featured_items)
+      ? draft.featured_items
+      : [];
+  return featuredItems.length;
+};
+
+const shouldPreferShopAdCandidate = (current: any, candidate: any) => {
+  if (!current) return true;
+  if (!isProfilePromoteItem(candidate)) return false;
+  const currentFeaturedCount = getShopProfileFeaturedCount(current);
+  const candidateFeaturedCount = getShopProfileFeaturedCount(candidate);
+  if (candidateFeaturedCount > currentFeaturedCount) return true;
+  const currentHasDraft = !!(current?.editDraft || current?.edit_draft || current?.raw?.editDraft || current?.raw?.edit_draft);
+  const candidateHasDraft = !!(candidate?.editDraft || candidate?.edit_draft || candidate?.raw?.editDraft || candidate?.raw?.edit_draft);
+  return candidateHasDraft && !currentHasDraft;
+};
+
+const normalizeProfilePromoteUploadContent = (content: any): UploadContentRecord | null => {
+  const normalizedId = content?.id || content?.content_id || content?.contentId || content?.upload_content_id || content?.uploadContentId || "";
+  const numericNormalizedId = Number(normalizedId);
+  const id = Number.isFinite(numericNormalizedId) && String(normalizedId).trim() !== "" ? numericNormalizedId : normalizedId;
+  if (!id) return null;
+
+  const mediaGallery = Array.isArray(content?.media_gallery)
+    ? content.media_gallery
+    : Array.isArray(content?.mediaGallery)
+      ? content.mediaGallery
+      : Array.isArray(content?.images)
+        ? content.images
+        : [];
+
+  return {
+    ...content,
+    id: id as any,
+    contentId: String(content?.contentId || content?.content_id || normalizedId || ""),
+    content_id: String(content?.content_id || content?.contentId || normalizedId || ""),
+    content_type: String(content?.content_type || content?.contentType || "vault").toLowerCase() === "flash" ? "flash" : "vault",
+    description: content?.description || content?.title || content?.topic || "",
+    topic: content?.topic || content?.title || content?.description || "Content",
+    price: Number(content?.price ?? content?.promo_price ?? 0),
+    affiliate_commission: Number(content?.affiliate_commission ?? content?.affiliateCommission ?? 0),
+    hashtags: Array.isArray(content?.hashtags) ? content.hashtags : [],
+    allow_comments: content?.allow_comments !== false,
+    show_link_on_home: !!content?.show_link_on_home,
+    external_link: content?.external_link || content?.externalLink || "",
+    media_type: content?.media_type || content?.mediaType || "",
+    media_preview: content?.media_preview || content?.mediaPreview || content?.preview_url || content?.previewUrl || content?.media_url || content?.mediaUrl || content?.image || "",
+    media_gallery: mediaGallery,
+    thumbnail_url: content?.thumbnail_url || content?.thumbnailUrl || content?.image_url || content?.imageUrl || "",
+    content_access_mode: content?.content_access_mode || content?.contentAccessMode || (content?.blurred || content?.is_blurred ? "blurred" : "unblurred"),
+    visibility: content?.visibility || "public",
+    status: content?.status || "Approved",
+  } as UploadContentRecord;
+};
+
 export default function ShopPage() {
   const MARKET_FEED_HISTORY_KEY = "googer-market-feed-history-v2";
   const MARKET_FEED_LAST_ORDER_KEY = "googer-market-feed-last-order-v1";
@@ -1804,6 +1874,8 @@ export default function ShopPage() {
   const [shareProduct, setShareProduct] = useState<any>(null);
   const [activePreviewIndex, setActivePreviewIndex] = useState(0);
   const [sharedAdPreviewModal, setSharedAdPreviewModal] = useState<{ ad: any; kind: "image" | "video" | "embed" } | null>(null);
+  const [profilePromoteUploadModal, setProfilePromoteUploadModal] = useState<UploadContentRecord | null>(null);
+  const [profilePromoteUploadAutoOpenKey, setProfilePromoteUploadAutoOpenKey] = useState<string | null>(null);
   const [productComments, setProductComments] = useState<any[]>([]);
   const [newComment, setNewComment] = useState("");
   const [, setRelativeTimeTick] = useState(0);
@@ -1813,6 +1885,11 @@ export default function ShopPage() {
     "likes" | "comments" | "shares" | "views"
   >("comments");
   const [bottomSheetData, setBottomSheetData] = useState<any[]>([]);
+  const [isUploadSheetOpen, setIsUploadSheetOpen] = useState(false);
+  const [uploadSheetType, setUploadSheetType] = useState<UploadContentSheetType>("comments");
+  const [interactionUpload, setInteractionUpload] = useState<UploadContentRecord | null>(null);
+  const [uploadSheetData, setUploadSheetData] = useState<any[]>([]);
+  const [isUploadSheetLoading, setIsUploadSheetLoading] = useState(false);
   const [openMenuProductId, setOpenMenuProductId] = useState<string | number | null>(
     null,
   );
@@ -1996,7 +2073,7 @@ export default function ShopPage() {
         ]
           .reduce((map, ad) => {
             const key = getShopAdRotationKey(ad);
-            if (key && !map.has(key)) map.set(key, ad);
+            if (key && (!map.has(key) || shouldPreferShopAdCandidate(map.get(key), ad))) map.set(key, ad);
             return map;
           }, new Map<string, any>())
           .values(),
@@ -2022,6 +2099,7 @@ export default function ShopPage() {
   const productsCacheRef = useRef<Record<string, any[]>>({});
   const productLoadRequestRef = useRef(0);
   const [notification, setNotification] = useState<{ type: 'error' | 'success', message: string, title?: string } | null>(null);
+  const [coinToast, setCoinToast] = useState<{ type: 'error' | 'success', message: string } | null>(null);
   const [isMenuOpenModal, setIsMenuOpenModal] = useState(false);
   const [quantity, setQuantity] = useState(1);
   const [selectedVariantIndex, setSelectedVariantIndex] = useState<number | null>(null);
@@ -2130,8 +2208,11 @@ export default function ShopPage() {
   useEffect(() => {
     if (activeTab !== "market") return;
     let cancelled = false;
+    let retryAfter = 0;
 
     const loadActiveShopAds = async () => {
+      if (Date.now() < retryAfter) return;
+
       try {
         const token = typeof window !== "undefined" ? (window.sessionStorage.getItem("token") || window.localStorage.getItem("token")) : null;
         const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
@@ -2145,8 +2226,11 @@ export default function ShopPage() {
             cache: "no-store",
             headers,
           });
-          const data = await response.json();
-          if (!response.ok) throw new Error(data?.message || "Failed to load active ads");
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            retryAfter = Date.now() + 30000;
+            return;
+          }
 
           const rawPageAds = Array.isArray(data?.ads) ? data.ads : [];
           const pageAds = filterAdsForViewer(rawPageAds, currentUser);
@@ -2169,10 +2253,11 @@ export default function ShopPage() {
         );
 
         if (cancelled) return;
+        retryAfter = 0;
         setMarketAds(dedupedHydratedAds);
         if (dedupedHydratedAds.length > 0) syncAds(dedupedHydratedAds);
-      } catch (error) {
-        console.error("Failed to load active ads for shop feed:", error);
+      } catch {
+        retryAfter = Date.now() + 30000;
       }
     };
 
@@ -2333,6 +2418,16 @@ export default function ShopPage() {
   const getSponsoredCollectionId = (product: any) => {
     if (!product?.is_sponsored) return product?.id;
     return String(product?.id || "").startsWith("ad-") ? product.id : (product?.adId ? `ad-${product.adId}` : product?.id);
+  };
+
+  const openProfilePromoteUploadContent = (content: any) => {
+    const normalized = normalizeProfilePromoteUploadContent(content);
+    if (!normalized?.id) {
+      setNotification({ type: "error", title: "Content unavailable", message: "The promoted content could not be opened." });
+      return;
+    }
+    setProfilePromoteUploadModal(normalized);
+    setProfilePromoteUploadAutoOpenKey(null);
   };
 
   const getUserIdentity = (user: any) => (
@@ -2882,9 +2977,8 @@ export default function ShopPage() {
       markAdCoinCollectedLocally(collectionId);
     },
     onCoinError: (_ad, error: any) => {
-      setNotification({
+      setCoinToast({
         type: "error",
-        title: "Collection Failed",
         message: error?.message || "Could not collect the ad coin.",
       });
     },
@@ -2957,12 +3051,12 @@ export default function ShopPage() {
         return;
       }
       const result = await adActions.collectAdCoin(resolvedProduct);
-      setNotification({
+      const collectedAmount = Number(result?.amount ?? resolvedProduct?.ad_coin_value ?? 1);
+      setCoinToast({
         type: "success",
-        title: "Coin Collected",
-        message: `Rupieer ${Number(result?.amount || resolvedProduct?.ad_coin_value || 1).toFixed(2)} added to the ad owner's wallet.`,
+        message: "Coin collected",
       });
-    } catch (error: any) {
+    } catch {
       // Notification is already handled by adActions.onCoinError
     } finally {
       setPendingAdCoinProduct(null);
@@ -2972,9 +3066,8 @@ export default function ShopPage() {
   const handleAdCoinClick = (event: React.MouseEvent, product: any) => {
     if (isWatchTimedSponsoredAdProduct(product) && !adVideoCoinEligibility[getAdCoinEligibilityKey(product)]) {
       event.stopPropagation();
-      setNotification({
+      setCoinToast({
         type: "error",
-        title: "Watch Required",
         message: `Please watch this ad for ${requiredAdWatchSeconds} seconds before collecting the coin.`,
       });
       return;
@@ -3102,6 +3195,43 @@ export default function ShopPage() {
   };
 
   // dragging states removed — no icon popup on long press
+
+  const openUploadSheet = async (
+    type: UploadContentSheetType,
+    uploadItem: UploadContentRecord,
+  ) => {
+    setUploadSheetType(type);
+    setInteractionUpload(uploadItem);
+    setIsUploadSheetOpen(true);
+    setUploadSheetData([]);
+    setIsUploadSheetLoading(true);
+
+    try {
+      let data: any[] = [];
+      if (type === "comments") data = await uploadContentService.getComments(uploadItem.id);
+      if (type === "likes") data = await uploadContentService.getLikes(uploadItem.id);
+      if (type === "shares") data = await uploadContentService.getShares(uploadItem.id);
+      if (type === "views") data = await uploadContentService.getViews(uploadItem.id);
+      setUploadSheetData(data || []);
+    } catch (error) {
+      console.error("Failed to open upload content interaction sheet:", error);
+    } finally {
+      setIsUploadSheetLoading(false);
+    }
+  };
+
+  const refreshUploadSheet = async () => {
+    if (!interactionUpload) return;
+
+    try {
+      if (uploadSheetType === "comments") setUploadSheetData(await uploadContentService.getComments(interactionUpload.id));
+      if (uploadSheetType === "likes") setUploadSheetData(await uploadContentService.getLikes(interactionUpload.id));
+      if (uploadSheetType === "shares") setUploadSheetData(await uploadContentService.getShares(interactionUpload.id));
+      if (uploadSheetType === "views") setUploadSheetData(await uploadContentService.getViews(interactionUpload.id));
+    } catch (error) {
+      console.error("Failed to refresh upload content interaction sheet:", error);
+    }
+  };
 
   const handleLogShare = async (id: number) => {
     try {
@@ -3303,6 +3433,12 @@ export default function ShopPage() {
   }, []);
 
   useEffect(() => {
+    if (!coinToast) return;
+    const timeoutId = window.setTimeout(() => setCoinToast(null), 2000);
+    return () => window.clearTimeout(timeoutId);
+  }, [coinToast]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     const handleAuthChanged = (event: Event) => {
       const nextUser = (event as CustomEvent)?.detail?.user || null;
@@ -3481,14 +3617,20 @@ export default function ShopPage() {
   }, [openMenuProductId]);
 
   useEffect(() => {
+    let debounceId: number | null = null;
     const syncFollowingState = () => {
-      loadUser();
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (debounceId !== null) window.clearTimeout(debounceId);
+      debounceId = window.setTimeout(() => {
+        loadUser();
+      }, 500);
     };
 
     window.addEventListener("focus", syncFollowingState);
     document.addEventListener("visibilitychange", syncFollowingState);
 
     return () => {
+      if (debounceId !== null) window.clearTimeout(debounceId);
       window.removeEventListener("focus", syncFollowingState);
       document.removeEventListener("visibilitychange", syncFollowingState);
     };
@@ -4107,6 +4249,64 @@ export default function ShopPage() {
     setOpenMenuProductId(null);
   };
 
+  const isCurrentUserAdOwner = (ad: any) => {
+    const raw = ad?.raw || ad || {};
+    const ownerIds = [
+      ad?.user_id,
+      ad?.userId,
+      ad?.owner_user_id,
+      ad?.ownerUserId,
+      ad?.ad_owner_user_id,
+      ad?.advertiser_id,
+      raw?.user_id,
+      raw?.userId,
+      raw?.owner_user_id,
+      raw?.ownerUserId,
+      raw?.ad_owner_user_id,
+      raw?.advertiser_id,
+    ].map((value) => String(value || "").trim()).filter(Boolean);
+    const viewerIds = [
+      currentUser?.id,
+      currentUser?.user_id,
+      currentUser?.userId,
+      currentUser?.googer_id,
+      currentUser?.googerId,
+    ].map((value) => String(value || "").trim()).filter(Boolean);
+    const ownerNames = [
+      ad?.username,
+      ad?.owner_username,
+      ad?.ownerUsername,
+      raw?.username,
+      raw?.owner_username,
+      raw?.ownerUsername,
+    ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+    const viewerNames = [
+      currentUser?.username,
+      currentUser?.name,
+      currentUser?.full_name,
+    ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+    return ownerIds.some((id) => viewerIds.includes(id))
+      || ownerNames.some((name) => viewerNames.includes(name));
+  };
+
+  const deleteOwnedAdFromShop = async (ad: any) => {
+    try {
+      const deletedAd = await adsService.deleteAd(ad);
+      const rawAdId = String(deletedAd?.adId || deletedAd?.ad_id || ad?.adId || ad?.ad_id || ad?.raw?.adId || ad?.raw?.ad_id || "").replace(/^ad-/, "");
+      setMarketAds((prev) => prev.filter((item) => String(item.adId || item.ad_id || item.id || "").replace(/^ad-/, "") !== rawAdId));
+      setProducts((prev) => prev.filter((item) => String(item.adId || item.ad_id || item.id || "").replace(/^ad-/, "") !== rawAdId));
+      setSharedAdPreviewModal(null);
+      window.dispatchEvent(new Event("googer-ad-history-updated"));
+      setNotification({ type: "success", title: "Deleted", message: "Ad removed from feeds." });
+    } catch (error) {
+      setNotification({
+        type: "error",
+        title: "Delete failed",
+        message: error instanceof Error ? error.message : "Could not delete this ad.",
+      });
+    }
+  };
+
   const handleReportSubmit = async (productId: number) => {
     if (!reportReason) return;
     setReportSubmitting(true);
@@ -4362,6 +4562,9 @@ export default function ShopPage() {
           onProductClick={(previewProduct) => {
             void openProductPromoteSecondView(previewProduct);
           }}
+          onContentClick={(content) => {
+            openProfilePromoteUploadContent(content);
+          }}
           onProfileClick={(profileAd) => {
             const profileUrl = getProfileShareUrl(profileAd);
             if (!profileUrl) return;
@@ -4409,6 +4612,7 @@ export default function ShopPage() {
               onShare={() => handleShareClick(product)}
               onReport={() => setReportingProduct(product)}
               onNotInterested={(id) => handleNotInterested(Number(id))}
+              onDeleteAd={deleteOwnedAdFromShop}
               onPromoteAgain={handlePromoteAgain}
               onCollectCoin={(event) => handleAdCoinClick(event, product)}
               onNavigateToProfile={(event) => navigateToProfile(event, product.user_id, product.username || product.owner_username || product.user?.username)}
@@ -4476,7 +4680,7 @@ export default function ShopPage() {
         ]
           .reduce((map, ad) => {
             const key = getShopAdRotationKey(ad);
-            if (key && !map.has(key)) map.set(key, ad);
+            if (key && (!map.has(key) || shouldPreferShopAdCandidate(map.get(key), ad))) map.set(key, ad);
             return map;
           }, new Map<string, any>())
           .values(),
@@ -4521,7 +4725,7 @@ export default function ShopPage() {
         ]
           .reduce((map, ad) => {
             const key = getShopAdRotationKey(ad);
-            if (key && !map.has(key)) map.set(key, ad);
+            if (key && (!map.has(key) || shouldPreferShopAdCandidate(map.get(key), ad))) map.set(key, ad);
             return map;
           }, new Map<string, any>())
           .values(),
@@ -4548,13 +4752,16 @@ export default function ShopPage() {
     })()
     : [];
 
+  const mobileShopSearchPortalTarget = mounted && typeof document !== "undefined"
+    ? document.getElementById("mobile-shop-search-portal")
+    : null;
+
   return (
     <div className="pb-10 relative min-h-screen w-full overflow-x-hidden">
       {/* Search Portal for Mobile Topbar */}
-      {mounted &&
-        document.getElementById("shop-search-portal") &&
+      {mobileShopSearchPortalTarget &&
         createPortal(
-          <form className="flex w-full items-center gap-2 md:hidden" onSubmit={(e) => { e.preventDefault(); if (activeTab === "market") setMarketSearchQuery(searchDraft); }}>
+          <form className="relative w-full min-w-0 md:hidden" onSubmit={(e) => { e.preventDefault(); if (activeTab === "market") setMarketSearchQuery(searchDraft); }}>
             <div className="relative flex-1">
               <input
                 type="text"
@@ -4566,33 +4773,19 @@ export default function ShopPage() {
                   applyPastedSearch(e);
                 }}
                 disabled={activeTab !== "market"}
-                className="w-full bg-[#111] text-white text-xs rounded-full pl-7 pr-7 py-1.5 outline-none focus:ring-1 focus:ring-white/20 border border-white/8 placeholder:text-white/30"
+                className="h-8 w-full rounded-full border border-white/10 bg-[#101012] pl-8 pr-7 text-[11px] font-bold text-white shadow-[0_12px_28px_rgba(0,0,0,0.25)] outline-none transition placeholder:text-white/35 focus:border-white/25 focus:bg-[#151515] disabled:opacity-50"
               />
-              <button type="submit" disabled={activeTab !== "market"} className="absolute left-0 top-0 bottom-0 pl-2.5 pr-1 flex items-center text-white/30 hover:text-white/60 transition disabled:opacity-30">
-                <IonIcon name="search-outline" className="text-xs" />
+              <button type="submit" disabled={activeTab !== "market"} className="absolute left-0 top-0 flex h-8 items-center pl-3 pr-1 text-white/45 transition hover:text-white/80 disabled:opacity-30">
+                <IonIcon name="search-outline" className="text-sm" />
               </button>
               {searchDraft && activeTab === "market" && (
-                <button type="button" onClick={() => { setSearchDraft(""); setMarketSearchQuery(""); }} className="absolute right-2 top-0 bottom-0 flex items-center text-red-400 hover:text-red-300 transition">
+                <button type="button" onClick={() => { setSearchDraft(""); setMarketSearchQuery(""); }} className="absolute right-0 top-0 flex h-8 items-center pl-1 pr-2.5 text-white/40 transition hover:text-white/80">
                   <IonIcon name="close-circle" className="text-sm" />
                 </button>
               )}
             </div>
-            <div className="relative">
-              <button
-                type="button"
-              onClick={() => {
-                setIsShopFilterOpen((value) => !value);
-                setIsCountryFilterOpen(false);
-              }}
-                disabled={activeTab !== "market"}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/8 bg-[#111] text-white/45 transition hover:text-white disabled:opacity-30"
-                aria-label="Open product filters"
-              >
-                <IonIcon name="options-outline" className="text-sm" />
-              </button>
-            </div>
           </form>,
-          document.getElementById("shop-search-portal")!,
+          mobileShopSearchPortalTarget,
         )}
 
       {/* Header: Tabs + Search (Desktop) */}
@@ -5298,9 +5491,9 @@ export default function ShopPage() {
 
                       {/* Items List */}
                       <div className="space-y-3">
-                        {items.map((item) => (
+                        {items.map((item, itemIndex) => (
                           <div
-                            key={item.id}
+                            key={`order-${orderNumber}-item-${item.id}-${itemIndex}`}
                             className={`bg-[#1a1a1a] rounded-[1.2rem] border transition-all p-2.5 flex flex-col sm:flex-row gap-3 group relative overflow-hidden sm:items-center ${(activeTab === "orders" || myListingsTab === "all") ? "cursor-default select-none" : "cursor-pointer"} ${selectedOrderIds.includes(item.id) ? 'border-amber-500/50 bg-amber-500/[0.03]' : 'border-white/5 hover:border-white/10'}`}
                             onClick={(e) => {
                               if (activeTab === "orders" || myListingsTab === "all") return;
@@ -5894,12 +6087,15 @@ export default function ShopPage() {
             if (product?.type === "profilePromoteCarousel") {
               return (
                 <ProfilePromoteCarousel
-                  key={product.id}
+                  key={`marketplace-product-${product.id}-${index}`}
                   ads={product.ads}
                   className="col-span-2 sm:col-span-2 lg:col-span-4 px-4 py-4 transition-colors sm:px-7"
                   cardsPerView={4}
                   onProductClick={(previewProduct) => {
                     void openProductPromoteSecondView(previewProduct);
+                  }}
+                  onContentClick={(content) => {
+                    openProfilePromoteUploadContent(content);
                   }}
                   onProfileClick={(profileAd) => {
                     const profileUrl = getProfileShareUrl(profileAd);
@@ -5949,6 +6145,7 @@ export default function ShopPage() {
                       onShare={() => handleShareClick(product)}
                       onReport={() => setReportingProduct(product)}
                       onNotInterested={(id) => handleNotInterested(Number(id))}
+                      onDeleteAd={deleteOwnedAdFromShop}
                       onPromoteAgain={handlePromoteAgain}
                       onCollectCoin={(event) => handleAdCoinClick(event, product)}
                       onNavigateToProfile={(event) => navigateToProfile(event, product.user_id, product.username || product.owner_username || product.user?.username)}
@@ -6073,6 +6270,7 @@ export default function ShopPage() {
           onShare={(ad) => handleShareClick(ad)}
           onReport={(ad) => setReportingProduct(ad)}
           onNotInterested={(id) => handleNotInterested(Number(id))}
+          onDeleteAd={isCurrentUserAdOwner(liveSharedAdPreviewModal.ad) ? deleteOwnedAdFromShop : undefined}
           onCollectCoin={(event, ad) => handleAdCoinClick(event, ad)}
           onNavigateToProfile={(event, ad) => navigateToProfile(event, ad.user_id, ad.username || ad.owner_username || ad.user?.username)}
           canShowCollectCoin={canShowCollectCoinButton}
@@ -6118,6 +6316,125 @@ export default function ShopPage() {
             setSelectedProduct(null);
           }}
         />
+      )}
+
+      {profilePromoteUploadModal && mounted && createPortal(
+        <div
+          className="fixed inset-0 z-[215] flex items-center justify-center bg-black/85 px-3 py-3 backdrop-blur-md"
+          onClick={() => setProfilePromoteUploadModal(null)}
+        >
+          <div className="relative max-h-[82vh] w-full max-w-[390px] overflow-y-auto rounded-[1.7rem] [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" onClick={(event) => event.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setProfilePromoteUploadModal(null)}
+              className="absolute right-2.5 top-2.5 z-30 flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-black/75 text-white/80 shadow-lg transition hover:bg-black hover:text-white"
+              aria-label="Close promoted content"
+            >
+              <IonIcon name="close-outline" className="text-lg" />
+            </button>
+            <UploadContentFeedCard
+              item={profilePromoteUploadModal}
+              currentUser={currentUser}
+              onToggleLike={async (item) => {
+                const result = await uploadContentService.toggleLike(item.id);
+                setProfilePromoteUploadModal((current) => current ? {
+                  ...current,
+                  user_liked: !!result.liked,
+                  likes_count: Number(result.likes_count || 0),
+                } : current);
+              }}
+              onOpenSheet={openUploadSheet}
+              onShare={async (item) => {
+                const url = getShareUrlForItem(item, "upload");
+                if (url && navigator?.clipboard) await navigator.clipboard.writeText(url);
+                setNotification({ type: "success", title: "Link Copied", message: "Content link copied." });
+              }}
+              onRepost={async (item) => {
+                const result = await uploadContentService.repostContent(item.id);
+                setProfilePromoteUploadModal((current) => current ? {
+                  ...current,
+                  user_reposted: true,
+                  reposts_count: Number(result.reposts_count || current.reposts_count || 0),
+                } : current);
+                return result;
+              }}
+              onRemoveRepost={async (item) => {
+                const result = await uploadContentService.removeRepost(item.id);
+                setProfilePromoteUploadModal((current) => current ? {
+                  ...current,
+                  user_reposted: false,
+                  reposts_count: Number(result.reposts_count || 0),
+                } : current);
+                return result;
+              }}
+              onLogView={async (item, options = {}) => {
+                try {
+                  const result = await uploadContentService.logView(item.id, options);
+                  setProfilePromoteUploadModal((current) => current ? {
+                    ...current,
+                    views_count: Number(result.views_count || current.views_count || 0),
+                  } : current);
+                } catch {
+                  // Best-effort view logging for promoted content preview.
+                }
+              }}
+              onPin={() => undefined}
+              onReport={(item) => setReportingProduct(item)}
+              onNotInterested={() => setProfilePromoteUploadModal(null)}
+              onInsights={() => undefined}
+              onAccessChanged={(changedItem, accessType = "content") => {
+                setProfilePromoteUploadModal((current) => {
+                  if (!current) return current;
+                  const isSameContent = String(current.id) === String(changedItem.id);
+                  return {
+                    ...current,
+                    user_purchased: isSameContent ? true : current.user_purchased,
+                    user_has_access: true,
+                    user_purchase_expires_at: isSameContent
+                      ? changedItem.user_purchase_expires_at || current.user_purchase_expires_at || null
+                      : current.user_purchase_expires_at,
+                    views_count: isSameContent && changedItem.views_count !== undefined
+                      ? Number(changedItem.views_count || 0)
+                      : current.views_count,
+                    viewCount: isSameContent && changedItem.viewCount !== undefined
+                      ? Number(changedItem.viewCount || changedItem.views_count || 0)
+                      : current.viewCount,
+                    ...(accessType === "creator_subscription" ? { user_has_creator_subscription: true } : {}),
+                  };
+                });
+              }}
+              flashPreviewSeconds={requiredAdWatchSeconds}
+              maxWidthClassName="max-w-[360px]"
+              articleClassName="w-full"
+              autoOpenWatchKey={null}
+              onFullViewClose={() => setProfilePromoteUploadModal(null)}
+              onOpenProfile={() => {
+                router.push(getPublicProfileHref(profilePromoteUploadModal.username, profilePromoteUploadModal.user_id));
+              }}
+            />
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {coinToast && (
+        <div className="fixed bottom-24 right-5 z-[10020] flex justify-end px-2">
+          <div className={`flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border px-3 py-2 shadow-2xl ${coinToast.type === "success" ? "border-black/10 bg-white text-neutral-900" : "border-red-200 bg-white text-red-700"}`}>
+            <IonIcon
+              name={coinToast.type === "success" ? "checkmark-circle-outline" : "alert-circle-outline"}
+              className={`shrink-0 text-base ${coinToast.type === "success" ? "text-neutral-700" : "text-red-600"}`}
+            />
+            <span className="text-xs font-bold tracking-tight">{coinToast.message}</span>
+            <button
+              type="button"
+              onClick={() => setCoinToast(null)}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-neutral-500 transition hover:bg-black/5 hover:text-neutral-900"
+              aria-label="Dismiss coin notification"
+            >
+              <IonIcon name="close" className="text-sm" />
+            </button>
+          </div>
+        </div>
       )}
 
       {notification && (
@@ -6544,7 +6861,7 @@ export default function ShopPage() {
 
                       {/* Price & Quantity Section */}
                       <div className="mb-5 px-1">
-                        <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/50 mb-2">RUPIEER</p>
+                        <p className="mb-2 text-[9px] font-black tracking-[0.2em] text-white/50">Rupieer</p>
                         <div className="flex flex-wrap items-center gap-4 rounded-[1.5rem] border border-white/10 bg-white/[0.03] px-4 py-3 shadow-inner">
                           <div className="flex items-center gap-2.5 shrink-0">
                             <span className="text-[22px] font-black text-white leading-none">•</span>
@@ -7037,7 +7354,7 @@ export default function ShopPage() {
                   </div>
                 ) : (
                   <>
-                    <span className="text-[10px] font-black text-white uppercase tracking-[0.3em]">RUPIEER</span>
+                    <span className="text-[10px] font-black text-white tracking-[0.3em]">Rupieer</span>
                     <span className="text-[19px] font-black text-white tracking-widest leading-none">
                       {(parseFloat(selectedProduct.promo_price || selectedProduct.price || 0) * quantity).toFixed(2)}
                     </span>
@@ -7135,6 +7452,116 @@ export default function ShopPage() {
             handleDeleteProduct(targetProd);
           }
         }}
+      />
+
+      <InteractionBottomSheet
+        isOpen={isUploadSheetOpen}
+        onClose={() => {
+          setIsUploadSheetOpen(false);
+          setInteractionUpload(null);
+        }}
+        type={uploadSheetType}
+        product={interactionUpload ? {
+          ...interactionUpload,
+          id: `upload-${interactionUpload.id}`,
+          title: interactionUpload.topic || "Upload content",
+          image_url: interactionUpload.media_preview || interactionUpload.thumbnail_url || interactionUpload.media_gallery?.[0] || "",
+        } : null}
+        data={uploadSheetData}
+        onTabChange={(type) => {
+          if (interactionUpload) void openUploadSheet(type, interactionUpload);
+        }}
+        onAddComment={async (comment, parentId) => {
+          if (!interactionUpload || !comment.trim()) return;
+          if (!authService.isAuthenticated() || !currentUser?.id) {
+            openLoginRequired({ message: "Please log in to comment on upload content." });
+            return;
+          }
+          try {
+            const commentData = await uploadContentService.addComment(interactionUpload.id, comment.trim(), parentId);
+            setUploadSheetData((current) => [...current, {
+              ...commentData,
+              username: currentUser?.username || commentData?.username || "You",
+              profile_picture: currentUser?.profile_picture ?? commentData?.profile_picture,
+            }]);
+            setProfilePromoteUploadModal((current) => current && String(current.id) === String(interactionUpload.id)
+              ? {
+                ...current,
+                comments_count: Number(current.comments_count ?? current.commentCount ?? 0) + 1,
+                commentCount: Number(current.comments_count ?? current.commentCount ?? 0) + 1,
+              }
+              : current);
+            setInteractionUpload((current) => current ? {
+              ...current,
+              comments_count: Number(current.comments_count ?? current.commentCount ?? 0) + 1,
+              commentCount: Number(current.comments_count ?? current.commentCount ?? 0) + 1,
+            } : current);
+          } catch (error) {
+            console.error("Failed to add upload content comment:", error);
+          }
+        }}
+        onDeleteComment={async (commentId) => {
+          if (!interactionUpload) return;
+          try {
+            const result = await uploadContentService.deleteComment(commentId);
+            const deletedCount = Math.max(1, Number(result?.deletedCount || 1));
+            setUploadSheetData((current) => current.filter((comment) => comment.id !== commentId && comment.parent_id !== commentId));
+            setProfilePromoteUploadModal((current) => current && String(current.id) === String(interactionUpload.id)
+              ? {
+                ...current,
+                comments_count: Math.max(0, Number(current.comments_count ?? current.commentCount ?? 0) - deletedCount),
+                commentCount: Math.max(0, Number(current.comments_count ?? current.commentCount ?? 0) - deletedCount),
+              }
+              : current);
+            setInteractionUpload((current) => current ? {
+              ...current,
+              comments_count: Math.max(0, Number(current.comments_count ?? current.commentCount ?? 0) - deletedCount),
+              commentCount: Math.max(0, Number(current.comments_count ?? current.commentCount ?? 0) - deletedCount),
+            } : current);
+          } catch (error) {
+            console.error("Failed to delete upload content comment:", error);
+          }
+        }}
+        onLikeComment={async (commentId) => {
+          try {
+            await uploadContentService.likeComment(Number(commentId));
+            if (interactionUpload) setUploadSheetData(await uploadContentService.getComments(interactionUpload.id));
+          } catch (error) {
+            console.error("Failed to like upload content comment:", error);
+          }
+        }}
+        onDislikeComment={async (commentId) => {
+          try {
+            await uploadContentService.dislikeComment(Number(commentId));
+            if (interactionUpload) setUploadSheetData(await uploadContentService.getComments(interactionUpload.id));
+          } catch (error) {
+            console.error("Failed to dislike upload content comment:", error);
+          }
+        }}
+        onReportComment={async (commentId) => {
+          try {
+            await uploadContentService.reportComment(Number(commentId));
+            addTopbarNotification({ type: "success", title: "Reported", message: "Comment has been reported for review." });
+          } catch (error: any) {
+            const message = error?.message || "";
+            addTopbarNotification({
+              type: "info",
+              title: message.includes("Already") ? "Already Reported" : "Error",
+              message: message.includes("Already") ? "You have already reported this comment." : "Could not submit report.",
+            });
+          }
+        }}
+        onRefresh={refreshUploadSheet}
+        onAction={(action) => {
+          if (!interactionUpload) return;
+          if (action === "star") void uploadContentService.toggleLike(interactionUpload.id);
+          if (action === "share" || action === "forward" || action === "upload") {
+            const url = getShareUrlForItem(interactionUpload, "upload");
+            if (url && navigator?.clipboard) void navigator.clipboard.writeText(url);
+          }
+        }}
+        currentUser={currentUser}
+        isLoading={isUploadSheetLoading}
       />
 
       {pendingAdCoinProduct && (

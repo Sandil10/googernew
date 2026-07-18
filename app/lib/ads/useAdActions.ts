@@ -206,9 +206,13 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
         return;
       }
 
-      const wasLiked = targetAd.liked;
+      const liveLiked = currentLiveState.user_liked ?? currentLiveState.liked;
+      const wasLiked = typeof liveLiked === "boolean" ? liveLiked : !!targetAd.liked;
       const willBeLiked = !wasLiked;
+      const baseLikesCount = Math.max(0, Number(currentLiveState.likes_count ?? targetAd.likeCount ?? targetAd.likes_count ?? 0));
       const isLikeLocked = !!(
+        currentLiveState.ad_like_locked ||
+        currentLiveState.ad_coin_collected ||
         targetAd.ad_like_locked ||
         targetAd.ad_coin_collected ||
         targetAd.coinCollected ||
@@ -227,10 +231,10 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
       }
 
       // Optimistic update in global store
-      updateAdState(targetAd, (prev) => ({
+      updateAdState(targetAd, () => ({
         like_pending: true,
         user_liked: willBeLiked,
-        likes_count: Math.max(0, (prev.likes_count ?? targetAd.likeCount ?? 0) + (willBeLiked ? 1 : -1))
+        likes_count: Math.max(0, baseLikesCount + (willBeLiked ? 1 : -1))
       }));
 
       options.onBeforeLike?.(targetAd, willBeLiked);
@@ -240,14 +244,11 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
         const keepLocked = isLikeLocked || !!targetAd.raw?.ad_like_locked;
         
         // Sync with server result in store, including count correction if the server disagrees.
-        updateAdState(targetAd, (prev) => ({
+        updateAdState(targetAd, () => ({
           like_pending: false,
           user_liked: isLiked,
           ad_like_locked: keepLocked,
-          likes_count: Math.max(
-            0,
-            (prev.likes_count ?? targetAd.likeCount ?? 0) + (isLiked === willBeLiked ? 0 : isLiked ? 1 : -1),
-          ),
+          likes_count: Math.max(0, baseLikesCount + (isLiked === wasLiked ? 0 : isLiked ? 1 : -1)),
         }));
         
         options.onLikeConfirmed?.(targetAd, isLiked, willBeLiked);
@@ -273,7 +274,7 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
           like_pending: false,
           user_liked: wasLiked,
           ad_like_locked: (error as any)?.locked ? true : prev.ad_like_locked,
-          likes_count: Math.max(0, (prev.likes_count ?? targetAd.likeCount ?? 0) + (wasLiked ? 1 : -1))
+          likes_count: baseLikesCount,
         }));
 
         if ((error as any)?.status === 401 || (error as any)?.unauthorized) {
@@ -293,7 +294,6 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
       const targetAd = normalizeTarget(normalizedAd, target);
       if (!targetAd?.id) return;
 
-      const raw = targetAd.raw || {};
       const ownerId = resolveAdOwnerIdentity(targetAd);
       const currentUserId = resolveUserIdentity(options.currentUser);
       const isOwn = !!currentUserId && !!ownerId && String(currentUserId) === String(ownerId);
@@ -353,7 +353,6 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
         return;
       }
 
-      const raw = targetAd.raw || {};
       const ownerId = resolveAdOwnerIdentity(targetAd);
       const currentUserId = resolveUserIdentity(options.currentUser);
       const isOwn = !!currentUserId && !!ownerId && String(currentUserId) === String(ownerId);
@@ -362,7 +361,7 @@ export function useAdActions(ad?: NormalizedAd | any | null, options: UseAdActio
       if (!canShowCollectCoinButton(targetAd, options.currentUser)) return;
       if (options.canShowCollectCoin && !options.canShowCollectCoin(targetAd)) return;
 
-      options.onNeedCoinConfirmation?.(targetAd);
+      void collectAdCoin(targetAd);
     };
 
     return {

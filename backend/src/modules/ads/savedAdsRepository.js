@@ -73,10 +73,6 @@ const RAW_PHOTO_VIDEO_UPLOAD_SQL = `
 `;
 
 const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
-    CASE
-        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
-        ELSE NULL
-    END,
     (
         SELECT
             CASE
@@ -116,7 +112,11 @@ const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
         FROM subscription_plans sp
         WHERE sp.slug = 'basic' AND sp.is_active = TRUE
         LIMIT 1
-    )
+    ),
+    CASE
+        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
+        ELSE NULL
+    END
 )`;
 
 const RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL = `
@@ -160,6 +160,7 @@ const mapRow = (row) => {
     const linkedProductId = row.linked_product_id ?? originalProductId ?? null;
     const linkedProductShareCode = row.linked_product_share_code ?? originalProductCode ?? null;
 
+    const activeLink = row.active_link || row.edit_draft?.activeLink || row.edit_draft?.active_link || row.cta_value || row.edit_draft?.ctaValue || row.edit_draft?.cta_value || '';
     const durationState = calculateAdDurationState(row);
     return {
         id: row.id,
@@ -203,7 +204,7 @@ const mapRow = (row) => {
         remainingBudget: Number(row.remaining_budget || 0),
         status: row.status || 'Under Review',
         campaignPath: row.campaign_path,
-        active_link: row.active_link || row.edit_draft?.activeLink || row.edit_draft?.active_link || '',
+        active_link: activeLink,
         cta_topic: row.cta_topic || row.edit_draft?.ctaTopic || row.edit_draft?.cta_topic || '',
         cta_value: row.cta_value || row.edit_draft?.ctaValue || row.edit_draft?.cta_value || '',
         product_id: row.product_id ?? null,
@@ -495,6 +496,8 @@ const listPublicSavedAdsByUser = async (profileUserId) => {
            AND a.user_id = $1
            AND LOWER(COALESCE(a.campaign_type, '')) IN ('photo and video', 'photo & video')
            AND LOWER(TRIM(REPLACE(REPLACE(COALESCE(a.status, ''), '_', ' '), '-', ' '))) = 'completed'
+           AND ${RAW_PHOTO_VIDEO_UPLOAD_SQL}
+           AND ${RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL}
          ORDER BY s.created_at DESC`,
         [profileUserId]
     );

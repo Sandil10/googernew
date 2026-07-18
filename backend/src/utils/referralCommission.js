@@ -562,6 +562,7 @@ async function distributeProductDiscountCommission(client, {
     commissionField = 'commission_percentage', // 'commission_percentage' for products, 'ad_commission_percentage' for wallet
     googerSharePercentage = DEFAULT_DISCOUNT_GOOGER_SHARE_PERCENTAGE,
     remainderRecipientId,
+    requireUplineForGoogerShare = false,
 }) {
     await ensureReferralCommissionTables(client);
 
@@ -624,6 +625,7 @@ async function distributeProductDiscountCommission(client, {
         transferType = REFERRAL_TRANSFER_TYPE,
         transferStatus = 'completed',
         creditWallet = true,
+        commissionAmount,
     }) => {
         const safeAmount = Number(Number(amount || 0).toFixed(2));
         if (!Number.isFinite(safeAmount) || safeAmount <= 0) return null;
@@ -645,6 +647,7 @@ async function distributeProductDiscountCommission(client, {
             transferType,
             transferStatus,
             creditWallet,
+            commissionAmount,
         });
 
         await client.query(
@@ -670,48 +673,6 @@ async function distributeProductDiscountCommission(client, {
 
     // Resolve Googer once so we can use it for remainder logic too
     const googerUserId = await resolveGoogerMainWalletUserId(client);
-
-    const googerLevel = await client.query(
-        `SELECT level, name AS level_name,
-                commission_percentage,
-                ad_commission_percentage
-         FROM referral_level_settings
-         WHERE level = 0 AND is_active = TRUE
-         LIMIT 1`
-    );
-
-    if (googerLevel.rows.length > 0) {
-        const rawGoogerPct = safeField === 'ad_commission_percentage'
-            ? googerLevel.rows[0].ad_commission_percentage
-            : googerLevel.rows[0].commission_percentage;
-        const configuredGoogerSharePct = normalizePercentage(rawGoogerPct, 0);
-        const googerSharePct = configuredGoogerSharePct > 0
-            ? configuredGoogerSharePct
-            : normalizePercentage(googerSharePercentage, DEFAULT_DISCOUNT_GOOGER_SHARE_PERCENTAGE);
-        const googerAmount = Math.min(
-            poolAmount - distributedAmount,
-            Number(((poolAmount * googerSharePct) / 100).toFixed(2))
-        );
-
-        if (googerUserId && googerAmount > 0) {
-            const payout = await creditPayout({
-                earnerId: googerUserId,
-                level: 0,
-                levelName: googerLevel.rows[0].level_name || 'Googer',
-                commissionPercentage: googerSharePct,
-                amount: googerAmount,
-                note: `${notePrefix} Distribution - Googer - ${description}`,
-                transferStatus: 'accepted',
-                creditWallet: false,
-            });
-            if (payout) {
-                distributedAmount = Number((distributedAmount + payout.amount).toFixed(2));
-                payouts.push(payout);
-            }
-        }
-    }
-
-    levelPoolAmount = Number(Math.max(0, poolAmount - distributedAmount).toFixed(2));
 
     const uplines = await client.query(
         `WITH RECURSIVE uplines AS (
@@ -748,6 +709,49 @@ async function distributeProductDiscountCommission(client, {
         ORDER BY uplines.level ASC`,
         [buyer]
     );
+
+    const googerLevel = await client.query(
+        `SELECT level, name AS level_name,
+                commission_percentage,
+                ad_commission_percentage
+         FROM referral_level_settings
+         WHERE level = 0 AND is_active = TRUE
+         LIMIT 1`
+    );
+
+    if (googerLevel.rows.length > 0 && (!requireUplineForGoogerShare || uplines.rows.length > 0)) {
+        const rawGoogerPct = safeField === 'ad_commission_percentage'
+            ? googerLevel.rows[0].ad_commission_percentage
+            : googerLevel.rows[0].commission_percentage;
+        const hasConfiguredGoogerShare = rawGoogerPct !== null && rawGoogerPct !== undefined && rawGoogerPct !== '';
+        const googerSharePct = hasConfiguredGoogerShare
+            ? normalizePercentage(rawGoogerPct, 0)
+            : normalizePercentage(googerSharePercentage, DEFAULT_DISCOUNT_GOOGER_SHARE_PERCENTAGE);
+        const googerAmount = Math.min(
+            poolAmount - distributedAmount,
+            Number(((poolAmount * googerSharePct) / 100).toFixed(2))
+        );
+
+        if (googerUserId && googerAmount > 0) {
+            const payout = await creditPayout({
+                earnerId: googerUserId,
+                level: 0,
+                levelName: googerLevel.rows[0].level_name || 'Googer',
+                commissionPercentage: googerSharePct,
+                amount: googerAmount,
+                note: `${notePrefix} Distribution - Googer - ${description}`,
+                transferStatus: 'accepted',
+                creditWallet: false,
+                commissionAmount: 0,
+            });
+            if (payout) {
+                distributedAmount = Number((distributedAmount + payout.amount).toFixed(2));
+                payouts.push(payout);
+            }
+        }
+    }
+
+    levelPoolAmount = Number(Math.max(0, poolAmount - distributedAmount).toFixed(2));
 
     for (const row of uplines.rows) {
         const remaining = Number((levelPoolAmount - distributedLevelAmount).toFixed(2));

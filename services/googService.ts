@@ -58,9 +58,12 @@ const requestJson = async (path: string, options: RequestInit = {}) => {
             ...(options.headers || {}),
         },
     });
-    const data = await response.json();
+    const contentType = response.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+        ? await response.json().catch(() => ({}))
+        : {};
     if (!response.ok) {
-        const error = new Error(data.message || 'Goog request failed') as Error & { status?: number };
+        const error = new Error(data?.message || data?.error || 'Goog request failed') as Error & { status?: number };
         error.status = response.status;
         throw error;
     }
@@ -69,8 +72,12 @@ const requestJson = async (path: string, options: RequestInit = {}) => {
 
 export const googService = {
     getPosts: async () => {
-        const data = await requestJson('/googs');
-        return data.data || [];
+        try {
+            const data = await requestJson('/googs');
+            return data.data || [];
+        } catch {
+            return [];
+        }
     },
 
     createPost: async (payload: { text: string; textColor: string }) => {

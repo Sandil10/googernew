@@ -39,6 +39,7 @@ export type AdCardHandlers = {
     onLogView?: (ad: any) => void;
     onReport: (ad: any) => void;
     onNotInterested: (adId: string | number) => void;
+    onDeleteAd?: (ad: any) => void | Promise<void>;
     onPromoteAgain?: (ad: any) => void | Promise<void>;
     promoteAgainLabel?: string;
     onCollectCoin: (event: React.MouseEvent, ad: any) => void;
@@ -60,6 +61,11 @@ export type SharedPhotoVideoAdCardProps = AdCardHandlers & {
 
 const EMPTY_OBJECT_PHOTO = {};
 
+const isRunningAdStatus = (value: unknown) => {
+    const status = String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+    return status === "active" || status === "running" || status === "approved";
+};
+
 export function SharedPhotoVideoAdCard({
     ad,
     isMenuOpen,
@@ -71,6 +77,7 @@ export function SharedPhotoVideoAdCard({
     onShare,
     onReport,
     onNotInterested,
+    onDeleteAd,
     onPromoteAgain,
     promoteAgainLabel = "Promote Again",
     onCollectCoin,
@@ -93,16 +100,29 @@ export function SharedPhotoVideoAdCard({
     const displayLikeLocked = !!(liveState.ad_like_locked ?? ad.ad_like_locked ?? displayCoinCollected);
 
     const raw = ad.raw || {};
+    const showRunningAdTag = isRunningAdStatus(ad.status || raw.status || raw.delivery_status || raw.deliveryStatus);
     const activeLink = normalizeExternalUrl(ad.active_link || raw.active_link || "");
     const previewType = getSponsoredLinkPreviewType(activeLink);
     const ctaTopic = ad.cta_topic || raw.cta_topic;
     const ctaValue = ad.cta_value || raw.cta_value;
+    const mediaTypeText = String(ad.media_type || raw.media_type || "").toLowerCase();
+    const uploadedVideoCandidate = String(
+        ad.video ||
+        (ad as any).video_url ||
+        (ad as any).media_url ||
+        raw.video_url ||
+        raw.media_url ||
+        raw.video ||
+        raw.media_preview ||
+        "",
+    ).trim();
+    const hasUploadedVideoMedia =
+        /video/i.test(mediaTypeText) ||
+        /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(uploadedVideoCandidate);
     const secondViewKind =
-        previewType === "embed"
-            ? "embed"
-            : previewType === "video" || /video/i.test(String(ad.media_type || raw.media_type || "")) || /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(String(raw.media_preview || raw.video_url || ""))
-                ? "video"
-                : "image";
+        hasUploadedVideoMedia
+            ? "video"
+            : "image";
     const resolvedPreviewImage = getSponsoredAdImages(ad.raw || ad, ad.image || getAdPreviewImage(raw, previewType))[0]
         || ad.image
         || getAdPreviewImage(raw, previewType);
@@ -118,7 +138,6 @@ export function SharedPhotoVideoAdCard({
     const advertiserImage = ad.profile_picture || raw.profile_picture || raw.profilePicture || raw.owner_profile_picture || raw.ownerProfilePicture || raw.user?.profile_picture || raw.user?.profilePicture || getItemProfilePicture(raw);
     const advertiserId = ad.userId || ad.user_id || raw.user_id || raw.userId || raw.owner_user_id || raw.ownerUserId || raw.user?.id;
     const displayTitle = String(ad.title || raw.title || raw.caption || "").trim();
-    const isGenericTitle = /^(Sponsored(?: post)?|Ad)$/i.test(displayTitle);
 
     const likeCount = Number(ad.likeCount ?? ad.likes_count ?? raw.likes_count ?? raw.likeCount ?? 0);
     const viewCount = Number(ad.viewCount ?? ad.views_count ?? raw.views_count ?? raw.viewCount ?? 0);
@@ -132,7 +151,6 @@ export function SharedPhotoVideoAdCard({
         raw.video_url ||
         raw.media_url ||
         raw.video ||
-        ((secondViewKind === "video" && previewType === "video") ? activeLink : "") ||
         ((secondViewKind === "video" && raw.media_preview) ? raw.media_preview : "") ||
         "",
     ).trim();
@@ -173,7 +191,7 @@ export function SharedPhotoVideoAdCard({
         if (!participantId) return;
         trackAdClick("message");
         if (typeof window !== "undefined") {
-            window.location.href = getPublicChatHref(advertiserUsername, participantId);
+            window.location.assign(getPublicChatHref(advertiserUsername, participantId));
         }
     };
 
@@ -208,14 +226,14 @@ export function SharedPhotoVideoAdCard({
                     <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
                         <Image
                             src="/assets/images/rupee.png"
-                            alt="Ruppier coin"
+                            alt="Rupieer coin"
                             width={28}
                             height={28}
                             className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
                             unoptimized
                         />
                     </span>
-                    <span className="leading-none">Ruppier</span>
+                    <span className="leading-none">Rupieer</span>
                 </button>
             )}
 
@@ -250,10 +268,13 @@ export function SharedPhotoVideoAdCard({
                             {advertiserId && <UserVerifiedBadge userId={advertiserId} size={12} />}
                         </span>
                         <div className="flex items-center gap-1.5 mt-0.5">
-                            <span className="text-[5px] md:text-[7px] text-slate-500 font-bold tracking-widest">
-                                <RelativeTime timestamp={ad.activeStartTime || ad.active_start_time || raw.active_start_time || raw.activeStartTime || ad.createdAt || ad.created_at} />
-                            </span>
-                            <span className="text-[5px] md:text-[7px] text-slate-500 font-bold tracking-widest">Ad</span>
+                            {showRunningAdTag ? (
+                                <span className="text-[5px] md:text-[7px] text-slate-500 font-bold tracking-widest">Ad</span>
+                            ) : (
+                                <span className="text-[5px] md:text-[7px] text-slate-500 font-bold tracking-widest">
+                                    <RelativeTime timestamp={ad.activeStartTime || ad.active_start_time || ad.startedAt || ad.started_at || raw.active_start_time || raw.activeStartTime || raw.started_at || raw.startedAt || ad.createdAt || ad.created_at || raw.created_at || raw.createdAt || raw.approved_at || raw.approvedAt || raw.updated_at || raw.updatedAt} />
+                                </span>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -314,6 +335,20 @@ export function SharedPhotoVideoAdCard({
                                     {promoteAgainLabel}
                                 </button>
                             )}
+                            {onDeleteAd && (
+                                <button
+                                    type="button"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        void onDeleteAd(ad);
+                                        onCloseMenu();
+                                    }}
+                                    className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-red-300 transition-colors hover:bg-red-500/10"
+                                >
+                                    <IonIcon name="trash-outline" className="text-lg text-red-400" />
+                                    Delete Ad
+                                </button>
+                            )}
                             <button
                                 type="button"
                                 onClick={(event) => {
@@ -363,7 +398,7 @@ export function SharedPhotoVideoAdCard({
                 {/* Title row */}
                 <div className="mb-1 flex items-start justify-between gap-1">
                     <h2 className="overflow-hidden text-[9px] md:text-[12px] font-black leading-tight text-white [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] break-words uppercase tracking-tight group-hover:text-amber-400 transition-colors flex-1">
-                        {isGenericTitle ? advertiserName : displayTitle}
+                        {displayTitle || "Sponsored"}
                     </h2>
                     {ctaTopic !== "No Button" && (
                         ctaTopic === "Call Now" ? (
