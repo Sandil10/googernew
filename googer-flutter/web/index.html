@@ -23,35 +23,16 @@
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="googer">
+  <meta name="apple-mobile-web-app-title" content="googer_app">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>Googer</title>
+  <title>googer_app</title>
   <link rel="manifest" href="manifest.json">
 </head>
-<body style="background:#000">
-  <!-- Kill any stale Flutter service worker so every deploy is served fresh -->
-  <script>
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.getRegistrations().then(function (regs) {
-        regs.forEach(function (reg) { reg.unregister(); });
-      });
-      if (window.caches) {
-        caches.keys().then(function (keys) { keys.forEach(function (k) { caches.delete(k); }); });
-      }
-    }
-  </script>
-  <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
-
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
-  -->
+<body>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

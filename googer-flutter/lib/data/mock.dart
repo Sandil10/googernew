@@ -2,6 +2,7 @@
 
 class GoogPost {
   final int id;
+  final String userId;
   final String text;
   final int? textColor; // ARGB
   final String time;
@@ -13,6 +14,7 @@ class GoogPost {
   final String shareCode;
   const GoogPost({
     required this.id,
+    this.userId = "",
     required this.text,
     this.textColor,
     required this.time,
@@ -31,16 +33,80 @@ class GoogPost {
 }
 
 const feedPosts = [
-  GoogPost(id: 1, text: "Just listed a fresh drop in my shop — check it out! #googer #shop", time: "8m", username: "nimasha", name: "Nimasha Perera", img: "https://i.pravatar.cc/80?img=47", badgeColor: 0xFF3B82F6, likes: 128, comments: 14, views: 2210, shares: 9),
-  GoogPost(id: 2, text: "Earned my first 500 Rupier coins today 🎉 The ad center actually works!", textColor: 0xFF4ADE80, time: "42m", username: "kasun_lk", name: "Kasun Silva", img: "https://i.pravatar.cc/80?img=15", likes: 342, comments: 51, views: 5804, shares: 22, liked: true),
-  GoogPost(id: 3, text: "New reel is live — behind the scenes of the studio build. www.youtube.com/watch?v=xyz", time: "1h", username: "tharindu", name: "Tharindu J", img: "https://i.pravatar.cc/80?img=33", badgeColor: 0xFFF59E0B, likes: 88, comments: 6, views: 940, shares: 3),
-  GoogPost(id: 4, text: "Anyone selling a good camera setup? DM me @nimasha #marketplace", time: "3h", username: "dev_amaya", name: "Amaya Fernando", img: "https://i.pravatar.cc/80?img=5", likes: 41, comments: 19, views: 620, shares: 1),
-  GoogPost(id: 5, text: "Flash content ads are the best ROI on Googer right now. Try one for a day.", textColor: 0xFF38BDF8, time: "5h", username: "googer_tips", name: "Googer Tips", img: "https://i.pravatar.cc/80?img=68", badgeColor: 0xFF3B82F6, likes: 517, comments: 73, views: 12100, shares: 64),
+  GoogPost(
+    id: 1,
+    text: "Just listed a fresh drop in my shop — check it out! #googer #shop",
+    time: "8m",
+    username: "nimasha",
+    name: "Nimasha Perera",
+    img: "https://i.pravatar.cc/80?img=47",
+    badgeColor: 0xFF3B82F6,
+    likes: 128,
+    comments: 14,
+    views: 2210,
+    shares: 9,
+  ),
+  GoogPost(
+    id: 2,
+    text:
+        "Earned my first 500 Rupier coins today 🎉 The ad center actually works!",
+    textColor: 0xFF4ADE80,
+    time: "42m",
+    username: "kasun_lk",
+    name: "Kasun Silva",
+    img: "https://i.pravatar.cc/80?img=15",
+    likes: 342,
+    comments: 51,
+    views: 5804,
+    shares: 22,
+    liked: true,
+  ),
+  GoogPost(
+    id: 3,
+    text:
+        "New reel is live — behind the scenes of the studio build. www.youtube.com/watch?v=xyz",
+    time: "1h",
+    username: "tharindu",
+    name: "Tharindu J",
+    img: "https://i.pravatar.cc/80?img=33",
+    badgeColor: 0xFFF59E0B,
+    likes: 88,
+    comments: 6,
+    views: 940,
+    shares: 3,
+  ),
+  GoogPost(
+    id: 4,
+    text: "Anyone selling a good camera setup? DM me @nimasha #marketplace",
+    time: "3h",
+    username: "dev_amaya",
+    name: "Amaya Fernando",
+    img: "https://i.pravatar.cc/80?img=5",
+    likes: 41,
+    comments: 19,
+    views: 620,
+    shares: 1,
+  ),
+  GoogPost(
+    id: 5,
+    text:
+        "Flash content ads are the best ROI on Googer right now. Try one for a day.",
+    textColor: 0xFF38BDF8,
+    time: "5h",
+    username: "googer_tips",
+    name: "Googer Tips",
+    img: "https://i.pravatar.cc/80?img=68",
+    badgeColor: 0xFF3B82F6,
+    likes: 517,
+    comments: 73,
+    views: 12100,
+    shares: 64,
+  ),
 ];
 
 class Product {
   final int id;
-  final String title, image, seller, category, description;
+  final String title, image, seller, sellerAvatar, category, description;
   final double price;
   final double? oldPrice;
   final double rating;
@@ -55,6 +121,7 @@ class Product {
     this.oldPrice,
     required this.image,
     required this.seller,
+    this.sellerAvatar = "",
     required this.rating,
     required this.sold,
     required this.category,
@@ -68,12 +135,77 @@ class Product {
 }
 
 const products = [
-  Product(id: 1, title: "Wireless Noise-Cancelling Headphones", price: 12500, oldPrice: 15900, image: "https://picsum.photos/seed/head/400/400", seller: "TechZone LK", rating: 4.8, sold: 214, category: "Electronics", description: "Premium over-ear headphones with 40h battery, ANC and fast charge."),
-  Product(id: 2, title: "Minimal Leather Watch — Black", price: 8900, image: "https://picsum.photos/seed/watch/400/400", seller: "Urban Gear", rating: 4.6, sold: 98, category: "Fashion", description: "Genuine leather strap, sapphire glass, 5ATM water resistance."),
-  Product(id: 3, title: "Espresso Coffee Maker 15-Bar", price: 24900, oldPrice: 29900, image: "https://picsum.photos/seed/coffee/400/400", seller: "HomePro", rating: 4.9, sold: 156, category: "Home", description: "Barista-grade espresso at home with milk frother and dual shot."),
-  Product(id: 4, title: "Running Shoes AeroLite v3", price: 10400, image: "https://picsum.photos/seed/shoes/400/400", seller: "SportHub", rating: 4.5, sold: 371, category: "Sports", description: "Featherweight mesh upper with responsive foam midsole."),
-  Product(id: 5, title: "Mechanical Keyboard RGB 75%", price: 15800, image: "https://picsum.photos/seed/keyb/400/400", seller: "TechZone LK", rating: 4.7, sold: 122, category: "Electronics", description: "Hot-swappable switches, gasket mount, tri-mode connectivity."),
-  Product(id: 6, title: "Ceramic Plant Pot Set (3pc)", price: 3200, image: "https://picsum.photos/seed/plant/400/400", seller: "GreenNest", rating: 4.4, sold: 68, category: "Home", description: "Matte-finish ceramic pots with bamboo trays, 3 sizes."),
+  Product(
+    id: 1,
+    title: "Wireless Noise-Cancelling Headphones",
+    price: 12500,
+    oldPrice: 15900,
+    image: "https://picsum.photos/seed/head/400/400",
+    seller: "TechZone LK",
+    rating: 4.8,
+    sold: 214,
+    category: "Electronics",
+    description:
+        "Premium over-ear headphones with 40h battery, ANC and fast charge.",
+  ),
+  Product(
+    id: 2,
+    title: "Minimal Leather Watch — Black",
+    price: 8900,
+    image: "https://picsum.photos/seed/watch/400/400",
+    seller: "Urban Gear",
+    rating: 4.6,
+    sold: 98,
+    category: "Fashion",
+    description:
+        "Genuine leather strap, sapphire glass, 5ATM water resistance.",
+  ),
+  Product(
+    id: 3,
+    title: "Espresso Coffee Maker 15-Bar",
+    price: 24900,
+    oldPrice: 29900,
+    image: "https://picsum.photos/seed/coffee/400/400",
+    seller: "HomePro",
+    rating: 4.9,
+    sold: 156,
+    category: "Home",
+    description:
+        "Barista-grade espresso at home with milk frother and dual shot.",
+  ),
+  Product(
+    id: 4,
+    title: "Running Shoes AeroLite v3",
+    price: 10400,
+    image: "https://picsum.photos/seed/shoes/400/400",
+    seller: "SportHub",
+    rating: 4.5,
+    sold: 371,
+    category: "Sports",
+    description: "Featherweight mesh upper with responsive foam midsole.",
+  ),
+  Product(
+    id: 5,
+    title: "Mechanical Keyboard RGB 75%",
+    price: 15800,
+    image: "https://picsum.photos/seed/keyb/400/400",
+    seller: "TechZone LK",
+    rating: 4.7,
+    sold: 122,
+    category: "Electronics",
+    description: "Hot-swappable switches, gasket mount, tri-mode connectivity.",
+  ),
+  Product(
+    id: 6,
+    title: "Ceramic Plant Pot Set (3pc)",
+    price: 3200,
+    image: "https://picsum.photos/seed/plant/400/400",
+    seller: "GreenNest",
+    rating: 4.4,
+    sold: 68,
+    category: "Home",
+    description: "Matte-finish ceramic pots with bamboo trays, 3 sizes.",
+  ),
 ];
 
 class Category {
@@ -98,16 +230,64 @@ class Conversation {
   final int unread;
   final bool online;
   final int peerId; // backend participant id (0 = demo)
-  const Conversation(this.username, this.name, this.img, this.last, this.time, this.unread, this.online,
-      [this.peerId = 0]);
+  const Conversation(
+    this.username,
+    this.name,
+    this.img,
+    this.last,
+    this.time,
+    this.unread,
+    this.online, [
+    this.peerId = 0,
+  ]);
 }
 
 const conversations = [
-  Conversation("nimasha", "Nimasha Perera", "https://i.pravatar.cc/80?img=47", "The order shipped this morning 📦", "2m", 2, true),
-  Conversation("kasun_lk", "Kasun Silva", "https://i.pravatar.cc/80?img=15", "Can you send the payment proof?", "18m", 0, true),
-  Conversation("tharindu", "Tharindu J", "https://i.pravatar.cc/80?img=33", "🔥🔥🔥", "1h", 0, false),
-  Conversation("dev_amaya", "Amaya Fernando", "https://i.pravatar.cc/80?img=5", "Deal. R 9,500 final.", "3h", 1, false),
-  Conversation("googer_support", "Googer Support", "https://i.pravatar.cc/80?img=68", "Your ticket #4821 has been resolved.", "1d", 0, true),
+  Conversation(
+    "nimasha",
+    "Nimasha Perera",
+    "https://i.pravatar.cc/80?img=47",
+    "The order shipped this morning 📦",
+    "2m",
+    2,
+    true,
+  ),
+  Conversation(
+    "kasun_lk",
+    "Kasun Silva",
+    "https://i.pravatar.cc/80?img=15",
+    "Can you send the payment proof?",
+    "18m",
+    0,
+    true,
+  ),
+  Conversation(
+    "tharindu",
+    "Tharindu J",
+    "https://i.pravatar.cc/80?img=33",
+    "🔥🔥🔥",
+    "1h",
+    0,
+    false,
+  ),
+  Conversation(
+    "dev_amaya",
+    "Amaya Fernando",
+    "https://i.pravatar.cc/80?img=5",
+    "Deal. R 9,500 final.",
+    "3h",
+    1,
+    false,
+  ),
+  Conversation(
+    "googer_support",
+    "Googer Support",
+    "https://i.pravatar.cc/80?img=68",
+    "Your ticket #4821 has been resolved.",
+    "1d",
+    0,
+    true,
+  ),
 ];
 
 class ChatMessage {
@@ -131,7 +311,14 @@ class Tx {
   final String type; // sent | received | topup | withdrawal
   final String counterparty, date, status;
   final double amount;
-  const Tx(this.id, this.type, this.counterparty, this.amount, this.date, this.status);
+  const Tx(
+    this.id,
+    this.type,
+    this.counterparty,
+    this.amount,
+    this.date,
+    this.status,
+  );
 }
 
 const transactions = [
@@ -147,12 +334,28 @@ class MyAd {
   final int id;
   final String type, title, status, expires;
   final int views, coins;
-  const MyAd(this.id, this.type, this.title, this.status, this.views, this.coins, this.expires);
+  const MyAd(
+    this.id,
+    this.type,
+    this.title,
+    this.status,
+    this.views,
+    this.coins,
+    this.expires,
+  );
 }
 
 const myAds = [
   MyAd(1, "Photo & Video", "Summer Drop Teaser", "Active", 4210, 320, "3 days"),
-  MyAd(2, "Product Promote", "Headphones — Flash Sale", "Active", 1876, 140, "12 hours"),
+  MyAd(
+    2,
+    "Product Promote",
+    "Headphones — Flash Sale",
+    "Active",
+    1876,
+    140,
+    "12 hours",
+  ),
   MyAd(3, "Profile Promote", "Grow @sandil", "Ended", 9034, 610, "—"),
 ];
 
@@ -165,10 +368,35 @@ class Plan {
 }
 
 const subscriptionPlans = [
-  Plan("Free", 0, ["5 Googs / month", "2 product listings", "75 letter limit", "Basic support"]),
-  Plan("Silver", 490, ["50 Googs / month", "15 product listings", "150 letter limit", "10 Goog colors", "Priority support"]),
-  Plan("Gold", 990, ["Unlimited Googs", "60 product listings", "300 letter limit", "20 Goog colors", "Verified-fast review", "Reseller tools"], popular: true),
-  Plan("Platinum", 1990, ["Everything in Gold", "Unlimited products", "No letter limit", "All Goog colors", "Dedicated manager", "0% withdrawal fee"]),
+  Plan("Free", 0, [
+    "5 Googs / month",
+    "2 product listings",
+    "75 letter limit",
+    "Basic support",
+  ]),
+  Plan("Silver", 490, [
+    "50 Googs / month",
+    "15 product listings",
+    "150 letter limit",
+    "10 Goog colors",
+    "Priority support",
+  ]),
+  Plan("Gold", 990, [
+    "Unlimited Googs",
+    "60 product listings",
+    "300 letter limit",
+    "20 Goog colors",
+    "Verified-fast review",
+    "Reseller tools",
+  ], popular: true),
+  Plan("Platinum", 1990, [
+    "Everything in Gold",
+    "Unlimited products",
+    "No letter limit",
+    "All Goog colors",
+    "Dedicated manager",
+    "0% withdrawal fee",
+  ]),
 ];
 
 class Notif {
@@ -179,10 +407,34 @@ class Notif {
 
 const notifs = [
   Notif(1, 0xe25b, 0xFFEF4444, "Nimasha liked your Goog", "5m"), // favorite
-  Notif(2, 0xe2eb, 0xFF4ADE80, "You received R 1,200 from @nimasha", "1h"), // payments
-  Notif(3, 0xe0af, 0xFF38BDF8, "Your ad 'Summer Drop Teaser' reached 4,000 views", "3h"), // campaign
-  Notif(4, 0xe32a, 0xFF60A5FA, "New login from Chrome on Windows", "1d"), // security
-  Notif(5, 0xe0b7, 0xFFFBBF24, "Kasun commented: \"Congrats! 🎉\"", "2d"), // chat
+  Notif(
+    2,
+    0xe2eb,
+    0xFF4ADE80,
+    "You received R 1,200 from @nimasha",
+    "1h",
+  ), // payments
+  Notif(
+    3,
+    0xe0af,
+    0xFF38BDF8,
+    "Your ad 'Summer Drop Teaser' reached 4,000 views",
+    "3h",
+  ), // campaign
+  Notif(
+    4,
+    0xe32a,
+    0xFF60A5FA,
+    "New login from Chrome on Windows",
+    "1d",
+  ), // security
+  Notif(
+    5,
+    0xe0b7,
+    0xFFFBBF24,
+    "Kasun commented: \"Congrats! 🎉\"",
+    "2d",
+  ), // chat
 ];
 
 class Device {
@@ -190,11 +442,25 @@ class Device {
   final String name, location, lastActive;
   final bool current;
   final int icon;
-  const Device(this.id, this.name, this.location, this.lastActive, this.current, this.icon);
+  const Device(
+    this.id,
+    this.name,
+    this.location,
+    this.lastActive,
+    this.current,
+    this.icon,
+  );
 }
 
 const trustedDevices = [
-  Device(1, "Samsung Galaxy S24", "Colombo, LK", "Now — this device", true, 0xe32c),
+  Device(
+    1,
+    "Samsung Galaxy S24",
+    "Colombo, LK",
+    "Now — this device",
+    true,
+    0xe32c,
+  ),
   Device(2, "Chrome on Windows", "Colombo, LK", "2 hours ago", false, 0xe30b),
   Device(3, "Safari on iPhone", "Kandy, LK", "3 days ago", false, 0xe32c),
 ];
@@ -206,9 +472,27 @@ class SecAlert {
 }
 
 const securityAlerts = [
-  SecAlert(1, "high", "New device signed in", "Safari on iPhone — Kandy, LK", "3 days ago"),
-  SecAlert(2, "medium", "Password changed", "Your login password was updated", "2 weeks ago"),
-  SecAlert(3, "low", "New passkey added", "Windows Hello passkey registered", "1 month ago"),
+  SecAlert(
+    1,
+    "high",
+    "New device signed in",
+    "Safari on iPhone — Kandy, LK",
+    "3 days ago",
+  ),
+  SecAlert(
+    2,
+    "medium",
+    "Password changed",
+    "Your login password was updated",
+    "2 weeks ago",
+  ),
+  SecAlert(
+    3,
+    "low",
+    "New passkey added",
+    "Windows Hello passkey registered",
+    "1 month ago",
+  ),
 ];
 
 class CoinPack {
@@ -226,16 +510,27 @@ const coinPacks = [
 
 /// Vault / flash upload content (feed cards with WATCH NOW + coins)
 class UploadContent {
+  final String ownerUserId;
   final int id;
-  final String contentId, type, topic, description, hashtags, thumbnail, mediaUrl;
+  final String contentId,
+      type,
+      topic,
+      description,
+      hashtags,
+      thumbnail,
+      mediaUrl;
+  final List<String> mediaGallery;
   final String mediaType; // "image" | "video" (backend media_type)
   final String externalLink; // YouTube/Instagram/TikTok source when set
+  final String status, createdAt, approvedAt, repostedAt, repostedByName;
+  final String contentAccessMode, suggestedTopic;
   final double coins;
   final String username, fullName, avatar, time;
   final int likes, comments, views, shares, reposts;
-  final bool liked, hasAccess, userReposted;
+  final bool liked, hasAccess, userReposted, showSuggested, allowComments;
   final String? resellerRef;
   const UploadContent({
+    this.ownerUserId = "",
     required this.id,
     this.contentId = "",
     required this.type,
@@ -244,8 +539,16 @@ class UploadContent {
     required this.hashtags,
     required this.thumbnail,
     required this.mediaUrl,
+    this.mediaGallery = const [],
     this.mediaType = "",
     this.externalLink = "",
+    this.status = "Approved",
+    this.createdAt = "",
+    this.approvedAt = "",
+    this.repostedAt = "",
+    this.repostedByName = "",
+    this.contentAccessMode = "",
+    this.suggestedTopic = "",
     required this.coins,
     required this.username,
     required this.fullName,
@@ -259,22 +562,51 @@ class UploadContent {
     this.liked = false,
     this.hasAccess = false,
     this.userReposted = false,
+    this.showSuggested = false,
+    this.allowComments = true,
     this.resellerRef,
   });
 }
 
 const demoUploadContents = [
   UploadContent(
-    id: 1, type: "vault", topic: "Comedy", description: "new", hashtags: "#k",
-    thumbnail: "https://picsum.photos/seed/vault1/600/600", mediaUrl: "",
-    coins: 10, username: "g1", fullName: "g1", avatar: "https://i.pravatar.cc/80?img=21",
-    time: "1 D", likes: 1, comments: 0, views: 1, shares: 1, reposts: 0,
+    id: 1,
+    type: "vault",
+    topic: "Comedy",
+    description: "new",
+    hashtags: "#k",
+    thumbnail: "https://picsum.photos/seed/vault1/600/600",
+    mediaUrl: "",
+    coins: 10,
+    username: "g1",
+    fullName: "g1",
+    avatar: "https://i.pravatar.cc/80?img=21",
+    time: "1 D",
+    likes: 1,
+    comments: 0,
+    views: 1,
+    shares: 1,
+    reposts: 0,
   ),
   UploadContent(
-    id: 2, type: "flash", topic: "Food & Cooking", description: "Street food tour 🍜", hashtags: "#food #colombo",
-    thumbnail: "https://picsum.photos/seed/vault2/600/600", mediaUrl: "",
-    coins: 0, username: "nimasha", fullName: "Nimasha Perera", avatar: "https://i.pravatar.cc/80?img=47",
-    time: "3 D", likes: 24, comments: 6, views: 210, shares: 4, reposts: 2, hasAccess: true,
+    id: 2,
+    type: "flash",
+    topic: "Food & Cooking",
+    description: "Street food tour 🍜",
+    hashtags: "#food #colombo",
+    thumbnail: "https://picsum.photos/seed/vault2/600/600",
+    mediaUrl: "",
+    coins: 0,
+    username: "nimasha",
+    fullName: "Nimasha Perera",
+    avatar: "https://i.pravatar.cc/80?img=47",
+    time: "3 D",
+    likes: 24,
+    comments: 6,
+    views: 210,
+    shares: 4,
+    reposts: 2,
+    hasAccess: true,
   ),
 ];
 
@@ -282,15 +614,18 @@ const demoUploadContents = [
 /// shape from app/dashboard/page.tsx (GET /api/ads/active-public).
 class HomeAd {
   final String adId; // numeric ad id, without the "ad-" prefix
-  final String campaignType; // "Photo and Video" | "Product Promote" | "Profile Promote" | ...
+  final String
+  campaignType; // "Photo and Video" | "Product Promote" | "Profile Promote" | ...
   final String title, description;
   final String mediaPreview, mediaType;
+  final List<String> mediaGallery;
   final String username, fullName, avatar;
   final String ctaTopic, ctaValue, activeLink;
   final double price;
   final double? promoPrice; // promo/sale price of the linked product (if any)
   final String discount; // commission_info.discount, e.g. "10" → "+10%" badge
-  final int linkedProductId; // market.id of the linked product (Product Promote)
+  final int
+  linkedProductId; // market.id of the linked product (Product Promote)
   final String linkedProductShareCode;
   final String ownerUserId;
   final List<Map<String, dynamic>> featuredItems; // Profile Promote grid items
@@ -303,6 +638,7 @@ class HomeAd {
     required this.title,
     required this.description,
     this.mediaPreview = "",
+    this.mediaGallery = const [],
     this.mediaType = "",
     required this.username,
     this.fullName = "",
@@ -330,8 +666,13 @@ class HomeAd {
   String get interactionId => "ad-$adId";
 
   bool get isProfilePromote {
-    final t = campaignType.trim().toLowerCase().replaceAll(RegExp(r"[_-]+"), " ");
-    return t == "profile promote" || t == "profile promote ad" || mediaType.toLowerCase() == "profile";
+    final t = campaignType.trim().toLowerCase().replaceAll(
+      RegExp(r"[_-]+"),
+      " ",
+    );
+    return t == "profile promote" ||
+        t == "profile promote ad" ||
+        mediaType.toLowerCase() == "profile";
   }
 
   bool get isProductPromote =>
@@ -343,23 +684,37 @@ class HomeAd {
 
   double? get oldPrice =>
       (promoPrice != null && promoPrice! > 0 && promoPrice! < price)
-          ? price
-          : null;
+      ? price
+      : null;
 }
 
 const demoHomeAds = [
   HomeAd(
-    adId: "9001", campaignType: "Photo and Video",
-    title: "Grow with Googer Ads", description: "Reach thousands of daily viewers with a one-day flash campaign.",
+    adId: "9001",
+    campaignType: "Photo and Video",
+    title: "Grow with Googer Ads",
+    description:
+        "Reach thousands of daily viewers with a one-day flash campaign.",
     mediaPreview: "https://picsum.photos/seed/ad1/800/500",
-    username: "googer_ads", fullName: "Googer Ads", avatar: "https://i.pravatar.cc/80?img=68",
-    ctaTopic: "Visit", ctaValue: "googer.site", activeLink: "https://googer.site",
-    likes: 44, comments: 3, views: 1250, shares: 6,
+    username: "googer_ads",
+    fullName: "Googer Ads",
+    avatar: "https://i.pravatar.cc/80?img=68",
+    ctaTopic: "Visit",
+    ctaValue: "googer.site",
+    activeLink: "https://googer.site",
+    likes: 44,
+    comments: 3,
+    views: 1250,
+    shares: 6,
   ),
   HomeAd(
-    adId: "9002", campaignType: "Profile Promote",
-    title: "nimasha", description: "Creator · Lifestyle",
-    username: "nimasha", fullName: "Nimasha Perera", avatar: "https://i.pravatar.cc/80?img=47",
+    adId: "9002",
+    campaignType: "Profile Promote",
+    title: "nimasha",
+    description: "Creator · Lifestyle",
+    username: "nimasha",
+    fullName: "Nimasha Perera",
+    avatar: "https://i.pravatar.cc/80?img=47",
   ),
 ];
 

@@ -6,3 +6,14 @@ build/
 *.iml
 .idea/
 ios/Pods/
+vendor/
+.env
+.env.*
+*.pem
+*.key
+*.jks
+*.keystore
+local.properties
+keystore.properties
+google-services.json
+GoogleService-Info.plist

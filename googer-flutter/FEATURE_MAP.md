@@ -13,6 +13,7 @@ endpoint not wired · ❌ not built yet.
 - **Tunnel** cloudflared → googer.site (`/api/*`→5000, rest→3000)
 
 ## 1. Home feed (`dashboard/page.tsx`)
+> Deep-dive with per-feature steps: see `HOME_PAGE_PARITY.md` (A→Z playbook, 2026-07-19).
 | Feature | Backend | Flutter |
 |---|---|---|
 | Feed of googs (algorithmic order, expansion stages `home_expansion_*`) | GET `/googs` | ✅ |
@@ -32,7 +33,7 @@ endpoint not wired · ❌ not built yet.
 | Interaction sheet: likes/comments/shares/views lists | GET `/googs/{id}/{likes,comments,shares,views}` | ✅ |
 | Add comment (+ emoji quick row) | POST `/googs/{id}/comments` | ✅ |
 | Comment like/dislike/report/delete | POST `/googs/comments/{id}/…` | ✅ report + delete (own) wired; like/dislike have no backend route |
-| Share sheet (WhatsApp/FB/IG/X/Telegram/copy) + log share | POST `/googs/{id}/share` | ✅ (copies link; native share intents ❌) |
+| Share sheet (WhatsApp/FB/IG/X/Telegram/copy) + log share | POST `/googs/{id}/share` | ✅ opens the same platform share URLs as web (wa.me/sharer/tweet/t.me); IG copies w/ hint like web |
 | ⋮ menu: Not Interested (24h hide) / Share / Report | report → POST `/googs/{id}/report` | ✅ |
 | Goog save/bookmark (limit by plan) | POST `/googs/{id}/save` | ✅ bookmark button on card + ⋮ menu |
 | Subscribe to goog author | POST `/googs/{id}/subscribe` | ✅ in ⋮ menu |

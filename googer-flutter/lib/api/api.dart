@@ -27,7 +27,7 @@ class Api {
   /// The web app keeps its token across reloads — the Flutter build must too,
   /// otherwise every refresh silently logs the user out.
   static Future<void> init() async {
-    token = readStorage("googer_token");
+    token = readStorage("token") ?? readStorage("googer_token");
     final saved = readStorage("googer_user");
     if (saved != null && saved.isNotEmpty) {
       try {
@@ -39,14 +39,19 @@ class Api {
 
   static void _persistAuth() {
     writeStorage("googer_token", token);
+    writeStorage("token", token);
     writeStorage("googer_user", user == null ? null : jsonEncode(user));
   }
+
   static String get displayName =>
       (user?["full_name"] ?? user?["username"] ?? "Googer User").toString();
   static String get username => (user?["username"] ?? "googer").toString();
   static String get email => (user?["email"] ?? "").toString();
   static String get googerId =>
       (user?["user_id"] ?? user?["googer_id"] ?? "").toString();
+  static String get currentUserId =>
+      (user?["id"] ?? user?["userId"] ?? user?["user_id"] ?? user?["googer_id"] ?? "")
+          .toString();
   static double get balance =>
       double.tryParse("${user?["wallet_balance"] ?? ""}") ?? 0;
   static String? get avatar {
@@ -71,6 +76,7 @@ class Api {
 
   /// Resolve backend media paths ("uploads/x.jpg", "/uploads/x.jpg", full URLs, data URIs)
   static String resolveMedia(String src) {
+    if (src.trim().isEmpty) return "";
     if (src.startsWith("http") || src.startsWith("data:")) return src;
     final normalized = src.replaceAll("\\", "/");
     // keep subfolders like /uploads/upload-content/... intact
@@ -80,10 +86,18 @@ class Api {
     return "$base/uploads/$file";
   }
 
-  static Map<String, String> _headers() => {
-        "Content-Type": "application/json",
-        if (token != null) "Authorization": "Bearer $token",
-      };
+  static String? _currentToken() {
+    token = readStorage("token") ?? readStorage("googer_token") ?? token;
+    return token;
+  }
+
+  static Map<String, String> _headers() {
+    final authToken = _currentToken();
+    return {
+      "Content-Type": "application/json",
+      if (authToken != null) "Authorization": "Bearer $authToken",
+    };
+  }
 
   static Future<dynamic> _get(String path) async {
     final res = await http
@@ -95,8 +109,11 @@ class Api {
 
   static Future<dynamic> _post(String path, Map<String, dynamic> body) async {
     final res = await http
-        .post(Uri.parse("$base/api$path"),
-            headers: _headers(), body: jsonEncode(body))
+        .post(
+          Uri.parse("$base/api$path"),
+          headers: _headers(),
+          body: jsonEncode(body),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) throw ApiError(res.statusCode, _msg(res));
     return res.body.isEmpty ? null : jsonDecode(res.body);
@@ -104,8 +121,11 @@ class Api {
 
   static Future<dynamic> _put(String path, Map<String, dynamic> body) async {
     final res = await http
-        .put(Uri.parse("$base/api$path"),
-            headers: _headers(), body: jsonEncode(body))
+        .put(
+          Uri.parse("$base/api$path"),
+          headers: _headers(),
+          body: jsonEncode(body),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) throw ApiError(res.statusCode, _msg(res));
     return res.body.isEmpty ? null : jsonDecode(res.body);
@@ -113,8 +133,11 @@ class Api {
 
   static Future<dynamic> _patch(String path, Map<String, dynamic> body) async {
     final res = await http
-        .patch(Uri.parse("$base/api$path"),
-            headers: _headers(), body: jsonEncode(body))
+        .patch(
+          Uri.parse("$base/api$path"),
+          headers: _headers(),
+          body: jsonEncode(body),
+        )
         .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) throw ApiError(res.statusCode, _msg(res));
     return res.body.isEmpty ? null : jsonDecode(res.body);
@@ -142,6 +165,12 @@ class Api {
 
   static Map<String, dynamic>? _asMap(dynamic value) {
     if (value is Map) return Map<String, dynamic>.from(value);
+    if (value is String && value.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(value);
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {}
+    }
     return null;
   }
 
@@ -170,11 +199,13 @@ class Api {
 
   static Future<String?> login(String emailIn, String password) async {
     try {
-      final data =
-          await _post("/auth/login", {"email": emailIn, "password": password});
+      final data = await _post("/auth/login", {
+        "email": emailIn,
+        "password": password,
+      });
       if (data is Map && data["otpRequired"] == true) {
-        final message =
-            (data["message"] ?? "OTP sent to registered email").toString();
+        final message = (data["message"] ?? "OTP sent to registered email")
+            .toString();
         final debugOtp = data["debugOtp"]?.toString();
         return "OTP_REQUIRED|$message${debugOtp == null || debugOtp.isEmpty ? "" : " (OTP: $debugOtp)"}";
       }
@@ -195,7 +226,10 @@ class Api {
   }
 
   static Future<String?> verifyLoginOtp(
-      String emailIn, String password, String otp) async {
+    String emailIn,
+    String password,
+    String otp,
+  ) async {
     try {
       final data = await _post("/auth/login/verify-otp", {
         "email": emailIn,
@@ -239,7 +273,8 @@ class Api {
   }
 
   static Future<({String? error, String? debugOtp})> requestPasswordResetOtp(
-      String emailIn) async {
+    String emailIn,
+  ) async {
     try {
       final data = await _post("/auth/forgot-password/request-otp", {
         "email": emailIn,
@@ -248,12 +283,17 @@ class Api {
     } on ApiError catch (e) {
       return (error: e.message, debugOtp: null);
     } catch (_) {
-      return (error: "Could not reach the server. Please try again.", debugOtp: null);
+      return (
+        error: "Could not reach the server. Please try again.",
+        debugOtp: null,
+      );
     }
   }
 
   static Future<({String? error, String? resetToken})> verifyPasswordResetOtp(
-      String emailIn, String otp) async {
+    String emailIn,
+    String otp,
+  ) async {
     try {
       final data = await _post("/auth/forgot-password/verify-otp", {
         "email": emailIn,
@@ -261,17 +301,23 @@ class Api {
       });
       return (
         error: null,
-        resetToken: (data?["resetToken"] ?? data?["reset_token"])?.toString()
+        resetToken: (data?["resetToken"] ?? data?["reset_token"])?.toString(),
       );
     } on ApiError catch (e) {
       return (error: e.message, resetToken: null);
     } catch (_) {
-      return (error: "Could not reach the server. Please try again.", resetToken: null);
+      return (
+        error: "Could not reach the server. Please try again.",
+        resetToken: null,
+      );
     }
   }
 
   static Future<String?> resetPasswordWithOtp(
-      String emailIn, String resetToken, String newPassword) async {
+    String emailIn,
+    String resetToken,
+    String newPassword,
+  ) async {
     try {
       await _post("/auth/forgot-password/reset", {
         "email": emailIn,
@@ -313,7 +359,8 @@ class Api {
       final list = _unwrapList(data, ["posts", "data", "googs", "items"]);
       return list
           .map<GoogPost>(
-              (raw) => parseGoog(Map<String, dynamic>.from(raw as Map)))
+            (raw) => parseGoog(Map<String, dynamic>.from(raw as Map)),
+          )
           .toList();
     } catch (_) {
       return const [];
@@ -332,17 +379,57 @@ class Api {
 
     return GoogPost(
       id: int.tryParse("${m["id"]}") ?? 0,
+      userId:
+          (u["id"] ??
+                  u["user_id"] ??
+                  u["userId"] ??
+                  m["user_id"] ??
+                  m["userId"] ??
+                  m["owner_user_id"] ??
+                  m["ownerUserId"] ??
+                  "")
+              .toString(),
       text: (m["text"] ?? m["content"] ?? "").toString(),
-      textColor:
-          parseColor(m["textColor"]?.toString() ?? m["text_color"]?.toString()),
+      textColor: parseColor(
+        m["textColor"]?.toString() ?? m["text_color"]?.toString(),
+      ),
       time: relativeTime(m["createdAt"] ?? m["created_at"] ?? ""),
       username: (u["username"] ?? m["username"] ?? "googer").toString(),
       name: (u["full_name"] ?? u["name"] ?? m["full_name"] ?? "Googer User")
           .toString(),
       img: resolveMedia(
-          (u["profile_picture"] ?? u["img"] ?? "").toString().isEmpty
-              ? ""
-              : (u["profile_picture"] ?? u["img"]).toString()),
+        (u["profile_picture"] ??
+                    u["profilePicture"] ??
+                    u["profile_image"] ??
+                    u["profileImage"] ??
+                    u["img"] ??
+                    u["avatar"] ??
+                    m["profile_picture"] ??
+                    m["profilePicture"] ??
+                    m["profile_image"] ??
+                    m["profileImage"] ??
+                    m["owner_profile_picture"] ??
+                    m["ownerProfilePicture"] ??
+                    m["avatar"] ??
+                    "")
+                .toString()
+                .isEmpty
+            ? ""
+            : (u["profile_picture"] ??
+                      u["profilePicture"] ??
+                      u["profile_image"] ??
+                      u["profileImage"] ??
+                      u["img"] ??
+                      u["avatar"] ??
+                      m["profile_picture"] ??
+                      m["profilePicture"] ??
+                      m["profile_image"] ??
+                      m["profileImage"] ??
+                      m["owner_profile_picture"] ??
+                      m["ownerProfilePicture"] ??
+                      m["avatar"])
+                  .toString(),
+      ),
       likes: int.tryParse("${m["likes"] ?? m["likes_count"] ?? 0}") ?? 0,
       comments:
           int.tryParse("${m["comments"] ?? m["comments_count"] ?? 0}") ?? 0,
@@ -363,7 +450,8 @@ class Api {
       int offset = 0;
       for (int page = 0; page < 4; page++) {
         final data = await _get(
-            "/ads/active-public?limit=50&offset=$offset&shuffle=${Uri.encodeComponent(shuffleSeed)}");
+          "/ads/active-public?limit=50&offset=$offset&shuffle=${Uri.encodeComponent(shuffleSeed)}",
+        );
         final list = data?["ads"];
         if (list is! List || list.isEmpty) break;
         for (final raw in list) {
@@ -378,7 +466,8 @@ class Api {
         final pagination = data?["pagination"];
         final hasMore = pagination is Map && pagination["hasMore"] == true;
         if (!hasMore) break;
-        offset = int.tryParse("${pagination["nextOffset"]}") ??
+        offset =
+            int.tryParse("${pagination["nextOffset"]}") ??
             (offset + list.length);
       }
       return ads;
@@ -388,26 +477,75 @@ class Api {
   }
 
   static HomeAd _parseHomeAd(Map<String, dynamic> m) {
-    final draft = m["editDraft"] is Map
-        ? Map<String, dynamic>.from(m["editDraft"])
-        : m["edit_draft"] is Map
-            ? Map<String, dynamic>.from(m["edit_draft"])
-            : <String, dynamic>{};
+    final draft = _asMap(m["editDraft"] ?? m["edit_draft"]) ?? {};
     final adId = (m["adId"] ?? m["ad_id"] ?? "${m["id"]}")
         .toString()
         .replaceFirst(RegExp(r"^ad-"), "");
-    final campaignType =
-        (m["campaign_type"] ?? m["campaignType"] ?? "Ads").toString();
+    final campaignType = (m["campaign_type"] ?? m["campaignType"] ?? "Ads")
+        .toString();
     final isProduct = campaignType.trim().toLowerCase() == "product promote";
-    final gallery = m["media_gallery"] is List
-        ? m["media_gallery"] as List
-        : m["mediaGallery"] is List
-            ? m["mediaGallery"] as List
-            : const [];
-    String media =
-        (m["media_preview"] ?? m["mediaPreview"] ?? m["image_url"] ?? "")
-            .toString();
-    if (media.isEmpty && gallery.isNotEmpty) media = gallery.first.toString();
+    final productGallery = _mediaList([
+      m["images"],
+      m["media_gallery"],
+      m["mediaGallery"],
+      m["gallery"],
+      m["product_images"],
+      m["productImages"],
+      m["variants"],
+      m["product"],
+      m["linked_product"],
+      m["linkedProduct"],
+      draft["images"],
+      draft["mediaGallery"],
+      draft["media_gallery"],
+      draft["gallery"],
+    ]);
+    final adGallery = _mediaList([
+      m["media_gallery"],
+      m["mediaGallery"],
+      m["gallery"],
+      m["media"],
+      draft["mediaGallery"],
+      draft["media_gallery"],
+      draft["gallery"],
+      m["images"],
+    ]);
+    final gallery = isProduct ? productGallery : adGallery;
+    final media = isProduct
+        ? _firstMedia([
+            m["image_url"],
+            m["imageUrl"],
+            m["main_image"],
+            m["mainImage"],
+            m["media_preview"],
+            m["mediaPreview"],
+            m["thumbnail_url"],
+            m["thumbnailUrl"],
+            m["media_url"],
+            m["mediaUrl"],
+            m["product_image"],
+            m["productImage"],
+            m["product"],
+            m["linked_product"],
+            m["linkedProduct"],
+            productGallery,
+          ])
+        : _firstMedia([
+            m["media_preview"],
+            m["mediaPreview"],
+            m["media_url"],
+            m["mediaUrl"],
+            m["video_url"],
+            m["videoUrl"],
+            m["thumbnail_url"],
+            m["thumbnailUrl"],
+            draft["mediaPreview"],
+            draft["media_preview"],
+            draft["mediaUrl"],
+            draft["media_url"],
+            draft["video_url"],
+            adGallery,
+          ]);
     return HomeAd(
       adId: adId,
       campaignType: campaignType,
@@ -415,50 +553,74 @@ class Api {
           .toString(),
       description: (m["description"] ?? "").toString(),
       mediaPreview: media.isEmpty ? "" : resolveMedia(media),
+      mediaGallery: gallery.map(resolveMedia).toList(),
       mediaType: (m["media_type"] ?? m["mediaType"] ?? "").toString(),
-      username: (m["owner_username"] ??
-              m["ownerUsername"] ??
-              m["username"] ??
-              (m["user"] is Map ? m["user"]["username"] : null) ??
-              "Ads")
-          .toString(),
-      fullName: (m["full_name"] ??
-              (m["user"] is Map ? m["user"]["full_name"] : null) ??
-              "")
-          .toString(),
-      avatar: resolveMedia((m["profile_picture"] ??
-              m["owner_profile_picture"] ??
-              (m["user"] is Map ? m["user"]["profile_picture"] : null) ??
-              "")
-          .toString()),
-      ctaTopic:
-          (draft["ctaTopic"] ?? m["cta_topic"] ?? "Visit").toString(),
+      username:
+          (m["owner_username"] ??
+                  m["ownerUsername"] ??
+                  m["username"] ??
+                  (m["user"] is Map ? m["user"]["username"] : null) ??
+                  "Ads")
+              .toString(),
+      fullName:
+          (m["full_name"] ??
+                  (m["user"] is Map ? m["user"]["full_name"] : null) ??
+                  "")
+              .toString(),
+      avatar: resolveMedia(
+        (m["profile_picture"] ??
+                m["profilePicture"] ??
+                m["owner_profile_picture"] ??
+                m["ownerProfilePicture"] ??
+                m["avatar"] ??
+                (m["user"] is Map ? m["user"]["profile_picture"] : null) ??
+                (m["user"] is Map ? m["user"]["profilePicture"] : null) ??
+                (m["user"] is Map ? m["user"]["avatar"] : null) ??
+                "")
+            .toString(),
+      ),
+      ctaTopic: (draft["ctaTopic"] ?? m["cta_topic"] ?? "Visit").toString(),
       ctaValue: (draft["ctaValue"] ?? m["cta_value"] ?? "").toString(),
-      activeLink: (draft["activeLink"] ??
-              m["active_link"] ??
-              m["activeLink"] ??
-              draft["ctaValue"] ??
-              m["cta_value"] ??
-              "")
-          .toString(),
+      activeLink:
+          (draft["activeLink"] ??
+                  m["active_link"] ??
+                  m["activeLink"] ??
+                  draft["ctaValue"] ??
+                  m["cta_value"] ??
+                  "")
+              .toString(),
       price: isProduct
           ? (double.tryParse(
-                  "${m["price"] ?? m["main_price"] ?? m["product_price"] ?? 0}") ??
-              0)
+                  "${m["price"] ?? m["main_price"] ?? m["product_price"] ?? 0}",
+                ) ??
+                0)
           : (double.tryParse("${m["budget"] ?? 0}") ?? 0),
       promoPrice: double.tryParse("${m["promo_price"] ?? ""}"),
       discount: _parseAdDiscount(m["commission_info"]),
-      linkedProductId: int.tryParse(
-              "${m["linked_product_id"] ?? m["product_id"] ?? m["productId"] ?? 0}") ??
+      linkedProductId:
+          int.tryParse(
+            "${m["linked_product_id"] ?? m["product_id"] ?? m["productId"] ?? 0}",
+          ) ??
           0,
       featuredItems: _parseFeaturedItems(draft),
-      linkedProductShareCode: (m["linked_product_share_code"] ??
-              m["linked_product_code"] ??
-              m["share_code"] ??
-              "")
-          .toString(),
+      linkedProductShareCode:
+          (m["linked_product_share_code"] ??
+                  m["linked_product_code"] ??
+                  m["share_code"] ??
+                  "")
+              .toString(),
       ownerUserId:
-          (m["user_id"] ?? m["userId"] ?? m["advertiser_id"] ?? "").toString(),
+          (m["user_id"] ??
+                  m["userId"] ??
+                  m["owner_user_id"] ??
+                  m["ownerUserId"] ??
+                  m["advertiser_id"] ??
+                  m["advertiserId"] ??
+                  (m["user"] is Map ? m["user"]["id"] : null) ??
+                  (m["user"] is Map ? m["user"]["user_id"] : null) ??
+                  (m["user"] is Map ? m["user"]["userId"] : null) ??
+                  "")
+              .toString(),
       likes: int.tryParse("${m["likes_count"] ?? 0}") ?? 0,
       comments: int.tryParse("${m["comments_count"] ?? 0}") ?? 0,
       views: int.tryParse("${m["views_count"] ?? m["viewCount"] ?? 0}") ?? 0,
@@ -470,6 +632,129 @@ class Api {
   }
 
   /// commission_info may be a JSON string or map — pull the seller discount %.
+  static String _firstMedia(List<dynamic> values) {
+    const keys = [
+      "media_preview",
+      "mediaPreview",
+      "image_url",
+      "imageUrl",
+      "image",
+      "thumbnail_url",
+      "thumbnailUrl",
+      "media_url",
+      "mediaUrl",
+      "video_url",
+      "videoUrl",
+      "product_image",
+      "productImage",
+      "main_image",
+      "mainImage",
+      "featured_image",
+      "featuredImage",
+      "url",
+      "src",
+    ];
+    for (final value in values) {
+      if (value == null) continue;
+      if (value is String && value.trim().isNotEmpty) return value.trim();
+      if (value is List) {
+        final nested = _firstMedia(value);
+        if (nested.isNotEmpty) return nested;
+      }
+      if (value is Map) {
+        for (final key in keys) {
+          final found = _firstMedia([value[key]]);
+          if (found.isNotEmpty) return found;
+        }
+        for (final key in [
+          "images",
+          "product_images",
+          "media_gallery",
+          "mediaGallery",
+          "media",
+          "variants",
+        ]) {
+          final found = _firstMedia([value[key]]);
+          if (found.isNotEmpty) return found;
+        }
+      }
+    }
+    return "";
+  }
+
+  static List<String> _mediaList(List<dynamic> values) {
+    final out = <String>[];
+    void add(String value) {
+      final trimmed = value.trim();
+      if (trimmed.isEmpty) return;
+      if (!out.contains(trimmed)) out.add(trimmed);
+    }
+
+    void walk(dynamic value) {
+      if (value == null) return;
+      if (value is String) {
+        final trimmed = value.trim();
+        if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+          try {
+            walk(jsonDecode(trimmed));
+            return;
+          } catch (_) {}
+        }
+        add(trimmed);
+        return;
+      }
+      if (value is List) {
+        for (final item in value) {
+          walk(item);
+        }
+        return;
+      }
+      if (value is Map) {
+        for (final key in const [
+          "media_preview",
+          "mediaPreview",
+          "image_url",
+          "imageUrl",
+          "image",
+          "thumbnail_url",
+          "thumbnailUrl",
+          "media_url",
+          "mediaUrl",
+          "video_url",
+          "videoUrl",
+          "url",
+          "src",
+          "path",
+          "file_url",
+          "fileUrl",
+          "main_image",
+          "mainImage",
+          "featured_image",
+          "featuredImage",
+        ]) {
+          if (value.containsKey(key)) walk(value[key]);
+        }
+        for (final key in const [
+          "media_gallery",
+          "mediaGallery",
+          "gallery",
+          "images",
+          "product_images",
+          "productImages",
+          "variants",
+          "items",
+        ]) {
+          if (value.containsKey(key)) walk(value[key]);
+        }
+      }
+    }
+
+    for (final value in values) {
+      walk(value);
+    }
+    return out;
+  }
+
   static String _parseAdDiscount(dynamic info) {
     try {
       final map = info is String ? jsonDecode(info) : info;
@@ -482,7 +767,9 @@ class Api {
   }
 
   /// Profile Promote editDraft.featuredItems — the 3-item product/content grid.
-  static List<Map<String, dynamic>> _parseFeaturedItems(Map<String, dynamic> draft) {
+  static List<Map<String, dynamic>> _parseFeaturedItems(
+    Map<String, dynamic> draft,
+  ) {
     final raw = draft["featuredItems"] ?? draft["featured_items"];
     if (raw is! List) return const [];
     return raw
@@ -494,7 +781,10 @@ class Api {
 
   /// POST /market/collect-coin — collect the ad's Rupieer coin after liking.
   /// Returns the collected amount (or 1) on success, null on failure.
-  static Future<double?> collectAdCoin(String adId, {String adType = "Ads"}) async {
+  static Future<double?> collectAdCoin(
+    String adId, {
+    String adType = "Ads",
+  }) async {
     if (!loggedIn) return null;
     try {
       final data = await _post("/market/collect-coin", {
@@ -510,11 +800,48 @@ class Api {
 
   /// GET /market?user_id=X — a promoted profile's active market items
   /// (used by the Profile Promote card grid, same as the web card).
-  static Future<List<Map<String, dynamic>>> userMarketItems(String userId) async {
+  static Future<List<String>> categories() async {
+    try {
+      final data = await _get("/categories/tree?includeInactive=0");
+      final raw = _unwrapList(data, ["categories", "data", "items"]);
+      final names = <String>["All"];
+
+      void walk(dynamic value) {
+        if (value is Map) {
+          final active = value["is_active"] ?? value["isActive"] ?? true;
+          final name = (value["name"] ?? value["title"] ?? "")
+              .toString()
+              .trim();
+          if (active != false && name.isNotEmpty && !names.contains(name)) {
+            names.add(name);
+          }
+          final children =
+              value["children"] ?? value["subcategories"] ?? value["items"];
+          if (children is List) {
+            for (final child in children) {
+              walk(child);
+            }
+          }
+        }
+      }
+
+      for (final item in raw) {
+        walk(item);
+      }
+      return names.take(16).toList();
+    } catch (_) {
+      return const ["All", "Trending", "Comedy", "General"];
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> userMarketItems(
+    String userId,
+  ) async {
     if (userId.trim().isEmpty) return const [];
     try {
       final data = await _get(
-          "/market?user_id=${Uri.encodeComponent(userId)}&status=active,approved");
+        "/market?user_id=${Uri.encodeComponent(userId)}&status=active,approved",
+      );
       final list = _unwrapList(data, ["data", "items", "products"]);
       return list
           .whereType<Map>()
@@ -524,6 +851,76 @@ class Api {
     } catch (_) {
       return const [];
     }
+  }
+
+  static Future<List<Product>> userProducts(dynamic userId) async {
+    final rows = await userMarketItems("$userId");
+    return rows.map((m) {
+      String image = "";
+      for (final key in [
+        "main_image",
+        "image_url",
+        "product_image",
+        "cover_image",
+        "thumbnail",
+        "thumbnail_url",
+        "media_url",
+      ]) {
+        final value = m[key];
+        if (value != null && value.toString().trim().isNotEmpty) {
+          image = value.toString();
+          break;
+        }
+      }
+      if (image.isEmpty) {
+        final gallery =
+            m["images"] ??
+            m["product_images"] ??
+            m["media_gallery"] ??
+            m["media"];
+        if (gallery is List && gallery.isNotEmpty) {
+          final first = gallery.first;
+          image = first is Map
+              ? (first["url"] ??
+                        first["src"] ??
+                        first["path"] ??
+                        first["image_url"] ??
+                        first["media_url"] ??
+                        "")
+                    .toString()
+              : first.toString();
+        }
+      }
+      final promo = double.tryParse("${m["promo_price"] ?? ""}");
+      final basePrice = double.tryParse("${m["price"] ?? 0}") ?? 0;
+      final avatar =
+          (m["profile_picture"] ??
+                  m["owner_profile_picture"] ??
+                  m["seller_avatar"] ??
+                  "")
+              .toString();
+      return Product(
+        id: int.tryParse("${m["id"]}") ?? 0,
+        title: (m["title"] ?? m["name"] ?? "Product").toString(),
+        price: promo != null && promo > 0 ? promo : basePrice,
+        oldPrice: promo != null && promo > 0 && promo < basePrice
+            ? basePrice
+            : null,
+        image: image.isEmpty ? "" : resolveMedia(image),
+        seller: (m["owner_username"] ?? m["username"] ?? "googer").toString(),
+        sellerAvatar: avatar.isEmpty ? "" : resolveMedia(avatar),
+        rating: double.tryParse("${m["rating"] ?? 4.5}") ?? 4.5,
+        sold: int.tryParse("${m["sold"] ?? m["sales_count"] ?? 0}") ?? 0,
+        category: (m["category"] ?? m["manual_category"] ?? "General")
+            .toString(),
+        description: (m["description"] ?? "").toString(),
+        likes: int.tryParse("${m["likes_count"] ?? 0}") ?? 0,
+        views: int.tryParse("${m["views_count"] ?? 0}") ?? 0,
+        comments: int.tryParse("${m["comments_count"] ?? 0}") ?? 0,
+        shares: int.tryParse("${m["shares_count"] ?? 0}") ?? 0,
+        liked: m["user_liked"] == true,
+      );
+    }).toList();
   }
 
   /// POST /market/{ad-N}/like — returns new liked state, null on failure.
@@ -557,7 +954,9 @@ class Api {
 
   /// GET /market/{ad-N}/likes|shares|views|comments (kind plural)
   static Future<List<Map<String, dynamic>>> adInteractions(
-      String interactionId, String kind) async {
+    String interactionId,
+    String kind,
+  ) async {
     try {
       final data = await _get("/market/$interactionId/$kind");
       final list = _unwrapList(data, [kind, "data", "items"]);
@@ -573,7 +972,10 @@ class Api {
   static Future<bool> addAdComment(String interactionId, String text) async {
     if (!loggedIn) return false;
     try {
-      await _post("/market/$interactionId/comments", {"comment": text, "text": text});
+      await _post("/market/$interactionId/comments", {
+        "comment": text,
+        "text": text,
+      });
       return true;
     } catch (_) {
       return false;
@@ -598,13 +1000,23 @@ class Api {
       final list = _unwrapList(data, ["products", "data", "items"]);
       return list.map<Product>((raw) {
         final m = Map<String, dynamic>.from(raw as Map);
-        // image priority matches the market API: main_image > image_url > thumbnail > media_url > images[0]
+        // image priority matches web/backend market shapes, including storage-bucket paths.
         String img = "";
         for (final key in [
           "main_image",
+          "mainImage",
           "image_url",
+          "imageUrl",
+          "product_image",
+          "productImage",
+          "cover_image",
+          "coverImage",
+          "thumbnail",
           "thumbnail_url",
-          "media_url"
+          "media_url",
+          "mediaUrl",
+          "photo_url",
+          "photoUrl",
         ]) {
           final v = m[key];
           if (v != null && v.toString().isNotEmpty) {
@@ -613,14 +1025,40 @@ class Api {
           }
         }
         if (img.isEmpty) {
-          final media = m["images"] ?? m["media_gallery"] ?? m["media"];
+          final media =
+              m["images"] ??
+              m["product_images"] ??
+              m["gallery"] ??
+              m["media_gallery"] ??
+              m["mediaGallery"] ??
+              m["media"];
           if (media is List && media.isNotEmpty) {
             final first = media.first;
             img = first is Map
-                ? (first["url"] ?? first["src"] ?? "").toString()
+                ? (first["url"] ??
+                          first["src"] ??
+                          first["path"] ??
+                          first["image_url"] ??
+                          first["media_url"] ??
+                          "")
+                      .toString()
                 : first.toString();
           }
         }
+        final owner = m["user"] is Map
+            ? Map<String, dynamic>.from(m["user"])
+            : m["owner"] is Map
+            ? Map<String, dynamic>.from(m["owner"])
+            : <String, dynamic>{};
+        final sellerAvatar =
+            (m["profile_picture"] ??
+                    m["owner_profile_picture"] ??
+                    m["seller_avatar"] ??
+                    m["avatar"] ??
+                    owner["profile_picture"] ??
+                    owner["avatar"] ??
+                    "")
+                .toString();
         final promo = double.tryParse("${m["promo_price"] ?? ""}");
         final basePrice = double.tryParse("${m["price"] ?? 0}") ?? 0;
         return Product(
@@ -631,15 +1069,18 @@ class Api {
               ? basePrice
               : null,
           image: img.isEmpty ? "" : resolveMedia(img),
-          seller: (m["owner_username"] ??
-                  m["shop_name"] ??
-                  m["username"] ??
-                  "Googer Seller")
-              .toString(),
+          seller:
+              (m["owner_username"] ??
+                      m["shop_name"] ??
+                      m["username"] ??
+                      owner["username"] ??
+                      "Googer Seller")
+                  .toString(),
+          sellerAvatar: sellerAvatar.isEmpty ? "" : resolveMedia(sellerAvatar),
           rating: double.tryParse("${m["rating"] ?? 4.5}") ?? 4.5,
           sold: int.tryParse("${m["sold"] ?? m["sales_count"] ?? 0}") ?? 0,
-          category:
-              (m["category"] ?? m["manual_category"] ?? "General").toString(),
+          category: (m["category"] ?? m["manual_category"] ?? "General")
+              .toString(),
           description: (m["description"] ?? "").toString(),
           likes: int.tryParse("${m["likes_count"] ?? 0}") ?? 0,
           views: int.tryParse("${m["views_count"] ?? 0}") ?? 0,
@@ -668,7 +1109,7 @@ class Api {
           "user",
           "other_user",
           "participant",
-          "partner"
+          "partner",
         ]) {
           if (m[key] is Map) {
             peer = Map<String, dynamic>.from(m[key]);
@@ -699,11 +1140,13 @@ class Api {
               .split("T")
               .first,
           int.tryParse(
-                  "${m["unread"] ?? m["unread_count"] ?? m["unreadCount"] ?? 0}") ??
+                "${m["unread"] ?? m["unread_count"] ?? m["unreadCount"] ?? 0}",
+              ) ??
               0,
           m["online"] == true || peer["online"] == true,
           int.tryParse(
-                  "${peer["id"] ?? m["participant_id"] ?? m["peer_id"] ?? m["user_id"] ?? 0}") ??
+                "${peer["id"] ?? m["participant_id"] ?? m["peer_id"] ?? m["user_id"] ?? 0}",
+              ) ??
               0,
         );
       }).toList();
@@ -746,7 +1189,9 @@ class Api {
 
   /// type: likes | comments | shares | views — returns raw entries
   static Future<List<Map<String, dynamic>>> googInteractions(
-      int id, String type) async {
+    int id,
+    String type,
+  ) async {
     try {
       final data = await _get("/googs/$id/$type");
       final list = _unwrapList(data, [type, "data", "entries", "users"]);
@@ -771,63 +1216,138 @@ class Api {
     try {
       final data = await _get("/upload-content/public");
       final list = _unwrapList(data, ["contents", "data", "items"]);
-      return list.map<UploadContent>((raw) {
-        final m = Map<String, dynamic>.from(raw as Map);
-        final thumb =
-            (m["thumbnail_url"] ?? m["media_preview"] ?? m["preview_url"] ?? "")
-                .toString();
-        final rawHashtags = m["hashtags"];
-        final hashtags = rawHashtags is List
-            ? rawHashtags.map((e) => e.toString()).join(" ")
-            : (rawHashtags ?? "").toString();
-        // Playable media: prefer an uploaded video file from media_gallery,
-        // then media_url, then the preview image (web watch-modal parity).
-        final gallery = m["media_gallery"] is List
-            ? (m["media_gallery"] as List).map((e) => e.toString()).toList()
-            : const <String>[];
-        final videoExt =
-            RegExp(r"\.(mp4|webm|mov|m4v|ogg)(\?.*)?$", caseSensitive: false);
-        final galleryVideo = gallery.firstWhere(
-            (entry) => videoExt.hasMatch(entry),
-            orElse: () => "");
-        final playable = [
-          (m["media_url"] ?? "").toString(),
-          galleryVideo,
-          gallery.isNotEmpty ? gallery.first : "",
-          (m["preview_url"] ?? "").toString(),
-          (m["media_preview"] ?? "").toString(),
-        ].firstWhere((v) => v.trim().isNotEmpty, orElse: () => "");
-        return UploadContent(
-          id: int.tryParse("${m["id"]}") ?? 0,
-          contentId: (m["content_id"] ?? m["contentId"] ?? "").toString(),
-          type: (m["content_type"] ?? "vault").toString(),
-          topic: (m["topic"] ?? "General").toString(),
-          description: (m["description"] ?? "").toString(),
-          hashtags: hashtags,
-          thumbnail: thumb.isEmpty ? "" : resolveMedia(thumb),
-          mediaUrl: playable.isEmpty ? "" : resolveMedia(playable),
-          mediaType: (m["media_type"] ?? "").toString(),
-          externalLink: (m["external_link"] ?? "").toString(),
-          coins: double.tryParse("${m["price"] ?? 0}") ?? 0,
-          username:
-              (m["username"] ?? m["owner_username"] ?? "googer").toString(),
-          fullName: (m["full_name"] ?? m["username"] ?? "Googer").toString(),
-          avatar: (m["profile_picture"] ?? "").toString().isEmpty
-              ? ""
-              : resolveMedia(m["profile_picture"].toString()),
-          time: relativeTime(m["created_at"] ?? ""),
-          likes: int.tryParse("${m["likes_count"] ?? 0}") ?? 0,
-          comments: int.tryParse("${m["comments_count"] ?? 0}") ?? 0,
-          views: int.tryParse("${m["views_count"] ?? 0}") ?? 0,
-          shares: int.tryParse("${m["shares_count"] ?? 0}") ?? 0,
-          reposts: int.tryParse("${m["reposts_count"] ?? 0}") ?? 0,
-          liked: m["user_liked"] == true,
-          hasAccess:
-              m["user_has_access"] == true || m["user_purchased"] == true,
-          userReposted: m["user_reposted"] == true,
-          resellerRef: (m["reseller_ref"] ?? m["resell_ref"])?.toString(),
-        );
-      }).toList();
+      return list
+          .whereType<Map>()
+          .where((raw) {
+            final status = (raw["status"] ?? "Approved").toString();
+            return status.toLowerCase() == "approved";
+          })
+          .map<UploadContent>((raw) {
+            final m = Map<String, dynamic>.from(raw);
+            final thumb =
+                (m["thumbnail_url"] ??
+                        m["media_preview"] ??
+                        m["preview_url"] ??
+                        "")
+                    .toString();
+            final rawHashtags = m["hashtags"];
+            final hashtags = rawHashtags is List
+                ? rawHashtags.map((e) => e.toString()).join(" ")
+                : (rawHashtags ?? "").toString();
+            // Playable media: prefer an uploaded video file from media_gallery,
+            // then media_url, then the preview image (web watch-modal parity).
+            final gallery = _mediaList([
+              m["media_gallery"],
+              m["mediaGallery"],
+              m["gallery"],
+              m["media"],
+              m["files"],
+              m["images"],
+            ]);
+            final videoExt = RegExp(
+              r"\.(mp4|webm|mov|m4v|ogg)(\?.*)?$",
+              caseSensitive: false,
+            );
+            final galleryVideo = gallery.firstWhere(
+              (entry) => videoExt.hasMatch(entry),
+              orElse: () => "",
+            );
+            final playable = [
+              (m["media_url"] ?? "").toString(),
+              galleryVideo,
+              gallery.isNotEmpty ? gallery.first : "",
+              (m["preview_url"] ?? "").toString(),
+              (m["media_preview"] ?? "").toString(),
+            ].firstWhere((v) => v.trim().isNotEmpty, orElse: () => "");
+            final reachStage =
+                (m["homeExpansionStage"] ?? m["home_expansion_stage"] ?? "")
+                    .toString();
+            final repostedBy =
+                (m["reposted_by_username"] ?? m["reposted_by_full_name"] ?? "")
+                    .toString();
+            final visibleTime =
+                m["status"] == "Approved" &&
+                    (m["approved_at"] ?? "").toString().isNotEmpty
+                ? m["approved_at"]
+                : (m["created_at"] ?? m["updated_at"] ?? "");
+            return UploadContent(
+              ownerUserId:
+                  (m["user_id"] ??
+                          m["userId"] ??
+                          m["owner_user_id"] ??
+                          m["ownerUserId"] ??
+                          m["reposted_by_user_id"] ??
+                          m["repostedByUserId"] ??
+                          "")
+                      .toString(),
+              id: int.tryParse("${m["id"]}") ?? 0,
+              contentId: (m["content_id"] ?? m["contentId"] ?? "").toString(),
+              type: (m["content_type"] ?? "vault").toString(),
+              topic: (m["topic"] ?? "General").toString(),
+              description: (m["description"] ?? "").toString(),
+              hashtags: hashtags,
+              thumbnail: thumb.isEmpty ? "" : resolveMedia(thumb),
+              mediaUrl: playable.isEmpty ? "" : resolveMedia(playable),
+              mediaGallery: gallery.map(resolveMedia).toList(),
+              mediaType: (m["media_type"] ?? "").toString(),
+              externalLink: (m["external_link"] ?? "").toString(),
+              status: (m["status"] ?? "Approved").toString(),
+              createdAt: (m["created_at"] ?? "").toString(),
+              approvedAt: (m["approved_at"] ?? "").toString(),
+              repostedAt: (m["reposted_at"] ?? "").toString(),
+              repostedByName: repostedBy,
+              contentAccessMode:
+                  (m["content_access_mode"] ?? m["contentAccessMode"] ?? "")
+                      .toString(),
+              suggestedTopic: (m["topic"] ?? reachStage ?? "Suggested")
+                  .toString(),
+              coins: double.tryParse("${m["price"] ?? 0}") ?? 0,
+              username: (m["username"] ?? m["owner_username"] ?? "googer")
+                  .toString(),
+              fullName: (m["full_name"] ?? m["username"] ?? "Googer")
+                  .toString(),
+              avatar:
+                  (m["profile_picture"] ??
+                          m["profilePicture"] ??
+                          m["owner_profile_picture"] ??
+                          m["ownerProfilePicture"] ??
+                          m["avatar"] ??
+                          m["reposted_by_profile_picture"] ??
+                          m["repostedByProfilePicture"] ??
+                          "")
+                      .toString()
+                      .isEmpty
+                  ? ""
+                  : resolveMedia(
+                      (m["profile_picture"] ??
+                              m["profilePicture"] ??
+                              m["owner_profile_picture"] ??
+                              m["ownerProfilePicture"] ??
+                              m["avatar"] ??
+                              m["reposted_by_profile_picture"] ??
+                              m["repostedByProfilePicture"])
+                          .toString(),
+                    ),
+              time: relativeTime(visibleTime),
+              likes: int.tryParse("${m["likes_count"] ?? 0}") ?? 0,
+              comments: int.tryParse("${m["comments_count"] ?? 0}") ?? 0,
+              views: int.tryParse("${m["views_count"] ?? 0}") ?? 0,
+              shares: int.tryParse("${m["shares_count"] ?? 0}") ?? 0,
+              reposts: int.tryParse("${m["reposts_count"] ?? 0}") ?? 0,
+              liked: m["user_liked"] == true,
+              hasAccess:
+                  m["user_has_access"] == true || m["user_purchased"] == true,
+              userReposted: m["user_reposted"] == true,
+              showSuggested:
+                  m["homeCanExpand"] == true ||
+                  m["home_can_expand"] == true ||
+                  reachStage.trim().isNotEmpty,
+              allowComments:
+                  m["allow_comments"] != false && m["allowComments"] != false,
+              resellerRef: (m["reseller_ref"] ?? m["resell_ref"])?.toString(),
+            );
+          })
+          .toList();
     } catch (_) {
       return const [];
     }
@@ -849,8 +1369,20 @@ class Api {
     }
   }
 
+  static Future<bool> reportUploadContent(int id, String reason) async {
+    try {
+      await _post("/upload-content/$id/report", {
+        "reason": reason,
+        "custom_reason": "",
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   static Future<({String? error, int? reposts, bool alreadyReposted})>
-      repostUploadContent(int id) async {
+  repostUploadContent(int id) async {
     try {
       final data = await _post("/upload-content/$id/repost", {});
       return (
@@ -864,7 +1396,7 @@ class Api {
       return (
         error: "Could not reach the server.",
         reposts: null,
-        alreadyReposted: false
+        alreadyReposted: false,
       );
     }
   }
@@ -884,8 +1416,39 @@ class Api {
     } catch (_) {}
   }
 
-  static Future<String?> purchaseUploadContent(int id,
-      {String? resellerRef}) async {
+  static Future<List<Map<String, dynamic>>> uploadInteractions(
+    int id,
+    String kind,
+  ) async {
+    try {
+      final data = await _get("/upload-content/$id/$kind");
+      final list = _unwrapList(data, [kind, "data", "items", "users"]);
+      return list
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  static Future<bool> addUploadComment(int id, String text) async {
+    if (!loggedIn) return false;
+    try {
+      await _post("/upload-content/$id/comments", {
+        "comment": text,
+        "text": text,
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<String?> purchaseUploadContent(
+    int id, {
+    String? resellerRef,
+  }) async {
     try {
       await _post("/upload-content/$id/purchase", {
         if (resellerRef != null && resellerRef.isNotEmpty)
@@ -902,7 +1465,8 @@ class Api {
   /* ── chat (same endpoints as web chatService) ── */
 
   static Future<List<Map<String, dynamic>>> chatMessages(
-      int participantId) async {
+    int participantId,
+  ) async {
     try {
       final data = await _get("/chat/messages/$participantId?markSeen=1");
       final list = _unwrapList(data, ["messages", "data", "items"]);
@@ -914,8 +1478,11 @@ class Api {
 
   static Future<bool> sendChatMessage(int receiverId, String text) async {
     try {
-      await _post("/chat/messages",
-          {"receiverId": receiverId, "type": "text", "text": text});
+      await _post("/chat/messages", {
+        "receiverId": receiverId,
+        "type": "text",
+        "text": text,
+      });
       return true;
     } catch (_) {
       return false;
@@ -933,10 +1500,12 @@ class Api {
   /* ── wallet transfer (same as web walletService.directTransfer) ── */
 
   static Future<List<Map<String, dynamic>>> searchWalletUsers(
-      String query) async {
+    String query,
+  ) async {
     try {
       final data = await _get(
-          "/wallet/search-users?query=${Uri.encodeComponent(query)}");
+        "/wallet/search-users?query=${Uri.encodeComponent(query)}",
+      );
       final list = _unwrapList(data, ["users", "data", "items"]);
       return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
     } catch (_) {
@@ -945,13 +1514,16 @@ class Api {
   }
 
   static Future<String?> walletTransfer(
-      int receiverId, double amount, String note) async {
+    int receiverId,
+    double amount,
+    String note,
+  ) async {
     try {
       await _post("/wallet/transfer", {
         "receiverId": receiverId,
         "amount": amount,
         "note": note,
-        "commissionPercentage": 0
+        "commissionPercentage": 0,
       });
       refreshProfile();
       return null;
@@ -1000,7 +1572,10 @@ class Api {
   }
 
   static Future<String?> updateGoog(
-      int id, String text, String textColorHex) async {
+    int id,
+    String text,
+    String textColorHex,
+  ) async {
     try {
       await _put("/googs/$id", {"text": text, "textColor": textColorHex});
       return null;
@@ -1067,7 +1642,8 @@ class Api {
       final list = _unwrapList(data, ["posts", "data", "googs", "items"]);
       return list
           .map<GoogPost>(
-              (raw) => parseGoog(Map<String, dynamic>.from(raw as Map)))
+            (raw) => parseGoog(Map<String, dynamic>.from(raw as Map)),
+          )
           .toList();
     } catch (_) {
       return [];
@@ -1087,8 +1663,9 @@ class Api {
 
   static Future<Map<String, dynamic>?> userByUsername(String username) async {
     try {
-      final data =
-          await _get("/auth/username/${Uri.encodeComponent(username)}");
+      final data = await _get(
+        "/auth/username/${Uri.encodeComponent(username)}",
+      );
       return _unwrapUser(data);
     } catch (_) {
       return null;
@@ -1098,8 +1675,13 @@ class Api {
   static Future<List<Map<String, dynamic>>> _userList(String path) async {
     try {
       final data = await _get(path);
-      final list =
-          _unwrapList(data, ["users", "followers", "following", "data", "views"]);
+      final list = _unwrapList(data, [
+        "users",
+        "followers",
+        "following",
+        "data",
+        "views",
+      ]);
       return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
     } catch (_) {
       return [];
@@ -1161,11 +1743,21 @@ class Api {
     }
   }
 
-  /// Verified-badge tier by plan — GET /subscriptions/badge/{userId}
-  static Future<String?> badgeForUser(dynamic userId) async {
+  /// Verified-badge data by plan/admin approval — GET /subscriptions/badge/{userId}
+  static Future<Map<String, dynamic>?> badgeForUser(dynamic userId) async {
+    final id = "$userId".trim();
+    if (id.isEmpty) return null;
     try {
-      final r = await _get("/subscriptions/badge/$userId");
-      return (r is Map ? (r["badge"] ?? r["tier"]) : null)?.toString();
+      final r = await _get("/subscriptions/badge/$id");
+      if (r is! Map) return null;
+      final badge = r["badge"];
+      if (badge is Map) return Map<String, dynamic>.from(badge);
+      final tier = r["tier"] ?? r["badge_color"] ?? r["color"];
+      if (tier == null || "$tier".trim().isEmpty) return null;
+      return {
+        "color": tier.toString(),
+        "tickColor": r["tickColor"] ?? r["tick_color"],
+      };
     } catch (_) {
       return null;
     }
@@ -1174,7 +1766,10 @@ class Api {
   /* ── wallet requests (web walletService.requestMoney / respond / cancel) ── */
 
   static Future<String?> requestMoney(
-      int receiverId, double amount, String note) async {
+    int receiverId,
+    double amount,
+    String note,
+  ) async {
     try {
       await _post("/wallet/request", {
         "receiverId": receiverId,
@@ -1204,8 +1799,10 @@ class Api {
   /// action: accept | reject
   static Future<String?> respondToRequest(int requestId, String action) async {
     try {
-      await _post(
-          "/wallet/respond", {"requestId": requestId, "action": action});
+      await _post("/wallet/respond", {
+        "requestId": requestId,
+        "action": action,
+      });
       refreshProfile();
       return null;
     } on ApiError catch (e) {
@@ -1249,11 +1846,15 @@ class Api {
     }
   }
 
-  static Future<String?> subscribePlan(int planId,
-      {bool switchPlan = false}) async {
+  static Future<String?> subscribePlan(
+    int planId, {
+    bool switchPlan = false,
+  }) async {
     try {
-      await _post("/subscriptions/subscribe",
-          {"plan_id": planId, "switch_plan": switchPlan});
+      await _post("/subscriptions/subscribe", {
+        "plan_id": planId,
+        "switch_plan": switchPlan,
+      });
       refreshProfile();
       return null;
     } on ApiError catch (e) {
@@ -1306,7 +1907,10 @@ class Api {
   }
 
   static Future<bool> reportProduct(
-      int id, String reason, String details) async {
+    int id,
+    String reason,
+    String details,
+  ) async {
     try {
       await _post("/market/$id/report", {"reason": reason, "details": details});
       return true;
@@ -1319,8 +1923,9 @@ class Api {
 
   static Future<void> updatePresence({int? activeParticipantId}) async {
     try {
-      await _post(
-          "/chat/presence", {"activeParticipantId": activeParticipantId});
+      await _post("/chat/presence", {
+        "activeParticipantId": activeParticipantId,
+      });
     } catch (_) {}
   }
 
@@ -1387,10 +1992,14 @@ class Api {
   /* ── account & security (web authService) ── */
 
   static Future<String?> changePassword(
-      String currentPassword, String newPassword) async {
+    String currentPassword,
+    String newPassword,
+  ) async {
     try {
-      await _post("/auth/change-password",
-          {"currentPassword": currentPassword, "newPassword": newPassword});
+      await _post("/auth/change-password", {
+        "currentPassword": currentPassword,
+        "newPassword": newPassword,
+      });
       return null;
     } on ApiError catch (e) {
       return e.message;
@@ -1402,7 +2011,8 @@ class Api {
   static Future<bool?> checkUsername(String username) async {
     try {
       final r = await _get(
-          "/auth/check-username?username=${Uri.encodeComponent(username)}");
+        "/auth/check-username?username=${Uri.encodeComponent(username)}",
+      );
       return r is Map ? r["available"] == true : null;
     } catch (_) {
       return null;
