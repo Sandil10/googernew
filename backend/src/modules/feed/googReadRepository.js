@@ -300,7 +300,7 @@ const googHomeReachMetricsSql = buildHomeReachMetricsSql({
     likesTable: 'goog_likes',
     likeTargetColumn: 'goog_id',
     ageDays: 3,
-    initialWindowMinutes: 5,
+    initialWindowMinutes: 25,
     stageSize: 8,
     requiredLikes: 3,
     viewTimestampColumn: 'last_viewed_at',

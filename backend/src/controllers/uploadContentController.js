@@ -826,7 +826,7 @@ const uploadHomeReachMetricsSql = buildHomeReachMetricsSql({
     likesTable: 'upload_content_likes',
     likeTargetColumn: 'content_id',
     ageDays: 7,
-    initialWindowMinutes: 5,
+    initialWindowMinutes: 25,
     stageSize: 8,
     requiredLikes: 3,
     viewTimestampColumn: 'created_at',
