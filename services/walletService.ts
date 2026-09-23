@@ -157,6 +157,24 @@ export const walletService = {
         return result as { success: boolean; transferId: number };
     },
 
+    refundAdBudgetEdit: async (amount: number, options: { adId: string | number; note?: string; idempotencyKey?: string }) => {
+        const response = await fetch(`${API_URL}/wallet/refund-ad-budget-edit`, {
+            method: 'POST',
+            headers: {
+                ...getHeaders(),
+                ...(options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
+            },
+            body: JSON.stringify({
+                adId: options.adId,
+                amount,
+                note: options.note,
+            }),
+        });
+        const result = await safeJson(response);
+        if (!response.ok) throw new Error(result?.message || `Ad refund failed (HTTP ${response.status})`);
+        return result as { success: boolean; currentBalance: number; transferId: number };
+    },
+
     payProfilePromote: async (amount: number, options?: { orderId?: string | number; note?: string }) => {
         const body = JSON.stringify({ amount, ...options });
         let response = await fetch(`${API_URL}/wallet/pay-profile-promote`, {

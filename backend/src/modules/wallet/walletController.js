@@ -57,6 +57,7 @@ module.exports = {
     payOrder: legacyWalletController.payOrder,
     payProfilePromote: legacyWalletController.payProfilePromote,
     recordPromoAd: legacyWalletController.recordPromoAd,
+    refundAdBudgetEdit: legacyWalletController.refundAdBudgetEdit,
     respondToRequest: legacyWalletController.respondToRequest,
     searchUsers,
     verifyManualPaymentHold: legacyWalletController.verifyManualPaymentHold,

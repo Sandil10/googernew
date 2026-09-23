@@ -16,6 +16,7 @@ const assertOk = async (response) => {
 };
 
 const uploadFile = async (file, folder) => {
+    if (!file.buffer && file.path) return require('./uploadBuffer').withUploadBuffer(file, buffered => uploadFile(buffered, folder));
     const form = new FormData();
     form.append('folder', folder || 'media');
     form.append(
@@ -35,6 +36,11 @@ const uploadFile = async (file, folder) => {
 };
 
 const uploadFiles = async (files = [], folder) => {
+    if (files.some(file => !file.buffer && file.path)) {
+        const urls = [];
+        for (const file of files) urls.push(await uploadFile(file, folder));
+        return urls;
+    }
     const form = new FormData();
     form.append('folder', folder || 'media');
     for (const file of files || []) {

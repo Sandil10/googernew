@@ -6,12 +6,16 @@ import { getAdInteractionId } from './adIdentity';
  */
 export interface AdLiveState {
     user_liked?: boolean;
+    liked?: boolean;
     likes_count?: number;
     like_count?: number;
     likeCount?: number;
     like_pending?: boolean;
     ad_coin_collected?: boolean;
     ad_like_locked?: boolean;
+    /** Brief, self-clearing flag — true only for the couple of seconds right
+     * after a blocked unlike tap, not for as long as the ad stays locked. */
+    like_locked_hint?: boolean;
     views_count?: number;
     viewCount?: number;
     impressions?: number;
@@ -203,18 +207,16 @@ export const useAdStore = create<AdStore>((set, get) => ({
 
         set((state) => {
             if (state.viewerKey === nextViewerKey) return state;
-            // Merge any guest-session state into the viewer partition so that
-            // actions taken before setViewer was called (e.g. coin collected on
-            // home feed before shop page sets viewer) are not silently lost.
-            const guestStates = state.adStatesByViewer["__guest__"] || {};
+            // Like and reward flags belong to one authenticated viewer. Guest
+            // state must never leak into an account partition, otherwise a
+            // heart can render as liked even though this account has no like.
             const viewerStates = state.adStatesByViewer[nextViewerKey || "__guest__"] || {};
-            const merged = { ...guestStates, ...viewerStates };
             return {
                 viewerKey: nextViewerKey,
-                adStates: merged,
+                adStates: viewerStates,
                 adStatesByViewer: {
                     ...state.adStatesByViewer,
-                    [nextViewerKey || "__guest__"]: merged,
+                    [nextViewerKey || "__guest__"]: viewerStates,
                 },
             };
         });

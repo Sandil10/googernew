@@ -4,6 +4,7 @@ const marketController = require('../controllers/marketController');
 const { interactionController, mutationController, productReadController, reportController, shareLookupController } = require('../modules/marketplace');
 const authenticateToken = require('../middleware/auth');
 const upload = require('../config/upload');
+const { createPublicResponseCache } = require('../middleware/publicResponseCache');
 
 const isSponsoredFeedItemId = (value) => typeof value === 'string' && value.startsWith('ad-');
 const isSponsoredCommentId = (value) => typeof value === 'string' && value.startsWith('ad-comment-');
@@ -17,7 +18,15 @@ const withSponsoredFallback = (marketHandler, sponsoredHandler, resolver = (req)
 
 // ─── Static / Non-ID Routes (must come FIRST) ───────────────────────────────
 // GET lightweight paginated market product cards
-router.get('/products', marketController.getMarketProducts);
+router.get(
+    '/products',
+    createPublicResponseCache({
+        ttlMs: Number(process.env.PUBLIC_SHOP_CACHE_TTL_MS || 15000),
+        keyPrefix: 'market-public-products',
+        anonymousOnly: true,
+    }),
+    marketController.getMarketProducts
+);
 
 // GET all market items
 router.get('/', marketController.getMarketItems);
@@ -59,25 +68,64 @@ router.delete('/comments/:commentId', authenticateToken, async (req, res) => {
     }
     return interactionController.deleteComment(req, res);
 });
+router.post('/comments/:commentId/like', authenticateToken, async (req, res) => {
+    const pool = require('../config/database');
+    try {
+        const sponsored = isSponsoredCommentId(req.params.commentId);
+        const commentId = sponsored
+            ? Number(String(req.params.commentId).replace('ad-comment-', ''))
+            : Number(req.params.commentId);
+        const table = sponsored ? 'ad_comments' : 'market_comments';
+        await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS likes INTEGER DEFAULT 0`).catch(() => {});
+        const result = await pool.query(
+            `UPDATE ${table} SET likes = COALESCE(likes, 0) + 1 WHERE id = $1 RETURNING likes`,
+            [commentId]
+        );
+        if (!result.rows.length) return res.status(404).json({ success: false, message: 'Comment not found' });
+        return res.status(200).json({ success: true, ...result.rows[0] });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error liking comment' }); }
+});
+router.post('/comments/:commentId/dislike', authenticateToken, async (req, res) => {
+    const pool = require('../config/database');
+    try {
+        const sponsored = isSponsoredCommentId(req.params.commentId);
+        const commentId = sponsored
+            ? Number(String(req.params.commentId).replace('ad-comment-', ''))
+            : Number(req.params.commentId);
+        const table = sponsored ? 'ad_comments' : 'market_comments';
+        await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS dislikes INTEGER DEFAULT 0`).catch(() => {});
+        const result = await pool.query(
+            `UPDATE ${table} SET dislikes = COALESCE(dislikes, 0) + 1 WHERE id = $1 RETURNING dislikes`,
+            [commentId]
+        );
+        if (!result.rows.length) return res.status(404).json({ success: false, message: 'Comment not found' });
+        return res.status(200).json({ success: true, ...result.rows[0] });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error disliking comment' }); }
+});
 router.post('/comments/:commentId/report', authenticateToken, async (req, res) => {
     const pool = require('../config/database');
     try {
-        const commentId = Number(req.params.commentId);
+        const sponsored = isSponsoredCommentId(req.params.commentId);
+        const commentId = sponsored
+            ? Number(String(req.params.commentId).replace('ad-comment-', ''))
+            : Number(req.params.commentId);
+        const table = sponsored ? 'ad_comments' : 'market_comments';
+        const reportsTable = sponsored ? 'ad_comment_reports' : 'market_comment_reports';
         const userId = req.user.id;
-        await pool.query('ALTER TABLE market_comments ADD COLUMN IF NOT EXISTS reports INTEGER DEFAULT 0').catch(() => {});
+        await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS reports INTEGER DEFAULT 0`).catch(() => {});
         await pool.query(`
-            CREATE TABLE IF NOT EXISTS market_comment_reports (
+            CREATE TABLE IF NOT EXISTS ${reportsTable} (
                 id SERIAL PRIMARY KEY,
-                comment_id INTEGER REFERENCES market_comments(id) ON DELETE CASCADE,
+                comment_id INTEGER REFERENCES ${table}(id) ON DELETE CASCADE,
                 user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(comment_id, user_id)
             )
         `).catch(() => {});
-        const existing = await pool.query('SELECT 1 FROM market_comment_reports WHERE comment_id=$1 AND user_id=$2', [commentId, userId]);
+        const existing = await pool.query(`SELECT 1 FROM ${reportsTable} WHERE comment_id=$1 AND user_id=$2`, [commentId, userId]);
         if (existing.rows.length) return res.status(400).json({ success: false, message: 'Already reported' });
-        await pool.query('INSERT INTO market_comment_reports (comment_id, user_id) VALUES ($1, $2)', [commentId, userId]);
-        await pool.query('UPDATE market_comments SET reports = COALESCE(reports,0)+1 WHERE id=$1', [commentId]);
+        await pool.query(`INSERT INTO ${reportsTable} (comment_id, user_id) VALUES ($1, $2)`, [commentId, userId]);
+        await pool.query(`UPDATE ${table} SET reports = COALESCE(reports,0)+1 WHERE id=$1`, [commentId]);
         res.status(201).json({ success: true });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: 'Server error' }); }
 });

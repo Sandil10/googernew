@@ -41,10 +41,13 @@ export function formatRelativeTime(timestamp?: string | number | Date | null, fa
   const now = Date.now();
   const elapsedSeconds = Math.floor((now - ts) / 1000);
 
-  // Clamp future or tiny negative drift to "just now".
-  if (elapsedSeconds < 60) return "just now";
+  // Tiny clock drift should still read as fresh. Larger future skew usually
+  // means a timezone-less DB value was interpreted in the wrong zone, so show
+  // a useful relative age instead of pinning the UI to "just now" forever.
+  const absoluteElapsedSeconds = Math.abs(elapsedSeconds);
+  if (absoluteElapsedSeconds < 60) return "just now";
 
-  const minutes = Math.floor(elapsedSeconds / 60);
+  const minutes = Math.floor(absoluteElapsedSeconds / 60);
   if (minutes < 60) return `${minutes} MIN`;
 
   const hours = Math.floor(minutes / 60);

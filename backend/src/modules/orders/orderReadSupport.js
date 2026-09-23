@@ -1,6 +1,6 @@
 const { distributeProductDiscountCommission } = require('../../utils/referralCommission');
-const { finalizeReceivedOrder } = require('../../../../../shared/utils/orderSettlementHelpers');
-const { autoReceiveExpiredCodOrders } = require('../../../../../shared/utils/orderAutoReceiveHelpers');
+const { finalizeReceivedOrder } = require('../../../../shared/utils/orderSettlementHelpers');
+const { autoReceiveExpiredCodOrders } = require('../../../../shared/utils/orderAutoReceiveHelpers');
 
 async function resolveGoogerMainWalletUserId(client) {
     const configuredId = Number.parseInt(String(process.env.GOOGER_MAIN_USER_ID || '').trim(), 10);

@@ -8,22 +8,23 @@ export const getApiUrl = (): string => {
     // Check if we're in a browser environment
     const isClient = typeof window !== 'undefined';
     if (!isClient) return '/api'; // SSR fallback
-    
+
+    const hostname = window.location.hostname;
+    const isLocalBrowser = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
     const envUrl = process.env.NEXT_PUBLIC_API_URL;
-    // If environment variable is explicitly set and not the default '/api', use it
-    if (envUrl && envUrl !== '/api' && envUrl !== 'http://127.0.0.1:5000') {
+
+    // Public Cloudflare pages must route API calls through the same origin.
+    if (!isLocalBrowser) {
+        return '/api';
+    }
+
+    // If environment variable is explicitly set for local development, use it.
+    if (envUrl && envUrl !== '/api') {
         return envUrl;
     }
-    
-    const hostname = window.location.hostname;
-    
+
     // For localhost development, use direct connection
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-        return 'http://127.0.0.1:5000';
-    }
-    
-    // For all other environments (Cloudflare, production), use relative path
-    return '/api';
+    return 'http://127.0.0.1:5000';
 };
 
 // Export as constant for use in service modules

@@ -76,6 +76,16 @@ export type UserSubscription = {
     auto_renew: boolean;
 };
 
+// Returned when the chosen plan holds fewer saved ads than the owner has, so
+// the caller can name the new allowance before the switch is paid for.
+export type SaveReleaseWarning = {
+    planName: string;
+    message: string;
+    saveLimits: { photo: number | null; video: number | null };
+    savedCounts: { photo: number; video: number };
+    releaseCount: number;
+};
+
 export const subscriptionService = {
     getMySubscription: async (): Promise<UserSubscription | null> => {
         const res = await fetch(`${API_URL}/subscriptions/me`, { headers: authHeaders() });
@@ -83,11 +93,20 @@ export const subscriptionService = {
         const data = await res.json();
         return data.subscription || null;
     },
-    subscribe: async (planId: number, options?: { switchPlan?: boolean }): Promise<{ subscription: UserSubscription } | { error: string; code?: number }> => {
+    subscribe: async (
+        planId: number,
+        options?: { switchPlan?: boolean; confirmReleaseSaves?: boolean },
+    ): Promise<{ subscription: UserSubscription; releasedSavesMessage?: string | null } | { error: string; code?: number; saveRelease?: SaveReleaseWarning }> => {
         let res: Response;
         try {
             res = await fetch(`${API_URL}/subscriptions/subscribe`, {
-                method: 'POST', headers: authHeaders(), body: JSON.stringify({ plan_id: planId, switch_plan: options?.switchPlan === true }),
+                method: 'POST',
+                headers: authHeaders(),
+                body: JSON.stringify({
+                    plan_id: planId,
+                    switch_plan: options?.switchPlan === true,
+                    confirm_release_saves: options?.confirmReleaseSaves === true,
+                }),
             });
         } catch (e: any) {
             return { error: `Network error: ${e.message || 'could not reach server'}` };
@@ -97,12 +116,27 @@ export const subscriptionService = {
         if (!res.ok) {
             const reason = data?.message
                 || (res.status === 404 ? 'API route not found — backend may need restart' : `Server returned ${res.status}`);
+            // The plan allows fewer saved ads than the owner holds. Hand the
+            // caller the allowance so it can ask before anything is charged.
+            if (data?.code === 'SAVE_RELEASE_CONFIRM_REQUIRED') {
+                return {
+                    error: reason,
+                    code: res.status,
+                    saveRelease: {
+                        planName: data.planName || '',
+                        message: data.message || reason,
+                        saveLimits: data.saveLimits || { photo: null, video: null },
+                        savedCounts: data.savedCounts || { photo: 0, video: 0 },
+                        releaseCount: Number(data.releaseCount) || 0,
+                    },
+                };
+            }
             return { error: reason, code: res.status };
         }
         if (typeof window !== 'undefined') {
             window.dispatchEvent(new Event('subscription:changed'));
         }
-        return { subscription: data.subscription };
+        return { subscription: data.subscription, releasedSavesMessage: data.releasedSavesMessage ?? null };
     },
     cancelMySubscription: async (): Promise<boolean> => {
         const res = await fetch(`${API_URL}/subscriptions/cancel`, { method: 'POST', headers: authHeaders() });

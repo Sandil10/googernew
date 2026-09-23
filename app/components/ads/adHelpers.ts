@@ -82,23 +82,31 @@ export const getSponsoredLinkPreviewImage = (value: string) => {
     return getMicrolinkScreenshotUrl(normalized);
 };
 
-export const getYouTubeEmbedUrl = (value: string) => {
+// `autoplay` is opt-in: the card's own first-view preview embeds this same
+// URL too (as a look-only, non-interactive iframe), and forcing autoplay
+// there would mean it starts playing silently in the background of what is
+// supposed to read as a static thumbnail. Only the second view — reached by
+// tapping that first-view play icon — passes `autoplay: true`, so a single
+// tap is enough to have it already playing there instead of landing on
+// YouTube's own paused thumbnail and needing a second tap on its own button.
+export const getYouTubeEmbedUrl = (value: string, autoplay = false) => {
     try {
         const url = new URL(normalizeExternalUrl(value));
         const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+        const suffix = autoplay ? "?autoplay=1&mute=1&playsinline=1" : "";
 
         if (host === "youtu.be") {
             const id = url.pathname.split("/").filter(Boolean)[0];
-            return id ? `https://www.youtube.com/embed/${id}` : null;
+            return id ? `https://www.youtube.com/embed/${id}${suffix}` : null;
         }
 
         if (host.includes("youtube.com")) {
             const id = url.searchParams.get("v");
-            if (id) return `https://www.youtube.com/embed/${id}`;
+            if (id) return `https://www.youtube.com/embed/${id}${suffix}`;
             const parts = url.pathname.split("/").filter(Boolean);
             const embedIndex = parts.findIndex((part) => part === "embed");
             if (embedIndex >= 0 && parts[embedIndex + 1]) {
-                return `https://www.youtube.com/embed/${parts[embedIndex + 1]}`;
+                return `https://www.youtube.com/embed/${parts[embedIndex + 1]}${suffix}`;
             }
         }
     } catch {
@@ -108,11 +116,11 @@ export const getYouTubeEmbedUrl = (value: string) => {
     return null;
 };
 
-export const getSponsoredSocialEmbedUrl = (value: string) => {
+export const getSponsoredSocialEmbedUrl = (value: string, autoplay = false) => {
     const normalized = normalizeExternalUrl(value);
     if (!normalized) return null;
 
-    const youtube = getYouTubeEmbedUrl(normalized);
+    const youtube = getYouTubeEmbedUrl(normalized, autoplay);
     if (youtube) return youtube;
 
     try {
@@ -172,6 +180,10 @@ export const getSponsoredCtaHref = (ctaTopic?: string, ctaValue?: string) => {
     if (trimmedValue.includes("@") && !/^https?:\/\//i.test(trimmedValue) && ctaTopic === "Contact Us") {
         return `mailto:${trimmedValue}`;
     }
+    if (ctaTopic === "Contact Us" && !/^https?:\/\//i.test(trimmedValue)) {
+        const digits = trimmedValue.replace(/[^\d+]/g, "");
+        if (digits.replace(/\D/g, "").length >= 7) return `tel:${digits}`;
+    }
     return normalizeExternalUrl(trimmedValue);
 };
 
@@ -225,6 +237,14 @@ const extractMediaValue = (item: any) => {
     return item.url || item.image_url || item.image || item.src || "";
 };
 
+const isUploadedImageMedia = (value: string) => {
+    const src = String(value || "").trim();
+    if (!src) return false;
+    if (/\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(src)) return false;
+    if (src.startsWith("/uploads/") || src.includes("/uploads/") || src.includes("\\uploads\\")) return true;
+    return /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(src) && !/^https?:\/\//i.test(src);
+};
+
 const getAdMediaGallery = (ad: any) => {
     const gallerySources = [
         ad?.mediaGallery,
@@ -245,6 +265,7 @@ const getAdMediaGallery = (ad: any) => {
 };
 
 export const getAdPreviewImage = (ad: any, previewType: string | null) => {
+    void previewType;
     const activeLink = normalizeExternalUrl(ad?.active_link || "");
     const linkPreviewImage = getSponsoredLinkPreviewImage(activeLink);
 
@@ -297,6 +318,30 @@ export const getSponsoredAdImages = (ad: any, fallbackImage?: string): string[] 
             ]
                 .map((item) => normalizeUploadPath(String(item || "").trim()))
                 .filter(Boolean) as string[],
+        ),
+    );
+};
+
+export const getSponsoredUploadedAdImages = (ad: any): string[] => {
+    const gallery = getAdMediaGallery(ad);
+    return Array.from(
+        new Set(
+            [
+                ad?.mediaPreview,
+                ad?.raw?.mediaPreview,
+                ad?.media_preview,
+                ad?.raw?.media_preview,
+                ...gallery.map(extractMediaValue),
+                ad?.image_url,
+                ad?.main_image,
+                ad?.thumbnail_url,
+                ad?.raw?.image_url,
+                ad?.raw?.main_image,
+                ad?.raw?.thumbnail_url,
+            ]
+                .map((item) => String(item || "").trim())
+                .filter(isUploadedImageMedia)
+                .map(normalizeUploadPath),
         ),
     );
 };

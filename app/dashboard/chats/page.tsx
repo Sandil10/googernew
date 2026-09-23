@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
 import { authService } from "@/services/authService";
+import { adsService } from "@/services/adsService";
 import IonIcon from "@/app/components/IonIcon";
 import { walletService } from "@/services/walletService";
 import { chatService } from "@/services/chatService";
@@ -172,8 +173,14 @@ const isAssignmentNoticeMessage = (message: any) =>
 const sanitizeChatMessages = (items: any[]) =>
     Array.isArray(items) ? items.filter((message) => !isAssignmentNoticeMessage(message)) : [];
 
+const hasConversationHistory = (entry: any) => {
+    if (!entry) return false;
+    if (entry.lastMessage && !isAssignmentNoticeMessage(entry.lastMessage)) return true;
+    return sanitizeChatMessages(Array.isArray(entry.conversation) ? entry.conversation : []).length > 0;
+};
+
 const sanitizeConversationSummaries = (items: any[]) =>
-    (Array.isArray(items) ? items : []).filter((entry) => !isAssignmentNoticeMessage(entry?.lastMessage));
+    (Array.isArray(items) ? items : []).filter(hasConversationHistory);
 
 const getMessagePreview = (message: any) => {
     if (!message) return "No messages yet";
@@ -416,6 +423,8 @@ export default function ChatsPage() {
     const [recordingSeconds, setRecordingSeconds] = useState(0);
     const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
     const [recordingBlob, setRecordingBlob] = useState<Blob | null>(null);
+    const [recordingPreviewPlaying, setRecordingPreviewPlaying] = useState(false);
+    const recordingPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
     const [speakingMessageId, setSpeakingMessageId] = useState<number | string | null>(null);
     const features = useSubscriptionFeatures();
     const canUseVoiceCall = features.voice_calls !== false;
@@ -423,6 +432,7 @@ export default function ChatsPage() {
     const [ttsEnabled, setTtsEnabled] = useState(false);
     const [ttsVoiceGender, setTtsVoiceGender] = useState<"male" | "female">("female");
     const [ttsSettingsOpen, setTtsSettingsOpen] = useState(false);
+    const [voiceGenderUpgradePromptOpen, setVoiceGenderUpgradePromptOpen] = useState(false);
     const [composerMode, setComposerMode] = useState<"typed" | "stt">("typed");
     const [showMobileChat, setShowMobileChat] = useState(false);
     const [videoQuality, setVideoQuality] = useState<"240p" | "360p">("240p");
@@ -519,6 +529,21 @@ export default function ChatsPage() {
         }
     }, [currentUser?.id]);
 
+    const readConversationListSnapshot = useCallback(() => {
+        const listCacheKey = getChatListCacheKey(currentUser?.id);
+        if (!listCacheKey || typeof window === "undefined") return [];
+        try {
+            const cached = JSON.parse(window.localStorage.getItem(listCacheKey) || "[]");
+            return sanitizeConversationSummaries(Array.isArray(cached) ? cached : [])
+                .filter((entry: any) => {
+                    const key = getChatConversationKey(entry?.participant) || String(entry?.participant?.id || "");
+                    return key && !clearedConversationIds.current.has(key);
+                });
+        } catch {
+            return [];
+        }
+    }, [currentUser?.id]);
+
     const unhideLocalConversation = useCallback((participantId: number | string) => {
         const id = String(participantId || "");
         if (!id) return;
@@ -593,6 +618,12 @@ export default function ChatsPage() {
     const [chatAdPendingCoin, setChatAdPendingCoin] = useState<any>(null);
     const [chatProductAdModal, setChatProductAdModal] = useState<any>(null);
     const updateAdState = useAdStore((state) => state.updateAdState);
+
+    useEffect(() => {
+        if (!chatAdNotification) return;
+        const timeoutId = window.setTimeout(() => setChatAdNotification(null), 2000);
+        return () => window.clearTimeout(timeoutId);
+    }, [chatAdNotification]);
 
     const callStartTimeRef = useRef<number | null>(null);
     const longPressTimerRef = useRef<number | null>(null);
@@ -1121,13 +1152,49 @@ export default function ChatsPage() {
                     participant: normalizeChatParticipant(entry?.participant),
                 })))
                 : [];
+            const cachedSummaries = readConversationListSnapshot();
+            const preservedSummaries = sanitizeConversationSummaries(
+                (conversationList.length > 0 ? conversationList : cachedSummaries)
+                    .filter((entry: any) => {
+                        const key = getChatConversationKey(entry?.participant) || String(entry?.participant?.id || "");
+                        return key && !clearedConversationIds.current.has(key);
+                    })
+            );
+            const keepCachedSummaries =
+                normalizedSummaries.length === 0 &&
+                preservedSummaries.length > 0;
+            let effectiveSummaries = keepCachedSummaries ? preservedSummaries : normalizedSummaries;
+            const activeParticipantForPreserve = preferredParticipant || activeConversationRef.current;
+            const activeParticipantKey = getChatConversationKey(activeParticipantForPreserve) || String(activeParticipantForPreserve?.id || "");
+            if (
+                activeParticipantForPreserve?.id &&
+                activeParticipantKey &&
+                !clearedConversationIds.current.has(activeParticipantKey) &&
+                preservedSummaries.some((entry: any) =>
+                    (getChatConversationKey(entry?.participant) || String(entry?.participant?.id || "")) === activeParticipantKey
+                ) &&
+                !effectiveSummaries.some((entry: any) =>
+                    (getChatConversationKey(entry?.participant) || String(entry?.participant?.id || "")) === activeParticipantKey
+                )
+            ) {
+                const cachedActiveEntry = preservedSummaries.find((entry: any) =>
+                    (getChatConversationKey(entry?.participant) || String(entry?.participant?.id || "")) === activeParticipantKey
+                );
+                if (cachedActiveEntry) {
+                    effectiveSummaries = [cachedActiveEntry, ...effectiveSummaries];
+                }
+            }
 
             // Only call setConversationList when data actually changed (Facebook/Instagram pattern:
             // skip re-render if payload is identical to avoid constant list re-renders during polling)
-            const newSignature = getConversationSignature(normalizedSummaries);
+            const newSignature = getConversationSignature(effectiveSummaries);
             if (newSignature !== convListSignatureRef.current) {
-                setConversationList(normalizedSummaries);
-                persistConversationListSnapshot(normalizedSummaries);
+                setConversationList(effectiveSummaries);
+                if (keepCachedSummaries) {
+                    convListSignatureRef.current = newSignature;
+                } else {
+                    persistConversationListSnapshot(effectiveSummaries);
+                }
             }
 
             // ─── STALE GUARD ──────────────────────────────────────────────────────
@@ -1162,7 +1229,7 @@ export default function ChatsPage() {
 
             if (!selectedKey && !selectedId) return;
 
-            const preferred = normalizedSummaries.find((entry: any) => {
+            const preferred = effectiveSummaries.find((entry: any) => {
                 const entryKey = getChatConversationKey(entry.participant) || String(entry.participant.id || "");
                 return selectedKey ? entryKey === selectedKey : String(entry.participant.id) === selectedId;
             });
@@ -1284,6 +1351,20 @@ export default function ChatsPage() {
         return subscribeToHiddenFeedItems(syncHiddenFeedItems);
     }, [currentUser?.id]);
 
+    // Ad-slot expiry (5 minutes past first seen) is decided server-side now,
+    // in `chatService.assignAdPlacement` (see `getAssignedConversationAd`
+    // above) — no local clock needed. This just forces a re-render every few
+    // seconds so that function's periodic recheck actually fires even when
+    // nothing else (a new message, typing) would otherwise re-render the
+    // thread — matching mobile, which piggybacks on its own message poll.
+    useEffect(() => {
+        if (!currentUser?.id) return;
+        const intervalId = window.setInterval(() => {
+            setAdPlacementTick((tick) => tick + 1);
+        }, 5000);
+        return () => window.clearInterval(intervalId);
+    }, [currentUser?.id]);
+
     useEffect(() => {
         // Fetch ads for chat injection (fire-and-forget, no blocking)
         const token = getTabAuthValue("token");
@@ -1321,6 +1402,42 @@ export default function ChatsPage() {
         }
     }, [currentUser?.id]);
 
+    // One-time cleanup for a fixed bug: `mergeIncomingMessage` used to cache a
+    // just-sent or just-received message under the bare participant id
+    // ("googer-chat-recent-<uid>-4") instead of the conversation-key format
+    // every other read/write here uses ("googer-chat-recent-<uid>-4:base").
+    // Anyone who used chat before that fix still has these orphaned, never-
+    // read entries sitting in their own browser; if the legacy copy is newer
+    // than what the correctly-keyed slot holds, merge it in before wiping it,
+    // so nobody's real history got silently dropped by the bug in the first
+    // place.
+    useEffect(() => {
+        if (!currentUser?.id || typeof window === "undefined") return;
+        const prefix = `googer-chat-recent-${currentUser.id}-`;
+        const legacyKeys: string[] = [];
+        for (let i = 0; i < window.localStorage.length; i++) {
+            const key = window.localStorage.key(i);
+            // A correctly-keyed entry ends in ":base" or ":<adminId>"; a legacy
+            // one is just the bare numeric participant id.
+            if (key && key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length))) {
+                legacyKeys.push(key);
+            }
+        }
+        for (const legacyKey of legacyKeys) {
+            try {
+                const bareId = legacyKey.slice(prefix.length);
+                const legacyMessages = sanitizeChatMessages(JSON.parse(window.localStorage.getItem(legacyKey) || "[]"));
+                const correctKey = `${prefix}${bareId}:base`;
+                const correctMessages = sanitizeChatMessages(JSON.parse(window.localStorage.getItem(correctKey) || "[]"));
+                const merged = mergeMessageList(correctMessages, legacyMessages);
+                if (merged.length > correctMessages.length) {
+                    window.localStorage.setItem(correctKey, JSON.stringify(merged));
+                }
+                window.localStorage.removeItem(legacyKey);
+            } catch { }
+        }
+    }, [currentUser?.id]);
+
     useEffect(() => {
         if (!currentUser?.id || typeof window === "undefined") return;
         const pathUsername = pathname?.startsWith("/chats/")
@@ -1337,27 +1454,87 @@ export default function ChatsPage() {
         try {
             const cachedListRaw = window.localStorage.getItem(listCacheKey);
             const cachedList = sanitizeConversationSummaries(cachedListRaw ? JSON.parse(cachedListRaw) : []);
-            if (!Array.isArray(cachedList) || cachedList.length === 0) return;
 
-            setConversationList(cachedList);
+            if (Array.isArray(cachedList) && cachedList.length > 0) {
+                convListSignatureRef.current = getConversationSignature(cachedList);
+                setConversationList(cachedList);
+            }
             const lastConversationKey = String(window.localStorage.getItem(lastOpenKey) || "");
             if (!lastConversationKey) return;
+
+            // `lastOpenKey` is written synchronously the instant a conversation is
+            // opened (handleOpenConversation), but the FULL cached entry for a
+            // brand-new conversation only lands in `googer-chat-list-cache` once
+            // the first message's socket round-trip finishes. Refresh fast enough
+            // (send, then reload within ~1s) and that write hasn't happened yet —
+            // `cachedList` won't contain it, even though the server already has
+            // the message. Point the initial refreshConversations() call at this
+            // key/id regardless, so once the live server data (which DOES have
+            // it) comes back, it still gets auto-selected instead of leaving the
+            // chat box empty until the user clicks the conversation again.
+            const bareId = lastConversationKey.split(":")[0];
+            if (bareId) {
+                preferredParticipantIdRef.current = bareId;
+                preferredConversationKeyRef.current = lastConversationKey;
+            }
+
             const cachedEntry = cachedList.find((entry: any) =>
                 (getChatConversationKey(entry?.participant) || String(entry?.participant?.id || "")) === lastConversationKey
             );
-            const participant = cachedEntry?.participant;
+            const recentKeyForLastOpen = getChatRecentKey(currentUser.id, lastConversationKey);
+            const cachedMessagesForLastOpen = recentKeyForLastOpen
+                ? sanitizeChatMessages(JSON.parse(window.localStorage.getItem(recentKeyForLastOpen) || "[]"))
+                : [];
+            const lastCachedMessage = cachedMessagesForLastOpen[cachedMessagesForLastOpen.length - 1] || cachedEntry?.lastMessage || null;
+            const fallbackParticipant = bareId
+                ? normalizeChatParticipant({
+                    id: bareId,
+                    conversation_key: lastConversationKey,
+                    name: lastCachedMessage
+                        ? String(lastCachedMessage.sender_id) === String(currentUser.id)
+                            ? (lastCachedMessage.receiver_name || cachedEntry?.participant?.name || "User")
+                            : (lastCachedMessage.sender_name || cachedEntry?.participant?.name || "User")
+                        : (cachedEntry?.participant?.name || "User"),
+                    username: cachedEntry?.participant?.username || null,
+                    profile_picture: cachedEntry?.participant?.profile_picture || null,
+                    roleLabel: cachedEntry?.participant?.roleLabel || "User",
+                    assigned_admin_id: lastConversationKey.includes(":") && lastConversationKey.split(":")[1] !== "base"
+                        ? lastConversationKey.split(":")[1]
+                        : cachedEntry?.participant?.assigned_admin_id || null,
+                })
+                : null;
+            const participant = cachedEntry?.participant?.id
+                ? cachedEntry.participant
+                : fallbackParticipant;
             if (!participant?.id) return;
 
             const pid = getChatConversationKey(participant) || String(participant.id);
             const recentKey = getChatRecentKey(currentUser.id, pid);
             const cachedMessages = recentKey
                 ? sanitizeChatMessages(JSON.parse(window.localStorage.getItem(recentKey) || "[]"))
-                : [];
+                : cachedMessagesForLastOpen;
             const seedMessages = Array.isArray(cachedMessages) && cachedMessages.length > 0
                 ? cachedMessages
                 : cachedEntry?.lastMessage && !isAssignmentNoticeMessage(cachedEntry.lastMessage)
                     ? [cachedEntry.lastMessage]
                     : [];
+
+            if (!cachedEntry?.participant?.id && seedMessages.length > 0) {
+                const restoredEntry = {
+                    participant,
+                    unread_count: 0,
+                    lastMessage: seedMessages[seedMessages.length - 1] || null,
+                    conversation: [],
+                };
+                setConversationList((prev) => {
+                    const exists = prev.some((entry: any) =>
+                        (getChatConversationKey(entry?.participant) || String(entry?.participant?.id || "")) === pid
+                    );
+                    const next = exists ? prev : [restoredEntry, ...prev];
+                    persistConversationListSnapshot(next);
+                    return next;
+                });
+            }
 
             preferredParticipantIdRef.current = String(participant.id);
             preferredConversationKeyRef.current = pid;
@@ -1444,7 +1621,20 @@ export default function ChatsPage() {
                         });
                     }
                 } catch {
-                    // Keep the lightweight fallback participant if profile lookup fails.
+                    // Username/id resolution failed (stale link, transient 404,
+                    // etc). Don't run with the synthetic placeholder below — its
+                    // "id" is the raw, unresolved username/target string, which
+                    // can never match a real numeric participant id in the
+                    // conversation list. That left the chat box stuck on a fake,
+                    // empty participant forever after a refresh, since nothing
+                    // ever re-resolves it. Fall back to whatever conversation
+                    // was last actually open on this device instead, so the
+                    // real conversation (which the server already has) still
+                    // gets selected once the live conversation list loads.
+                    if (lastOpenId) {
+                        resolvedTargetId = lastOpenId.split(":")[0];
+                        queryParticipant = null;
+                    }
                 }
             }
 
@@ -1804,20 +1994,15 @@ export default function ChatsPage() {
         clearedConversationIds.current.delete(otherUserId);
         unhideLocalConversation(otherUserId);
 
-        messagesCacheRef.current[otherUserId] = mergeMessageList(messagesCacheRef.current[otherUserId] || [], [message]);
-        const recentKey = getChatRecentKey(currentUser.id, otherUserId);
-        if (recentKey) {
-            try { window.localStorage.setItem(recentKey, JSON.stringify(messagesCacheRef.current[otherUserId])); } catch { }
-        }
-
-        if (String(activeConversationRef.current?.id || "") === otherUserId) {
+        const isOpen = String(activeConversationRef.current?.id || "") === otherUserId;
+        if (isOpen) {
             setMessages((currentMessages) => mergeMessageList(currentMessages, [message]));
         }
 
         setConversationList((prev) => {
             const existing = prev.find((entry) => String(entry.participant.id) === otherUserId);
             const participant = normalizeChatParticipant(existing?.participant || (
-                String(activeConversationRef.current?.id || "") === otherUserId ? activeConversationRef.current : null
+                isOpen ? activeConversationRef.current : null
             ) || {
                 id: otherUserId,
                 name: String(message.sender_id) === String(currentUser.id)
@@ -1827,8 +2012,22 @@ export default function ChatsPage() {
                 profile_picture: null,
                 roleLabel: "User",
             });
+
+            // The SAME key every other messages-cache read/write uses
+            // (`getChatConversationKey`, e.g. "<id>:<assignedAdminId|base>") —
+            // caching under the bare id here forked a second, never-restored
+            // cache slot, which is what left a conversation's history looking
+            // incomplete (or gone) right after sending, until the next live
+            // poll happened to land and overwrite the correctly-keyed slot
+            // instead.
+            const cacheKey = getChatConversationKey(participant) || otherUserId;
+            messagesCacheRef.current[cacheKey] = mergeMessageList(messagesCacheRef.current[cacheKey] || [], [message]);
+            const recentKey = getChatRecentKey(currentUser.id, cacheKey);
+            if (recentKey) {
+                try { window.localStorage.setItem(recentKey, JSON.stringify(messagesCacheRef.current[cacheKey])); } catch { }
+            }
+
             const rest = prev.filter((entry) => String(entry.participant.id) !== otherUserId);
-            const isOpen = String(activeConversationRef.current?.id || "") === otherUserId;
             const isIncomingUnread = String(message.receiver_id) === String(currentUser.id) && !isOpen;
             const next = [
                 {
@@ -2092,10 +2291,10 @@ export default function ChatsPage() {
             void openChatAdSheet(type, item.raw || item);
         },
         onCoinCollected: (_ad, _collectionId, result) => {
+            const collectedAmount = Number(result?.amount ?? result?.coin_value ?? result?.ad_coin_value ?? 1);
             setChatAdNotification({
                 type: "success",
-                title: "Coin Collected",
-                message: `Ruppier ${Number(result?.coin_value || result?.ad_coin_value || 1).toFixed(2)} added to your wallet.`,
+                message: "Coin collected",
             });
             setChatAdPendingCoin(null);
             if (typeof window !== "undefined") window.dispatchEvent(new Event("googer-wallet-updated"));
@@ -2304,9 +2503,43 @@ export default function ChatsPage() {
         setChatAds((currentAds) => currentAds.filter((ad) => getAdInteractionId(ad) !== interactionId));
     }, [chatAds, currentUser?.id]);
 
-    type ChatAdPlacementState = { ad: any };
+    const handleChatAdDelete = useCallback(async (ad: any) => {
+        if (!isCurrentUserChatAdOwner(ad)) return;
+
+        try {
+            const deletedAd = await adsService.deleteAd(ad);
+            const adId = String(deletedAd?.adId || deletedAd?.ad_id || ad?.adId || ad?.ad_id || ad?.raw?.adId || ad?.raw?.ad_id || "").replace(/^ad-/, "");
+            const isSameAd = (candidate: any) => {
+                const candidateRaw = candidate?.raw?.raw || candidate?.raw || candidate || {};
+                const candidateId = String(candidateRaw.ad_id || candidateRaw.adId || candidate?.ad_id || candidate?.adId || candidateRaw.id || candidate?.id || "").replace(/^ad-/, "");
+                return candidateId === adId;
+            };
+            setChatAds((currentAds) => currentAds.filter((item) => !isSameAd(item)));
+            adPlacementAssignmentsRef.current = {};
+            setChatAdNotification({ type: "success", title: "Deleted", message: "Ad removed from feeds." });
+            window.dispatchEvent(new Event("googer-ad-history-updated"));
+        } catch (error) {
+            setChatAdNotification({
+                type: "error",
+                title: "Delete failed",
+                message: error instanceof Error ? error.message : "Could not delete this ad.",
+            });
+        }
+    }, [isCurrentUserChatAdOwner]);
+
+    type ChatAdPlacementState = { ad: any; retired?: boolean };
     const adThresholdsRef = useRef<Record<string, number[]>>({});
+    // Server-confirmed placements only — `/chat/ad-placements/assign` is the
+    // single source of truth for which ad occupies a slot, shared between web
+    // and mobile, so the same conversation never shows two different ads on
+    // the two platforms and a retirement (5 minutes past first seen) is
+    // decided once, for both, instead of each client guessing off its own
+    // local clock. This ref is just the render-time cache of those answers.
     const adPlacementAssignmentsRef = useRef<Record<string, Record<number, ChatAdPlacementState>>>({});
+    const adPlacementInFlightRef = useRef<Set<string>>(new Set());
+    const adPlacementLastCheckedAtRef = useRef<Record<string, number>>({});
+    const [, setAdPlacementTick] = useState(0);
+    const AD_PLACEMENT_RECHECK_MS = 15000;
 
     const getAdThresholds = useCallback((convId: string, totalAds: number): number[] => {
         const existingThresholds = adThresholdsRef.current[convId];
@@ -2333,39 +2566,68 @@ export default function ChatsPage() {
         return thresholds;
     }, []);
 
-    const getAssignedConversationAd = useCallback((convId: string, slotIndex: number, ads: any[]) => {
-        if (!ads.length) return null;
+    const adIdOf = (candidate: any) =>
+        String(candidate?.adId || candidate?.ad_id || candidate?.raw?.adId || candidate?.raw?.ad_id || candidate?.id || "");
 
+    const getAssignedConversationAd = useCallback((convId: string, slotIndex: number, ads: any[]) => {
         if (!adPlacementAssignmentsRef.current[convId]) {
             adPlacementAssignmentsRef.current[convId] = {};
         }
-
         const placements = adPlacementAssignmentsRef.current[convId];
-        const existing = placements[slotIndex];
-        if (existing) return existing;
+        const cached = placements[slotIndex];
+        const key = `${convId}:${slotIndex}`;
 
-        const usedAdIds = new Set(
-            Object.values(placements).map((assigned: any) =>
-                String(assigned?.ad?.adId || assigned?.ad?.ad_id || assigned?.ad?.raw?.adId || assigned?.ad?.raw?.ad_id || assigned?.ad?.id || ""),
-            ),
-        );
+        // Once the server says a slot is retired (5 minutes past first seen),
+        // it stays empty for good — never backfilled with a different ad.
+        if (cached?.retired) return null;
 
-        const nextAd =
-            ads.find((candidate) => {
-                const candidateAdId = String(candidate?.adId || candidate?.ad_id || candidate?.raw?.adId || candidate?.raw?.ad_id || candidate?.id || "");
-                return candidateAdId && !usedAdIds.has(candidateAdId);
-            }) ||
-            ads[slotIndex % ads.length];
+        if (!ads.length) return cached ?? null;
 
-        const placement = { ad: nextAd };
-        placements[slotIndex] = placement;
-        return placement;
+        const resolveFromServer = async () => {
+            adPlacementInFlightRef.current.add(key);
+            try {
+                const candidateAdIds = ads.map(adIdOf).filter(Boolean);
+                const result = await chatService.assignAdPlacement(convId, slotIndex, candidateAdIds);
+                adPlacementLastCheckedAtRef.current[key] = Date.now();
+                const resolvedAd = result.ad_id
+                    ? ads.find((candidate) => adIdOf(candidate) === result.ad_id) ?? null
+                    : null;
+                const next: ChatAdPlacementState = result.retired || !resolvedAd
+                    ? { ad: null, retired: true }
+                    : { ad: resolvedAd, retired: false };
+                const prev = placements[slotIndex];
+                if (prev?.retired !== next.retired || adIdOf(prev?.ad) !== adIdOf(next.ad)) {
+                    placements[slotIndex] = next;
+                    setAdPlacementTick((tick) => tick + 1);
+                }
+            } catch {
+                // Network hiccup — keep showing whatever is cached and retry
+                // on the next render/recheck pass.
+            } finally {
+                adPlacementInFlightRef.current.delete(key);
+            }
+        };
+
+        if (!cached) {
+            if (!adPlacementInFlightRef.current.has(key)) void resolveFromServer();
+            return null;
+        }
+
+        // Already resolved once — keep showing it optimistically, but
+        // periodically re-ask the server so a retirement it decides while
+        // this tab stays open still lands here instead of only on remount.
+        const lastChecked = adPlacementLastCheckedAtRef.current[key] ?? 0;
+        if (Date.now() - lastChecked >= AD_PLACEMENT_RECHECK_MS && !adPlacementInFlightRef.current.has(key)) {
+            void resolveFromServer();
+        }
+        return cached;
     }, []);
 
     // Build ad context for the render loop
     const conversationAds = useMemo(() => {
         return chatAds.filter((ad) => {
-            if (hiddenChatAdIds.has(getAdInteractionId(ad))) return false;
+            const interactionId = getAdInteractionId(ad);
+            if (hiddenChatAdIds.has(interactionId)) return false;
             const normalized = normalizeAdData(ad);
             const adType = String(normalized?.type || ad?.type || "").trim().toLowerCase();
             return adType !== "profile";
@@ -2567,8 +2829,11 @@ export default function ChatsPage() {
             username: user.username || null,
         };
 
+        const participantKey = getChatConversationKey(participant) || String(participant.id);
         delete messagesCacheRef.current[String(participant.id)];
-        clearedConversationIds.current.add(String(participant.id));
+        delete messagesCacheRef.current[participantKey];
+        clearedConversationIds.current.delete(String(participant.id));
+        clearedConversationIds.current.delete(participantKey);
         unhideLocalConversation(participant.id);
         chatService.unhideConversation(Number(participant.id)).catch(() => {});
         handleOpenConversation(participant, []);
@@ -2818,6 +3083,9 @@ export default function ChatsPage() {
         setRecordingBlob(null);
         setRecordingSeconds(0);
         setRecordingState("idle");
+        recordingPreviewAudioRef.current?.pause();
+        recordingPreviewAudioRef.current = null;
+        setRecordingPreviewPlaying(false);
     };
 
     const startVoiceRecording = async () => {
@@ -2894,6 +3162,43 @@ export default function ChatsPage() {
             }, 1000);
             setRecordingState("recording");
         }
+    };
+
+    // The first icon — listen back to whatever has been captured so far,
+    // without ending the recording. Pauses capture first (so `requestData`
+    // hands back a clean, complete snapshot rather than a half-written
+    // chunk) — resume with the second (pause/resume) icon afterward.
+    const listenToRecordingSoFar = () => {
+        const recorder = mediaRecorderRef.current;
+        if (!recorder) return;
+
+        if (recordingPreviewPlaying) {
+            recordingPreviewAudioRef.current?.pause();
+            setRecordingPreviewPlaying(false);
+            return;
+        }
+
+        if (recorder.state === "recording") {
+            recorder.pause();
+            if (recordingTimerRef.current) window.clearInterval(recordingTimerRef.current);
+            recordingTimerRef.current = null;
+            setRecordingState("paused");
+        }
+
+        recorder.requestData();
+        window.setTimeout(() => {
+            if (!recordingChunksRef.current.length) return;
+            const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            recordingPreviewAudioRef.current = audio;
+            audio.onended = () => {
+                setRecordingPreviewPlaying(false);
+                URL.revokeObjectURL(url);
+            };
+            setRecordingPreviewPlaying(true);
+            audio.play().catch(() => setRecordingPreviewPlaying(false));
+        }, 80);
     };
 
     const finishVoiceRecording = () => {
@@ -3108,7 +3413,19 @@ export default function ChatsPage() {
     };
 
     const beginTtsLongPress = () => {
-        if (!features.text_to_voice || !ttsEnabled) return;
+        // Basic-plan users have no text_to_voice feature at all — long-pressing
+        // used to just silently do nothing, with no indication why. Show an
+        // upgrade prompt instead so the gesture always does *something*.
+        if (!features.text_to_voice) {
+            ttsLongPressFiredRef.current = false;
+            if (ttsLongPressTimerRef.current) window.clearTimeout(ttsLongPressTimerRef.current);
+            ttsLongPressTimerRef.current = window.setTimeout(() => {
+                ttsLongPressFiredRef.current = true;
+                setVoiceGenderUpgradePromptOpen(true);
+            }, 550);
+            return;
+        }
+        if (!ttsEnabled) return;
         ttsLongPressFiredRef.current = false;
         if (ttsLongPressTimerRef.current) window.clearTimeout(ttsLongPressTimerRef.current);
         ttsLongPressTimerRef.current = window.setTimeout(() => {
@@ -5347,6 +5664,7 @@ export default function ChatsPage() {
                                                         onOpenProductSecondView={openChatProductPromoteSecondView}
                                                         onPromoteAgain={canPromoteChatAd(placement.ad) ? handleChatAdPromoteAgain : undefined}
                                                         promoteAgainLabel={isCurrentUserChatAdOwner(placement.ad) ? "Promote Again" : "Promote"}
+                                                        onDeleteAd={isCurrentUserChatAdOwner(placement.ad) ? handleChatAdDelete : undefined}
                                                     />
                                                 );
                                             }
@@ -5950,10 +6268,34 @@ export default function ChatsPage() {
                                         >
                                             <IonIcon name="trash-outline" className="text-sm" />
                                         </button>
-                                        <div className="flex min-w-0 flex-1 items-center gap-3">
-                                            <div className={`flex h-11 w-11 items-center justify-center rounded-full bg-red-600 text-white shadow-lg shadow-red-600/20 ${isListening ? "animate-pulse" : ""}`}>
-                                                <IonIcon name={isListening ? "mic" : recordingState === "paused" ? "play-outline" : "pause-outline"} className="text-lg" />
-                                            </div>
+                                        <div className="flex min-w-0 flex-1 items-center gap-2">
+                                            {!isListening && (recordingState === "recording" || recordingState === "paused") ? (
+                                                <>
+                                                    {/* First icon: listen back to what's captured so far without
+                                                        ending the recording. */}
+                                                    <button
+                                                        type="button"
+                                                        onClick={listenToRecordingSoFar}
+                                                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-lg shadow-red-600/20 hover:bg-red-500"
+                                                        title={recordingPreviewPlaying ? "Stop listening" : "Listen back"}
+                                                    >
+                                                        <IonIcon name={recordingPreviewPlaying ? "pause-outline" : "play-outline"} className="text-lg" />
+                                                    </button>
+                                                    {/* Second icon: pause/resume the live recording itself. */}
+                                                    <button
+                                                        type="button"
+                                                        onClick={pauseOrResumeVoiceRecording}
+                                                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-red-600/70 text-white hover:bg-red-500"
+                                                        title={recordingState === "paused" ? "Resume" : "Pause"}
+                                                    >
+                                                        <IonIcon name={recordingState === "paused" ? "mic-outline" : "pause-outline"} className="text-lg" />
+                                                    </button>
+                                                </>
+                                            ) : (
+                                                <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-lg shadow-red-600/20 ${isListening ? "animate-pulse" : ""}`}>
+                                                    <IonIcon name={isListening ? "mic" : "pause-outline"} className="text-lg" />
+                                                </div>
+                                            )}
                                             <div className="min-w-0 flex-1">
                                                 <div className="text-[8px] font-black uppercase tracking-widest text-red-200">
                                                     {isListening ? "Listening..." : recordingState === "sending" ? "Voice sending" : recordingState === "ready" ? "Voice ready" : "Recording"}
@@ -5964,16 +6306,6 @@ export default function ChatsPage() {
                                                 )}
                                             </div>
                                         </div>
-                                        {!isListening && (recordingState === "recording" || recordingState === "paused") && (
-                                            <button
-                                                type="button"
-                                                onClick={pauseOrResumeVoiceRecording}
-                                                className="flex h-9 w-9 items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-500"
-                                                title={recordingState === "paused" ? "Play" : "Pause"}
-                                            >
-                                                <IonIcon name={recordingState === "paused" ? "play-outline" : "pause-outline"} className="text-base" />
-                                            </button>
-                                        )}
                                         {isListening && (
                                             <button
                                                 type="button"
@@ -6012,7 +6344,7 @@ export default function ChatsPage() {
                                             <button
                                                 type="button"
                                                 onClick={sendVoiceRecording}
-                                                className="flex h-9 w-9 items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-500"
+                                                className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-500"
                                                 title="Send voice"
                                             >
                                                 <IonIcon name="send-outline" className="text-base" />
@@ -6252,6 +6584,53 @@ export default function ChatsPage() {
                                 className="h-11 rounded-2xl border border-red-500/30 bg-red-600 text-[9px] font-black uppercase tracking-widest text-white transition-all hover:bg-red-500"
                             >
                                 Yes
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* ── Voice gender (text-to-voice) plan-upgrade prompt ── */}
+        {voiceGenderUpgradePromptOpen && (
+            <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
+                <div className="w-full max-w-xs overflow-hidden rounded-3xl border border-white/10 bg-[#101014] shadow-2xl">
+                    <div className="border-b border-white/10 px-5 py-4">
+                        <div className="flex items-center gap-3">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-amber-500/25 bg-amber-500/15">
+                                <IonIcon name="mic-outline" className="text-base text-amber-400" />
+                            </div>
+                            <div className="min-w-0">
+                                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white">
+                                    Not on your plan
+                                </div>
+                                <div className="mt-1 text-[9px] font-bold text-white/40">
+                                    Female/male voice selection
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="p-4">
+                        <p className="mb-4 text-[9px] font-bold leading-relaxed text-white/45">
+                            This isn&apos;t included in your current plan. Upgrade to a plan with text-to-voice to use this option.
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setVoiceGenderUpgradePromptOpen(false)}
+                                className="h-11 rounded-2xl border border-white/10 bg-white/[0.04] text-[9px] font-black uppercase tracking-widest text-white/60 transition-all hover:bg-white/[0.08]"
+                            >
+                                Not now
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setVoiceGenderUpgradePromptOpen(false);
+                                    router.push("/dashboard/wallet/subscription");
+                                }}
+                                className="h-11 rounded-2xl border border-amber-500/30 bg-amber-500 text-[9px] font-black uppercase tracking-widest text-black transition-all hover:bg-amber-400"
+                            >
+                                Upgrade
                             </button>
                         </div>
                     </div>
@@ -6615,25 +6994,25 @@ export default function ChatsPage() {
         {/* ── Chat Ad: Toast notification ── */}
         {chatAdNotification && (
             <div
-                className={`fixed bottom-6 left-1/2 z-[200] -translate-x-1/2 flex items-center gap-3 rounded-2xl border px-4 py-3 shadow-2xl backdrop-blur-md transition-all ${
+                className={`fixed bottom-24 right-5 z-[200] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border px-3 py-2 shadow-2xl transition-all ${
                     chatAdNotification.type === "success"
-                        ? "border-emerald-500/30 bg-emerald-900/70 text-emerald-200"
-                        : "border-red-500/30 bg-red-900/70 text-red-200"
+                        ? "border-black/10 bg-white text-neutral-900"
+                        : "border-red-200 bg-white text-red-700"
                 }`}
-                onClick={() => setChatAdNotification(null)}
             >
                 <IonIcon
-                    name={chatAdNotification.type === "success" ? "checkmark-circle" : "alert-circle"}
-                    className="text-xl shrink-0"
+                    name={chatAdNotification.type === "success" ? "checkmark-circle-outline" : "alert-circle-outline"}
+                    className={`shrink-0 text-base ${chatAdNotification.type === "success" ? "text-neutral-700" : "text-red-600"}`}
                 />
-                <div>
-                    {chatAdNotification.title && (
-                        <div className="text-[9px] font-black uppercase tracking-widest mb-0.5">
-                            {chatAdNotification.title}
-                        </div>
-                    )}
-                    <div className="text-[10px] font-bold">{chatAdNotification.message}</div>
-                </div>
+                <span className="text-xs font-bold tracking-tight">{chatAdNotification.message}</span>
+                <button
+                    type="button"
+                    onClick={() => setChatAdNotification(null)}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-neutral-500 transition hover:bg-black/5 hover:text-neutral-900"
+                    aria-label="Dismiss coin notification"
+                >
+                    <IonIcon name="close" className="text-sm" />
+                </button>
             </div>
         )}
         {copiedMessageNotice && (

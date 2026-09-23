@@ -9,8 +9,16 @@ const formatDateTime = (value: string) => {
     })}`;
 };
 
-const formatAccount = (id: string | number | undefined, username: string | undefined) => {
-    return `ID ${id ?? 'N/A'} (${username || 'Unknown'})`;
+const formatAccount = (_id: string | number | undefined, username: string | undefined) => {
+    const value = String(username || 'Googer').trim();
+    return /(^|[\s_-])(super[\s_-]*)?admin($|[\s_-])|^googer([\s_-]*(admin|official|support))?$/i.test(value)
+        ? 'Googer'
+        : value;
+};
+
+const isSubscriptionTransaction = (transaction: any) => {
+    const type = String(transaction?.type || '').toLowerCase();
+    return type === 'subscription_payment' || type === 'sub_auto_renew';
 };
 
 const formatTransactionStatus = (transaction: any) => {
@@ -56,6 +64,7 @@ const getReceiptData = (transaction: any) => {
     const isGoogerPaymentOrderHold = type === 'order_hold'
         && !/manual payment/i.test(String(transaction.note || ''));
     const isProductDiscount = type === 'discount_staking';
+    const isSubscription = isSubscriptionTransaction(transaction);
     const productDiscountPercentage = Number(transaction.product_discount_percentage || transaction.commission_percentage || 0);
 
     let title = 'Wallet Transaction';
@@ -94,6 +103,9 @@ const getReceiptData = (transaction: any) => {
         title = 'Product Discount';
         amountLabel = 'Amount';
         typeLabel = 'Product Discount';
+    } else if (isSubscription) {
+        title = type === 'sub_auto_renew' ? 'Subscription Renewal' : 'Subscription Payment';
+        typeLabel = type === 'sub_auto_renew' ? 'Subscription Renewal' : 'Subscription Payment';
     }
 
     const details = [
@@ -123,14 +135,16 @@ const getReceiptData = (transaction: any) => {
         details.push({ label: isSellerBuyDiscount ? 'Send Discount' : (type === 'seller_discount' ? 'Send Discounts' : (type === 'request' ? 'Discount Request' : 'Discount Requested')), value: `${commission}%` });
     }
 
-    if (type === 'order_hold' && /manual payment/i.test(String(transaction.note || ''))) {
+    if (isSubscription) {
+        // Do not expose the internal payment wallet on customer receipts.
+    } else if (type === 'order_hold' && /manual payment/i.test(String(transaction.note || ''))) {
         details.push(
             {
-                label: 'Buyer ID',
+                label: 'Buyer',
                 value: formatAccount(transaction.sender_readable_id || transaction.sender_id, transaction.sender_username),
             },
             {
-                label: 'Seller ID',
+                label: 'Seller',
                 value: formatAccount(transaction.receiver_readable_id || transaction.receiver_id, transaction.receiver_username),
             }
         );

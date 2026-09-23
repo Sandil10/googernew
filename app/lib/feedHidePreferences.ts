@@ -78,6 +78,20 @@ export function hideFeedItemFor24Hours(
   writeEntries(userId, nextEntries);
 }
 
+export function unhideFeedItems(
+  userId: string | number | null | undefined,
+  kind: HiddenFeedItemKind,
+  ids: Array<string | number | null | undefined>,
+) {
+  if (!userId || !ids.length) return;
+  const normalizedIds = new Set(ids.map(normalizeId).filter(Boolean));
+  if (!normalizedIds.size) return;
+  const nextEntries = readEntries(userId).filter(
+    (entry) => !(entry.kind === kind && normalizedIds.has(entry.id)),
+  );
+  writeEntries(userId, nextEntries);
+}
+
 export function subscribeToHiddenFeedItems(callback: () => void) {
   if (typeof window === "undefined") return () => {};
   window.addEventListener(HIDDEN_FEED_ITEMS_EVENT, callback);

@@ -50,13 +50,6 @@ const safeJson = async (response: Response) => {
     }
     const text = await response.text().catch(() => "");
     if (!text.trim()) return null;
-    if (!response.ok) {
-        console.error(`Non-JSON response from ${response.url}:`, {
-            status: response.status,
-            contentType,
-            preview: text.substring(0, 200)
-        });
-    }
     return null;
 };
 
@@ -74,6 +67,33 @@ const getOrCreateDeviceId = () => {
         storage.set(key, value);
     }
     return value;
+};
+
+const getBrowserLoginLocation = async () => {
+    if (!isClient || !navigator.geolocation) return {};
+    return await new Promise<Record<string, number>>((resolve) => {
+        let settled = false;
+        const done = (value: Record<string, number> = {}) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+        };
+        const timer = window.setTimeout(() => done(), 1500);
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                window.clearTimeout(timer);
+                done({
+                    latitude: position.coords.latitude,
+                    longitude: position.coords.longitude,
+                });
+            },
+            () => {
+                window.clearTimeout(timer);
+                done();
+            },
+            { enableHighAccuracy: false, maximumAge: 10 * 60 * 1000, timeout: 1200 }
+        );
+    });
 };
 
 const getCachedUser = () => {
@@ -207,10 +227,11 @@ export const authService = {
                 throw new Error('API not configured. Please set NEXT_PUBLIC_API_URL in Vercel.');
             }
 
+            const location = await getBrowserLoginLocation();
             const response = await fetch(`${API_URL}/auth/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ...data, deviceId: getOrCreateDeviceId() }),
+                body: JSON.stringify({ ...data, ...location, deviceId: getOrCreateDeviceId() }),
             }).catch(() => {
                 throw new Error('Server connection failed. Is the backend running?');
             });
@@ -244,6 +265,25 @@ export const authService = {
             }
             throw error;
         }
+    },
+
+    verifyLoginOtp: async (data: { email: string; password: string; otp: string }) => {
+        const location = await getBrowserLoginLocation();
+        const response = await fetch(`${API_URL}/auth/login/verify-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...data, ...location, deviceId: getOrCreateDeviceId() }),
+        });
+        const result = await safeJson(response);
+        if (!response.ok && response.status !== 202) {
+            throw new Error(buildErrorMessage(result, response));
+        }
+        if (result?.token) {
+            storage.set('token', result.token);
+            storage.set('user', JSON.stringify(result.user));
+            emitAuthChanged(result.user);
+        }
+        return result;
     },
 
     getDeviceApprovalStatus: async (payload: { approvalId: string; approvalToken: string }) => {
@@ -391,7 +431,7 @@ export const authService = {
         return result?.suspension;
     },
 
-    selfDeactivateAccount: async () => {
+    selfDeactivateAccount: async (securityToken = '') => {
         const token = storage.get('token');
         if (!token) throw new Error('No session found');
         const response = await fetch(`${API_URL}/auth/self-deactivate`, {
@@ -400,6 +440,7 @@ export const authService = {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json',
             },
+            body: JSON.stringify({ securityToken }),
         });
         const result = await safeJson(response);
         if (!response.ok) throw new Error(result?.message || 'Failed to deactivate account');
@@ -409,7 +450,7 @@ export const authService = {
         return result;
     },
 
-    selfDeleteAccount: async () => {
+    selfDeleteAccount: async (securityToken = '') => {
         const token = storage.get('token');
         if (!token) throw new Error('No session found');
         const response = await fetch(`${API_URL}/auth/self-delete`, {
@@ -418,6 +459,7 @@ export const authService = {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json',
             },
+            body: JSON.stringify({ securityToken }),
         });
         const result = await safeJson(response);
         if (!response.ok) throw new Error(result?.message || 'Failed to delete account');
@@ -463,6 +505,29 @@ export const authService = {
         }
     },
 
+    /// People search for the "Search Googs" suggestions.
+    /// Backed by GET /auth/search-users, which excludes staff/support accounts,
+    /// deactivated/deleted users and anyone blocked either way.
+    searchUsers: async (query: string) => {
+        const trimmed = String(query || '').trim();
+        if (!trimmed) return [] as any[];
+        try {
+            const token = storage.get('token');
+            const response = await fetch(`${API_URL}/auth/search-users?query=${encodeURIComponent(trimmed)}`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+                },
+            });
+            const result = await safeJson(response);
+            if (!response.ok) return [] as any[];
+            return Array.isArray(result?.users) ? result.users : ([] as any[]);
+        } catch {
+            return [] as any[];
+        }
+    },
+
     getSubscriptionStatus: async (id: string | number) => {
         try {
             const token = storage.get('token');
@@ -495,10 +560,10 @@ export const authService = {
                 },
             });
             const result = await safeJson(response);
-            if (!response.ok) throw new Error(result?.message || 'Failed to fetch following users');
+            if (!response.ok) return [];
             return result?.data || [];
         } catch (error: any) {
-            throw error;
+            return [];
         }
     },
 
@@ -513,10 +578,10 @@ export const authService = {
                 },
             });
             const result = await safeJson(response);
-            if (!response.ok) throw new Error(result?.message || 'Failed to fetch followers');
+            if (!response.ok) return [];
             return result?.data || [];
         } catch (error: any) {
-            throw error;
+            return [];
         }
     },
 
@@ -659,7 +724,10 @@ export const authService = {
             },
         });
         const result = await safeJson(response);
-        if (!response.ok) throw new Error(buildErrorMessage(result, response));
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) clearStoredSession();
+            throw new Error(buildErrorMessage(result, response));
+        }
         return result;
     },
 
@@ -673,7 +741,10 @@ export const authService = {
             },
         });
         const result = await safeJson(response);
-        if (!response.ok) throw new Error(buildErrorMessage(result, response));
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) clearStoredSession();
+            throw new Error(buildErrorMessage(result, response));
+        }
         return result;
     },
 
@@ -689,7 +760,10 @@ export const authService = {
             body: JSON.stringify({}),
         });
         const result = await safeJson(response);
-        if (!response.ok) throw new Error(buildErrorMessage(result, response));
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) clearStoredSession();
+            throw new Error(buildErrorMessage(result, response));
+        }
         return result;
     },
 
@@ -705,7 +779,10 @@ export const authService = {
             body: JSON.stringify(payload),
         });
         const result = await safeJson(response);
-        if (!response.ok) throw new Error(buildErrorMessage(result, response));
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) clearStoredSession();
+            throw new Error(buildErrorMessage(result, response));
+        }
         return result;
     },
 
@@ -726,7 +803,10 @@ export const authService = {
             body: JSON.stringify(payload),
         });
         const result = await safeJson(response);
-        if (!response.ok) throw new Error(buildErrorMessage(result, response));
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) clearStoredSession();
+            throw new Error(buildErrorMessage(result, response));
+        }
         return result;
     },
 
@@ -798,7 +878,7 @@ export const authService = {
 
     saveTwoFactorPhone: async (payload: {
         emailSecurityToken: string;
-        phoneSecurityToken: string;
+        phoneSecurityToken?: string;
         countryCode: string;
         countryName: string;
         dialCode: string;

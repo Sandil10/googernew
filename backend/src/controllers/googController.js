@@ -510,39 +510,42 @@ exports.createPost = async (req, res) => {
         // Fetch dynamic limits for this user
         const limits = await getUserPlanLimits(userId);
 
-        // Enforce write goog count limit
-        const countRes = await pool.query(
-            'SELECT COUNT(*)::int AS c FROM goog_posts WHERE user_id = $1',
-            [userId]
-        );
-        if (countRes.rows[0].c >= limits.writeGoogLimit) {
+        // Enforce write-goog daily and total posting limits.
+        const [dailyCountRes, totalCountRes] = await Promise.all([
+            pool.query(
+                `SELECT COUNT(*)::int AS c
+                 FROM goog_posts
+                 WHERE user_id = $1
+                   AND created_at >= CURRENT_DATE
+                   AND created_at < CURRENT_DATE + INTERVAL '1 day'`,
+                [userId]
+            ),
+            pool.query(
+                'SELECT COUNT(*)::int AS c FROM goog_posts WHERE user_id = $1',
+                [userId]
+            ),
+        ]);
+        if (Number(limits.writeGoogDailyLimit) > 0 && Number(dailyCountRes.rows[0].c) >= Number(limits.writeGoogDailyLimit)) {
             return res.status(403).json({
                 success: false,
-                message: 'Limit reached. Subscribe to a higher plan to create more googs.',
+                message: 'Daily Goog posting limit reached. Subscribe to a higher plan to create more googs today.',
                 code: 'WRITE_GOOG_LIMIT',
-                limit: limits.writeGoogLimit,
+                limitType: 'daily',
+                limit: limits.writeGoogDailyLimit,
+            });
+        }
+        if (Number(limits.writeGoogTotalLimit) > 0 && Number(totalCountRes.rows[0].c) >= Number(limits.writeGoogTotalLimit)) {
+            return res.status(403).json({
+                success: false,
+                message: 'Total Goog posting limit reached. Subscribe to a higher plan to create more googs.',
+                code: 'WRITE_GOOG_LIMIT',
+                limitType: 'total',
+                limit: limits.writeGoogTotalLimit,
             });
         }
 
         const text = String(req.body?.text || '').trim().slice(0, limits.googLetterLimit);
         const textColor = String(req.body?.textColor || '#FFFFFF').trim().slice(0, 20);
-
-        // Enforce colored goog limit if a non-default color is requested
-        const isColored = textColor && textColor.toUpperCase() !== '#FFFFFF' && textColor.toLowerCase() !== 'white';
-        if (isColored && limits.writeGoogColorLimit !== undefined) {
-            const colorCountRes = await pool.query(
-                `SELECT COUNT(*)::int AS c FROM goog_posts WHERE user_id = $1 AND UPPER(text_color) != '#FFFFFF' AND text_color IS NOT NULL AND text_color != ''`,
-                [userId]
-            );
-            if (colorCountRes.rows[0].c >= limits.writeGoogColorLimit) {
-                return res.status(403).json({
-                    success: false,
-                    message: `You have reached your colored Goog limit (${limits.writeGoogColorLimit}). Upgrade your plan to create more colored Googs.`,
-                    code: 'WRITE_GOOG_COLOR_LIMIT',
-                    limit: limits.writeGoogColorLimit,
-                });
-            }
-        }
 
         if (!text) return res.status(400).json({ success: false, message: 'Post text is required' });
 
@@ -613,16 +616,20 @@ exports.toggleLike = async (req, res) => {
         const userId = req.user.id;
         const id = parseInt(req.params.id, 10);
 
-        const existing = await pool.query('SELECT 1 FROM goog_likes WHERE goog_id = $1 AND user_id = $2', [id, userId]);
-        if (existing.rows.length) {
-            await pool.query('DELETE FROM goog_likes WHERE goog_id = $1 AND user_id = $2', [id, userId]);
-            await pool.query('UPDATE goog_posts SET likes_count = GREATEST(COALESCE(likes_count, 0) - 1, 0) WHERE id = $1', [id]);
-            return res.status(200).json({ success: true, liked: false });
-        }
-
-        await pool.query('INSERT INTO goog_likes (goog_id, user_id) VALUES ($1, $2)', [id, userId]);
-        await pool.query('UPDATE goog_posts SET likes_count = COALESCE(likes_count, 0) + 1 WHERE id = $1', [id]);
-        res.status(200).json({ success: true, liked: true });
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const post=await client.query('SELECT id FROM goog_posts WHERE id=$1 FOR UPDATE',[id]);
+            if(!post.rows.length){await client.query('ROLLBACK');return res.status(404).json({success:false,message:'Goog post not found'});}
+            const existing=await client.query('SELECT 1 FROM goog_likes WHERE goog_id=$1 AND user_id=$2',[id,userId]);
+            const liked=existing.rows.length===0;
+            if(liked) await client.query('INSERT INTO goog_likes(goog_id,user_id) VALUES($1,$2)',[id,userId]);
+            else await client.query('DELETE FROM goog_likes WHERE goog_id=$1 AND user_id=$2',[id,userId]);
+            const updated=await client.query('UPDATE goog_posts SET likes_count=(SELECT COUNT(*) FROM goog_likes WHERE goog_id=$1) WHERE id=$1 RETURNING likes_count',[id]);
+            await client.query('COMMIT');
+            return res.json({success:true,liked,likes_count:Number(updated.rows[0].likes_count)});
+        }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}
+        finally{client.release();}
     } catch (error) {
         console.error('Error toggling Goog like:', error);
         res.status(500).json({ success: false, message: 'Server error toggling Goog like' });

@@ -1,5 +1,6 @@
 const { Pool, types } = require('pg');
 const path = require('path');
+const fs = require('fs');
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 require('dotenv').config();
 
@@ -24,15 +25,10 @@ const localSslRejectUnauthorized = ['true', '1'].includes(String(process.env.DB_
 const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 const forceLocalDb = ['true', '1', 'yes'].includes(String(process.env.FORCE_LOCAL_DB || '').toLowerCase());
 
-// Hosted Postgres on EC2/RDS often needs relaxed certificate validation in app code.
-if (connectionString || (localSslEnabled && !localSslRejectUnauthorized)) {
-    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-}
-
 if (connectionString && !forceLocalDb) {
     console.log('Using Cloud Database Connection URL');
     dbConfig.connectionString = connectionString;
-    dbConfig.ssl = { rejectUnauthorized: false };
+    dbConfig.ssl = { rejectUnauthorized: localSslRejectUnauthorized };
 } else if (process.env.DB_HOST) {
     console.log(`Using Database Host Config: ${process.env.DB_HOST}`);
     dbConfig.host = process.env.DB_HOST;
@@ -51,6 +47,10 @@ if (connectionString && !forceLocalDb) {
     console.warn('Warning: No Database Configuration Found. Defaulting to local pg defaults.');
 }
 
+if (dbConfig.ssl && process.env.DB_SSL_CA_FILE) {
+    dbConfig.ssl.ca = fs.readFileSync(process.env.DB_SSL_CA_FILE, 'utf8');
+}
+
 const poolMax = Number.parseInt(String(process.env.DB_POOL_MAX || process.env.PGPOOL_MAX || '25'), 10);
 const poolIdleTimeoutMs = Number.parseInt(String(process.env.DB_POOL_IDLE_TIMEOUT_MS || '30000'), 10);
 const poolConnectionTimeoutMs = Number.parseInt(String(process.env.DB_POOL_CONNECTION_TIMEOUT_MS || '10000'), 10);
@@ -60,6 +60,20 @@ dbConfig.max = Number.isFinite(poolMax) && poolMax > 0 ? poolMax : 25;
 dbConfig.idleTimeoutMillis = Number.isFinite(poolIdleTimeoutMs) && poolIdleTimeoutMs > 0 ? poolIdleTimeoutMs : 30000;
 dbConfig.connectionTimeoutMillis = Number.isFinite(poolConnectionTimeoutMs) && poolConnectionTimeoutMs > 0 ? poolConnectionTimeoutMs : 10000;
 dbConfig.maxUses = Number.isFinite(poolMaxUses) && poolMaxUses > 0 ? poolMaxUses : 7500;
+// Force the session timezone via the connection's startup packet instead of a
+// post-connect `SET timezone` query. The old `pool.on('connect', ...)` query
+// below was fire-and-forget — nothing blocked a freshly checked-out connection
+// from running a real query (e.g. an INSERT with `created_at DEFAULT
+// CURRENT_TIMESTAMP`) before that SET finished. When that race lost, the
+// server cast CURRENT_TIMESTAMP (timestamptz) down to the column's
+// `timestamp without time zone` using the server's own default zone
+// (Asia/Colombo, UTC+5:30) instead of UTC, silently storing a wall-clock
+// value 5.5 hours behind the real UTC instant — which then, read back and
+// treated as UTC everywhere else, made brand-new rows look hours old to any
+// age-based logic (e.g. chat auto-delete pruning). `options: '-c
+// TimeZone=UTC'` is applied by the server before any query can run on the
+// connection, so there is no window for that race.
+dbConfig.options = `${dbConfig.options ? dbConfig.options + ' ' : ''}-c TimeZone=UTC`;
 
 const pool = new Pool(dbConfig);
 

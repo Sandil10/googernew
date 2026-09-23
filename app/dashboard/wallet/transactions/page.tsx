@@ -20,13 +20,18 @@ import {
 const formatHistoryCounterparty = (tx: any, currentUserId?: number | string) => {
     const isSent = tx.sender_id === currentUserId;
     const type = String(tx?.type || '').toLowerCase();
+    if (type === 'subscription_payment' || type === 'sub_auto_renew') {
+        return 'Googer';
+    }
     if (type === 'commission_hold') {
         return 'Googer Commission';
     }
     const fullName = isSent ? tx.receiver_full_name : tx.sender_full_name;
     const username = isSent ? tx.receiver_username : tx.sender_username;
-    const readableId = isSent ? tx.receiver_readable_id : tx.sender_readable_id;
-    return `${fullName || username || 'Unknown User'}${readableId ? ` (ID ${readableId})` : ''}`;
+    const displayName = String(fullName || username || 'Googer').trim();
+    return /(^|[\s_-])(super[\s_-]*)?admin($|[\s_-])|^googer([\s_-]*(admin|official|support))?$/i.test(displayName)
+        ? 'Googer'
+        : displayName;
 };
 
 const isManualOrderHold = (tx: any) => {

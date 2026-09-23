@@ -292,7 +292,7 @@ function SystemVideoPlayer({
                 </button>
             </div>
 
-            {/* Center controls: skip back 10s, play/pause, skip forward 10s  ( <  ⏸  > ) */}
+            {/* Center controls: skip back 5s, play/pause, skip forward 5s  ( <  ⏸  > ) */}
             <div className={`absolute left-1/2 top-1/2 z-20 flex -translate-x-1/2 -translate-y-1/2 items-center gap-3 transition-all duration-200 ${showControls ? "opacity-100" : "pointer-events-none opacity-0"}`} onClick={(event) => event.stopPropagation()}>
                 <button
                     type="button"

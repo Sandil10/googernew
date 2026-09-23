@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import RupieerCoinButton from "../ads/RupieerCoinButton";
 import { useState, memo, useEffect, useMemo } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import SubscribeButton from "@/app/components/SubscribeButton";
@@ -56,9 +57,15 @@ export interface SharedProductCardProps {
   onUpdateOrderStatus?: (id: any, status: string) => void;
   activeTab?: string;
   myListingsTab?: string;
+  compact?: boolean;
 }
 
 const EMPTY_OBJECT = {};
+
+const isRunningAdStatus = (value: unknown) => {
+  const status = String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+  return status === "active" || status === "running" || status === "approved";
+};
 
 const isPlaceholderProductImage = (src: any) => {
   const value = String(src || "").trim().toLowerCase();
@@ -112,9 +119,9 @@ export const SharedProductCard = memo(({
   onUpdateOrderStatus,
   activeTab = "market",
   myListingsTab = "active",
+  compact = false,
 }: SharedProductCardProps) => {
   const [openMenu, setOpenMenu] = useState(false);
-  const [likeLockMessage, setLikeLockMessage] = useState(false);
   // Connect to global reactive store for both products and ads to ensure parity
   const interactionId = getAdInteractionId(product);
   const liveState = useAdStore((state) => state.adStates[interactionId] || EMPTY_OBJECT);
@@ -129,8 +136,10 @@ export const SharedProductCard = memo(({
   const displayCommentsCount = liveState.comments_count ?? liveState.commentCount ?? Number(product.comments_count || product.commentCount || 0);
   const displaySharesCount = liveState.shares_count ?? liveState.shareCount ?? Number(product.shares_count || product.shareCount || 0);
   const displayTimestamp = isAd
-    ? (product.active_start_time || product.activeStartTime || product.started_at || product.startedAt || product.created_at || product.createdAt)
+    ? (product.active_start_time || product.activeStartTime || product.started_at || product.startedAt || product.raw?.active_start_time || product.raw?.activeStartTime || product.raw?.started_at || product.raw?.startedAt || product.created_at || product.createdAt || product.raw?.created_at || product.raw?.createdAt || product.raw?.approved_at || product.raw?.approvedAt || product.raw?.updated_at || product.raw?.updatedAt)
     : (product.created_at || product.createdAt);
+  const explicitAdStatus = product.ad_status || product.adStatus || product.delivery_status || product.deliveryStatus || product.raw?.status || product.raw?.delivery_status || product.raw?.deliveryStatus;
+  const showRunningAdTag = isAd && isRunningAdStatus(explicitAdStatus || product.status);
 
   // For the canShowCollectCoin callback, we want to pass a normalized-like object that has the merged state
   const mergedForCallback = useMemo(() => ({
@@ -159,6 +168,7 @@ export const SharedProductCard = memo(({
   const img = normalizeMediaSrc(primaryImage);
   
   const showAdCoinButton = isAd && !!canShowCollectCoin?.(mergedForCallback) && !displayCoinCollected;
+  const compactAdCard = isAd && compact;
 
   const handleCardClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -173,7 +183,13 @@ export const SharedProductCard = memo(({
   const handleProfileClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     trackProductPromoteClick();
-    onNavigateToProfile?.(e, product.user_id);
+    // onNavigateToProfile (dashboard/page.tsx's navigateToAdProfile) reads
+    // ad.user_id / getItemUsername(ad) off its second argument — it expects
+    // the whole item, the same as SharedPhotoVideoAdCard passes. Passing
+    // just the id here left it destructuring fields off a bare number,
+    // which resolved to nothing and sent the click to the fallback profile
+    // instead of this card's actual advertiser.
+    onNavigateToProfile?.(e, product);
   };
 
   const handleMenuToggle = (e: React.MouseEvent) => {
@@ -223,41 +239,27 @@ export const SharedProductCard = memo(({
   return (
     <div className="relative group flex flex-col transition-all duration-500 hover:z-10 w-full">
       {showAdCoinButton && onCollectCoin && (
-        <div className="absolute right-3 top-[57px] z-[25] md:right-4 md:top-[62px]">
-          <button
-            type="button"
+        <div className={`absolute z-[25] ${compactAdCard ? "right-2 top-[46px] md:right-4 md:top-[62px]" : "right-3 top-[57px] md:right-4 md:top-[62px]"}`}>
+          <RupieerCoinButton
+            compact={compactAdCard}
             onClick={(event) => {
               event.stopPropagation();
               onCollectCoin(event, mergedForCallback);
             }}
-            className="flex items-center gap-1.5 rounded-full border border-red-400/30 bg-red-600 px-2 py-1 text-[8px] font-black uppercase tracking-[0.1em] text-white shadow-xl transition hover:bg-red-500 active:scale-95"
-            aria-label="Collect ad coin"
-          >
-            <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
-              <Image
-                src="/assets/images/rupee.png"
-                alt="Ruppier coin"
-                width={28}
-                height={28}
-                className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
-                unoptimized
-              />
-            </span>
-            <span className="leading-none">Ruppier</span>
-          </button>
+          />
         </div>
       )}
 
       <div
-        className="group relative flex min-w-0 cursor-pointer flex-col rounded-[1.5rem] border border-white/5 bg-[#1a1a1a] pb-2 transition-all hover:border-white/20 hover:shadow-2xl md:rounded-[2.5rem] md:pb-4"
+        className={`group relative flex min-w-0 cursor-pointer flex-col border border-white/5 bg-[#1a1a1a] transition-all hover:border-white/20 hover:shadow-2xl ${compactAdCard ? "rounded-[1.1rem] pb-1.5 md:rounded-[2.5rem] md:pb-4" : "rounded-[1.5rem] pb-2 md:rounded-[2.5rem] md:pb-4"}`}
         onClick={handleCardClick}
       >
         {/* Header Section */}
-        <div className="flex items-center justify-between gap-1 p-1.5 md:p-3 md:px-4">
+        <div className={`flex items-center justify-between gap-1 ${compactAdCard ? "p-1.5 md:p-3 md:px-4" : "p-1.5 md:p-3 md:px-4"}`}>
           <div className="group/profile flex min-w-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
             <div
               onClick={handleProfileClick}
-              className="relative flex h-5 w-5 flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-white/10 bg-gradient-to-tr from-blue-600 to-purple-600 text-[7px] text-white shadow-lg transition-all group-hover/profile:border-white/40 md:h-8 md:w-8 md:text-[10px]"
+              className={`relative flex flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-white/10 bg-gradient-to-tr from-blue-600 to-purple-600 text-white shadow-lg transition-all group-hover/profile:border-white/40 ${compactAdCard ? "h-6 w-6 text-[7px] md:h-8 md:w-8 md:text-[10px]" : "h-5 w-5 text-[7px] md:h-8 md:w-8 md:text-[10px]"}`}
             >
               {sellerImage ? (
                 <Image
@@ -278,19 +280,20 @@ export const SharedProductCard = memo(({
             <div className="flex flex-col min-w-0">
               <span
                 onClick={handleProfileClick}
-                className="flex items-center gap-1 text-[7px] md:text-[10px] text-white font-black normal-case tracking-tight truncate leading-none group-hover/profile:text-blue-400 transition-colors cursor-pointer"
+                className={`flex items-center gap-1 text-white font-black normal-case tracking-tight truncate leading-none group-hover/profile:text-blue-400 transition-colors cursor-pointer ${compactAdCard ? "text-[8px] md:text-[10px]" : "text-[7px] md:text-[10px]"}`}
               >
                 {sellerName}
                 {sellerId && <UserVerifiedBadge userId={sellerId} size={12} />}
               </span>
               <div className="flex items-center gap-1.5 mt-0.5">
-                <span className="text-[5px] md:text-[7px] text-slate-500 font-bold tracking-widest">
-                  <RelativeTime timestamp={displayTimestamp} />
-                </span>
-                {isAd && (
-                  <span className="flex items-center gap-0.5 text-[6px] md:text-[8px] font-bold text-emerald-400 px-1">
+                {showRunningAdTag ? (
+                  <span className={`flex items-center gap-0.5 font-bold text-emerald-400 px-1 ${compactAdCard ? "text-[7px] md:text-[8px]" : "text-[6px] md:text-[8px]"}`}>
                     <IonIcon name="megaphone-outline" className="text-[8px] md:text-[10px]" />
                     Ad
+                  </span>
+                ) : (
+                  <span className="text-[5px] md:text-[7px] text-slate-500 font-bold tracking-widest">
+                    <RelativeTime timestamp={displayTimestamp} />
                   </span>
                 )}
               </div>
@@ -309,7 +312,7 @@ export const SharedProductCard = memo(({
             <div className="relative">
               <button
                 onClick={handleMenuToggle}
-                className="light-theme-option-dots w-5 h-5 md:w-8 md:h-8 rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center transition-all active:scale-75"
+                className={`light-theme-option-dots rounded-full bg-white/5 hover:bg-white/10 text-white flex items-center justify-center transition-all active:scale-75 ${compactAdCard ? "h-6 w-6 md:h-8 md:w-8" : "w-5 h-5 md:w-8 md:h-8"}`}
                 aria-label="Open product options"
               >
                 <div className="flex flex-col gap-0.5">
@@ -327,7 +330,7 @@ export const SharedProductCard = memo(({
                       onClick={() => { trackProductPromoteClick(); onShare(mergedForCallback); setOpenMenu(false); }}
                       className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors"
                     >
-                      <IonIcon name="share-social-outline" className="text-blue-400 text-lg" />
+                      <IonIcon name="arrow-redo-outline" className="text-blue-400 text-lg" />
                       Share Link
                     </button>
                   )}
@@ -349,13 +352,13 @@ export const SharedProductCard = memo(({
                       Edit Post
                     </button>
                   )}
-                  {onDeleteProduct && currentUser?.id === product.user_id && (
+                  {onDeleteProduct && (isAd || currentUser?.id === product.user_id) && (
                     <button
                       onClick={() => { onDeleteProduct(product); setOpenMenu(false); }}
                       className="w-full px-4 py-3 text-left text-[11px] font-bold text-red-500 hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
                     >
                       <IonIcon name="trash-outline" className="text-lg" />
-                      Delete Post
+                      {isAd ? "Delete Ad" : "Delete Post"}
                     </button>
                   )}
                   {currentUser?.id !== product.user_id && (
@@ -383,7 +386,7 @@ export const SharedProductCard = memo(({
         </div>
 
         {/* Image Section */}
-        <div className="relative mx-2 rounded-[1.2rem] md:rounded-[2rem] overflow-hidden mb-1.5 bg-black border border-white/5 shadow-inner aspect-square">
+        <div className={`relative overflow-hidden bg-black border border-white/5 shadow-inner aspect-square ${compactAdCard ? "mx-1.5 mb-1 rounded-[0.8rem] md:mx-2 md:mb-1.5 md:rounded-[2rem]" : "mx-2 rounded-[1.2rem] md:rounded-[2rem] mb-1.5"}`}>
           {img ? (
             <Image
               src={img}
@@ -445,9 +448,9 @@ export const SharedProductCard = memo(({
         </div>
 
         {/* Content Section */}
-        <div className="px-2.5 md:px-5 pb-1.5">
+        <div className={`${compactAdCard ? "px-1.5 pb-1 md:px-5 md:pb-1.5" : "px-2.5 md:px-5 pb-1.5"}`}>
           <div className="mb-1 flex items-start gap-1 flex-wrap">
-            <h3 className="text-white text-[9px] md:text-[12px] font-black uppercase tracking-tight group-hover:text-amber-400 transition-colors break-words leading-tight">
+            <h3 className={`text-white font-black uppercase tracking-tight group-hover:text-amber-400 transition-colors break-words leading-tight ${compactAdCard ? "text-[8px] md:text-[12px]" : "text-[9px] md:text-[12px]"}`}>
               {product.title}
             </h3>
             {uniqueVariantColors.length > 0 && (
@@ -469,10 +472,10 @@ export const SharedProductCard = memo(({
           </div>
 
           <div className="flex flex-col mb-0.5">
-            <div className="flex items-center justify-between gap-2 mr-[-8px]">
+            <div className="flex items-center justify-between gap-2">
               <div className="flex items-baseline gap-1">
-                <span className="text-xs font-black text-white/40">R</span>
-                <span className="text-2xl font-black text-white tracking-tighter">
+                <span className={`font-black text-white/40 ${compactAdCard ? "text-[9px] md:text-xs" : "text-xs"}`}>R</span>
+                <span className={`font-black text-white tracking-tighter ${compactAdCard ? "text-base md:text-2xl" : "text-2xl"}`}>
                   {displayPrice}
                 </span>
               </div>
@@ -487,9 +490,9 @@ export const SharedProductCard = memo(({
                       handleCardClick(e);
                     }
                   }}
-                  className="w-10 h-10 flex items-center justify-center bg-white/5 hover:bg-white/10 text-white/40 transition-all rounded-2xl border border-white/5 shadow-inner hover:text-blue-400 active:scale-75"
+                  className={`flex shrink-0 items-center justify-center bg-white/8 hover:bg-white/12 text-white transition-all border border-white/10 shadow-inner hover:text-blue-300 active:scale-75 ${compactAdCard ? "h-7 w-7 rounded-xl md:h-10 md:w-10 md:rounded-2xl" : "h-8 w-8 rounded-xl md:h-10 md:w-10 md:rounded-2xl"}`}
                 >
-                  <IonIcon name="cart-outline" className="text-xl" />
+                  <IonIcon name="cart-outline" className={compactAdCard ? "text-sm md:text-xl" : "text-base md:text-xl"} />
                 </button>
               )}
             </div>
@@ -509,27 +512,15 @@ export const SharedProductCard = memo(({
                       count={displayLikesCount}
                       color="text-white"
                       activeColor="text-white"
+                      locked={isAd && !!liveState.like_locked_hint}
                       onSingleClick={() => {
                         if (likePending) return;
                         // Read synchronously at click time — avoids stale reactive value between
                         // Zustand set() and React's next render
-                        const freshState = useAdStore.getState().getAdState(product);
-                        const isLocked = !!(freshState.ad_like_locked ?? freshState.ad_coin_collected ?? displayLikeLocked);
-                        const isLiked = !!(freshState.user_liked ?? displayLiked);
-                        if (isLiked && isLocked) {
-                          setLikeLockMessage(true);
-                          setTimeout(() => setLikeLockMessage(false), 3000);
-                          return;
-                        }
                         onToggleLike?.(mergedForCallback);
                       }}
                       onLongPress={() => onOpenSheet?.("likes", mergedForCallback)}
                     />
-                    {likeLockMessage && (
-                      <span className="absolute top-full mt-0.5 whitespace-nowrap rounded px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider text-red-400">
-                        Like locked
-                      </span>
-                    )}
                   </div>
                   <AdInteractionButton
                     type="views"
@@ -560,8 +551,8 @@ export const SharedProductCard = memo(({
                   />
                   <AdInteractionButton
                     type="shares"
-                    icon="share-social-outline"
-                    activeIcon="share-social"
+                    icon="arrow-redo-outline"
+                    activeIcon="arrow-redo"
                     count={isAd ? displaySharesCount : (() => {
                       try {
                         const info = typeof product.commission_info === "string" ? JSON.parse(product.commission_info) : product.commission_info;
@@ -576,7 +567,7 @@ export const SharedProductCard = memo(({
                       onShare?.(mergedForCallback);
                     }}
                     onLongPress={() => onOpenSheet?.("shares", mergedForCallback)}
-                    iconSize="text-sm md:text-base opacity-90"
+                    iconSize="text-[17px] md:text-base opacity-90"
                   />
                 </>
               )}

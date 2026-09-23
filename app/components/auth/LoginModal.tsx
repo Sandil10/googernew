@@ -20,6 +20,10 @@ export default function LoginModal({
     const [loading, setLoading] = useState(false);
     const [deviceApproval, setDeviceApproval] = useState<{ id: string; token: string } | null>(null);
     const [approvalStatus, setApprovalStatus] = useState("Waiting for a trusted device to respond.");
+    const [loginOtpRequired, setLoginOtpRequired] = useState(false);
+    const [loginOtp, setLoginOtp] = useState("");
+    const [loginDebugOtp, setLoginDebugOtp] = useState("");
+    const [loginMessage, setLoginMessage] = useState("");
     const [resetStep, setResetStep] = useState(0);
     const [resetEmail, setResetEmail] = useState("");
     const [otp, setOtp] = useState("");
@@ -73,12 +77,71 @@ export default function LoginModal({
                 setApprovalStatus("A new device is trying to access your account. Waiting for approval.");
                 return;
             }
+            if (result?.otpRequired) {
+                setLoginOtpRequired(true);
+                setLoginOtp("");
+                setLoginDebugOtp(result?.debugOtp || "");
+                setLoginMessage(result?.message || "OTP sent to registered email.");
+                return;
+            }
             onSuccess();
         } catch (err: any) {
             setError(err?.message || "Login failed. Please check your credentials.");
         } finally {
             setLoading(false);
         }
+    };
+
+    const handleVerifyLoginOtp = async () => {
+        setError("");
+        if (!/^\d{6}$/.test(loginOtp.trim())) {
+            setError("Please enter the 6-digit OTP.");
+            return;
+        }
+        setLoading(true);
+        try {
+            const result = await authService.verifyLoginOtp({ email, password, otp: loginOtp.trim() });
+            if (result?.approvalRequired && result?.approval?.id && result?.approval?.token) {
+                setDeviceApproval({ id: result.approval.id, token: result.approval.token });
+                setApprovalStatus("A new device is trying to access your account. Waiting for approval.");
+                setLoginOtpRequired(false);
+                return;
+            }
+            onSuccess();
+        } catch (err: any) {
+            setError(err?.message || "Could not verify OTP.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleResendLoginOtp = async () => {
+        setError("");
+        setLoginMessage("");
+        setLoading(true);
+        try {
+            const result = await authService.login({ email, password });
+            if (result?.otpRequired) {
+                setLoginOtp("");
+                setLoginDebugOtp(result?.debugOtp || "");
+                setLoginMessage(result?.message || "OTP sent to registered email.");
+                return;
+            }
+            onSuccess();
+        } catch (err: any) {
+            setError(err?.message || "Could not resend OTP.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const resetLoginOtpFlow = () => {
+        setLoginOtpRequired(false);
+        setLoginOtp("");
+        setLoginDebugOtp("");
+        setLoginMessage("");
+        setError("");
+        setLoading(false);
     };
 
     const closeResetFlow = () => {
@@ -192,7 +255,7 @@ export default function LoginModal({
                 )}
 
                 {resetStep === 0 ? (
-                    <form onSubmit={handleSubmit} className="space-y-4">
+                    <form onSubmit={loginOtpRequired ? (event) => { event.preventDefault(); void handleVerifyLoginOtp(); } : handleSubmit} className="space-y-4">
                         {deviceApproval && (
                             <div className="rounded-2xl border border-amber-400/25 bg-amber-400/10 px-4 py-4 text-center">
                                 <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-400/10 text-amber-200">
@@ -209,59 +272,108 @@ export default function LoginModal({
                                 </button>
                             </div>
                         )}
-                        <div>
-                            <input
-                                className="w-full rounded-xl border border-gray-800 bg-[#121212] px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500/40"
-                                id="modal-email"
-                                name="email"
-                                type="email"
-                                placeholder="Enter Email"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                required
-                            />
-                        </div>
+                        {loginOtpRequired ? (
+                            <div className="animate-[slideIn_0.4s_ease-out]">
+                                {loginMessage && (
+                                    <div className="mb-4 rounded-xl border border-green-500/30 bg-green-500/10 px-4 py-3 text-center text-xs font-semibold text-green-200">
+                                        {loginMessage}
+                                    </div>
+                                )}
+                                <div className="mb-6 text-center">
+                                    <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/5">
+                                        <IonIcon name="keypad-outline" className="text-2xl text-gray-300" />
+                                    </div>
+                                    <h3 className="mb-2 text-xl font-bold text-white">Verify Login OTP</h3>
+                                    <p className="text-xs leading-relaxed text-gray-500">We've sent a 6-digit code to <br /><span className="font-bold text-gray-300">{email}</span></p>
+                                </div>
 
-                        <div className="relative">
-                            <input
-                                className="w-full rounded-xl border border-gray-800 bg-[#121212] px-4 py-3 pr-12 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500/40"
-                                id="modal-password"
-                                name="password"
-                                type={showPassword ? "text" : "password"}
-                                placeholder="Enter Password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                required
-                            />
-                            <button
-                                type="button"
-                                onClick={() => setShowPassword(!showPassword)}
-                                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 transition-colors hover:text-white"
-                            >
-                                <IonIcon name={showPassword ? "eye-outline" : "eye-off-outline"} className="text-xl" />
-                            </button>
-                        </div>
+                                <input
+                                    type="text"
+                                    placeholder="Enter 6-Digit OTP"
+                                    maxLength={6}
+                                    value={loginOtp}
+                                    onChange={(e) => setLoginOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                                    className="mb-4 w-full rounded-xl border border-gray-800 bg-[#121212] px-4 py-3 text-center text-sm font-bold tracking-[0.5em] text-white outline-none focus:ring-1 focus:ring-gray-500/40"
+                                />
 
-                        <div className="text-right px-1">
-                            <button
-                                type="button"
-                                className="text-xs font-bold text-red-500 transition-colors hover:text-red-400"
-                                onClick={() => {
-                                    setResetEmail(email.trim());
-                                    setResetStep(1);
-                                }}
-                            >
-                                Forgot Password?
-                            </button>
-                        </div>
+                                <button
+                                    type="button"
+                                    onClick={handleVerifyLoginOtp}
+                                    disabled={loading}
+                                    className="w-full rounded-full bg-white px-4 py-3 text-sm font-bold text-black shadow-lg transition-all hover:bg-gray-200 active:scale-[0.97] disabled:opacity-50"
+                                >
+                                    {loading ? "Verifying..." : "Verify & Login"}
+                                </button>
 
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="mt-2 w-full rounded-full bg-gray-200 px-4 py-3 text-sm font-bold text-black shadow-[0_14px_30px_rgba(255,255,255,0.08)] transition-all duration-200 hover:bg-white active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            {loading ? "Logging in..." : "Login"}
-                        </button>
+                                {loginDebugOtp && (
+                                    <div className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-center text-[11px] font-bold text-amber-100">
+                                        Debug OTP: {loginDebugOtp}
+                                    </div>
+                                )}
+
+                                <div className="mt-4 flex items-center justify-center gap-3 text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                                    <button type="button" onClick={handleResendLoginOtp} disabled={loading} className="text-red-500 hover:underline disabled:opacity-50">Resend OTP</button>
+                                    <span className="text-white/15">|</span>
+                                    <button type="button" onClick={resetLoginOtpFlow} disabled={loading} className="text-white/45 hover:text-white disabled:opacity-50">Back</button>
+                                </div>
+                            </div>
+                        ) : (
+                            <>
+                                <div>
+                                    <input
+                                        className="w-full rounded-xl border border-gray-800 bg-[#121212] px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500/40"
+                                        id="modal-email"
+                                        name="email"
+                                        type="email"
+                                        placeholder="Enter Email"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        required
+                                    />
+                                </div>
+
+                                <div className="relative">
+                                    <input
+                                        className="w-full rounded-xl border border-gray-800 bg-[#121212] px-4 py-3 pr-12 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500/40"
+                                        id="modal-password"
+                                        name="password"
+                                        type={showPassword ? "text" : "password"}
+                                        placeholder="Password or 6-digit passkey"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        required
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowPassword(!showPassword)}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 transition-colors hover:text-white"
+                                    >
+                                        <IonIcon name={showPassword ? "eye-outline" : "eye-off-outline"} className="text-xl" />
+                                    </button>
+                                </div>
+
+                                <div className="text-right px-1">
+                                    <button
+                                        type="button"
+                                        className="text-xs font-bold text-red-500 transition-colors hover:text-red-400"
+                                        onClick={() => {
+                                            setResetEmail(email.trim());
+                                            setResetStep(1);
+                                        }}
+                                    >
+                                        Forgot Password?
+                                    </button>
+                                </div>
+
+                                <button
+                                    type="submit"
+                                    disabled={loading}
+                                    className="mt-2 w-full rounded-full bg-gray-200 px-4 py-3 text-sm font-bold text-black shadow-[0_14px_30px_rgba(255,255,255,0.08)] transition-all duration-200 hover:bg-white active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {loading ? "Logging in..." : "Login"}
+                                </button>
+                            </>
+                        )}
 
                         <div className="mt-4 text-center">
                             <span className="text-xs font-normal text-gray-500 underline decoration-gray-800 underline-offset-4">Don't have an account? </span>

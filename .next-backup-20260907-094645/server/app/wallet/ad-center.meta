@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/wallet/layout,_N_T_/wallet/ad-center/layout,_N_T_/wallet/ad-center/page,_N_T_/wallet/ad-center"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/wallet/ad-center/__PAGE__",
+    "/wallet/ad-center",
+    "/wallet",
+    "/_index",
+    "/_head"
+  ]
+}

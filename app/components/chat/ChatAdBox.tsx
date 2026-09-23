@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import RupieerCoinButton from "../ads/RupieerCoinButton";
 import React, { useState } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import { AdInteractionButton } from "@/app/components/ads/AdInteractionButton";
@@ -29,6 +30,7 @@ type ChatAdBoxProps = {
     onOpenProductSecondView?: (ad: any) => void | Promise<void>;
     onPromoteAgain?: (ad: any) => void | Promise<void>;
     promoteAgainLabel?: string;
+    onDeleteAd?: (ad: any) => void | Promise<void>;
 };
 
 const EMPTY_STATE = {};
@@ -48,6 +50,7 @@ export function ChatAdBox({
     onOpenProductSecondView,
     onPromoteAgain,
     promoteAgainLabel = "Promote Again",
+    onDeleteAd,
 }: ChatAdBoxProps) {
     const [popupOpen, setPopupOpen] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
@@ -239,10 +242,14 @@ export function ChatAdBox({
                             </div>
                         )}
                         {isVideo && (
-                            <div className="absolute inset-0 flex items-center justify-center">
-                                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/80 shadow">
-                                    <IonIcon name="play" className="text-[10px] text-black ml-0.5" />
-                                </span>
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                <Image
+                                    src="/assets/images/googer.png"
+                                    alt="Play"
+                                    width={22}
+                                    height={22}
+                                    className="h-[22px] w-[22px] object-contain drop-shadow-[0_4px_8px_rgba(0,0,0,0.65)]"
+                                />
                             </div>
                         )}
                     </div>
@@ -305,7 +312,7 @@ export function ChatAdBox({
                                 }}
                                 className="flex w-full items-center gap-3 px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5"
                             >
-                                <IonIcon name="share-social-outline" className="text-lg text-blue-400" />
+                                <IonIcon name="arrow-redo-outline" className="text-lg text-blue-400" />
                                 Share Link
                             </button>
                             {onPromoteAgain && (
@@ -319,6 +326,19 @@ export function ChatAdBox({
                                 >
                                     <IonIcon name="megaphone-outline" className="text-lg text-emerald-400" />
                                     {promoteAgainLabel}
+                                </button>
+                            )}
+                            {onDeleteAd && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        void onDeleteAd(mergedAd.raw || mergedAd);
+                                        setMenuOpen(false);
+                                    }}
+                                    className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-3 text-left text-[11px] font-bold text-red-500 transition-colors hover:bg-white/5"
+                                >
+                                    <IonIcon name="trash-outline" className="text-lg" />
+                                    Delete Ad
                                 </button>
                             )}
                             <button
@@ -409,23 +429,10 @@ export function ChatAdBox({
 
                             <div className="flex items-center gap-2">
                                 {canShowCoinBtn && (
-                                    <button
-                                        type="button"
+                                    <RupieerCoinButton
+                                        compact
                                         onClick={(e) => { e.stopPropagation(); onCollectCoin(e, mergedAd); }}
-                                        className="flex items-center gap-1.5 rounded-full border border-red-400/30 bg-red-600 px-2 py-1 text-[8px] font-black uppercase tracking-[0.1em] text-white shadow-xl transition hover:bg-red-500 active:scale-95"
-                                    >
-                                        <span className="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
-                                            <Image
-                                                src="/assets/images/rupee.png"
-                                                alt="Ruppier coin"
-                                                width={20}
-                                                height={20}
-                                                className="h-4 w-4 object-contain"
-                                                unoptimized
-                                            />
-                                        </span>
-                                        <span className="leading-none">Ruppier</span>
-                                    </button>
+                                    />
                                 )}
                                 <button
                                     type="button"
@@ -473,6 +480,7 @@ export function ChatAdBox({
                                     count={likeCount}
                                     color="text-white"
                                     activeColor="text-white"
+                                    locked={!!liveState.like_locked_hint}
                                     onSingleClick={() => onToggleLike(mergedAd)}
                                     onLongPress={() => onOpenSheet("likes", mergedAd)}
                                     iconSize="text-base md:text-xl"
@@ -501,8 +509,8 @@ export function ChatAdBox({
                                 />
                                 <AdInteractionButton
                                     type="shares"
-                                    icon="share-social"
-                                    activeIcon="share-social"
+                                    icon="arrow-redo"
+                                    activeIcon="arrow-redo"
                                     count={shareCount}
                                     color="text-white"
                                     activeColor="text-white"

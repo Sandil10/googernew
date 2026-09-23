@@ -26,7 +26,33 @@ router.get(
 router.get('/saved-public/:userId', savedAdsController.getPublicSavedAdsByUser);
 
 router.use(authMiddleware);
+router.get('/publish-operations/:operationKey', async (req, res, next) => {
+    try {
+        const result = await require('../config/database').query(
+            'SELECT response FROM ad_publish_operations WHERE user_id=$1 AND operation_key=$2',
+            [req.user.id, req.params.operationKey]);
+        if (!result.rows.length) return res.status(404).json({ success: false, message: 'Publish operation not completed.' });
+        return res.json(result.rows[0].response);
+    } catch (error) { next(error); }
+});
+router.post('/publish', upload.array('images', 5), async (req, res) => {
+    try {
+        const result = await require('../modules/ads/publishAdService').publishAd(req);
+        res.status(result.statusCode || 200).json(result);
+    } catch (error) {
+        const status = error.statusCode || 500;
+        // An unexpected failure here used to be discarded entirely, so every
+        // cause looked like the same generic 500 to the client and left no
+        // trace at all server-side — a broken media upload was indistinguishable
+        // from a database fault.
+        if (status >= 500) {
+            console.error('Ad publish failed:', error?.name, error?.message, error?.stack);
+        }
+        res.status(status).json({ success: false, message: status < 500 ? error.message : 'Could not publish ad. Please retry with the same operation.' });
+    }
+});
 
+router.get('/resolve-link', require('../modules/ads/shareLinkController').resolveShareLink);
 router.get('/my', readAdsController.getMyAds);
 router.get('/all', readAdsController.getAllAds);
 router.get('/saves', savedAdsController.getMySavedAds);

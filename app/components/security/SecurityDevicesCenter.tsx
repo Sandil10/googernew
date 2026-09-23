@@ -78,10 +78,17 @@ const hasLocationValue = (value: unknown) => {
     return String(value).trim().length > 0 && String(value).trim().toLowerCase() !== "unknown";
 };
 
+const compactSecret = (value?: string) => {
+    const clean = String(value || "").trim();
+    if (!clean) return "Unknown";
+    return clean.length > 4 ? `${clean.slice(0, 4)}...` : clean;
+};
+
 export function DeviceDetailsModal({ device, onClose }: { device: AuthSessionDevice; onClose: () => void }) {
     const [deviceLookup, setDeviceLookup] = useState<DeviceLookupDetails | null>(null);
     const [deviceLookupLoading, setDeviceLookupLoading] = useState(false);
     const [deviceLookupError, setDeviceLookupError] = useState("");
+    const [copiedIp, setCopiedIp] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -118,12 +125,22 @@ export function DeviceDetailsModal({ device, onClose }: { device: AuthSessionDev
     const mapLat = hasLocationValue(device.latitude) ? Number(device.latitude) : hasLocationValue(location?.latitude) ? Number(location?.latitude) : null;
     const mapLng = hasLocationValue(device.longitude) ? Number(device.longitude) : hasLocationValue(location?.longitude) ? Number(location?.longitude) : null;
     const hasMap = mapLat !== null && mapLng !== null;
+    const copyIpAddress = async () => {
+        if (!device.ipAddress) return;
+        try {
+            await navigator.clipboard.writeText(device.ipAddress);
+            setCopiedIp(true);
+            window.setTimeout(() => setCopiedIp(false), 1200);
+        } catch {
+            setCopiedIp(false);
+        }
+    };
     const rows = [
         ["Device", device.deviceName],
         ["Type", device.deviceType],
         ["Browser", device.browser],
         ["Operating System", device.operatingSystem],
-        ["IP Address", device.ipAddress || "Unknown"],
+        ["IP Address", device.ipAddress || "Unknown", "ip"],
         ["Region", location?.region || device.region],
         ["District", location?.district],
         ["City", location?.city || device.city],
@@ -169,10 +186,21 @@ export function DeviceDetailsModal({ device, onClose }: { device: AuthSessionDev
                     </div>
 
                     <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
-                        {rows.length > 0 ? rows.map(([label, value]) => (
+                        {rows.length > 0 ? rows.map(([label, value, kind]) => (
                             <div key={String(label)} className="flex justify-between gap-3 rounded-xl bg-white/[0.03] px-3 py-2 text-xs">
                                 <span className="text-white/35">{label}</span>
-                                <span className="text-right font-semibold text-white/75">{value}</span>
+                                {kind === "ip" ? (
+                                    <span className="flex min-w-0 items-center justify-end gap-2 text-right font-semibold text-white/75">
+                                        <span className="truncate">{compactSecret(String(value || ""))}</span>
+                                        {device.ipAddress && (
+                                            <button type="button" onClick={copyIpAddress} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/10 text-white/55 transition hover:bg-white/5 hover:text-white" aria-label="Copy IP address">
+                                                <IonIcon name={copiedIp ? "checkmark-outline" : "copy-outline"} className="text-sm" />
+                                            </button>
+                                        )}
+                                    </span>
+                                ) : (
+                                    <span className="min-w-0 truncate text-right font-semibold text-white/75">{value}</span>
+                                )}
                             </div>
                         )) : (
                             <div className="rounded-xl bg-white/[0.03] px-3 py-4 text-sm text-white/45">
@@ -213,6 +241,10 @@ export default function SecurityDevicesCenter({
             setDevices(Array.isArray(result?.sessions) ? result.sessions : []);
             setLoginHistory(Array.isArray(historyResult?.history) ? historyResult.history : []);
         } catch (err: any) {
+            if (!authService.isAuthenticated()) {
+                window.location.href = "/";
+                return;
+            }
             if (!silent) setMessage({ type: "error", text: err?.message || "Could not load security devices." });
         } finally {
             if (!silent) setLoading(false);
@@ -264,7 +296,12 @@ export default function SecurityDevicesCenter({
 
     const toggleTrustedDevice = async (device: AuthSessionDevice) => {
         try {
-            await authService.updateAuthSession(device.id, { trusted: !device.trusted });
+            const result = await authService.updateAuthSession(device.id, { trusted: !device.trusted });
+            if (result?.session?.isCurrent && device.trusted) {
+                authService.clearSession();
+                window.location.href = "/";
+                return;
+            }
             setMessage({ type: "success", text: device.trusted ? "Device untrusted." : "Device trusted." });
             await loadDevices(true);
         } catch (err: any) {

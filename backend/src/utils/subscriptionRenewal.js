@@ -1,5 +1,16 @@
 const pool = require('../config/database');
-const { recordSubscriptionPayment } = require('../../../../shared/utils/financeCommands');
+const { recordSubscriptionPayment } = require('../../../shared/utils/financeCommands');
+const userSubscriptionsRepository = require('../modules/subscriptions/userSubscriptionsRepository');
+
+// Required lazily: savedAdsRepository reads getGraceDurationSeconds from this
+// module at load time, so requiring it up here would close a cycle and hand it
+// a half-built exports object.
+const getSavedAdsRepository = () => require('../modules/ads/savedAdsRepository');
+const {
+    syncUserApprovedUploadsToBasic,
+    syncUsersWithoutActivePaidPlanToBasic,
+    deleteExpiredUploadContents,
+} = require('./uploadContentPlanExpiry');
 
 let tableReady = false;
 let processingAll = false;
@@ -9,7 +20,31 @@ const getTestDurationMinutes = () => {
     return Number.isFinite(raw) && raw > 0 ? raw : 0;
 };
 
+const DURATION_UNIT_MS = {
+    minutes: 60 * 1000,
+    hours: 60 * 60 * 1000,
+    days: 24 * 60 * 60 * 1000,
+};
+
+// A plan can state its own billing period in minutes or hours, the same way it
+// already states its own grace period. The duration_days column is whole days,
+// so it cannot express "this plan lasts 5 minutes" — and the env switch below
+// can, but only by forcing that duration on every plan at once. This reads the
+// plan's own value first so one plan can be shortened on its own.
+const getPlanDurationOverrideMs = (plan) => {
+    const extra = plan?.extra || {};
+    const value = Number(extra.duration_value ?? extra.subscription_duration_value);
+    const unit = String(extra.duration_unit ?? extra.subscription_duration_unit ?? '').toLowerCase();
+    if (!Number.isFinite(value) || value <= 0) return null;
+    const multiplier = DURATION_UNIT_MS[unit];
+    if (!multiplier) return null;
+    return Math.floor(value) * multiplier;
+};
+
 const getPlanDurationMs = (plan) => {
+    const override = getPlanDurationOverrideMs(plan);
+    if (override !== null) return override;
+
     const testMinutes = getTestDurationMinutes();
     if (testMinutes > 0) return testMinutes * 60 * 1000;
 
@@ -19,7 +54,15 @@ const getPlanDurationMs = (plan) => {
 
 const getPlanDurationSeconds = (plan) => Math.max(0, Math.round(getPlanDurationMs(plan) / 1000));
 
-const getGraceDurationMs = () => {
+const getGraceDurationMs = (plan = null) => {
+    const planExtra = plan?.extra || {};
+    const planValue = Number(planExtra.grace_period_value ?? planExtra.subscription_grace_value);
+    const planUnit = String(planExtra.grace_period_unit ?? planExtra.subscription_grace_unit ?? '').toLowerCase();
+    if (Number.isFinite(planValue) && planValue > 0 && ['minutes', 'hours', 'days'].includes(planUnit)) {
+        const multiplier = planUnit === 'minutes' ? 60 * 1000 : planUnit === 'hours' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+        return Math.floor(planValue) * multiplier;
+    }
+
     const testMinutes = Number(process.env.SUBSCRIPTION_TEST_GRACE_MINUTES || 0);
     if (Number.isFinite(testMinutes) && testMinutes > 0) return testMinutes * 60 * 1000;
 
@@ -30,6 +73,15 @@ const getGraceDurationMs = () => {
 const getGraceDurationSeconds = () => Math.max(0, Math.round(getGraceDurationMs() / 1000));
 
 const getPlanIntervalLabel = (plan) => {
+    const override = getPlanDurationOverrideMs(plan);
+    if (override !== null) {
+        const minutes = Math.round(override / 60000);
+        if (minutes < 60) return `${minutes} min`;
+        const hours = Math.round(minutes / 60);
+        if (hours < 48) return `${hours}h`;
+        return `${Math.round(hours / 24)}d`;
+    }
+
     const testMinutes = getTestDurationMinutes();
     if (testMinutes > 0) return `${testMinutes} min test`;
     return `${Number(plan?.duration_days || 0)}d`;
@@ -90,18 +142,17 @@ const normalizeTestModeExpiries = async (userId) => {
 };
 
 const renewSubscription = async (client, sub) => {
-    const graceEndsAt = sub.expires_at
-        ? new Date(new Date(sub.expires_at).getTime() + getGraceDurationMs())
-        : null;
-    const isInsideGrace = graceEndsAt && graceEndsAt.getTime() > Date.now();
-
     const planRes = await client.query(
-        `SELECT id, slug, name, price, duration_days, is_active
+        `SELECT id, slug, name, price, duration_days, is_active, extra
          FROM subscription_plans
          WHERE id = $1`,
         [sub.plan_id]
     );
     const plan = planRes.rows[0];
+    const graceEndsAt = sub.expires_at
+        ? new Date(new Date(sub.expires_at).getTime() + getGraceDurationMs(plan))
+        : null;
+    const isInsideGrace = graceEndsAt && graceEndsAt.getTime() > Date.now();
     if (!plan?.is_active) {
         await client.query(
             `UPDATE user_plan_subscriptions
@@ -204,6 +255,9 @@ const processSubscriptionRow = async (subscriptionId) => {
         }
 
         const result = await renewSubscription(client, sub);
+        if (result.action === 'expired') {
+            await syncUserApprovedUploadsToBasic(client, sub.user_id);
+        }
         await client.query('COMMIT');
         return result;
     } catch (error) {
@@ -234,6 +288,12 @@ const processDueSubscriptionsForUser = async (userId) => {
     for (const row of due.rows) {
         results.push(await processSubscriptionRow(row.id));
     }
+        await syncUsersWithoutActivePaidPlanToBasic(pool, userId, getGraceDurationSeconds());
+        await userSubscriptionsRepository.clearBadgesWithoutActivePaidPlan(getGraceDurationSeconds());
+        await deleteExpiredUploadContents(pool, getGraceDurationSeconds());
+        // Basic allows no saved ads, so a lapsed account's saves fall away with
+        // its badge and its content rather than lingering on the profile.
+        await getSavedAdsRepository().trimSavesForLapsedAccounts(getGraceDurationSeconds());
     return results;
 };
 
@@ -257,6 +317,12 @@ const processDueSubscriptions = async () => {
         for (const row of due.rows) {
             results.push(await processSubscriptionRow(row.id));
         }
+        await syncUsersWithoutActivePaidPlanToBasic(pool, null, getGraceDurationSeconds());
+        await userSubscriptionsRepository.clearBadgesWithoutActivePaidPlan(getGraceDurationSeconds());
+        await deleteExpiredUploadContents(pool, getGraceDurationSeconds());
+        // Basic allows no saved ads, so a lapsed account's saves fall away with
+        // its badge and its content rather than lingering on the profile.
+        await getSavedAdsRepository().trimSavesForLapsedAccounts(getGraceDurationSeconds());
         return results;
     } finally {
         processingAll = false;

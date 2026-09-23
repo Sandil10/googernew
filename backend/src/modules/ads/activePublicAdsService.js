@@ -2,10 +2,6 @@ const activePublicAdsRepository = require('./activePublicAdsRepository');
 
 const getGraceIntervalSql = () => `((${require('../../utils/subscriptionRenewal').getGraceDurationSeconds()}::text || ' seconds')::interval)`;
 const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
-    CASE
-        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
-        ELSE NULL
-    END,
     (
         SELECT
             CASE
@@ -45,12 +41,26 @@ const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
         FROM subscription_plans sp
         WHERE sp.slug = 'basic' AND sp.is_active = TRUE
         LIMIT 1
-    )
+    ),
+    CASE
+        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
+        ELSE NULL
+    END
 )`;
+// Measured from approval, but only able to take an ad away once it has
+// finished running — expiry never cuts a live ad short. A save overrides it:
+// an ad the owner saved stays past its window until they unsave it.
 const RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL = `
-    a.active_start_time IS NOT NULL
-    AND (${getRawPhotoVideoProfileExpiryIntervalSql()}) IS NOT NULL
-    AND a.active_start_time > NOW() - (${getRawPhotoVideoProfileExpiryIntervalSql()})
+    (
+        LOWER(TRIM(REPLACE(REPLACE(COALESCE(a.status, ''), '_', ' '), '-', ' '))) <> 'completed'
+        OR (${getRawPhotoVideoProfileExpiryIntervalSql()}) IS NULL
+        OR a.active_start_time IS NULL
+        OR a.active_start_time > NOW() - (${getRawPhotoVideoProfileExpiryIntervalSql()})
+        OR EXISTS (
+            SELECT 1 FROM ad_saves keep
+            WHERE keep.ad_id = a.ad_id AND keep.user_id = a.user_id
+        )
+    )
 `;
 
 const getActiveAdsPublic = async (req, res) => {
@@ -59,6 +69,10 @@ const getActiveAdsPublic = async (req, res) => {
     const mark = (label, startedAt) => {
         timings[label] = Number(activePublicAdsRepository.readDurationMs(startedAt).toFixed(2));
     };
+
+    const syncExpiredStartedAt = process.hrtime.bigint();
+    await activePublicAdsRepository.syncExpiredAds(require('../../config/database'));
+    mark('syncExpiredMs', syncExpiredStartedAt);
 
     const viewerId = activePublicAdsRepository.getOptionalViewerId(req);
     const isAnonymousRequest = !viewerId;
@@ -137,9 +151,9 @@ const getActiveAdsPublic = async (req, res) => {
     const ads = rows.slice(0, limit).map((row) => {
         const ad = {
             ...activePublicAdsRepository.savedAdsRepository.mapRow(row),
-            user_liked: !!row.user_liked || !!row.ad_coin_collected,
+            user_liked: !!row.user_liked,
             ad_coin_collected: !!row.ad_coin_collected,
-            ad_like_locked: !!row.ad_coin_collected,
+            ad_like_locked: false,
         };
         const mediaGallery = (ad.mediaGallery || []).map(activePublicAdsRepository.getMediaUrl).filter(Boolean);
         const mediaPreview = activePublicAdsRepository.getMediaUrl(ad.mediaPreview) || mediaGallery[0] || activePublicAdsRepository.getRawMediaValue(ad.mediaPreview) || '/assets/images/googer.png';
@@ -167,7 +181,7 @@ const getActiveAdsPublic = async (req, res) => {
             },
             user_liked: !!ad.user_liked,
             ad_coin_collected: !!ad.ad_coin_collected,
-            ad_like_locked: !!ad.ad_coin_collected,
+            ad_like_locked: false,
         };
     });
     mark('mapAdsMs', mapAdsStartedAt);
@@ -225,14 +239,44 @@ const getActiveAdsPublic = async (req, res) => {
         const productImage = productImageCandidates.find((item) => !isPlaceholderImage(item)) || '/assets/images/googer.png';
         const sizes = Array.isArray(linked.sizes) ? linked.sizes : activePublicAdsRepository.deriveVariantSizes(linkedVariants);
         const colors = Array.isArray(linked.colors) ? linked.colors : activePublicAdsRepository.deriveVariantColors(linkedVariants);
+        const advertiserUserId = ad.user_id || ad.userId || ad.ad_owner_user_id || ad.adOwnerUserId || ad.advertiser_id || ad.advertiserId || null;
+        const advertiserPublicUserId = ad.owner_user_id || ad.ownerUserId || ad.user?.user_id || ad.user?.userId || null;
+        const advertiserUsername = ad.owner_username || ad.ownerUsername || ad.user?.username || ad.username || null;
+        const advertiserFullName = ad.full_name || ad.fullName || ad.user?.full_name || ad.user?.fullName || advertiserUsername || null;
+        const advertiserProfilePictureCandidate = ad.profile_picture || ad.user?.profile_picture || null;
+        const advertiserProfilePicture = activePublicAdsRepository.isDefaultAvatarValue(advertiserProfilePictureCandidate)
+            ? null
+            : advertiserProfilePictureCandidate;
+        const productOwnerProfilePicture = linked.profile_picture || null;
+        const productOwnerUserId = linked.user_id || linked.userId || null;
+        const productOwnerUsername = linked.owner_username || linked.username || null;
         return {
             ...ad,
             ...linked,
             id: Number(linked.id),
             adId: ad.adId || ad.ad_id,
             ad_id: ad.ad_id || ad.adId,
-            ad_owner_user_id: ad.user_id || ad.userId,
-            advertiser_id: ad.user_id || ad.userId,
+            user_id: advertiserUserId,
+            userId: advertiserUserId,
+            owner_user_id: advertiserPublicUserId,
+            ownerUserId: advertiserPublicUserId,
+            ad_owner_user_id: advertiserUserId,
+            adOwnerUserId: advertiserUserId,
+            advertiser_id: advertiserUserId,
+            advertiserId: advertiserUserId,
+            product_owner_user_id: productOwnerUserId,
+            productOwnerUserId: productOwnerUserId,
+            product_owner_username: productOwnerUsername,
+            productOwnerUsername: productOwnerUsername,
+            seller_id: productOwnerUserId,
+            sellerId: productOwnerUserId,
+            seller_username: productOwnerUsername,
+            sellerUsername: productOwnerUsername,
+            username: advertiserUsername,
+            owner_username: advertiserUsername,
+            ownerUsername: advertiserUsername,
+            full_name: advertiserFullName,
+            fullName: advertiserFullName,
             title: linked.title || ad.title,
             description: linked.description || ad.description || '',
             category: linked.category || ad.category,
@@ -265,12 +309,33 @@ const getActiveAdsPublic = async (req, res) => {
             productId: linked.id,
             share_code: linked.product_code || ad.share_code || String(linked.id),
             shareCode: linked.product_code || ad.shareCode || String(linked.id),
-            profile_picture: linked.profile_picture || ad.profile_picture,
+            profile_picture: advertiserProfilePicture,
+            owner_profile_picture: advertiserProfilePicture,
+            ownerProfilePicture: advertiserProfilePicture,
+            ad_display_username: advertiserUsername,
+            adDisplayUsername: advertiserUsername,
+            ad_display_full_name: advertiserFullName,
+            adDisplayFullName: advertiserFullName,
+            ad_display_avatar: advertiserProfilePicture,
+            adDisplayAvatar: advertiserProfilePicture,
+            ad_display_user_id: advertiserUserId,
+            adDisplayUserId: advertiserUserId,
+            linked_product_owner_id: productOwnerUserId,
+            linkedProductOwnerId: productOwnerUserId,
+            linked_product_owner_username: productOwnerUsername,
+            linkedProductOwnerUsername: productOwnerUsername,
+            linked_product_profile_picture: productOwnerProfilePicture,
+            linkedProductProfilePicture: productOwnerProfilePicture,
+            status: ad.status || 'Active',
             user: {
                 ...(ad.user || {}),
-                id: linked.user_id,
-                username: linked.owner_username || ad.user?.username || ad.username,
-                profile_picture: linked.profile_picture || ad.user?.profile_picture || ad.profile_picture || null,
+                id: advertiserUserId,
+                user_id: advertiserPublicUserId,
+                userId: advertiserPublicUserId,
+                username: advertiserUsername,
+                full_name: advertiserFullName,
+                fullName: advertiserFullName,
+                profile_picture: advertiserProfilePicture,
             },
             is_sponsored: true,
             isAd: true,
@@ -285,18 +350,26 @@ const getActiveAdsPublic = async (req, res) => {
             viewCount: Number(ad.views_count || 0),
             user_liked: !!ad.user_liked,
             ad_coin_collected: !!ad.ad_coin_collected,
-            ad_like_locked: !!ad.ad_coin_collected,
+            ad_like_locked: false,
         };
     }).filter(Boolean);
     mark('hydrateProductsMs', hydrateProductsStartedAt);
 
+    const finalAds = hydratedAds.map(ad => {
+        return {
+            ...ad,
+            normalized_ad: require('./adNormalizer').normalizeAdToContract(ad),
+            normalizedAd: require('./adNormalizer').normalizeAdToContract(ad),
+        };
+    });
+
     const payload = {
         success: true,
-        ads: hydratedAds,
+        ads: finalAds,
         pagination: {
             limit,
             offset,
-            nextOffset: offset + hydratedAds.length,
+            nextOffset: offset + finalAds.length,
             hasMore: rows.length > limit || candidateRows.length > limit,
         },
     };

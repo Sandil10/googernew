@@ -219,6 +219,26 @@ const getProfileViews = async (targetUserIdValue) => {
     return { success: true, profileViewsCount: count };
 };
 
+/// People search for the Googs search suggestions (web + mobile share this).
+const searchPeople = async (rawQuery, viewerId) => {
+    const query = String(rawQuery || '').trim();
+    if (!query) {
+        return { success: true, users: [] };
+    }
+
+    const rows = await readRepository.searchPeople({ query, viewerId });
+    return {
+        success: true,
+        users: rows.map((row) => ({
+            id: row.id,
+            user_id: row.user_id,
+            username: row.username || '',
+            full_name: row.full_name || '',
+            profile_picture: row.profile_picture || '',
+        })),
+    };
+};
+
 module.exports = {
     getBlockedUsers,
     getProfile,
@@ -226,5 +246,6 @@ module.exports = {
     getUserById,
     getUserByUsername,
     logProfileView,
+    searchPeople,
     toggleBlockUser,
 };

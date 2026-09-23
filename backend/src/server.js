@@ -10,13 +10,13 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 require('dotenv').config();
 const pool = require('./config/database');
 const { createRouteServiceProxy } = require('./shared/http/routeServiceProxy');
-const { assertFinanceSchemaReady } = require('../../../shared/utils/financeSchemaGuard');
+const { assertFinanceSchemaReady } = require('../../shared/utils/financeSchemaGuard');
 const { ensureAdminWalletGuard } = require('./utils/adminWalletGuard');
 const { attachChatSocket } = require('./modules/chat');
 const { mountPublicUploads } = require('./modules/media');
 const { bootstrapRuntimeSchemas } = require('./startup');
-const internalOpsAuth = require('../../../shared/utils/internalOpsAuth');
-const { getBackgroundQueueMetrics, getBackgroundWorkerMetrics } = require('../../../shared/utils/backgroundMonitoring');
+const internalOpsAuth = require('../../shared/utils/internalOpsAuth');
+const { getBackgroundQueueMetrics, getBackgroundWorkerMetrics } = require('../../shared/utils/backgroundMonitoring');
 
 // Fix for Supabase IPv6 timeout issues
 if (dns.setDefaultResultOrder) {
@@ -44,6 +44,14 @@ const getRawClientIp = (req) => {
     return req.ip;
 };
 
+const getRateLimitKey = (req) => {
+    const authorization = req.headers.authorization || req.headers.Authorization;
+    if (typeof authorization === 'string' && authorization.trim()) {
+        return `auth:${authorization.trim()}`;
+    }
+    return ipKeyGenerator(getRawClientIp(req));
+};
+
 const skipReadOnlyRequests = (req) => (
     skipOperationalHealth(req)
     || ['GET', 'HEAD', 'OPTIONS'].includes(req.method)
@@ -52,6 +60,12 @@ const skipReadOnlyRequests = (req) => (
 const isAuthEntryRoute = (req) => (
     /^\/(?:api\/)?auth\/(?:login|register)(?:\/|$)/i.test(req.path || '')
 );
+
+const isUploadContentInteractionRoute = (req) => {
+    const target = `${req.originalUrl || ''} ${req.baseUrl || ''} ${req.path || ''}`;
+    return /(?:^|\/)upload-content\/[^/?#]+\/(?:like|repost|comments|share|view|purchase|subscriptions)(?:\/|$|\?)/i.test(target)
+        || /(?:^|\/)upload-content\/comments\/[^/?#]+\/(?:like|dislike|report)(?:\/|$|\?)/i.test(target);
+};
 
 // Security Middleware
 app.use(helmet({
@@ -76,18 +90,18 @@ const limiter = rateLimit({
     message: { success: false, message: 'Too many requests, please try again later.' },
     standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
     legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-    keyGenerator: (req) => ipKeyGenerator(getRawClientIp(req)),
+    keyGenerator: getRateLimitKey,
     skip: (req) => skipReadOnlyRequests(req) || isAuthEntryRoute(req),
 });
 app.use('/api/', limiter);
 
 const strictMutationLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: process.env.NODE_ENV === 'development' ? 1000 : 120,
+    max: process.env.NODE_ENV === 'development' ? 1000 : 240,
     message: { success: false, message: 'Too many requests, please try again later.' },
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => ipKeyGenerator(getRawClientIp(req)),
+    keyGenerator: getRateLimitKey,
 });
 
 const authLimiter = rateLimit({
@@ -102,11 +116,12 @@ const authLimiter = rateLimit({
 
 const uploadLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: process.env.NODE_ENV === 'development' ? 300 : 40,
+    max: process.env.NODE_ENV === 'development' ? 300 : 80,
     message: { success: false, message: 'Too many uploads, please try again later.' },
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => ipKeyGenerator(getRawClientIp(req)),
+    keyGenerator: getRateLimitKey,
+    skip: isUploadContentInteractionRoute,
 });
 
 const limitMutationsOnly = (limiterMiddleware) => (req, res, next) => {
@@ -131,6 +146,7 @@ app.use(['/api/chat', '/chat'], createRouteServiceProxy({
 app.use(['/api/feed', '/feed', '/api/googs', '/googs', '/api/upload-content', '/upload-content'], createRouteServiceProxy({
     envVar: 'FEED_SERVICE_URL',
     serviceName: 'feed-service',
+    excludedPrefixes: ['/api/googs', '/googs'],
 }));
 app.use(['/api/market', '/market', '/api/categories', '/categories', '/api/cart', '/cart'], createRouteServiceProxy({
     envVar: 'MARKETPLACE_SERVICE_URL',
@@ -143,6 +159,7 @@ app.use(['/api/ads', '/ads'], createRouteServiceProxy({
 app.use(['/api/auth', '/auth', '/api/subscriptions', '/subscriptions', '/api/subscription-plans', '/subscription-plans', '/api/verification', '/verification'], createRouteServiceProxy({
     envVar: 'ACCOUNT_SERVICE_URL',
     serviceName: 'account-service',
+    excludedPrefixes: ['/api/auth/user', '/auth/user'],
 }));
 app.use(['/api/orders', '/orders'], createRouteServiceProxy({
     envVar: 'ORDERS_SERVICE_URL',
@@ -364,7 +381,7 @@ if (require.main === module) {
         const io = attachChatSocket(server, corsOptions);
         app.set('io', io);
 
-        server.listen(PORT, () => {
+        server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
             console.log(`
         🚀 Googer Backend Enhanced
         -------------------------

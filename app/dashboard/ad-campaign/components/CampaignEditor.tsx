@@ -15,6 +15,7 @@ import { subscriptionService } from "@/services/subscriptionService";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { addAdWalletRefund, getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
 import { calcReach, type ReachTier } from "@/utils/reachCalc";
+import { getCountryDialCode } from "@/app/lib/phoneCountryDialCodes";
 
 type PreviewMode = "mobile" | "desktop";
 type LinkPreviewType = "image" | "video" | "embed" | "website" | null;
@@ -126,6 +127,16 @@ type PublishedAdReview = {
         durationDays: number;
         promoCode: string;
         hasPromoCodeAdded: boolean;
+        promoDiscount?: {
+            discount_type: string;
+            discount_value: number;
+            reach_cap?: number | null;
+            min_reach_bonus?: number;
+            max_reach_bonus?: number;
+            promo_max_days?: number;
+        } | null;
+        effectivePaymentAmount?: number;
+        isFreePromoAd?: boolean;
         carryOverViews?: number;
         mediaPreview?: string;
         mediaGallery?: string[];
@@ -830,6 +841,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [acceptedUploadTerms, setAcceptedUploadTerms] = useState(false);
     const [editingAdId, setEditingAdId] = useState("");
     const [editingOriginalBudget, setEditingOriginalBudget] = useState<number | null>(null);
+    // The promo code the ad being edited already had, if any.
+    const [editingOriginalPromoCode, setEditingOriginalPromoCode] = useState("");
     const [carryOverViews, setCarryOverViews] = useState(0);
     const [isPromoteAgain, setIsPromoteAgain] = useState(false);
     const [sourceOwnerDbId, setSourceOwnerDbId] = useState<number | string | null>(null);
@@ -1046,11 +1059,21 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const isFreeProfilePromotePromo = isProfilePromote && hasPromoCodeAdded;
     const showProfileNonRefundableNotice = isProfilePromote && !hasPromoCodeAdded;
     const hasInsufficientBalance = !isUploadContent && walletBalanceLoaded && budget !== null && effectivePaymentAmount > walletBalance;
-    const isPromoLockingBudget = hasPromoCodeAdded && (
+    // Editing a live ad, as opposed to composing a new one or promoting again.
+    const isEditingExistingAd = !!String(editingAdId || "").trim() && !isPromoteAgain && !isUploadContent;
+    // That ad already had a promo code, so the field is here to replace it.
+    const isEditingPromoAd = isEditingExistingAd && editingOriginalPromoCode.length > 0;
+    // A promo code is priced and issued against the ad it was applied to, so it
+    // cannot be bolted onto an ad that was already paid for and published —
+    // that would hand back budget the ad has, in part, already spent. Matches
+    // the mobile editor: while editing, the promo field only ever *replaces* a
+    // code the ad already had.
+    const isPromoCodeLocked = isEditingExistingAd && !isEditingPromoAd;
+    const isPromoLockingBudget = isEditingPromoAd || (hasPromoCodeAdded && (
         isProfilePromote
             ? true  // Profile Promote: freeze packages the moment any promo is applied
             : budget !== null && (promoDiscount?.discount_type === "rupee" || promoDiscount?.discount_type === "reach")
-    );
+    ));
     const filteredCountries = useMemo(() => {
         const query = countrySearch.trim().toLowerCase();
         if (!query) return countries;
@@ -1904,6 +1927,26 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
     const handlePublish = async () => {
         if (isPublishing) return;
+        if (!isUploadContent) {
+            const pendingAdId = editingAdId || window.sessionStorage.getItem(draftStorageKey + ':publishing');
+            const pendingKey = pendingAdId && window.sessionStorage.getItem(draftStorageKey + ':publish-operation:' + pendingAdId);
+            if (pendingKey) {
+                try {
+                    const completed = await adsService.getPublishOperation(pendingKey);
+                    if (completed) {
+                        setWalletBalance(Number(completed.currentBalance));
+                        setPublishedAd(completed.ad);
+                        setShowPublishedPopup(true);
+                        window.sessionStorage.removeItem(draftStorageKey + ':publish-operation:' + pendingAdId);
+                        window.sessionStorage.removeItem(draftStorageKey + ':publishing');
+                        window.localStorage.removeItem(draftStorageKey);
+                        window.dispatchEvent(new Event('googer-wallet-updated'));
+                        window.dispatchEvent(new Event('googer-ad-history-updated'));
+                        return;
+                    }
+                } catch (error: any) { showPopupError(error.message); return; }
+            }
+        }
         if (!validateFinalForm()) return;
         if (!(await validateUploadContentLimits())) return;
         if (hasInsufficientBalance && !isFreeProfilePromotePromo) {
@@ -1916,16 +1959,27 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const sponsorId = userProfile?.id ?? userProfile?._id ?? userProfile?.user_id;
         const sponsorPublicId = typeof userProfile?.user_id === "string" ? userProfile.user_id : String(userProfile?.user_id ?? "");
         const sponsorUsername = typeof userProfile?.username === "string" ? userProfile.username : "";
-        const existingReview = editingAdId ? await adsService.getAdById(editingAdId).catch(() => null) : null;
-        // Fall back to editingOriginalBudget from draft if the API fetch failed, so we never charge the full budget on an edit
+        const normalizedEditingAdId = String(editingAdId || "").trim();
+        const isEditingExistingAd = !isPromoteAgain && !isUploadContent && !!normalizedEditingAdId;
+        const existingReview = normalizedEditingAdId ? await adsService.getAdById(normalizedEditingAdId).catch(() => null) : null;
+        if (isEditingExistingAd && !existingReview) {
+            showPopupError("Could not load the ad being edited. Please reopen the ad and try again.");
+            return;
+        }
         const existingBudget = isPromoteAgain ? 0 : Number(existingReview?.budget ?? editingOriginalBudget ?? 0);
         const existingUploadContentId = !isPromoteAgain && isUploadContent && editingAdId
             ? String(editingAdId).trim()
             : "";
         const nextAdId = existingUploadContentId
-            || (!isPromoteAgain && existingReview?.adId && typeof existingReview.adId === "string"
-                ? existingReview.adId
-                : createNextAdId());
+            || (isEditingExistingAd
+                ? normalizedEditingAdId
+                : (!isPromoteAgain && existingReview?.adId && typeof existingReview.adId === "string"
+                    ? existingReview.adId
+                    : (window.sessionStorage.getItem(draftStorageKey + ":publishing") || createNextAdId())));
+        if (!isUploadContent && !isEditingExistingAd) window.sessionStorage.setItem(draftStorageKey + ":publishing", nextAdId);
+        const operationStorageKey = draftStorageKey + ":publish-operation:" + nextAdId;
+        const publishOperationId = window.sessionStorage.getItem(operationStorageKey) || crypto.randomUUID();
+        if (!isUploadContent) window.sessionStorage.setItem(operationStorageKey, publishOperationId);
         const carryOverViews = isPromoteAgain
             ? Number(existingReview?.views_count ?? existingReview?.viewCount ?? existingReview?.views ?? 0)
             : 0;
@@ -1960,11 +2014,15 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             ownerUsername: displayOwnerUsername || undefined,
             budget: publishBudget,
             durationDays: effectiveDurationDays,
+            // The card's own title is the Description field, matching the
+            // mobile editor and how the feed card renders it — it must never
+            // fall back to the link-derived previewTitle (or campaignType)
+            // while the advertiser has actually typed a description.
             title: isProductPromote && linkedProduct
                 ? linkedProduct.title
                 : isProfilePromote
                     ? profileDisplayName
-                    : previewTitle,
+                    : (description.trim() || previewTitle),
             description: description.trim(),
             mediaPreview: isProductPromote && linkedProduct
                 ? getProductImageSrc(linkedProduct)
@@ -2026,6 +2084,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 durationDays,
                 promoCode,
                 hasPromoCodeAdded,
+                promoDiscount,
+                effectivePaymentAmount,
+                isFreePromoAd: hasPromoCodeAdded && effectivePaymentAmount === 0,
                 carryOverViews: Number.isFinite(carryOverViews) ? Math.max(0, carryOverViews) : 0,
                 sourceOwnerDbId: displayOwnerDbId,
                 sourceOwnerPublicId: displayOwnerPublicId,
@@ -2071,8 +2132,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         setPopupError("");
         try {
             if (isUploadContent) {
+                const hasNewUploadedVideo = hasUploadedVideo && uploadedFiles.length > 0;
                 let publishPreviewFile = autoPreviewFile;
-                if (uploadPreviewMode === "auto_preview" && hasUploadedVideo && !publishPreviewFile) {
+                if (uploadPreviewMode === "auto_preview" && hasNewUploadedVideo && !publishPreviewFile) {
                     publishPreviewFile = await generateThreeSecondPreview();
                     if (!publishPreviewFile) {
                         throw new Error("The three-second preview could not be created.");
@@ -2120,7 +2182,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         uploadFormData.append("images", file);
                     });
                 }
-                if (uploadPreviewMode === "auto_preview" && publishPreviewFile) {
+                if (uploadPreviewMode === "auto_preview" && hasNewUploadedVideo && publishPreviewFile) {
                     uploadFormData.append("preview", publishPreviewFile);
                 }
                 const savedContent = await uploadContentService.createContent(
@@ -2141,72 +2203,14 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 return;
             }
 
-            const promotionLabel = isProfilePromote
-                ? "Profile Promote"
-                : isProductPromote
-                    ? "Product Promote"
-                    : hasUploadedVideo
-                        ? "Video Promote"
-                        : "Photo Promote";
-            let paymentResult: any = null;
-
-            // Payment amount after promo discount
-            const discountedBudget = (() => {
-                if (!hasPromoCodeAdded || !promoDiscount || (existingReview && !isPromoteAgain)) return publishBudget;
-                if (isProfilePromote) return 0; // Profile Promote + any promo = always free
-                if (promoDiscount.discount_type === "rupee") {
-                    return Math.max(0, publishBudget - promoDiscount.discount_value);
-                }
-                if (promoDiscount.discount_type === "reach") {
-                    return 0;
-                }
-                return publishBudget; // days promos: full budget charged, bonus is free
-            })();
-
-            // isEditMode: editing an existing Under Review ad (not promote-again)
-            // Works even if the API fetch for existingReview failed, by falling back to editingOriginalBudget
-            const isEditMode = !isPromoteAgain && (!!existingReview || (!!editingAdId && editingOriginalBudget !== null));
-            const payAmount = isEditMode ? budgetDifference : discountedBudget;
-            if ((isEditMode && budgetDifference > 0) || (!isEditMode && discountedBudget > 0)) {
-                if (isProfilePromote) {
-                    paymentResult = await walletService.payProfilePromote(payAmount, {
-                        orderId: reviewRecord.adId,
-                        note: `Ad Hold Summary - Profile Promotion - Ad ID: ${reviewRecord.adId} - Status: Completed - Hold Amount: R ${Number(payAmount || 0).toFixed(2)} - Deducted Amount: R ${Number(payAmount || 0).toFixed(2)}`,
-                    });
-                } else {
-                    paymentResult = await walletService.payOrder(payAmount, {
-                        orderId: reviewRecord.adId,
-                        note: `${isPromoteAgain ? "Ad Promote" : existingReview ? "Ad Promote Update" : "Ad Promote"} - ${reviewRecord.adId} - ${promotionLabel}`,
-                    });
-                }
-            }
-
-            if (existingReview && isEditMode && budgetDifference < 0 && ownerKey) {
-                addAdWalletRefund(reviewRecord.adId, ownerKey, Math.abs(budgetDifference), `Ad Budget Refund - ${reviewRecord.adId}`);
-            }
-
-            // Record a $0 wallet entry for free promo ads so they appear in transaction history
-            if (!isEditMode && discountedBudget === 0 && hasPromoCodeAdded && promoCode) {
-                try {
-                    await walletService.recordPromoAd(reviewRecord.adId, promotionLabel);
-                } catch {
-                    // non-critical — don't block publish
-                }
-            }
-
-            const currentBalance = Number(paymentResult?.currentBalance);
-            if (Number.isFinite(currentBalance)) {
-                setWalletBalance(getWalletBalanceWithAdAdjustments(currentBalance, ownerKey));
-            } else if (isEditMode && budgetDifference < 0) {
-                setWalletBalance((current) => current + Math.abs(budgetDifference));
-            } else {
-                setWalletBalance((current) => Math.max(0, current - (isEditMode ? Math.max(0, budgetDifference) : discountedBudget)));
-            }
-            window.dispatchEvent(new Event("googer-wallet-updated"));
+            const isEditMode = isEditingExistingAd && !!existingReview;
 
             const savedAdPayload = {
                 ...reviewRecord,
-                walletTransferId: paymentResult?.transferId || existingReview?.walletTransferId,
+                publishMode: isEditMode ? "update" : "create",
+                publishOperationId,
+                expectedBudget: isEditMode ? existingBudget : undefined,
+                walletTransferId: existingReview?.walletTransferId,
                 promoteAgain: isPromoteAgain,
                 spend: isPromoteAgain ? 0 : (typeof existingReview?.spend === "number" ? existingReview.spend : reviewRecord.spend),
                 remainingBudget: isPromoteAgain ? (budget ?? 0) : ((budget ?? 0) - (typeof existingReview?.spend === "number" ? existingReview.spend : 0)),
@@ -2231,18 +2235,12 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 formData.set("data", JSON.stringify(uploadAdPayload));
             }
 
-            const savedAd = (existingReview && !isPromoteAgain)
-                ? await adsService.updateAd(reviewRecord.adId, payload as any)
-                : await adsService.createAd(payload as any);
-
-            // Redeem promo AFTER ad is successfully created (increments uses_count)
-            if (hasPromoCodeAdded && promoCode && (!existingReview || isPromoteAgain)) {
-                try {
-                    await adsService.redeemPromoCode(promoCode, getAdTypeForCampaign(), reviewRecord.adId);
-                } catch {
-                    // Non-fatal — ad is already created and paid for; just skip redeem silently
-                }
-            }
+            const publishResult = await adsService.publishAd(payload as any);
+            const savedAd = publishResult.ad;
+            if (Number.isFinite(Number(publishResult.currentBalance))) setWalletBalance(Number(publishResult.currentBalance));
+            window.sessionStorage.removeItem(operationStorageKey);
+            window.sessionStorage.removeItem(draftStorageKey + ":publishing");
+            window.dispatchEvent(new Event("googer-wallet-updated"));
 
             window.dispatchEvent(new Event("googer-ad-history-updated"));
             window.localStorage.removeItem(draftStorageKey);
@@ -2280,6 +2278,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     };
 
     const addPromoCode = async () => {
+        // The disabled input and button already say no; this closes the Enter
+        // key and any stale-state path to the same thing.
+        if (isPromoCodeLocked) return;
         const sanitizedCode = sanitizePromoCode(promoCode);
         if (!sanitizedCode) {
             if (hasPromoCodeAdded) {
@@ -2715,6 +2716,13 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 if (typeof parsed.editingOriginalBudget === "number") {
                     setEditingOriginalBudget(parsed.editingOriginalBudget);
                 }
+                // Whether the ad already carried a promo code when the edit
+                // started. Held apart from `promoCode`, which the user can
+                // clear — the rules below turn on what the ad *was*, not on
+                // what the form currently shows.
+                setEditingOriginalPromoCode(
+                    sanitizePromoCode(String(parsed.editingOriginalPromoCode ?? parsed.promoCode ?? ""))
+                );
             }
             if (typeof parsed.carryOverViews === "number") {
                 setCarryOverViews(Math.max(0, parsed.carryOverViews));
@@ -2847,6 +2855,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             const draftPayload = {
                 version: AD_DRAFT_VERSION,
                 editingAdId,
+                editingOriginalPromoCode,
                 promoteAgain: isPromoteAgain,
                 carryOverViews,
                 sourceOwnerDbId,
@@ -2909,7 +2918,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         }, 250);
 
         return () => window.clearTimeout(timeoutId);
-    }, [acceptedUploadTerms, activeLink, ageMax, ageMin, budget, carryOverViews, contentAccessMode, ctaTopic, ctaValue, description, draftStorageKey, durationDays, editingAdId, genderTarget, hasPromoCodeAdded, historyMediaPreview, imageName, isPromoteAgain, persistedImageGallery, linkInput, promoCode, publishedAd, selectedCountryCode, selectedInterestTopics, selectedLocationCodes, selectedPlacements, sourceOwnerDbId, sourceOwnerProfilePicture, sourceOwnerPublicId, sourceOwnerUsername, thumbnailName, thumbnailPreview, uploadAffiliateCommission, uploadAllowComments, uploadHashtags, uploadMaxPriceInput, uploadPreviewMode, uploadShowLinkedContentOnHome, uploadSubscriptionPackages, uploadTopic, uploadVisibility, uploadedMediaType]);
+    }, [acceptedUploadTerms, activeLink, ageMax, ageMin, budget, carryOverViews, contentAccessMode, ctaTopic, ctaValue, description, draftStorageKey, durationDays, editingAdId, editingOriginalPromoCode, genderTarget, hasPromoCodeAdded, historyMediaPreview, imageName, isPromoteAgain, persistedImageGallery, linkInput, promoCode, publishedAd, selectedCountryCode, selectedInterestTopics, selectedLocationCodes, selectedPlacements, sourceOwnerDbId, sourceOwnerProfilePicture, sourceOwnerPublicId, sourceOwnerUsername, thumbnailName, thumbnailPreview, uploadAffiliateCommission, uploadAllowComments, uploadHashtags, uploadMaxPriceInput, uploadPreviewMode, uploadShowLinkedContentOnHome, uploadSubscriptionPackages, uploadTopic, uploadVisibility, uploadedMediaType]);
 
     useEffect(() => {
         const justCrossedIntoInsufficientBalance = hasInsufficientBalance && !wasInsufficientBalanceRef.current;
@@ -3003,7 +3012,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             name: country.name.common,
                             flag: country.flags?.svg || country.flags?.png || "",
                             flagEmoji: country.flag || getFlagEmoji(country.cca2),
-                            dialCode,
+                            dialCode: getCountryDialCode(country.cca2, dialCode),
                         };
                     })
                     .filter((country): country is CountryOption => Boolean(country))
@@ -3504,7 +3513,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     <span>{linkedProduct?.comments_count || 0}</span>
                                 </div>
                                 <div className="flex items-center gap-0.5 text-[7px] font-black">
-                                    <IonIcon name="share-social-outline" className="text-[12px]" />
+                                    <IonIcon name="arrow-redo-outline" className="text-[12px]" />
                                     <span>{linkedProduct?.shares_count || 0}</span>
                                 </div>
                             </div>
@@ -4877,7 +4886,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                         if (event.key === "Enter") addPromoCode();
                                                     }}
                                                     maxLength={15}
-                                                    disabled={hasPromoCodeAdded && !isPromoEditing}
+                                                    disabled={isPromoCodeLocked || (hasPromoCodeAdded && !isPromoEditing)}
                                                     placeholder="Promo Code"
                                                     className="h-7 w-32 bg-transparent px-2 text-[10px] font-black uppercase tracking-[0.08em] text-white outline-none placeholder:text-white/40 disabled:cursor-default disabled:opacity-100"
                                                 />
@@ -4901,7 +4910,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                         type="button"
                                                         onClick={addPromoCode}
                                                         className="flex h-7 min-w-10 items-center justify-center rounded-lg bg-rose-500 px-2 text-[9px] font-black uppercase tracking-[0.08em] text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
-                                                        disabled={(!promoCode.trim() && !hasPromoCodeAdded) || isValidatingPromo}
+                                                        disabled={isPromoCodeLocked || (!promoCode.trim() && !hasPromoCodeAdded) || isValidatingPromo}
                                                     >
                                                         {isValidatingPromo ? (
                                                             <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
@@ -5302,7 +5311,20 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                         className="mt-0.5 h-4 w-4 shrink-0 accent-white"
                                     />
                                     <span className="text-[10px] font-bold leading-5 text-white/75">
-                                        I agree to the <span className="underline underline-offset-2">terms and conditions</span>.
+                                        I agree to the{" "}
+                                        {/* Was a plain <span>: underlined like
+                                            a link but not clickable. Opens in a
+                                            new tab so the in-progress campaign
+                                            is not lost. */}
+                                        <a
+                                            href="/terms-and-policies"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="underline underline-offset-2 hover:text-white"
+                                        >
+                                            terms and conditions
+                                        </a>.
                                         <span className="mt-2 block font-semibold text-white/45">
                                             This content will be deleted from your profile after 30 days. Get a subscription package to keep it on your profile.
                                         </span>

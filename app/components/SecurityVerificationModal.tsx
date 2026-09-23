@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import IonIcon from "@/app/components/IonIcon";
 
 interface TransactionDetails {
@@ -16,10 +16,18 @@ interface TransactionDetails {
 interface SecurityVerificationModalProps {
     isOpen: boolean;
     onClose: () => void;
-    onVerify: (password: string) => Promise<void>;
+    onVerify: (password: string, method?: "password" | "biometric") => Promise<void>;
     isProcessing: boolean;
     transaction?: TransactionDetails;
 }
+
+const toBase64Url = (bytes: Uint8Array) => {
+    let binary = "";
+    bytes.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+    });
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
 
 export default function SecurityVerificationModal({
     isOpen,
@@ -30,6 +38,28 @@ export default function SecurityVerificationModal({
 }: SecurityVerificationModalProps) {
     const [password, setPassword] = useState("");
     const [error, setError] = useState("");
+    const [biometricAvailable, setBiometricAvailable] = useState(false);
+    const [biometricBusy, setBiometricBusy] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        const checkBiometricSupport = async () => {
+            if (!isOpen || typeof window === "undefined" || !window.isSecureContext || !navigator.credentials || !("PublicKeyCredential" in window)) {
+                setBiometricAvailable(false);
+                return;
+            }
+            try {
+                const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+                if (!cancelled) setBiometricAvailable(Boolean(available));
+            } catch {
+                if (!cancelled) setBiometricAvailable(false);
+            }
+        };
+        void checkBiometricSupport();
+        return () => {
+            cancelled = true;
+        };
+    }, [isOpen]);
 
     if (!isOpen) return null;
 
@@ -43,10 +73,46 @@ export default function SecurityVerificationModal({
         }
 
         try {
-            await onVerify(password);
+            await onVerify(password, "password");
             setPassword("");
         } catch (err: any) {
             setError(err.message || "Invalid password");
+        }
+    };
+
+    const handleBiometricVerify = async () => {
+        setError("");
+        setBiometricBusy(true);
+        try {
+            const challenge = new Uint8Array(32);
+            crypto.getRandomValues(challenge);
+            const userId = new Uint8Array(16);
+            crypto.getRandomValues(userId);
+            const credential = await navigator.credentials.create({
+                publicKey: {
+                    challenge,
+                    rp: { name: "Googer" },
+                    user: {
+                        id: userId,
+                        name: "wallet-security@googer.local",
+                        displayName: "Googer Wallet",
+                    },
+                    pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+                    authenticatorSelection: {
+                        authenticatorAttachment: "platform",
+                        residentKey: "discouraged",
+                        userVerification: "required",
+                    },
+                    attestation: "none",
+                    timeout: 60000,
+                },
+            });
+            if (!credential) throw new Error("Device verification was cancelled.");
+            await onVerify(toBase64Url(challenge), "biometric");
+        } catch (err: any) {
+            setError(err?.message || "Face ID or fingerprint verification failed.");
+        } finally {
+            setBiometricBusy(false);
         }
     };
 
@@ -149,7 +215,7 @@ export default function SecurityVerificationModal({
                     <form onSubmit={handleSubmit} className="space-y-6">
                         <div>
                             <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-2 px-1">
-                                Enter Password to Verify
+                                Enter password or 6-digit passkey
                             </label>
                             <div className="relative">
                                 <input
@@ -170,6 +236,18 @@ export default function SecurityVerificationModal({
                                 </p>
                             )}
                         </div>
+
+                        {biometricAvailable && (
+                            <button
+                                type="button"
+                                onClick={handleBiometricVerify}
+                                disabled={isProcessing || biometricBusy}
+                                className="flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-500/10 py-3.5 text-xs font-black uppercase tracking-widest text-emerald-100 transition hover:bg-emerald-500/15 disabled:opacity-50"
+                            >
+                                <IonIcon name="finger-print-outline" className="text-lg" />
+                                {biometricBusy ? "Checking Device..." : "Use Face ID / Fingerprint"}
+                            </button>
+                        )}
 
                         <div className="flex gap-3 pt-2">
                             <button

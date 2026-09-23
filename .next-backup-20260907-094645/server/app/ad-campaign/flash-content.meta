@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/ad-campaign/layout,_N_T_/ad-campaign/flash-content/layout,_N_T_/ad-campaign/flash-content/page,_N_T_/ad-campaign/flash-content"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/ad-campaign/flash-content/__PAGE__",
+    "/ad-campaign/flash-content",
+    "/ad-campaign",
+    "/_index",
+    "/_head"
+  ]
+}

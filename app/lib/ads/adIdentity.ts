@@ -35,6 +35,16 @@ export const getAdInteractionId = (item: any): string => {
     const idStr = String(item);
     return idStr.startsWith("ad-") ? idStr : `ad-${idStr}`;
   }
+  // Must be idempotent: normalizeAdData() stamps `id` with this function's own
+  // output, then callers (e.g. ChatAdBox's impression tracking) re-run it on
+  // that normalized object. Once `item.id` already looks like "ad-249" it IS
+  // the canonical id — re-deriving from item.adId/ad_id here would silently
+  // switch to a different, unrelated numeric field on the raw ad payload
+  // (id and ad_id can legitimately differ), producing a second, mismatched
+  // id for the same ad. That broke "seen" tracking matching the id actually
+  // used to place/filter the ad, so a chat ad's 5-minute auto-expiry could
+  // never find the ad it was supposed to expire.
+  if (typeof item.id === "string" && item.id.startsWith("ad-")) return item.id;
   const sponsoredId = item.adId || item.ad_id;
   const isSponsored =
     !!sponsoredId &&

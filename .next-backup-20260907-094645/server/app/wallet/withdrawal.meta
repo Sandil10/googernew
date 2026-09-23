@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/wallet/layout,_N_T_/wallet/withdrawal/layout,_N_T_/wallet/withdrawal/page,_N_T_/wallet/withdrawal"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/wallet/withdrawal/__PAGE__",
+    "/wallet/withdrawal",
+    "/wallet",
+    "/_index",
+    "/_head"
+  ]
+}

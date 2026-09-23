@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/settings/layout,_N_T_/settings/change-login-email/layout,_N_T_/settings/change-login-email/page,_N_T_/settings/change-login-email"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/settings/change-login-email/__PAGE__",
+    "/settings/change-login-email",
+    "/settings",
+    "/_index",
+    "/_head"
+  ]
+}

@@ -8,7 +8,7 @@
         "start:cluster": "node src/clusterServer.js",
         "dev": "nodemon src/server.js",
         "worker": "node src/workers/backgroundWorker.js",
-        "loadtest": "node ../../shared/scripts/load-test.js",
+        "loadtest": "node ../shared/scripts/load-test.js",
         "seed:auth-loadtest": "node scripts/seed-auth-loadtest-dataset.js",
         "test:boundaries": "node scripts/test-boundary-regressions.js",
         "smoke:media": "node scripts/smoke-media-module.js",
@@ -23,6 +23,7 @@
     "author": "",
     "license": "ISC",
     "dependencies": {
+        "@aws-sdk/client-s3": "^3.1094.0",
         "@socket.io/redis-adapter": "^8.3.0",
         "bcryptjs": "^2.4.3",
         "cloudinary": "^1.41.3",

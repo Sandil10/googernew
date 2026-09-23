@@ -30,6 +30,19 @@ const FALLBACK = {
 
 const UNLIMITED = 999999;
 
+const parseLimitOrUnlimited = (value) => {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : UNLIMITED;
+};
+
+const resolvePostingLimits = (plan = {}) => {
+    const extra = plan.extra || {};
+    const legacyTotal = extra.goog_posting_limit ?? extra.write_goog_limit ?? plan.googs_limit;
+    const daily = parseLimitOrUnlimited(extra.goog_posting_daily_limit ?? extra.write_goog_daily_limit ?? 0);
+    const total = parseLimitOrUnlimited(extra.goog_posting_total_limit ?? legacyTotal ?? 0);
+    return { daily, total };
+};
+
 const isPlan03Slug = (slug = '') => {
     const normalized = String(slug || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
     return normalized === 'plan03' || normalized === 'plan3' || normalized === '03';
@@ -48,19 +61,30 @@ const getUserPlanLimits = async (userId) => {
              FROM user_plan_subscriptions ups
              JOIN subscription_plans sp ON sp.id = ups.plan_id
              WHERE ups.user_id = $1 AND ups.status = 'active'
-               AND (ups.expires_at IS NULL OR ups.expires_at + (($2::text || ' seconds')::interval) > NOW())
-             ORDER BY ups.started_at DESC LIMIT 1`,
+               AND (ups.expires_at IS NULL OR ups.expires_at + (
+                    COALESCE(NULLIF(sp.extra->>'grace_period_value', '')::numeric, $2) *
+                    CASE LOWER(COALESCE(sp.extra->>'grace_period_unit', 'seconds'))
+                        WHEN 'minutes' THEN INTERVAL '1 minute'
+                        WHEN 'hours' THEN INTERVAL '1 hour'
+                        WHEN 'days' THEN INTERVAL '1 day'
+                        ELSE INTERVAL '1 second'
+                    END
+               ) > NOW())
+             ORDER BY ups.started_at DESC, ups.id DESC LIMIT 1`,
             [userId, graceSeconds]
         );
 
         if (paidRes.rows.length > 0) {
             const { slug, googs_limit, verified_tick, extra = {} } = paidRes.rows[0];
-            // admin stores color limit as write_goog_limit (labeled "Write Goog (color)")
+            const postingLimits = resolvePostingLimits({ googs_limit, extra });
+            // Paid plans use googs_limit for total posting and write_goog_limit for colored Googs.
             // ad limits stored as ad_videos / ad_photos
             const tmStr = String(extra.text_messaging ?? '');
             return {
-                writeGoogLimit:       UNLIMITED,
-                writeGoogColorLimit:  extra.write_goog_limit       != null ? parseInt(extra.write_goog_limit)       : UNLIMITED,
+                writeGoogLimit:       postingLimits.total,
+                writeGoogDailyLimit:  postingLimits.daily,
+                writeGoogTotalLimit:  postingLimits.total,
+                writeGoogColorLimit:  (extra.write_goog_color_limit ?? extra.write_goog_limit) != null ? parseInt(extra.write_goog_color_limit ?? extra.write_goog_limit) : UNLIMITED,
                 googLetterLimit:      extra.goog_letter_limit      != null ? parseInt(extra.goog_letter_limit)      : UNLIMITED,
                 productUploadLimit:   extra.product_upload_limit   != null ? parseInt(extra.product_upload_limit)   : UNLIMITED,
                 videoAdsSaveLimit:    (extra.ad_videos ?? extra.video_ads_save_limit) != null ? parseInt(extra.ad_videos ?? extra.video_ads_save_limit) : UNLIMITED,
@@ -89,8 +113,11 @@ const getUserPlanLimits = async (userId) => {
 
         if (basicRes.rows.length > 0) {
             const { googs_limit, verified_tick, extra = {} } = basicRes.rows[0];
+            const postingLimits = resolvePostingLimits({ googs_limit, extra });
             return {
-                writeGoogLimit:      parseInt(extra.write_goog_limit      ?? FALLBACK.writeGoogLimit),
+                writeGoogLimit:      postingLimits.total,
+                writeGoogDailyLimit: postingLimits.daily,
+                writeGoogTotalLimit: postingLimits.total,
                 writeGoogColorLimit: 0,
                 googLetterLimit:     parseInt(extra.goog_letter_limit     ?? FALLBACK.googLetterLimit),
                 productUploadLimit:  parseInt(extra.product_upload_limit  ?? FALLBACK.productUploadLimit),
@@ -158,8 +185,16 @@ const getUserSubscriptionFeatures = async (userId) => {
                  FROM user_plan_subscriptions ups
                  JOIN subscription_plans sp ON sp.id = ups.plan_id
                  WHERE ups.user_id = $1 AND ups.status = 'active'
-                   AND (ups.expires_at IS NULL OR ups.expires_at + (($2::text || ' seconds')::interval) > NOW())
-                 ORDER BY ups.started_at DESC LIMIT 1`,
+                   AND (ups.expires_at IS NULL OR ups.expires_at + (
+                        COALESCE(NULLIF(sp.extra->>'grace_period_value', '')::numeric, $2) *
+                        CASE LOWER(COALESCE(sp.extra->>'grace_period_unit', 'seconds'))
+                            WHEN 'minutes' THEN INTERVAL '1 minute'
+                            WHEN 'hours' THEN INTERVAL '1 hour'
+                            WHEN 'days' THEN INTERVAL '1 day'
+                            ELSE INTERVAL '1 second'
+                        END
+                   ) > NOW())
+                 ORDER BY ups.started_at DESC, ups.id DESC LIMIT 1`,
                 [userId, graceSeconds]
             );
             if (paidRes.rows.length > 0) {
@@ -190,6 +225,7 @@ const getUserSubscriptionFeatures = async (userId) => {
 
     const extra = (plan && plan.extra) ? plan.extra : {};
     const googsLimit = plan ? asNum(plan.googs_limit) : null;
+    const postingLimits = resolvePostingLimits(plan || {});
 
     // For paid plans: if a boolean feature key is absent from extra, default to TRUE
     // (same logic as getUserPlanLimits: `extra.key !== false`).
@@ -212,10 +248,12 @@ const getUserSubscriptionFeatures = async (userId) => {
         badge_color:              plan?.badge_color || null,
 
         // Limits (null = unlimited / not set)
-        // For paid plans: write_goog_limit is the COLOR limit (admin labels it "Write Goog (color)")
+        // For paid plans: googs_limit is total posting; write_goog_limit is the COLOR limit.
         // For basic: write_goog_limit is the total write limit
-        write_goog_limit:         isBasic ? (asNum(extra.write_goog_limit) ?? googsLimit) : null,
-        write_goog_color_limit:   isBasic ? 0 : asNum(extra.write_goog_limit),
+        write_goog_limit:         postingLimits.total,
+        goog_posting_daily_limit: postingLimits.daily,
+        goog_posting_total_limit: postingLimits.total,
+        write_goog_color_limit:   isBasic ? 0 : asNum(extra.write_goog_color_limit ?? extra.write_goog_limit),
         goog_letter_limit:        asNum(extra.goog_letter_limit),
         product_upload_limit:     asNum(extra.product_upload_limit),
         // Admin stores ad limits as ad_videos / ad_photos

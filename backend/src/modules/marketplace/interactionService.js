@@ -12,15 +12,6 @@ const toggleLike = async (req, res) => {
         const checkLike = await interactionRepository.findMarketLike({ marketId, userId });
 
         if (checkLike.rows.length > 0) {
-            if (await interactionRepository.hasCollectedCoinForPromotedProduct({ marketId, userId })) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'This ad like is locked after coin collection.',
-                    liked: true,
-                    locked: true,
-                });
-            }
-
             await interactionRepository.deleteMarketLike({ marketId, userId });
             await interactionRepository.decrementMarketLikesCount(marketId);
             return res.status(200).json({ success: true, liked: false });

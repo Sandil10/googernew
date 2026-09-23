@@ -1,7 +1,25 @@
+const jwt = require('jsonwebtoken');
 const { getUserPlanLimits } = require('../../utils/planLimits');
 const googInteractionRepository = require('./googInteractionRepository');
+const { extractAuthToken, getJwtSecret } = require('../../../../shared/api/authToken');
 
 const VALID_REPORT_REASONS = ['Spam or misleading', 'Harassment or bullying', 'Hate speech or graphic', 'Inappropriate content', 'Other'];
+
+/// Best-effort viewer id for public routes: returns the signed-in user when a
+/// valid token happens to be present, and null otherwise. Never rejects the
+/// request — these endpoints must keep working for logged-out visitors.
+const resolveOptionalViewerId = (req) => {
+    try {
+        const token = extractAuthToken(req.header('Authorization'));
+        if (!token) return null;
+        const secret = getJwtSecret();
+        if (!secret) return null;
+        const decoded = jwt.verify(token, secret);
+        return decoded?.id || decoded?.userId || null;
+    } catch {
+        return null;
+    }
+};
 
 const toUtcIso = (value) => {
     if (!value) return null;
@@ -142,8 +160,13 @@ const addComment = async (req, res) => {
 const getComments = async (req, res) => {
     try {
         await googInteractionRepository.ensureGoogSchema();
+        await googInteractionRepository.ensureCommentReactionsTable();
         const postId = parseInt(req.params.id, 10);
-        const result = await googInteractionRepository.fetchComments(postId);
+        // This route stays public, but when a token is present we resolve the
+        // viewer so each comment reports whether *they* already voted — that is
+        // what keeps the like button lit after a reload.
+        const viewerId = resolveOptionalViewerId(req);
+        const result = await googInteractionRepository.fetchComments(postId, viewerId);
         const normalizedComments = result.rows.map((row) => ({
             ...row,
             created_at: toUtcIso(row.created_at),
@@ -184,6 +207,56 @@ const deleteComment = async (req, res) => {
         return res.status(500).json({ success: false, message: 'Server error deleting Goog comment' });
     }
 };
+
+/// Applies a like/dislike as a per-user toggle:
+///  - tapping the same reaction again clears it (un-like / un-dislike)
+///  - tapping the opposite one switches the vote
+/// Counts are recomputed from the reaction rows, so they always match reality.
+const applyCommentReaction = async (req, res, reaction) => {
+    try {
+        await googInteractionRepository.ensureGoogSchema();
+        await googInteractionRepository.ensureCommentReactionsTable();
+
+        const commentId = parseInt(req.params.commentId, 10);
+        const userId = req.user?.id || req.user?.userId;
+        if (!commentId) {
+            return res.status(400).json({ success: false, message: 'Invalid comment id' });
+        }
+        if (!userId) {
+            return res.status(401).json({ success: false, message: 'Unauthorized' });
+        }
+
+        const existing = await googInteractionRepository.findCommentReaction({ commentId, userId });
+        const current = existing.rows[0]?.reaction || null;
+
+        if (current === reaction) {
+            await googInteractionRepository.deleteCommentReaction({ commentId, userId });
+        } else {
+            await googInteractionRepository.upsertCommentReaction({ commentId, userId, reaction });
+        }
+
+        const counts = await googInteractionRepository.syncCommentReactionCounts(commentId);
+        if (!counts.rows.length) {
+            return res.status(404).json({ success: false, message: 'Comment not found' });
+        }
+
+        const userReaction = current === reaction ? null : reaction;
+        return res.status(200).json({
+            success: true,
+            ...counts.rows[0],
+            user_reaction: userReaction,
+            user_liked: userReaction === 'like',
+            user_disliked: userReaction === 'dislike',
+        });
+    } catch (error) {
+        console.error(`Error applying '${reaction}' to Goog comment:`, error);
+        return res.status(500).json({ success: false, message: 'Server error updating comment reaction' });
+    }
+};
+
+const likeComment = (req, res) => applyCommentReaction(req, res, 'like');
+
+const dislikeComment = (req, res) => applyCommentReaction(req, res, 'dislike');
 
 const toggleSave = async (req, res) => {
     try {
@@ -229,7 +302,9 @@ module.exports = {
     checkSubscribe,
     createReport,
     deleteComment,
+    dislikeComment,
     getComments,
+    likeComment,
     toggleLike,
     toggleSave,
     toggleSubscribe,

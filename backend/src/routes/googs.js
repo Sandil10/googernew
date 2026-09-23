@@ -2,14 +2,25 @@ const express = require('express');
 const router = express.Router();
 const { googEngagementController, googInteractionController, googMutationController, googReadController } = require('../modules/feed');
 const authenticateToken = require('../middleware/auth');
+const { createPublicResponseCache } = require('../middleware/publicResponseCache');
 
 // Fixed-path routes MUST come before /:id to avoid wildcard capture
-router.get('/', googReadController.getPosts);
+router.get(
+    '/',
+    createPublicResponseCache({
+        ttlMs: Number(process.env.PUBLIC_FEED_CACHE_TTL_MS || 15000),
+        keyPrefix: 'googs-public-feed',
+        anonymousOnly: true,
+    }),
+    googReadController.getPosts
+);
 router.get('/public/:id', googReadController.getPostPublic);
 router.get('/saved', authenticateToken, googReadController.getSavedGoogs);
 router.get('/saved/status', authenticateToken, googReadController.getSavedStatus);
 router.get('/user/:userId', googReadController.getUserPosts);
 router.delete('/comments/:commentId', authenticateToken, googInteractionController.deleteComment);
+router.post('/comments/:commentId/like', authenticateToken, googInteractionController.likeComment);
+router.post('/comments/:commentId/dislike', authenticateToken, googInteractionController.dislikeComment);
 router.post('/comments/:commentId/report', authenticateToken, async (req, res) => {
     const pool = require('../config/database');
     try {

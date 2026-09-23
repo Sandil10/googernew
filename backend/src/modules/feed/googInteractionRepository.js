@@ -92,15 +92,79 @@ const getCommentAuthor = async (userId) => pool.query(
     [userId]
 );
 
-const fetchComments = async (postId) => pool.query(
+/// Per-user comment votes. Without this the like endpoint was a blind counter
+/// bump: it could not tell who had voted, so un-liking was impossible and the
+/// same user could inflate a count indefinitely.
+let commentReactionsTableEnsured = false;
+const ensureCommentReactionsTable = async () => {
+    if (commentReactionsTableEnsured) return;
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS goog_comment_reactions (
+            id SERIAL PRIMARY KEY,
+            comment_id INTEGER NOT NULL REFERENCES goog_comments(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            reaction VARCHAR(10) NOT NULL CHECK (reaction IN ('like', 'dislike')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (comment_id, user_id)
+        )
+    `);
+    await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_goog_comment_reactions_comment
+        ON goog_comment_reactions(comment_id)
+    `);
+    commentReactionsTableEnsured = true;
+};
+
+const findCommentReaction = async ({ commentId, userId }) => pool.query(
+    'SELECT reaction FROM goog_comment_reactions WHERE comment_id = $1 AND user_id = $2',
+    [commentId, userId]
+);
+
+const deleteCommentReaction = async ({ commentId, userId }) => pool.query(
+    'DELETE FROM goog_comment_reactions WHERE comment_id = $1 AND user_id = $2',
+    [commentId, userId]
+);
+
+const upsertCommentReaction = async ({ commentId, userId, reaction }) => pool.query(
+    `INSERT INTO goog_comment_reactions (comment_id, user_id, reaction)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (comment_id, user_id)
+     DO UPDATE SET reaction = EXCLUDED.reaction, created_at = CURRENT_TIMESTAMP`,
+    [commentId, userId, reaction]
+);
+
+/// Recomputes both counters from the reaction rows, so the stored totals can
+/// never drift away from the actual votes.
+const syncCommentReactionCounts = async (commentId) => pool.query(
+    `UPDATE goog_comments gc
+     SET likes = COALESCE(counts.likes, 0),
+         dislikes = COALESCE(counts.dislikes, 0)
+     FROM (
+        SELECT
+            COUNT(*) FILTER (WHERE reaction = 'like')::int AS likes,
+            COUNT(*) FILTER (WHERE reaction = 'dislike')::int AS dislikes
+        FROM goog_comment_reactions
+        WHERE comment_id = $1
+     ) AS counts
+     WHERE gc.id = $1
+     RETURNING gc.id, gc.likes, gc.dislikes`,
+    [commentId]
+);
+
+const fetchComments = async (postId, viewerId = null) => pool.query(
     `SELECT gc.id, gc.goog_id, gc.goog_id as market_id, gc.user_id, gc.comment as text,
             gc.parent_id, gc.likes, gc.dislikes, gc.reports, gc.created_at,
-            u.username, u.profile_picture
+            u.username, u.profile_picture,
+            r.reaction AS user_reaction,
+            (r.reaction = 'like') AS user_liked,
+            (r.reaction = 'dislike') AS user_disliked
      FROM goog_comments gc
      JOIN users u ON u.id = gc.user_id
+     LEFT JOIN goog_comment_reactions r
+            ON r.comment_id = gc.id AND r.user_id = $2
      WHERE gc.goog_id = $1
      ORDER BY gc.created_at ASC`,
-    [postId]
+    [postId, viewerId]
 );
 
 const fetchCommentWithOwner = async (commentId) => pool.query(
@@ -133,6 +197,16 @@ const decrementCommentsCount = async ({ postId, deletedCount }) => pool.query(
     [postId, deletedCount]
 );
 
+const incrementCommentLikes = async (commentId) => pool.query(
+    'UPDATE goog_comments SET likes = COALESCE(likes, 0) + 1 WHERE id = $1 RETURNING likes, dislikes',
+    [commentId]
+);
+
+const incrementCommentDislikes = async (commentId) => pool.query(
+    'UPDATE goog_comments SET dislikes = COALESCE(dislikes, 0) + 1 WHERE id = $1 RETURNING likes, dislikes',
+    [commentId]
+);
+
 const findSavedGoog = async ({ userId, googId }) => pool.query(
     'SELECT id FROM saved_googs WHERE user_id = $1 AND goog_id = $2',
     [userId, googId]
@@ -157,8 +231,13 @@ module.exports = {
     countSavedGoogs,
     decrementCommentsCount,
     decrementLikesCount,
+    deleteCommentReaction,
     deleteCommentTree,
     deleteLike,
+    ensureCommentReactionsTable,
+    findCommentReaction,
+    syncCommentReactionCounts,
+    upsertCommentReaction,
     deleteSavedGoog,
     deleteSubscription,
     ensureGoogSchema,
@@ -172,6 +251,8 @@ module.exports = {
     findSubscription,
     getCommentAuthor,
     incrementCommentsCount,
+    incrementCommentDislikes,
+    incrementCommentLikes,
     incrementLikesCount,
     incrementReportsCount,
     insertComment,

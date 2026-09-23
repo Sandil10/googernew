@@ -6,7 +6,7 @@ import IonIcon from "@/app/components/IonIcon";
 import { BadgeSvg } from "@/app/components/VerifiedBadge";
 import { authService } from "@/services/authService";
 import { getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
-import { subscriptionService, SubscriptionPlan, UserSubscription } from "@/services/subscriptionService";
+import { subscriptionService, SubscriptionPlan, UserSubscription, SaveReleaseWarning } from "@/services/subscriptionService";
 import { clearFeaturesCache, refreshSubscriptionFeatures } from "@/app/lib/subscriptionFeatures";
 
 // Derives human-readable feature bullets purely from DB fields — nothing hardcoded.
@@ -50,6 +50,10 @@ function normalizeChatFeatureLabel(label: string): string | null {
     return cleaned;
 }
 
+function isLegacyPostingLimitLabel(label: string): boolean {
+    return /^goog(?:er)?\s+posting\s+limit\b/i.test(label.trim());
+}
+
 function getContentExpiryLabel(extra: Record<string, any>): string {
     const labels = extra.labels || {};
     const unit = String(extra.content_expiry_unit || "unlimited");
@@ -69,7 +73,10 @@ function formatVideoLimitMinutes(value: number): string {
 
 function derivePlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; chat: string[]; content: string[] } {
     const e = plan.extra || {};
-    const regular: string[] = (plan.features || []).filter((label) => !isChatFeatureLabel(String(label)));
+    const regular: string[] = (plan.features || [])
+        .filter((label) => !isChatFeatureLabel(String(label)))
+        .filter((label) => !isLegacyPostingLimitLabel(String(label)))
+        .filter((label) => !/verified\s*(tick|badge)/i.test(String(label)));
     const chat: string[] = (plan.features || [])
         .filter((label) => isChatFeatureLabel(String(label)))
         .map((label) => normalizeChatFeatureLabel(String(label)))
@@ -77,19 +84,17 @@ function derivePlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; c
     const content: string[] = [];
     const contentLabels = e.labels || {};
     const isBasicPlan = plan.slug === "basic" || Number(plan.price) === 0;
+    if (plan.verified_tick) regular.unshift("Verification tick");
+
+    const postingDailyLimit = Number(e.goog_posting_daily_limit ?? e.write_goog_daily_limit ?? 0);
+    const postingTotalLimit = Number(e.goog_posting_total_limit ?? plan.googs_limit ?? e.goog_posting_limit ?? e.write_goog_limit ?? 0);
+    regular.push(`Googer Posting Daily: ${postingDailyLimit > 0 ? `${postingDailyLimit.toLocaleString()}/day` : "Unlimited/day"}`);
+    regular.push(`Googer Posting Total: ${postingTotalLimit > 0 ? `${postingTotalLimit.toLocaleString()} total` : "Unlimited total"}`);
 
     // Googs
-    const writeLimit = e.write_goog_limit != null ? Number(e.write_goog_limit) : null;
-    if (writeLimit != null && writeLimit > 0)
-        regular.push(`Write up to ${writeLimit.toLocaleString()} Googs`);
-
     const letterLimit = e.goog_letter_limit != null ? Number(e.goog_letter_limit) : null;
     if (letterLimit != null && letterLimit > 0)
         regular.push(`${letterLimit} characters per Goog`);
-
-    const saveLimit = plan.googs_limit != null ? Number(plan.googs_limit) : null;
-    if (saveLimit != null && saveLimit > 0 && saveLimit < 999999)
-        regular.push(`Save up to ${saveLimit.toLocaleString()} Googs`);
 
     // Shop / Ads
     const productLimit = e.product_upload_limit != null ? Number(e.product_upload_limit) : null;
@@ -161,9 +166,6 @@ function derivePlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; c
     if (e.free_profile_ad_promo || e.free_promo)
         regular.push("Free profile ad promotion");
 
-    // Verified badge
-    if (plan.verified_tick) regular.push("Verified badge");
-
     return {
         regular: regular.filter((label, index, list) => list.indexOf(label) === index),
         chat: chat.filter((label, index, list) => list.indexOf(label) === index),
@@ -227,6 +229,7 @@ export default function ProductPlansModal({
     const [sheetOpen, setSheetOpen]   = useState(false);
     const [paying, setPaying]         = useState(false);
     const [insufficient, setInsufficient] = useState(false);
+    const [saveRelease, setSaveRelease] = useState<SaveReleaseWarning | null>(null);
     const [message, setMessage]       = useState<string | null>(null);
     const [success, setSuccess]       = useState<string | null>(null);
     const [cancelling, setCancelling] = useState(false);
@@ -273,22 +276,36 @@ export default function ProductPlansModal({
         setSheetOpen(true);
     };
 
-    const handlePay = async () => {
+    const handlePay = async (confirmedRelease = false) => {
         if (!selectedPlan) return;
         const price = Number(selectedPlan.price) || 0;
         if (balance < price) { setInsufficient(true); return; }
         setPaying(true);
         try {
             const isSwitchingPlan = !!(activeSub && activeSub.status === "active" && activeSub.plan_id !== selectedPlan.id);
-            const result = await subscriptionService.subscribe(selectedPlan.id, { switchPlan: isSwitchingPlan });
+            const result = await subscriptionService.subscribe(selectedPlan.id, {
+                switchPlan: isSwitchingPlan,
+                confirmReleaseSaves: confirmedRelease,
+            });
             if ("error" in result) {
-                if (result.code === 402) setInsufficient(true);
+                // Nothing has been charged yet. Name the new allowance and what
+                // it costs, and only retry once the owner accepts.
+                if (result.saveRelease) setSaveRelease(result.saveRelease);
+                else if (result.code === 402) setInsufficient(true);
                 else { setMessage(result.error); setSheetOpen(false); }
                 return;
             }
             setSheetOpen(false);
             setActiveSub(result.subscription);
-            setSuccess(`Subscribed to ${selectedPlan.name}!`);
+            // A smaller plan allows fewer saved ads, so the backend releases
+            // the excess. Say so plainly rather than letting saved ads vanish
+            // without explanation.
+            const releasedMessage = (result as any)?.releasedSavesMessage;
+            setSuccess(
+                releasedMessage
+                    ? `Subscribed to ${selectedPlan.name}. ${releasedMessage}`
+                    : `Subscribed to ${selectedPlan.name}!`
+            );
             await refreshBalance();
             clearFeaturesCache();
             void refreshSubscriptionFeatures();
@@ -569,9 +586,50 @@ export default function ProductPlansModal({
                                 disabled={paying}>
                                 Close
                             </button>
-                            <button onClick={handlePay} disabled={paying}
+                            <button onClick={() => handlePay(false)} disabled={paying}
                                 className="flex-1 py-2.5 rounded-full bg-red-500 hover:bg-red-400 text-white text-sm font-bold transition disabled:opacity-50">
                                 {paying ? "Processing…" : "Confirm Pay"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Saved-ad release confirmation — shown before the plan is paid for */}
+            {saveRelease && (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+                    <div onClick={() => setSaveRelease(null)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+                    <div className="relative w-full max-w-[320px] bg-[#0a0a0a] border border-amber-500/40 rounded-2xl p-4 text-center">
+                        <p className="text-sm font-bold text-amber-200 mb-1.5">Saved ads will be removed</p>
+                        <div className="text-[11px] text-white/70 mb-2.5 space-y-1">
+                            <p>
+                                <span className="font-bold text-white">{saveRelease.planName}</span> lets you keep{" "}
+                                {saveRelease.saveLimits.photo !== null && (
+                                    <span className="font-bold text-white">{saveRelease.saveLimits.photo} photo ad{saveRelease.saveLimits.photo === 1 ? "" : "s"}</span>
+                                )}
+                                {saveRelease.saveLimits.photo !== null && saveRelease.saveLimits.video !== null && " and "}
+                                {saveRelease.saveLimits.video !== null && (
+                                    <span className="font-bold text-white">{saveRelease.saveLimits.video} video ad{saveRelease.saveLimits.video === 1 ? "" : "s"}</span>
+                                )}
+                                {" "}saved.
+                            </p>
+                            <p>
+                                You have {saveRelease.savedCounts.photo} saved photo ad{saveRelease.savedCounts.photo === 1 ? "" : "s"} and{" "}
+                                {saveRelease.savedCounts.video} saved video ad{saveRelease.savedCounts.video === 1 ? "" : "s"}.
+                            </p>
+                            <p className="text-amber-300/90">
+                                Your {saveRelease.releaseCount === 1 ? "most recent saved ad" : `${saveRelease.releaseCount} most recent saved ads`} will be
+                                removed from your profile if you continue.
+                            </p>
+                        </div>
+                        <div className="flex gap-2 justify-center">
+                            <button onClick={() => setSaveRelease(null)}
+                                className="bg-white/5 border border-gray-700 text-white/80 font-bold text-[11px] px-4 py-1.5 rounded-full hover:bg-white/10 transition">
+                                Cancel
+                            </button>
+                            <button type="button" onClick={() => { setSaveRelease(null); handlePay(true); }}
+                                className="bg-amber-500 hover:bg-amber-400 text-black font-bold text-[11px] px-5 py-1.5 rounded-full transition">
+                                OK
                             </button>
                         </div>
                     </div>

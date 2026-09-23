@@ -1,8 +1,8 @@
 const pool = require('../../config/database');
 const { distributeProductDiscountCommission } = require('../../utils/referralCommission');
-const { adjustOrderItemStock } = require('../../../../../shared/utils/orderStockHelpers');
-const { refundCancelledOrder } = require('../../../../../shared/utils/orderRefundHelpers');
-const { finalizeReceivedOrder } = require('../../../../../shared/utils/orderSettlementHelpers');
+const { adjustOrderItemStock } = require('../../../../shared/utils/orderStockHelpers');
+const { refundCancelledOrder } = require('../../../../shared/utils/orderRefundHelpers');
+const { finalizeReceivedOrder } = require('../../../../shared/utils/orderSettlementHelpers');
 const orderRepository = require('./orderRepository');
 const {
     calculateDiscountedProductAmount,

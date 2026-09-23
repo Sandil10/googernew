@@ -20,7 +20,9 @@ try {
 }
 
 const mediaStorageConfig = getMediaStorageConfig();
-const useCloudinary = getMediaStorageProvider() === 'cloudinary';
+const mediaStorageProvider = getMediaStorageProvider();
+const useCloudinary = mediaStorageProvider === 'cloudinary';
+const useS3 = mediaStorageProvider === 's3';
 
 let cloudinary = null;
 if (useCloudinary) {
@@ -31,6 +33,21 @@ if (useCloudinary) {
         api_secret: mediaStorageConfig.cloudinary.apiSecret,
     });
 }
+
+let s3Client = null;
+let PutObjectCommand = null;
+if (useS3) {
+    ({ S3Client: s3Client, PutObjectCommand } = require('@aws-sdk/client-s3'));
+    s3Client = new s3Client({
+        region: mediaStorageConfig.s3.region,
+    });
+}
+
+const buildS3PublicUrl = (key) => {
+    const baseUrl = String(mediaStorageConfig.s3.publicBaseUrl || '').replace(/\/+$/, '');
+    if (baseUrl) return `${baseUrl}/${key}`;
+    return `https://${mediaStorageConfig.s3.bucket}.s3.${mediaStorageConfig.s3.region}.amazonaws.com/${key}`;
+};
 
 const getSafeExtension = (file = {}) => {
     const originalExt = path.extname(file.originalname || '').toLowerCase();
@@ -46,6 +63,11 @@ const getSafeExtension = (file = {}) => {
         'video/mp4': '.mp4',
         'video/webm': '.webm',
         'video/quicktime': '.mov',
+        'video/x-m4v': '.m4v',
+        'video/x-msvideo': '.avi',
+        'video/avi': '.avi',
+        'video/x-matroska': '.mkv',
+        'video/mpeg': '.mpeg',
     }[file.mimetype];
 
     return mimeExt || '.bin';
@@ -149,11 +171,30 @@ const uploadToCloudinary = (file, folder) => {
     });
 };
 
-const saveUploadedFile = async (file, folder = 'media') => {
-    if (!file?.buffer) return '';
+const uploadToS3 = async (file, folder) => {
+    const safeFolder = String(folder || 'media').replace(/[^a-z0-9-_]/gi, '').toLowerCase() || 'media';
+    const processed = await processUploadFile(file);
+    const filename = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${processed.extension}`;
+    const key = `${safeFolder}/${filename}`;
+
+    await s3Client.send(new PutObjectCommand({
+        Bucket: mediaStorageConfig.s3.bucket,
+        Key: key,
+        Body: processed.buffer,
+        ContentType: processed.mimetype || file.mimetype || 'application/octet-stream',
+    }));
+
+    return buildS3PublicUrl(key);
+};
+
+const persistUploadedFile = async (file, folder = 'media') => {
 
     if (useCloudinary) {
         return uploadToCloudinary(file, folder);
+    }
+
+    if (useS3) {
+        return uploadToS3(file, folder);
     }
 
     const safeFolder = String(folder || 'media').replace(/[^a-z0-9-_]/gi, '').toLowerCase() || 'media';
@@ -166,6 +207,11 @@ const saveUploadedFile = async (file, folder = 'media') => {
     await fs.writeFile(absolutePath, processed.buffer);
 
     return buildPublicUploadUrl(safeFolder, filename);
+};
+
+const saveUploadedFile = async (file, folder = 'media') => {
+    if (!file?.buffer && !file?.path) return '';
+    return require('./uploadBuffer').withUploadBuffer(file, buffered => persistUploadedFile(buffered, folder));
 };
 
 const saveUploadedFiles = async (files = [], folder = 'media') => {

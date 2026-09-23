@@ -67,14 +67,19 @@ const formatWalletCounterparty = (tx: any, currentUserId?: number | string) => {
     if (type === 'commission_hold') {
         return `${isSent ? 'Sent To' : 'Received From'} - Googer Commission`;
     }
+    if (type === 'subscription_payment' || type === 'sub_auto_renew') {
+        return `${isSent ? 'Sent To' : 'Received From'} - Googer`;
+    }
     const label = type === 'request'
         ? (isSent ? 'Requested From' : 'Requested By')
         : (isSent ? 'Send To' : 'Received From');
     const fullName = isSent ? tx.receiver_full_name : tx.sender_full_name;
     const username = isSent ? tx.receiver_username : tx.sender_username;
-    const readableId = isSent ? tx.receiver_readable_id : tx.sender_readable_id;
-    const displayName = fullName || username || 'Unknown User';
-    return `${label} - ${displayName} (ID ${readableId ?? 'N/A'})`;
+    const rawName = String(fullName || username || 'Googer').trim();
+    const displayName = /(^|[\s_-])(super[\s_-]*)?admin($|[\s_-])|^googer([\s_-]*(admin|official|support))?$/i.test(rawName)
+        ? 'Googer'
+        : rawName;
+    return `${label} - ${displayName}`;
 };
 
 const formatWalletTypeLabel = (tx: any) => {
@@ -766,15 +771,15 @@ export default function MyWallet() {
         setShowSecurityModal(true);
     };
 
-    const executeVerifiedTransfer = async (password: string) => {
+    const executeVerifiedTransfer = async (password: string, method: 'password' | 'biometric' = 'password') => {
         if (!securityAction) return;
 
         setIsProcessing(true);
         try {
-            // 1. Verify Password First
-            await authService.verifyPassword(password);
+            if (method !== 'biometric') {
+                await authService.verifyPassword(password);
+            }
 
-            // 2. If verified, proceed
             if (securityAction.type === 'transfer') {
                 let effectiveSelectedUser = selectedUser;
                 const effectiveAmount = amount;
@@ -944,7 +949,7 @@ export default function MyWallet() {
                         <div className="relative w-12 h-6 md:w-16 md:h-10 shrink-0">
                             <Image
                                 src="/assets/images/rupee.png"
-                                alt="Rupee"
+                                alt="Rupieer"
                                 width={100}
                                 height={50}
                                 className="object-contain"
@@ -1497,7 +1502,7 @@ export default function MyWallet() {
                                             <IonIcon name="gift-outline" className="text-3xl text-white/40" />
                                         </div>
                                         <p className="text-gray-500 font-bold uppercase tracking-widest text-[10px]">No ad coin rewards yet</p>
-                                        <p className="text-gray-600 text-[10px] mt-2">Like a sponsored ad and collect the Ruppier coin reward</p>
+                                        <p className="mt-2 text-[10px] text-gray-600">Like a sponsored ad and collect the Rupieer coin reward</p>
                                     </div>
                                 ) : (
                                     adCoinTxs.map((tx) => {

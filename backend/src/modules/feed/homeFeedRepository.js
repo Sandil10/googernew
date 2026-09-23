@@ -135,7 +135,7 @@ const fetchHomeFeedAds = async ({ userId, isAnonymousRequest, adFetchLimit }) =>
                 a.linked_product_id, a.linked_product_share_code,
                 u.username AS owner_username_joined, u.profile_picture,
                 EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1) AS user_liked,
-                EXISTS(SELECT 1 FROM ad_like_coin_rewards acr WHERE acr.ad_id = a.ad_id AND acr.user_id = $1) AS ad_coin_collected
+                EXISTS(SELECT 1 FROM ad_coin_collections acc WHERE acc.ad_id = a.ad_id AND acc.user_id = $1) AS ad_coin_collected
          FROM ads a
          JOIN users u ON u.id = a.user_id
          WHERE a.status = 'Active'

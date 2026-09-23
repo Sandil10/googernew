@@ -73,10 +73,6 @@ const RAW_PHOTO_VIDEO_UPLOAD_SQL = `
 `;
 
 const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
-    CASE
-        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
-        ELSE NULL
-    END,
     (
         SELECT
             CASE
@@ -116,13 +112,28 @@ const getRawPhotoVideoProfileExpiryIntervalSql = () => `COALESCE(
         FROM subscription_plans sp
         WHERE sp.slug = 'basic' AND sp.is_active = TRUE
         LIMIT 1
-    )
+    ),
+    CASE
+        WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
+        ELSE NULL
+    END
 )`;
 
+// The window is measured from approval, but it can only ever take an ad away
+// once that ad has finished running — expiry must never cut a live ad short.
+// A save overrides it outright: an ad the owner saved stays on the profile
+// past its window, and only becomes removable again if they unsave it.
 const RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL = `
-    a.active_start_time IS NOT NULL
-    AND (${getRawPhotoVideoProfileExpiryIntervalSql()}) IS NOT NULL
-    AND a.active_start_time > NOW() - (${getRawPhotoVideoProfileExpiryIntervalSql()})
+    (
+        LOWER(TRIM(REPLACE(REPLACE(COALESCE(a.status, ''), '_', ' '), '-', ' '))) <> 'completed'
+        OR (${getRawPhotoVideoProfileExpiryIntervalSql()}) IS NULL
+        OR a.active_start_time IS NULL
+        OR a.active_start_time > NOW() - (${getRawPhotoVideoProfileExpiryIntervalSql()})
+        OR EXISTS (
+            SELECT 1 FROM ad_saves keep
+            WHERE keep.ad_id = a.ad_id AND keep.user_id = a.user_id
+        )
+    )
 `;
 
 const stripDataUrl = (value) => {
@@ -160,8 +171,9 @@ const mapRow = (row) => {
     const linkedProductId = row.linked_product_id ?? originalProductId ?? null;
     const linkedProductShareCode = row.linked_product_share_code ?? originalProductCode ?? null;
 
+    const activeLink = row.active_link || row.edit_draft?.activeLink || row.edit_draft?.active_link || row.cta_value || row.edit_draft?.ctaValue || row.edit_draft?.cta_value || '';
     const durationState = calculateAdDurationState(row);
-    return {
+    const mappedRow = {
         id: row.id,
         adId: row.ad_id,
         ad_id: row.ad_id,
@@ -203,7 +215,7 @@ const mapRow = (row) => {
         remainingBudget: Number(row.remaining_budget || 0),
         status: row.status || 'Under Review',
         campaignPath: row.campaign_path,
-        active_link: row.active_link || row.edit_draft?.activeLink || row.edit_draft?.active_link || '',
+        active_link: activeLink,
         cta_topic: row.cta_topic || row.edit_draft?.ctaTopic || row.edit_draft?.cta_topic || '',
         cta_value: row.cta_value || row.edit_draft?.ctaValue || row.edit_draft?.cta_value || '',
         product_id: row.product_id ?? null,
@@ -250,8 +262,17 @@ const mapRow = (row) => {
         updated_at: toUtcIso(row.updated_at),
         savedAt: toUtcIso(row.saved_at),
         saved_at: toUtcIso(row.saved_at),
+        keptBySaveOnly: !!row.kept_by_save_only,
+        kept_by_save_only: !!row.kept_by_save_only,
         profile_picture: row.profile_picture || row.edit_draft?.sourceOwnerProfilePicture || null,
     };
+    
+    // Add normalized payload
+    const adNormalizer = require('./adNormalizer');
+    mappedRow.normalized_ad = adNormalizer.normalizeAdToContract(mappedRow);
+    mappedRow.normalizedAd = mappedRow.normalized_ad;
+    
+    return mappedRow;
 };
 
 const ensureAdsTable = async () => adsRuntimeRepository.ensureAdsTable();
@@ -419,8 +440,146 @@ const deleteSave = async (userId, adId) => {
     await pool.query('DELETE FROM ad_saves WHERE user_id = $1 AND ad_id = $2', [userId, adId]);
 };
 
-const countUploadSavesByType = async (userId, adMediaType) => {
+// A cancelled or removed ad is gone from the profile for good, so keeping its
+// save would only hold one of the owner's slots for something they can never
+// see again. Expiry is deliberately NOT a reason to delete: a saved ad is
+// meant to outlive its expiry window — the save is what keeps it on the
+// profile. Only unsaving it lets expiry take it away.
+// Dropping to a smaller plan leaves the owner holding more saves than the new
+// plan allows. The excess goes newest-ad-first — ordered by when the ad itself
+// was published, NOT by when it was saved — because that is what the owner
+// reads as "the recent ad". Saving an old ad today must not make that old ad
+// the first thing deleted. The returned rows let the caller tell them exactly
+// what was let go.
+//
+// $1 user, $2 media type, $3 limit. Shared by the preview and the delete below
+// so the popup can never promise a different ad than the trim removes.
+const TRIM_SELECTION_SQL = `
+    FROM ad_saves s
+    LEFT JOIN ads a ON a.ad_id = s.ad_id
+    WHERE s.user_id = $1
+      AND s.ad_media_type = $2
+      AND s.ad_source_type = 'upload'
+    ORDER BY COALESCE(a.created_at, s.created_at) DESC, s.created_at DESC, s.ad_id DESC
+    LIMIT GREATEST(
+        (
+            SELECT COUNT(*) FROM ad_saves c
+            WHERE c.user_id = $1
+              AND c.ad_media_type = $2
+              AND c.ad_source_type = 'upload'
+        ) - $3,
+        0
+    )`;
+
+// Same selection the trim below deletes, without deleting: lets the caller
+// warn the owner which saves a downgrade would cost before charging them.
+const previewUploadSaveTrim = async (userId, adMediaType, limit, executor = pool) => {
+    if (!Number.isFinite(Number(limit)) || Number(limit) < 0) return [];
+    const result = await executor.query(
+        `SELECT s.ad_id, s.ad_media_type, s.created_at AS saved_at,
+                a.created_at AS ad_created_at
+         ${TRIM_SELECTION_SQL}`,
+        [userId, adMediaType, Number(limit)]
+    );
+    return result.rows;
+};
+
+const trimUploadSavesToLimit = async (userId, adMediaType, limit, executor = pool) => {
+    if (!Number.isFinite(Number(limit)) || Number(limit) < 0) return [];
+    const result = await executor.query(
+        `DELETE FROM ad_saves
+         WHERE ctid IN (
+             SELECT s.ctid
+             ${TRIM_SELECTION_SQL}
+         )
+         RETURNING ad_id, ad_media_type`,
+        [userId, adMediaType, Number(limit)]
+    );
+    return result.rows;
+};
+
+// Once a paid plan lapses past its grace period the account falls back to the
+// basic plan, and basic normally allows no saved ads at all. The saves it was
+// holding have to go with it — the same fall-back that strips its badge and
+// its uploaded content. Left behind, they would sit on the profile forever
+// while counting against an allowance the owner can no longer reach.
+//
+// Uses the same "no active paid plan, past grace" test as
+// clearBadgesWithoutActivePaidPlan, and the same newest-ad-first ordering as
+// a plan downgrade, so a shrinking allowance always takes the newest ads.
+const trimSavesForLapsedAccounts = async (graceSeconds) => {
+    const grace = Math.max(0, Math.floor(Number(graceSeconds) || 0));
+
+    const basic = await pool.query(
+        `SELECT extra->>'ad_photos' AS photos, extra->>'ad_videos' AS videos
+         FROM subscription_plans WHERE slug = 'basic' LIMIT 1`
+    );
+    const readLimit = (raw) => {
+        if (raw === null || raw === undefined || raw === '') return null;
+        const value = Number(raw);
+        return Number.isFinite(value) && value >= 0 ? value : null;
+    };
+    const limits = {
+        photo: readLimit(basic.rows[0]?.photos),
+        video: readLimit(basic.rows[0]?.videos),
+    };
+    // No basic plan, or no allowance recorded on it, means there is no number
+    // to trim down to — leaving the saves alone beats guessing at zero.
+    if (limits.photo === null && limits.video === null) return [];
+
+    const lapsed = await pool.query(
+        `SELECT DISTINCT s.user_id
+         FROM ad_saves s
+         WHERE s.ad_source_type = 'upload'
+           AND NOT EXISTS (
+               SELECT 1
+               FROM user_plan_subscriptions ups
+               INNER JOIN subscription_plans sp ON sp.id = ups.plan_id
+               WHERE ups.user_id = s.user_id
+                 AND ups.status = 'active'
+                 AND COALESCE(sp.price, 0) > 0
+                 AND (
+                     ups.expires_at IS NULL
+                     OR ups.expires_at + (
+                         COALESCE(NULLIF(sp.extra->>'grace_period_value', '')::numeric, $1) *
+                         CASE LOWER(COALESCE(sp.extra->>'grace_period_unit', 'days'))
+                             WHEN 'minutes' THEN INTERVAL '1 minute'
+                             WHEN 'hours' THEN INTERVAL '1 hour'
+                             WHEN 'days' THEN INTERVAL '1 day'
+                             ELSE INTERVAL '1 second'
+                         END
+                     ) > NOW()
+                 )
+           )`,
+        [grace]
+    );
+
+    const released = [];
+    for (const row of lapsed.rows) {
+        for (const mediaType of ['photo', 'video']) {
+            if (limits[mediaType] === null) continue;
+            const rows = await trimUploadSavesToLimit(row.user_id, mediaType, limits[mediaType]);
+            for (const r of rows) released.push({ ...r, user_id: row.user_id });
+        }
+    }
+    return released;
+};
+
+const purgeExpiredUploadSaves = async (userId) => {
     const result = await pool.query(
+        `DELETE FROM ad_saves s
+         USING ads a
+         WHERE a.ad_id = s.ad_id
+           AND s.user_id = $1
+           AND LOWER(TRIM(REPLACE(REPLACE(COALESCE(a.status, ''), '_', ' '), '-', ' ')))
+               IN ('cancelled', 'canceled', 'removed')`,
+        [userId]
+    );
+    return result.rowCount || 0;
+};
+
+const countUploadSavesByType = async (userId, adMediaType, executor = pool) => {
+    const result = await executor.query(
         `SELECT COUNT(*)::int AS c FROM ad_saves
          WHERE user_id = $1 AND ad_media_type = $2 AND ad_source_type = 'upload'`,
         [userId, adMediaType]
@@ -450,7 +609,18 @@ const listMySavedAds = async (userId) => {
                 COALESCE(owner_u.username, sponsor_u.username) AS owner_username_joined,
                 COALESCE(owner_u.profile_picture, sponsor_u.profile_picture) AS profile_picture,
                 COALESCE(av.reach_count, 0) AS reach_count,
-                s.created_at AS saved_at
+                s.created_at AS saved_at,
+                -- True when the save is the only reason this ad is still on
+                -- show: it has finished and its window has passed, so
+                -- unsaving it takes it off the profile for good. The client
+                -- warns before that happens rather than doing it silently.
+                (
+                    LOWER(TRIM(REPLACE(REPLACE(COALESCE(a.status, ''), '_', ' '), '-', ' '))) = 'completed'
+                    AND s.ad_source_type = 'upload'
+                    AND a.active_start_time IS NOT NULL
+                    AND (${getRawPhotoVideoProfileExpiryIntervalSql()}) IS NOT NULL
+                    AND a.active_start_time <= NOW() - (${getRawPhotoVideoProfileExpiryIntervalSql()})
+                ) AS kept_by_save_only
          FROM ad_saves s
          JOIN ads a ON a.ad_id = s.ad_id
          LEFT JOIN users sponsor_u ON a.user_id = sponsor_u.id
@@ -495,6 +665,11 @@ const listPublicSavedAdsByUser = async (profileUserId) => {
            AND a.user_id = $1
            AND LOWER(COALESCE(a.campaign_type, '')) IN ('photo and video', 'photo & video')
            AND LOWER(TRIM(REPLACE(REPLACE(COALESCE(a.status, ''), '_', ' '), '-', ' '))) = 'completed'
+           AND NOT (
+               s.ad_source_type = 'upload'
+               AND ${RAW_PHOTO_VIDEO_UPLOAD_SQL}
+               AND NOT (${RAW_PHOTO_VIDEO_PROFILE_NOT_EXPIRED_SQL})
+           )
          ORDER BY s.created_at DESC`,
         [profileUserId]
     );
@@ -538,5 +713,9 @@ module.exports = {
     mapRow,
     countUploadSavesByType,
     deleteSave,
+    purgeExpiredUploadSaves,
+    trimUploadSavesToLimit,
+    trimSavesForLapsedAccounts,
+    previewUploadSaveTrim,
     syncExpiredAds,
 };

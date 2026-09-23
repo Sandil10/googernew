@@ -21,18 +21,27 @@ export function ProfilePromoteCarousel({
   onContentClick,
   onProfileClick,
   className = "px-4 py-4 transition-colors sm:px-7",
-  cardsPerView = 3,
+  cardsPerView = 4,
 }: ProfilePromoteCarouselProps) {
   const [profilePromoteIndex, setProfilePromoteIndex] = useState(0);
   const containerRef = useRef<HTMLElement>(null);
+  const loggedExposureKeysRef = useRef(new Set<string>());
+  const loggedViewIdsRef = useRef(new Set<string>());
+  const lastScrollRotateRef = useRef(0);
   const [isInViewport, setIsInViewport] = useState(false);
+  const [viewportExposureTick, setViewportExposureTick] = useState(0);
   const visibleCount = Math.max(2, Math.min(4, cardsPerView));
   const canSlide = ads.length > visibleCount;
   const visibleAds = useMemo(() => {
     if (!ads.length) return [];
+    if (ads.length <= 1) return ads;
+    const rotatedAds = [
+      ...ads.slice(profilePromoteIndex % ads.length),
+      ...ads.slice(0, profilePromoteIndex % ads.length),
+    ];
     return canSlide
-      ? Array.from({ length: visibleCount }, (_, offset) => ads[(profilePromoteIndex + offset) % ads.length])
-      : ads.slice(0, visibleCount);
+      ? rotatedAds.slice(0, visibleCount)
+      : rotatedAds.slice(0, visibleCount);
   }, [ads, canSlide, profilePromoteIndex, visibleCount]);
   const visibleAdsKey = visibleAds
     .map((profileAd) => String(profileAd?.id || profileAd?.adId || profileAd?.ad_id || ""))
@@ -46,7 +55,12 @@ export function ProfilePromoteCarousel({
       return;
     }
     const observer = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) setIsInViewport(true); },
+      ([entry]) => {
+        setIsInViewport(entry.isIntersecting);
+        if (entry.isIntersecting) {
+          setViewportExposureTick((tick) => tick + 1);
+        }
+      },
       { threshold: 0.1 }
     );
     observer.observe(el);
@@ -58,22 +72,52 @@ export function ProfilePromoteCarousel({
   }, [ads.length]);
 
   useEffect(() => {
+    if (!isInViewport || ads.length <= 1 || viewportExposureTick < 1) return;
+    setProfilePromoteIndex((current) => (current + visibleCount + viewportExposureTick) % ads.length);
+  }, [ads.length, isInViewport, viewportExposureTick, visibleCount]);
+
+  useEffect(() => {
+    if (ads.length <= 1 || typeof window === "undefined") return;
+    const rotateOnScroll = () => {
+      const now = Date.now();
+      if (now - lastScrollRotateRef.current < 900) return;
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+      const visible = rect.bottom > 80 && rect.top < viewportHeight - 80;
+      if (!visible) return;
+      lastScrollRotateRef.current = now;
+      setProfilePromoteIndex((current) => (current + 1) % ads.length);
+      setViewportExposureTick((tick) => tick + 1);
+    };
+    window.addEventListener("scroll", rotateOnScroll, { passive: true, capture: true });
+    return () => window.removeEventListener("scroll", rotateOnScroll, { capture: true } as AddEventListenerOptions);
+  }, [ads.length]);
+
+  useEffect(() => {
     if (!visibleAds.length || !isInViewport) return;
     const updateAdState = useAdStore.getState().updateAdState;
-    visibleAds.forEach((profileAd) => {
+    visibleAds.forEach((profileAd, offset) => {
       // Use the ad-prefixed ID so the backend routes this as a sponsored ad view
       const adId = profileAd?.adId || profileAd?.ad_id;
       const viewId = adId ? `ad-${adId}` : String(profileAd?.id || "");
       if (!viewId) return;
-      void marketService.logAdImpression(viewId).then((result: any) => {
-        if (!result?.success) return;
-        updateAdState(profileAd, {
-          impressions: Number(result.impressions ?? profileAd?.impressions ?? profileAd?.impressions_count ?? 0),
-          impressions_count: Number(result.impressions ?? profileAd?.impressions ?? profileAd?.impressions_count ?? 0),
-          current_reach: Number(result.current_reach ?? result.reach ?? profileAd?.current_reach ?? profileAd?.reach ?? 0),
-          reach: Number(result.current_reach ?? result.reach ?? profileAd?.current_reach ?? profileAd?.reach ?? 0),
+      const exposureKey = `${viewId}:${profilePromoteIndex}:${offset}:${viewportExposureTick}`;
+      if (!loggedExposureKeysRef.current.has(exposureKey)) {
+        loggedExposureKeysRef.current.add(exposureKey);
+        void marketService.logAdImpression(viewId).then((result: any) => {
+          if (!result?.success) return;
+          updateAdState(profileAd, {
+            impressions: Number(result.impressions ?? profileAd?.impressions ?? profileAd?.impressions_count ?? 0),
+            impressions_count: Number(result.impressions ?? profileAd?.impressions ?? profileAd?.impressions_count ?? 0),
+            current_reach: Number(result.current_reach ?? result.reach ?? profileAd?.current_reach ?? profileAd?.reach ?? 0),
+            reach: Number(result.current_reach ?? result.reach ?? profileAd?.current_reach ?? profileAd?.reach ?? 0),
+          });
         });
-      });
+      }
+      if (loggedViewIdsRef.current.has(viewId)) return;
+      loggedViewIdsRef.current.add(viewId);
       void marketService.logView(viewId).then((result: any) => {
         if (!result?.success) return;
         const nextViewsCount = Number(
@@ -97,20 +141,20 @@ export function ProfilePromoteCarousel({
         });
       });
     });
-  }, [isInViewport, visibleAds, visibleAdsKey]);
+  }, [isInViewport, profilePromoteIndex, viewportExposureTick, visibleAds, visibleAdsKey]);
 
   if (!ads.length) return null;
 
   return (
     <article ref={containerRef} className={className}>
-      <div className="mx-auto w-full max-w-[1120px] overflow-hidden">
+      <div className={`w-full overflow-hidden ${visibleCount === 4 ? "max-w-[1120px]" : "max-w-[620px]"}`}>
         <div className="mb-2 flex min-h-7 items-center justify-end gap-2 sm:mb-3">
           {canSlide && (
             <>
               <button
                 type="button"
                 onClick={() => setProfilePromoteIndex((current) => (current - 1 + ads.length) % ads.length)}
-                className="flex h-7 w-7 items-center justify-center rounded-full border border-white/15 bg-black/45 text-xs font-black text-white shadow-lg shadow-black/30 transition hover:bg-white/10 active:scale-95 sm:h-8 sm:w-8 sm:text-sm"
+                className="hidden h-7 w-7 items-center justify-center rounded-full border border-white/15 bg-black/45 text-xs font-black text-white shadow-lg shadow-black/30 transition hover:bg-white/10 active:scale-95 md:flex sm:h-8 sm:w-8 sm:text-sm"
                 aria-label="Previous profile promote ads"
               >
                 &lt;
@@ -118,7 +162,7 @@ export function ProfilePromoteCarousel({
               <button
                 type="button"
                 onClick={() => setProfilePromoteIndex((current) => (current + 1) % ads.length)}
-                className="flex h-7 w-7 items-center justify-center rounded-full border border-white/15 bg-black/45 text-xs font-black text-white shadow-lg shadow-black/30 transition hover:bg-white/10 active:scale-95 sm:h-8 sm:w-8 sm:text-sm"
+                className="hidden h-7 w-7 items-center justify-center rounded-full border border-white/15 bg-black/45 text-xs font-black text-white shadow-lg shadow-black/30 transition hover:bg-white/10 active:scale-95 md:flex sm:h-8 sm:w-8 sm:text-sm"
                 aria-label="Next profile promote ads"
               >
                 &gt;
@@ -126,13 +170,37 @@ export function ProfilePromoteCarousel({
             </>
           )}
         </div>
-        <div className="overflow-hidden">
-          <div className={`grid gap-2 sm:gap-4 ${visibleCount === 2 ? "grid-cols-2" : visibleCount === 4 ? "grid-cols-2 md:grid-cols-4" : "grid-cols-2 md:grid-cols-3"}`}>
-            {visibleAds.map((profileAd) => (
-              <div key={`profile-promote-${profileAd.id}`} className="min-w-0 overflow-hidden rounded-[1.1rem]">
+        <div className="hidden overflow-hidden md:block">
+          <div className={`grid gap-3 lg:gap-4 ${visibleCount === 4 ? "grid-cols-4" : visibleCount === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+            {visibleAds.map((profileAd, profileAdIndex) => (
+              <div key={`profile-promote-${profileAd.id}-${profileAdIndex}`} className="min-w-0 overflow-hidden rounded-[1.1rem]">
                 <PromotedAdCard
                   ad={profileAd}
-                  compact={visibleCount === 2}
+                  compact
+                  onProductClick={onProductClick}
+                  onContentClick={onContentClick}
+                  onProfileClick={(clickedAd) => {
+                    if (clickedAd) {
+                      onProfileClick(clickedAd);
+                      return;
+                    }
+                    onProfileClick({ ...profileAd, username: getItemUsername(profileAd, "Advertiser") });
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="-mx-1 overflow-x-auto px-1 [scrollbar-width:none] md:hidden [&::-webkit-scrollbar]:hidden">
+          <div className="flex snap-x snap-mandatory gap-2">
+            {visibleAds.map((profileAd, profileAdIndex) => (
+              <div
+                key={`profile-promote-mobile-${profileAd.id}-${profileAdIndex}`}
+                className="min-w-[calc((100%_-_0.5rem)/2)] max-w-[calc((100%_-_0.5rem)/2)] snap-start overflow-hidden rounded-[1.1rem]"
+              >
+                <PromotedAdCard
+                  ad={profileAd}
+                  compact
                   onProductClick={onProductClick}
                   onContentClick={onContentClick}
                   onProfileClick={(clickedAd) => {

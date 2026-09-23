@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import RupieerCoinButton from "../ads/RupieerCoinButton";
 import { useState, useRef } from "react";
 import IonIcon from "@/app/components/IonIcon";
 import SubscribeButton from "@/app/components/SubscribeButton";
@@ -124,23 +125,7 @@ export function ProductSecondViewModal({
                   <SubscribeButton userId={item.user_id} initialIsSubscribed={false} size="small" />
                 )}
                 {showAdCoinButton && onCollectCoin && (
-                  <button
-                    type="button"
-                    onClick={(event) => onCollectCoin(event, item)}
-                    className="flex items-center gap-1.5 rounded-full border border-red-400/30 bg-red-600 px-2 py-1 text-[8px] font-black uppercase tracking-[0.1em] text-white shadow-xl transition hover:bg-red-500 active:scale-95"
-                  >
-                    <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
-                      <Image
-                        src="/assets/images/rupee.png"
-                        alt="Ruppier coin"
-                        width={28}
-                        height={28}
-                        className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
-                        unoptimized
-                      />
-                    </span>
-                    <span className="leading-none">Ruppier</span>
-                  </button>
+                  <RupieerCoinButton onClick={(event) => onCollectCoin(event, item)} />
                 )}
                 <button
                   onClick={onClose}
@@ -166,7 +151,7 @@ export function ProductSecondViewModal({
                         onClick={() => { handleShareClick(); setIsMenuOpen(false); }}
                         className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors"
                       >
-                        <IonIcon name="share-social-outline" className="text-blue-400 text-lg" />
+                        <IonIcon name="arrow-redo-outline" className="text-blue-400 text-lg" />
                         Share Link
                       </button>
                     )}
@@ -371,8 +356,8 @@ export function ProductSecondViewModal({
               {onShare && (
                 <InteractionButton
                   type="shares"
-                  icon="share-social-outline"
-                  activeIcon="share-social"
+                  icon="arrow-redo-outline"
+                  activeIcon="arrow-redo"
                   count={item.shares_count || 0}
                   color="text-white"
                   activeColor="text-white"

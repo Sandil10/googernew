@@ -38,6 +38,7 @@ const listMyAds = async (userId) => {
 };
 
 const findMyAdById = async (adId, userId) => {
+    const normalizedAdId = String(adId || '').trim().replace(/^ad-/i, '');
     const result = await pool.query(
         `SELECT a.*,
                 COALESCE(owner_u.id, sponsor_u.id) AS display_user_id,
@@ -53,9 +54,9 @@ const findMyAdById = async (adId, userId) => {
              FROM ad_views
              GROUP BY ad_id
          ) av ON av.ad_id = a.ad_id
-         WHERE a.ad_id = $1 AND a.user_id = $2
+         WHERE (a.ad_id = $1 OR a.id::text = $1) AND a.user_id = $2
          LIMIT 1`,
-        [adId, userId]
+        [normalizedAdId, userId]
     );
 
     return result.rows[0] || null;

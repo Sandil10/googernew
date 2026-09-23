@@ -8,6 +8,15 @@ const countPostsByUser = async (userId) => pool.query(
     [userId]
 );
 
+const countPostsTodayByUser = async (userId) => pool.query(
+    `SELECT COUNT(*)::int AS c
+     FROM goog_posts
+     WHERE user_id = $1
+       AND created_at >= CURRENT_DATE
+       AND created_at < CURRENT_DATE + INTERVAL '1 day'`,
+    [userId]
+);
+
 const countColoredPostsByUser = async (userId) => pool.query(
     `SELECT COUNT(*)::int AS c
      FROM goog_posts
@@ -46,6 +55,7 @@ const deletePost = async ({ id, userId }) => pool.query(
 module.exports = {
     countColoredPostsByUser,
     countPostsByUser,
+    countPostsTodayByUser,
     createPost,
     deletePost,
     ensureGoogSchema,

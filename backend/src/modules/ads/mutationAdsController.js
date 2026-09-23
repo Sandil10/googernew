@@ -7,7 +7,7 @@ const createAd = async (req, res) => {
         return res.status(result.statusCode || 201).json({ success: result.success, ad: result.ad });
     } catch (error) {
         const statusCode = error.statusCode || 500;
-        if ([400, 403, 404].includes(statusCode)) {
+        if ([400, 403, 404, 409].includes(statusCode)) {
             return res.status(statusCode).json({ success: false, message: error.message });
         }
         console.error('Create ad error:', error);
@@ -21,7 +21,7 @@ const updateAd = async (req, res) => {
         return res.status(result.statusCode || 200).json({ success: result.success, ad: result.ad });
     } catch (error) {
         const statusCode = error.statusCode || 500;
-        if ([400, 403, 404].includes(statusCode)) {
+        if ([400, 403, 404, 409].includes(statusCode)) {
             return res.status(statusCode).json({ success: false, message: error.message });
         }
         console.error('Update ad error:', error);

@@ -1,0 +1,3 @@
+module.exports=[41872,a=>{"use strict";var b=a.i(87924),c=a.i(72131),d=a.i(50944),e=a.i(56383);function f(){let a=(0,d.useRouter)();return(0,c.useEffect)(()=>{a.replace("/ad-campaign/photo-video")},[a]),(0,b.jsxs)("div",{children:[(0,b.jsx)("div",{className:"mb-6 flex items-center gap-3",children:(0,b.jsx)("button",{type:"button",onClick:()=>a.back(),className:"flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/70 transition hover:bg-white/10 hover:text-white active:scale-95",children:(0,b.jsx)(e.default,{name:"arrow-back-outline",className:"text-xl"})})}),(0,b.jsx)("div",{className:"min-h-[320px]"})]})}a.s(["default",()=>f])}];
+
+//# sourceMappingURL=app_dashboard_ad-campaign_page_tsx_4fef2929._.js.map

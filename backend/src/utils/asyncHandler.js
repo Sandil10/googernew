@@ -1,1 +1,1 @@
-module.exports = require('../../../../shared/utils/asyncHandler');
+module.exports = require('../../../shared/utils/asyncHandler');

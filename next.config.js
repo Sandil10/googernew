@@ -4,6 +4,7 @@
 const BACKEND_ORIGIN = process.env.BACKEND_URL || 'http://127.0.0.1:5000';
 
 const nextConfig = {
+  ...(process.env.GOOGER_BUILD_DIR ? { distDir: process.env.GOOGER_BUILD_DIR } : {}),
   // Keep production browser bundles minified without exposing source maps.
   // This does not affect local development or application logic.
   productionBrowserSourceMaps: false,
@@ -11,7 +12,7 @@ const nextConfig = {
   experimental: {
   },
   images: {
-    qualities: [55, 58, 75],
+    qualities: [55, 58, 60, 75],
     // Skip Next.js server-side optimization for all images. Profile pictures and
     // user-uploaded media are served via the /uploads/ rewrite to the backend; the
     // optimizer makes an extra server-side fetch that fails with "received null" when
@@ -73,6 +74,28 @@ const nextConfig = {
       {
         source: '/shop/:id/:reseller',
         destination: '/dashboard/shop?id=:id&reseller=:reseller',
+      },
+    ];
+  },
+  async headers() {
+    return [
+      {
+        source: '/uploads/:path*.jfif',
+        headers: [
+          {
+            key: 'Content-Type',
+            value: 'image/jpeg',
+          },
+        ],
+      },
+      {
+        source: '/uploads/:path*.jpe',
+        headers: [
+          {
+            key: 'Content-Type',
+            value: 'image/jpeg',
+          },
+        ],
       },
     ];
   },

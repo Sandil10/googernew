@@ -9,6 +9,7 @@ const { subscriptionPlansController } = require('../modules/subscriptions');
 const referralCommissionController = require('../controllers/referralCommissionController');
 const authMiddleware = require('../middleware/auth');
 const pool = require('../config/database');
+const { getCountryCatalog } = require('../utils/countryCatalog');
 
 // ── Ad Allowed Countries (proxied from admin panel) ──────────────────────
 const ADMIN_PANEL_URL = (process.env.ADMIN_PANEL_URL || 'http://localhost:3001').replace(/\/$/, '');
@@ -20,6 +21,7 @@ const AD_ALLOWED_COUNTRIES_KEY = 'ad_allowed_countries';
 const GLOBAL_CHAT_ASSIGNMENT_KEY = 'global_chat_assignment';
 const AD_COUNTRY_KEYS = ['photo_video', 'product_promote', 'profile_promote'];
 let adminCustomizationTableReady = false;
+let countryCatalogTableReady = false;
 
 const ensureAdminCustomizationTable = async () => {
     if (adminCustomizationTableReady) return;
@@ -31,6 +33,27 @@ const ensureAdminCustomizationTable = async () => {
         )
     `);
     adminCustomizationTableReady = true;
+};
+
+const ensureCountryCatalogTable = async () => {
+    if (countryCatalogTableReady) return;
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS country_catalog (
+            code CHAR(2) PRIMARY KEY,
+            name VARCHAR(120) NOT NULL,
+            flag VARCHAR(16) NOT NULL DEFAULT '',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+    await pool.query(`
+        INSERT INTO country_catalog (code, name, flag, updated_at)
+        SELECT code, name, flag, NOW()
+        FROM jsonb_to_recordset($1::jsonb) AS item(code TEXT, name TEXT, flag TEXT)
+        ON CONFLICT (code) DO UPDATE
+          SET name = EXCLUDED.name,
+              flag = EXCLUDED.flag
+    `, [JSON.stringify(getCountryCatalog())]);
+    countryCatalogTableReady = true;
 };
 
 const assertAdmin = async (userId) => {
@@ -208,6 +231,22 @@ const saveAdAllowedCountries = async (req, res) => {
 
 router.post('/ad-allowed-countries', authMiddleware, saveAdAllowedCountries);
 router.put('/ad-allowed-countries', authMiddleware, saveAdAllowedCountries);
+
+router.get('/country-catalog', async (_req, res) => {
+    try {
+        await ensureCountryCatalogTable();
+        const { rows } = await pool.query(
+            'SELECT code, name, flag FROM country_catalog ORDER BY name ASC'
+        );
+        return res.json({
+            success: true,
+            countries: rows,
+        });
+    } catch (err) {
+        console.error('[adminCustomization] country catalog error:', err);
+        return res.status(500).json({ success: false, message: 'Failed to load country catalog' });
+    }
+});
 
 router.get('/chat-assignment', authMiddleware, async (req, res) => {
     try {

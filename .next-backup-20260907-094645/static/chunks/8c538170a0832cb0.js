@@ -1,0 +1,1 @@
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,13930,e=>{"use strict";var t=e.i(43476),i=e.i(71645),o=e.i(18566);function c(){let e=(0,o.useRouter)();return(0,i.useEffect)(()=>{e.replace("/ad-campaign/photo-video")},[e]),(0,t.jsx)("div",{className:"min-h-[320px]"})}e.s(["default",()=>c])}]);

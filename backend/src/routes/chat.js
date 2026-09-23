@@ -4,11 +4,13 @@ const { chatController } = require('../modules/chat');
 const authMiddleware = require('../middleware/auth');
 
 router.use(authMiddleware);
+router.get('/snapshot/:participantId', (req, res, next) => require('../modules/chat/chatSnapshot').chatSnapshot(req, res).catch(next));
 
 router.post('/presence', chatController.updatePresence);
 router.post('/typing', chatController.updateTyping);
 router.get('/typing/:participantId', chatController.getTyping);
 router.get('/conversations', chatController.getConversations);
+router.get('/support-assignment', chatController.getSupportAssignment);
 router.post('/conversations/hide', chatController.hideConversation);
 router.post('/conversations/unhide', chatController.unhideConversation);
 router.delete('/conversations/:participantId', chatController.deleteConversation);
@@ -35,5 +37,7 @@ router.post('/calls/:callId/reject', chatController.rejectCall);
 router.post('/calls/:callId/complete', chatController.completeCall);
 router.post('/calls/:callId/signal', chatController.sendSignal);
 router.get('/calls/:callId/signals', chatController.getSignals);
+
+router.post('/ad-placements/assign', chatController.assignAdPlacement);
 
 module.exports = router;

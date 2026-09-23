@@ -1,6 +1,6 @@
 const pool = require('../config/database');
 const { distributeProductDiscountCommission } = require('../utils/referralCommission');
-const { resolveGoogerMainWalletUserId } = require('../../../../shared/utils/financeBoundary');
+const { resolveGoogerMainWalletUserId, getLockedGoogerPooledState } = require('../../../shared/utils/financeBoundary');
 const {
     reserveWalletFunds,
     refundHeldWalletFunds,
@@ -10,7 +10,7 @@ const {
     insertWalletTransfer,
     transferWalletFunds,
     recordGoogerRevenuePayment,
-} = require('../../../../shared/utils/financeCommands');
+} = require('../../../shared/utils/financeCommands');
 
 const TRANSACTION_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const UTC_NOW_SQL = "NOW()";
@@ -1039,6 +1039,22 @@ exports.recordPromoAd = async (req, res) => {
     }
 };
 
+// Reverse part of an ad budget while the ad is still under review.
+// This is used when a user edits an under-review Product/Photo&Video ad
+// and lowers the budget after previously increasing it.
+exports.refundAdBudgetEdit = async (req, res) => {
+    try {
+        const { readRefundReceipt } = require('../modules/ads/adBudgetRefund');
+        const result = await readRefundReceipt(pool, {
+            userId: req.user.id,
+            adId: String(req.body?.adId || '').trim().replace(/^ad-/i, ''),
+            amount: req.body?.amount,
+        });
+        return res.status(200).json(result);
+    } catch (error) {
+        return res.status(error.statusCode || 500).json({ success: false, message: error.statusCode ? error.message : 'Failed to read budget refund.' });
+    }
+};
 // Admin-only: explicitly add capital to the personal admin wallet balance.
 // Normal commission/system flows are blocked from changing admin users.wallet_balance by a DB trigger.
 exports.addAdminCapital = async (req, res) => {

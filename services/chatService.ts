@@ -56,6 +56,9 @@ export const chatService = {
     getConversations: async () =>
         request('/chat/conversations'),
 
+    getSupportAssignment: async () =>
+        request('/chat/support-assignment'),
+
     getMessages: async (
         participantId: number,
         markSeen: boolean = false,
@@ -145,6 +148,19 @@ export const chatService = {
 
     getCallSummaries: async () =>
         request('/chat/calls/summaries'),
+
+    // Get-or-create for one (conversation, slot) ad placement — the server
+    // decides which ad wins the slot and when it retires, so mobile and web
+    // agree on the same answer instead of each guessing independently.
+    assignAdPlacement: async (
+        conversationKey: string,
+        slotIndex: number,
+        candidateAdIds: string[],
+    ): Promise<{ ad_id: string | null; retired: boolean; first_seen_at: string | null }> =>
+        request('/chat/ad-placements/assign', {
+            method: 'POST',
+            body: JSON.stringify({ conversationKey, slotIndex, candidateAdIds }),
+        }),
 
     sendTyping: async () =>
         request('/chat/typing', { method: 'POST' }),

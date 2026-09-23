@@ -249,13 +249,13 @@ export default function CoinsManagementPage() {
         setShowSecurityModal(true);
     };
 
-    const executeVerifiedAction = async (password: string) => {
+    const executeVerifiedAction = async (password: string, method: 'password' | 'biometric' = 'password') => {
         setLoading(true);
         try {
-            // 1. Verify Password
-            await authService.verifyPassword(password);
+            if (method !== 'biometric') {
+                await authService.verifyPassword(password);
+            }
 
-            // 2. Execute Action
             if (securityAction.type === 'initiate') {
                 if (lockedManualPayment) {
                     if (securityAction.transferType !== 'transfer') {

@@ -154,8 +154,24 @@ const updatePlan = async (id, body = {}) => {
         throw error;
     }
 
+    // The badge is copied onto the user row at subscribe time, so a colour
+    // edited here would only reach people who resubscribed afterwards. Push the
+    // new colours to everyone currently on the plan instead. Turning the tick
+    // off is left alone: a tick may also have been granted by verification, and
+    // the grace-period sweep is what takes badges away.
+    let badgesUpdated = 0;
+    if (plan.verified_tick) {
+        const extra = plan.extra || {};
+        badgesUpdated = await userSubscriptionsRepository.applyPlanBadgeToActiveSubscribers(
+            plan.id,
+            extra.badge_custom_color || plan.badge_color || 'blue',
+            extra.badge_tick_color || null,
+            getGraceDurationSeconds()
+        );
+    }
+
     invalidatePublicPlansCache();
-    return { plan, success: true };
+    return { plan, badgesUpdated, success: true };
 };
 
 const deletePlan = async (id) => {

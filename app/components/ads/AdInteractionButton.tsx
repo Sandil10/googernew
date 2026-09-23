@@ -18,6 +18,10 @@ export type AdInteractionButtonProps = {
     iconSize?: string;
     className?: string;
     countClassName?: string;
+    /** True for a couple of seconds right after a blocked unlike tap — shows
+     * a small red "Like Locked" line under the icon instead of a toast, then
+     * hides again. Not a standing label for as long as the ad stays locked. */
+    locked?: boolean;
 };
 
 export function AdInteractionButton({
@@ -30,9 +34,13 @@ export function AdInteractionButton({
     onSingleClick,
     onLongPress,
     type,
-    iconSize = "text-[13px] md:text-xl",
+    // 17px on mobile matches UploadContentFeedCard, which passes text-[17px]
+    // explicitly. The old 13px default left product and ad cards visibly
+    // smaller than content cards on a phone.
+    iconSize = "text-[17px] md:text-xl",
     className = "",
     countClassName = "text-[7px] font-black tracking-tighter md:text-[9px]",
+    locked = false,
 }: AdInteractionButtonProps) {
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const didLongPressRef = useRef(false);
@@ -87,11 +95,18 @@ export function AdInteractionButton({
             onPointerLeave={handlePointerEnd}
             onClick={handleClick}
             onContextMenu={(event) => event.preventDefault()}
-            className={`${currentColorClass} flex touch-none select-none items-center gap-1 transition-all duration-300 active:scale-75 focus:outline-none focus:ring-0 ${className}`}
+            className={`${currentColorClass} flex touch-none select-none ${locked ? "flex-col items-start gap-0" : "items-center gap-1"} transition-all duration-300 active:scale-75 focus:outline-none focus:ring-0 ${className}`}
             aria-pressed={isLikeButton ? !!isActive : undefined}
         >
-            <IonIcon key={iconRenderKey} name={currentIcon} className={`${iconSize} ${currentColorClass} shrink-0`} style={iconColorStyle} />
-            {hasCount && <span className={`shrink-0 ${countClassName}`}>{count}</span>}
+            <span className="flex items-center gap-1">
+                <IonIcon key={iconRenderKey} name={currentIcon} className={`${iconSize} ${currentColorClass} shrink-0`} style={iconColorStyle} />
+                {hasCount && <span className={`shrink-0 ${countClassName}`}>{count}</span>}
+            </span>
+            {locked && (
+                <span className="shrink-0 text-[6px] font-black uppercase leading-tight tracking-tight text-red-500 md:text-[7px]">
+                    Like Locked
+                </span>
+            )}
         </button>
     );
 }

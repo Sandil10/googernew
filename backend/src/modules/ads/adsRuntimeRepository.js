@@ -39,10 +39,10 @@ const syncAdsReachCaps = async (adId = null) => {
             continue;
         }
 
-        params.push(Number(tier.max_reach_multiplier));
+        const multiplierParam = `$${params.push(Number(tier.max_reach_multiplier))}`;
         await pool.query(
             `UPDATE ads a
-             SET max_reach_cap = GREATEST(1, ROUND(COALESCE(a.budget, 0)::numeric * $3::numeric))::integer,
+             SET max_reach_cap = GREATEST(1, ROUND(COALESCE(a.budget, 0)::numeric * ${multiplierParam}::numeric))::integer,
                  current_reach = GREATEST(COALESCE(a.current_reach, 0), COALESCE(a.impressions, 0)),
                  updated_at = CURRENT_TIMESTAMP
              WHERE ${adTypeCondition}

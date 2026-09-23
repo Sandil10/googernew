@@ -86,7 +86,7 @@ export default function ProductDetailsPage() {
                             {/* Price & Quantity Area */}
                             <div className="w-full flex items-center justify-between mb-6 pb-5 border-b border-white/10">
                                 <div className="flex flex-col items-start gap-0.5">
-                                    <span className="text-[9px] font-bold text-white/40 uppercase tracking-[0.2em]">Rupieer</span>
+                                    <span className="text-[9px] font-bold tracking-[0.2em] text-white/40">Rupieer</span>
                                     <div className="flex items-center gap-2">
                                         <div className="relative w-5 h-4">
                                             <Image src="/assets/images/rupee.png" alt="R" fill className="object-contain invert opacity-100" />
@@ -140,7 +140,7 @@ export default function ProductDetailsPage() {
 
                             {/* Final Area */}
                             <div className="w-full mt-6 pt-5 border-t border-white/5 flex justify-end items-baseline gap-2 opacity-30">
-                                <span className="text-[8px] font-bold uppercase tracking-[0.2em]">Rupieer</span>
+                                <span className="text-[8px] font-bold tracking-[0.2em]">Rupieer</span>
                                 <span className="text-lg font-bold tracking-tighter text-white">{(product.price * quantity).toFixed(2)}</span>
                             </div>
                         </div>

@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/wallet/layout,_N_T_/wallet/subscription/layout,_N_T_/wallet/subscription/page,_N_T_/wallet/subscription"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/wallet/subscription/__PAGE__",
+    "/wallet/subscription",
+    "/wallet",
+    "/_index",
+    "/_head"
+  ]
+}

@@ -13,31 +13,31 @@ const createPost = async (req, res) => {
         const userId = req.user.id;
         const limits = await getUserPlanLimits(userId);
 
-        const countRes = await googMutationRepository.countPostsByUser(userId);
-        if (countRes.rows[0].c >= limits.writeGoogLimit) {
+        const [dailyCountRes, totalCountRes] = await Promise.all([
+            googMutationRepository.countPostsTodayByUser(userId),
+            googMutationRepository.countPostsByUser(userId),
+        ]);
+        if (Number(limits.writeGoogDailyLimit) > 0 && Number(dailyCountRes.rows[0].c) >= Number(limits.writeGoogDailyLimit)) {
             return res.status(403).json({
                 success: false,
-                message: 'Limit reached. Subscribe to a higher plan to create more googs.',
+                message: 'Daily Goog posting limit reached. Subscribe to a higher plan to create more googs today.',
                 code: 'WRITE_GOOG_LIMIT',
-                limit: limits.writeGoogLimit,
+                limitType: 'daily',
+                limit: limits.writeGoogDailyLimit,
+            });
+        }
+        if (Number(limits.writeGoogTotalLimit) > 0 && Number(totalCountRes.rows[0].c) >= Number(limits.writeGoogTotalLimit)) {
+            return res.status(403).json({
+                success: false,
+                message: 'Total Goog posting limit reached. Subscribe to a higher plan to create more googs.',
+                code: 'WRITE_GOOG_LIMIT',
+                limitType: 'total',
+                limit: limits.writeGoogTotalLimit,
             });
         }
 
         const text = sanitizeText(req.body?.text, limits.googLetterLimit);
         const textColor = sanitizeTextColor(req.body?.textColor);
-
-        const isColored = textColor && textColor.toUpperCase() !== '#FFFFFF' && textColor.toLowerCase() !== 'white';
-        if (isColored && limits.writeGoogColorLimit !== undefined) {
-            const colorCountRes = await googMutationRepository.countColoredPostsByUser(userId);
-            if (colorCountRes.rows[0].c >= limits.writeGoogColorLimit) {
-                return res.status(403).json({
-                    success: false,
-                    message: `You have reached your colored Goog limit (${limits.writeGoogColorLimit}). Upgrade your plan to create more colored Googs.`,
-                    code: 'WRITE_GOOG_COLOR_LIMIT',
-                    limit: limits.writeGoogColorLimit,
-                });
-            }
-        }
 
         if (!text) {
             return res.status(400).json({ success: false, message: 'Post text is required' });

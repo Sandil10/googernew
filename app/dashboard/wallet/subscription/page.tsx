@@ -8,7 +8,7 @@ import IonIcon from "@/app/components/IonIcon";
 import { BadgeSvg } from "@/app/components/VerifiedBadge";
 import { authService } from "@/services/authService";
 import { getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
-import { subscriptionService, SubscriptionPlan, UserSubscription } from "@/services/subscriptionService";
+import { subscriptionService, SubscriptionPlan, UserSubscription, SaveReleaseWarning } from "@/services/subscriptionService";
 import { clearFeaturesCache, refreshSubscriptionFeatures } from "@/app/lib/subscriptionFeatures";
 
 const BADGE_TEXT: Record<string, string> = {
@@ -87,6 +87,10 @@ function normalizeChatFeatureLabel(label: string): string | null {
     return cleaned;
 }
 
+function isLegacyPostingLimitLabel(label: string): boolean {
+    return /^goog(?:er)?\s+posting\s+limit\b/i.test(label.trim());
+}
+
 function getContentExpiryLabel(extra: Record<string, any>): string {
     const labels = extra.labels || {};
     const unit = String(extra.content_expiry_unit || "unlimited");
@@ -110,7 +114,10 @@ function getPlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; chat
         .filter((label) => isChatFeatureLabel(String(label)))
         .map((label) => normalizeChatFeatureLabel(String(label)))
         .filter((label): label is string => !!label);
-    const regular = (plan.features || []).filter((label) => !isChatFeatureLabel(String(label)));
+    const regular = (plan.features || [])
+        .filter((label) => !isChatFeatureLabel(String(label)))
+        .filter((label) => !isLegacyPostingLimitLabel(String(label)))
+        .filter((label) => !/verified\s*(tick|badge)/i.test(String(label)));
     const chat: string[] = [];
     const content: string[] = [];
     const contentLabels = extra.labels || {};
@@ -127,6 +134,12 @@ function getPlanFeatureGroups(plan: SubscriptionPlan): { regular: string[]; chat
     const hasVideoCalls = extra.video_calls === true;
     const hasVoiceToText = extra.voice_notes_to_text || extra.voice_to_text || extra.speech_to_text || extra.microphone;
     const hasTextToVoice = extra.text_to_voice_note || extra.text_to_voice || extra.tts || extra.speech;
+    const postingDailyLimit = Number(extra.goog_posting_daily_limit ?? extra.write_goog_daily_limit ?? 0);
+    const postingTotalLimit = Number(extra.goog_posting_total_limit ?? plan.googs_limit ?? extra.goog_posting_limit ?? extra.write_goog_limit ?? 0);
+
+    if (plan.verified_tick) regular.unshift("Verification tick");
+    regular.push(`Googer Posting Daily: ${postingDailyLimit > 0 ? `${postingDailyLimit.toLocaleString()}/day` : "Unlimited/day"}`);
+    regular.push(`Googer Posting Total: ${postingTotalLimit > 0 ? `${postingTotalLimit.toLocaleString()} total` : "Unlimited total"}`);
 
     if (hasTextMessaging) chat.push("Text messages");
     if (hasChatColors) chat.push("Text messaging colors");
@@ -162,6 +175,7 @@ export default function SubscriptionPage() {
     const [balance, setBalance] = useState<number>(0);
     const [sheetOpen, setSheetOpen] = useState(false);
     const [insufficient, setInsufficient] = useState(false);
+    const [saveRelease, setSaveRelease] = useState<SaveReleaseWarning | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
     const [activeSub, setActiveSub] = useState<UserSubscription | null>(null);
     const [cancelling, setCancelling] = useState(false);
@@ -270,7 +284,7 @@ export default function SubscriptionPage() {
         setInsufficient(false);
     };
 
-    const handlePay = async () => {
+    const handlePay = async (confirmedRelease = false) => {
         if (!selectedPlan) return;
         const price = Number(selectedPlan.price) || 0;
         if (balance < price) {
@@ -280,9 +294,16 @@ export default function SubscriptionPage() {
         setPaying(true);
         try {
             const isSwitchingPlan = !!(activeSub && activeSub.status === 'active' && activeSub.plan_id !== selectedPlan.id);
-            const result = await subscriptionService.subscribe(selectedPlan.id, { switchPlan: isSwitchingPlan });
+            const result = await subscriptionService.subscribe(selectedPlan.id, {
+                switchPlan: isSwitchingPlan,
+                confirmReleaseSaves: confirmedRelease,
+            });
             if ('error' in result) {
-                if (result.code === 402) {
+                if (result.saveRelease) {
+                    // Nothing has been charged yet. Name the new allowance and
+                    // what it costs, and only retry once the owner accepts.
+                    setSaveRelease(result.saveRelease);
+                } else if (result.code === 402) {
                     setInsufficient(true);
                 } else {
                     setMessage(result.error);
@@ -294,7 +315,15 @@ export default function SubscriptionPage() {
             lastSubRef.current = result.subscription;
             hasLoadedSubRef.current = true;
             setActiveSub(result.subscription);
-            setSuccess(`Payment successful! You're subscribed to ${selectedPlan.name}.`);
+            // A smaller plan allows fewer saved ads, so the backend releases
+            // the excess. Say so plainly rather than letting saved ads vanish
+            // without explanation.
+            const releasedMessage = (result as any)?.releasedSavesMessage;
+            setSuccess(
+                releasedMessage
+                    ? `Payment successful! You're subscribed to ${selectedPlan.name}. ${releasedMessage}`
+                    : `Payment successful! You're subscribed to ${selectedPlan.name}.`
+            );
             await refreshBalance();
             // Force features to reload so plan perks apply immediately everywhere
             clearFeaturesCache();
@@ -675,7 +704,7 @@ export default function SubscriptionPage() {
                         {/* Pay Now */}
                         <div className="flex justify-center">
                             <button
-                                onClick={handlePay}
+                                onClick={() => handlePay(false)}
                                 disabled={paying || !selectedPlan}
                                 className="bg-red-500 hover:bg-red-400 text-white font-bold text-xs px-8 py-2 rounded-full transition disabled:opacity-50"
                             >
@@ -755,6 +784,58 @@ export default function SubscriptionPage() {
                                 className="bg-red-500 hover:bg-red-400 text-white font-bold text-[11px] px-4 py-1.5 rounded-full transition"
                             >
                                 Top Up
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Saved-ad release confirmation — shown before the plan is paid for */}
+            {saveRelease && (
+                <div className="fixed inset-0 z-[75] flex items-center justify-center p-4">
+                    <div onClick={() => setSaveRelease(null)} className="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+                    <div className="relative w-full max-w-[320px] bg-[#0a0a0a] border border-amber-500/40 rounded-2xl p-4 text-center animate-[popIn_0.18s_ease-out]">
+                        <div className="w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/40 flex items-center justify-center mx-auto mb-2">
+                            <IonIcon name="bookmark" className="text-amber-400 text-lg" />
+                        </div>
+                        <p className="text-sm font-bold text-amber-200 mb-1.5">Saved ads will be removed</p>
+                        <div className="text-[11px] text-white/70 mb-2.5 space-y-1">
+                            <p>
+                                <span className="font-bold text-white">{saveRelease.planName}</span> lets you keep{' '}
+                                {saveRelease.saveLimits.photo !== null && (
+                                    <span className="font-bold text-white">{saveRelease.saveLimits.photo} photo ad{saveRelease.saveLimits.photo === 1 ? '' : 's'}</span>
+                                )}
+                                {saveRelease.saveLimits.photo !== null && saveRelease.saveLimits.video !== null && ' and '}
+                                {saveRelease.saveLimits.video !== null && (
+                                    <span className="font-bold text-white">{saveRelease.saveLimits.video} video ad{saveRelease.saveLimits.video === 1 ? '' : 's'}</span>
+                                )}
+                                {' '}saved.
+                            </p>
+                            <p>
+                                You have {saveRelease.savedCounts.photo} saved photo ad{saveRelease.savedCounts.photo === 1 ? '' : 's'} and{' '}
+                                {saveRelease.savedCounts.video} saved video ad{saveRelease.savedCounts.video === 1 ? '' : 's'}.
+                            </p>
+                            <p className="text-amber-300/90">
+                                Your {saveRelease.releaseCount === 1 ? 'most recent saved ad' : `${saveRelease.releaseCount} most recent saved ads`} will be
+                                removed from your profile if you continue.
+                            </p>
+                        </div>
+                        <div className="flex gap-2 justify-center">
+                            <button
+                                onClick={() => setSaveRelease(null)}
+                                className="bg-white/5 border border-gray-700 text-white/80 font-bold text-[11px] px-4 py-1.5 rounded-full hover:bg-white/10 transition"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSaveRelease(null);
+                                    handlePay(true);
+                                }}
+                                className="bg-amber-500 hover:bg-amber-400 text-black font-bold text-[11px] px-5 py-1.5 rounded-full transition"
+                            >
+                                OK
                             </button>
                         </div>
                     </div>

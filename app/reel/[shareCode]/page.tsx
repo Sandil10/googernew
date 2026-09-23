@@ -71,16 +71,6 @@ export default function ReelSharePage() {
                     resell_ref: resellerRef,
                 } as UploadContentRecord : match;
                 setItem(nextItem);
-                uploadContentService.logView(match.id)
-                    .then((viewResult) => {
-                        if (!mounted) return;
-                        setItem((current) => current ? {
-                            ...current,
-                            views_count: Number(viewResult.views_count || current.views_count || current.viewCount || 0),
-                            viewCount: Number(viewResult.views_count || current.views_count || current.viewCount || 0),
-                        } : current);
-                    })
-                    .catch(() => {});
             } catch {
                 if (mounted) {
                     setNotFound(true);
@@ -176,9 +166,9 @@ export default function ReelSharePage() {
         }
     };
 
-    const handleLogView = async (target: UploadContentRecord) => {
+    const handleLogView = async (target: UploadContentRecord, options: { force?: boolean } = {}) => {
         try {
-            const result = await uploadContentService.logView(target.id);
+            const result = await uploadContentService.logView(target.id, options);
             updateItem((current) => ({
                 ...current,
                 views_count: Number(result.views_count || current.views_count || current.viewCount || 0),

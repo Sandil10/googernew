@@ -87,8 +87,16 @@ const getUserActivePlan = async (userId, graceSeconds) => {
          FROM user_plan_subscriptions ups
          JOIN subscription_plans sp ON sp.id = ups.plan_id
          WHERE ups.user_id = $1 AND ups.status = 'active'
-           AND (ups.expires_at IS NULL OR ups.expires_at + (($2::text || ' seconds')::interval) > NOW())
-         ORDER BY ups.started_at DESC LIMIT 1`,
+           AND (ups.expires_at IS NULL OR ups.expires_at + (
+                COALESCE(NULLIF(sp.extra->>'grace_period_value', '')::numeric, $2) *
+                CASE LOWER(COALESCE(sp.extra->>'grace_period_unit', 'seconds'))
+                    WHEN 'minutes' THEN INTERVAL '1 minute'
+                    WHEN 'hours' THEN INTERVAL '1 hour'
+                    WHEN 'days' THEN INTERVAL '1 day'
+                    ELSE INTERVAL '1 second'
+                END
+           ) > NOW())
+         ORDER BY ups.started_at DESC, ups.id DESC LIMIT 1`,
         [userId, graceSeconds]
     );
     return rows[0] || null;

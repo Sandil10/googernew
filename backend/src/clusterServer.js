@@ -2,7 +2,7 @@ const cluster = require('node:cluster');
 const os = require('node:os');
 const path = require('node:path');
 const pool = require('./config/database');
-const { assertFinanceSchemaReady } = require('../../../shared/utils/financeSchemaGuard');
+const { assertFinanceSchemaReady } = require('../../shared/utils/financeSchemaGuard');
 const { ensureAdminWalletGuard } = require('./utils/adminWalletGuard');
 const { bootstrapRuntimeSchemas } = require('./startup');
 

@@ -1,4 +1,4 @@
-const { normalizeMoney } = require('../../../../../shared/utils/financeBoundary');
+const { normalizeMoney } = require('../../../../shared/utils/financeBoundary');
 const coinRequestRepository = require('./coinRequestRepository');
 
 const getMyRequests = async (userId) => {

@@ -206,92 +206,12 @@ const syncExpiredAds = async (pool, adId = null) => {
         adId ? [adId] : []
     );
 
-    // Raw uploaded Photo & Video expiry only. Link ads are excluded.
-    // The clock starts when the admin approves the ad (active_start_time).
-    // If the user selected an ad duration, the ad runs until that duration ends.
-    // The plan raw-ad expiry is only used when no explicit duration is set.
-    await pool.query(
-        `WITH raw_ads AS (
-             SELECT
-                 a.ad_id,
-                 a.status,
-                 COALESCE(
-                     (
-                         SELECT
-                             CASE
-                                 WHEN NULLIF(sp.extra->>'ads_expiry_value', '')::numeric > 0 THEN
-                                     NULLIF(sp.extra->>'ads_expiry_value', '')::numeric *
-                                     CASE LOWER(COALESCE(sp.extra->>'ads_expiry_unit', 'days'))
-                                         WHEN 'minutes' THEN INTERVAL '1 minute'
-                                         WHEN 'hours'   THEN INTERVAL '1 hour'
-                                         ELSE                INTERVAL '1 day'
-                                     END
-                                 WHEN NULLIF(sp.extra->>'ads_expiry_days', '')::numeric > 0 THEN
-                                     NULLIF(sp.extra->>'ads_expiry_days', '')::numeric * INTERVAL '1 day'
-                                 ELSE NULL
-                             END
-                         FROM user_plan_subscriptions ups
-                         JOIN subscription_plans sp ON sp.id = ups.plan_id
-                         WHERE ups.user_id = a.user_id
-                           AND ups.status = 'active'
-                           AND (ups.expires_at IS NULL OR ups.expires_at + ${getGraceIntervalSql()} > NOW())
-                         ORDER BY ups.started_at DESC
-                         LIMIT 1
-                     ),
-                     (
-                         SELECT
-                             CASE
-                                 WHEN NULLIF(sp.extra->>'ads_expiry_value', '')::numeric > 0 THEN
-                                     NULLIF(sp.extra->>'ads_expiry_value', '')::numeric *
-                                     CASE LOWER(COALESCE(sp.extra->>'ads_expiry_unit', 'days'))
-                                         WHEN 'minutes' THEN INTERVAL '1 minute'
-                                         WHEN 'hours'   THEN INTERVAL '1 hour'
-                                         ELSE                INTERVAL '1 day'
-                                     END
-                                 WHEN NULLIF(sp.extra->>'ads_expiry_days', '')::numeric > 0 THEN
-                                     NULLIF(sp.extra->>'ads_expiry_days', '')::numeric * INTERVAL '1 day'
-                                 ELSE NULL
-                             END
-                         FROM subscription_plans sp
-                         WHERE sp.slug = 'basic' AND sp.is_active = TRUE
-                         LIMIT 1
-                     )
-                 ) AS plan_interval,
-                 CASE
-                     WHEN COALESCE(a.duration_days, 0) > 0 THEN COALESCE(a.duration_days, 0) * INTERVAL '1 day'
-                     ELSE NULL
-                 END AS duration_interval
-             FROM ads a
-             WHERE a.status IN ('Active', 'Paused', 'Removed')
-               AND ${RAW_PHOTO_VIDEO_UPLOAD_SQL}
-               ${adId ? 'AND a.ad_id = $1' : ''}
-         ),
-         expiring_ads AS (
-             SELECT
-                 ad_id,
-                 CASE
-                     WHEN status = 'Removed' THEN plan_interval
-                     ELSE COALESCE(duration_interval, plan_interval)
-                 END AS expiry_interval
-             FROM raw_ads
-         )
-         UPDATE ads a
-         SET status = 'Completed',
-             accumulated_active_ms = CASE
-                 WHEN a.status = 'Active' THEN COALESCE(a.accumulated_active_ms, 0) + GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(a.last_resumed_at, CURRENT_TIMESTAMP))) * 1000))
-                 ELSE COALESCE(a.accumulated_active_ms, 0)
-             END,
-             last_resumed_at = NULL,
-             paused_at = NULL,
-             completed_at = COALESCE(a.completed_at, CURRENT_TIMESTAMP),
-             updated_at = CURRENT_TIMESTAMP
-         FROM expiring_ads up
-         WHERE a.ad_id = up.ad_id
-           AND up.expiry_interval IS NOT NULL
-           AND a.active_start_time IS NOT NULL
-           AND a.active_start_time <= NOW() - up.expiry_interval`,
-        adId ? [adId] : []
-    );
+    // Photo & Video ads — raw upload, link and image alike — run until their
+    // impressions cap is met; the duration the advertiser picked does not end
+    // them. (The raw-upload duration expiry that used to sit here completed ads
+    // with most of their reach undelivered, e.g. 15 of 150 impressions after a day.)
+    // What a finished ad does afterwards — how long it stays on the profile, and
+    // how a save keeps it — is decided by the profile window, not by this sweep.
 
     // Debug: log how many raw photo/video ads exist and what their expiry config looks like
     try {
@@ -466,12 +386,44 @@ const matchesAnyText = (targets, values) => {
     )));
 };
 
+let countryAliases = null;
+const getCountryAliases = () => {
+    if (countryAliases) return countryAliases;
+    countryAliases = new Map();
+    try {
+        const names = new Intl.DisplayNames(['en'], { type: 'region' });
+        for (let first = 65; first <= 90; first += 1) {
+            for (let second = 65; second <= 90; second += 1) {
+                const code = String.fromCharCode(first, second);
+                const name = names.of(code);
+                if (!name || name === code || name.toLowerCase().includes('unknown region')) continue;
+                countryAliases.set(normalizeText(code), normalizeText(name));
+                countryAliases.set(normalizeText(name), normalizeText(code));
+            }
+        }
+    } catch {}
+    return countryAliases;
+};
+
+const expandCountryValues = (values) => {
+    const aliases = getCountryAliases();
+    return uniqueTexts(values).flatMap((value) => {
+        const normalized = normalizeText(value);
+        return aliases.has(normalized) ? [value, aliases.get(normalized)] : [value];
+    });
+};
+
 const adMatchesViewer = (adRow, viewerProfile) => {
     if (viewerProfile?.isAnonymous) return true;
 
+    // Keep the advertiser's newly approved campaign visible in their own
+    // feeds. This gives them the same delivery preview as anonymous viewers,
+    // even when their own country falls outside the campaign audience.
+    if (Number(adRow?.user_id) === Number(viewerProfile?.viewerId)) return true;
+
     const targeting = getAdTargeting(adRow);
     if (!matchesGender(targeting.gender, viewerProfile?.gender)) return false;
-    if (!matchesAnyText(targeting.countries, viewerProfile?.countries || [])) return false;
+    if (!matchesAnyText(expandCountryValues(targeting.countries), expandCountryValues(viewerProfile?.countries || []))) return false;
     if (!matchesAnyText(targeting.interests, viewerProfile?.interests || [])) return false;
     return true;
 };

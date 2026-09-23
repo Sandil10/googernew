@@ -1,0 +1,3 @@
+module.exports=[66756,a=>{"use strict";var b=a.i(87924),c=a.i(72131),d=a.i(50944),e=a.i(25934),f=a.i(1214);function g({children:a}){let g=(0,d.useRouter)();return((0,c.useEffect)(()=>{e.authService.isAuthenticated()||((0,f.openLoginRequired)({message:"Please log in to open chats."}),g.replace("/dashboard"))},[g]),e.authService.isAuthenticated())?(0,b.jsx)(b.Fragment,{children:a}):null}a.s(["default",()=>g])}];
+
+//# sourceMappingURL=app_dashboard_chats_layout_tsx_49059788._.js.map

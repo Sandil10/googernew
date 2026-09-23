@@ -1,0 +1,18 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/dashboard/layout,_N_T_/dashboard/wallet/layout,_N_T_/dashboard/wallet/topup/layout,_N_T_/dashboard/wallet/topup/bank-transfer/layout,_N_T_/dashboard/wallet/topup/bank-transfer/page,_N_T_/dashboard/wallet/topup/bank-transfer"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/dashboard/wallet/topup/bank-transfer/__PAGE__",
+    "/dashboard/wallet/topup/bank-transfer",
+    "/dashboard/wallet/topup",
+    "/dashboard/wallet",
+    "/dashboard",
+    "/_index",
+    "/_head"
+  ]
+}

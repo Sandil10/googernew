@@ -69,6 +69,15 @@ const ensureExtendedUserProfileSchema = async () => {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS who_can_see_activity VARCHAR(30) DEFAULT 'followers';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS contact_email_visibility VARCHAR(30) DEFAULT 'public';
         ALTER TABLE users ADD COLUMN IF NOT EXISTS contact_phone_visibility VARCHAR(30) DEFAULT 'public';
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS username_changed_at TIMESTAMPTZ;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS username_next_change_at TIMESTAMPTZ;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN NOT NULL DEFAULT false;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_phone_country_code VARCHAR(10);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_phone_country_name VARCHAR(120);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_phone_dial_code VARCHAR(12);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_phone_number VARCHAR(50);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_delivery_method VARCHAR(20) NOT NULL DEFAULT 'email';
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_settings JSONB DEFAULT '{}'::jsonb;
     `);
 
     extendedUserProfileSchemaEnsured = true;
@@ -222,7 +231,9 @@ const getPublicUserById = async (id, includeShippingAddress) => {
         'who_can_follow_me',
         'who_can_see_activity',
         'contact_email_visibility',
-        'contact_phone_visibility'
+        'contact_phone_visibility',
+        'username_changed_at',
+        'username_next_change_at'
     ];
     if (includeShippingAddress) {
         publicColumns.push('shipping_address');
@@ -263,7 +274,9 @@ const getPublicUserByUsername = async (username, includeShippingAddress) => {
         'who_can_follow_me',
         'who_can_see_activity',
         'contact_email_visibility',
-        'contact_phone_visibility'
+        'contact_phone_visibility',
+        'username_changed_at',
+        'username_next_change_at'
     ];
     if (includeShippingAddress) {
         publicColumns.push('shipping_address');
@@ -304,6 +317,13 @@ const getOwnProfileById = async (userId, includeShippingAddress) => {
         'who_can_see_activity',
         'contact_email_visibility',
         'contact_phone_visibility',
+        'two_factor_enabled',
+        'two_factor_phone_country_code',
+        'two_factor_phone_country_name',
+        'two_factor_phone_dial_code',
+        'two_factor_phone_number',
+        'otp_delivery_method',
+        'notification_settings',
         'referral_code',
         'wallet_balance',
         'user_type',
@@ -365,6 +385,50 @@ const listBlockedUsers = async (targetUserId) => {
          WHERE ub.blocker_id = $1
          ORDER BY ub.created_at DESC`,
         [targetUserId]
+    );
+    return result.rows;
+};
+
+/// Public people search powering the "Search Googs" suggestions on web + mobile.
+///
+/// Deliberately narrower than the wallet recipient lookup:
+///  - staff accounts (admin / superadmin — these carry the "Googer Support"
+///    display name) are never returned to a normal user
+///  - email is NOT searchable; matching on it would leak private addresses
+///  - deleted, deactivated and blocked-either-way accounts are excluded
+const searchPeople = async ({ query, viewerId }) => {
+    await ensureUserBlocksTable();
+    const normalizedQuery = String(query || '').trim();
+    const result = await pool.query(
+        `SELECT id, user_id, username, full_name, profile_picture
+         FROM users
+         WHERE (
+            user_id = $2
+            OR user_id ILIKE $1
+            OR username ILIKE $1
+            OR full_name ILIKE $1
+         )
+         AND LOWER(COALESCE(user_type, '')) NOT IN ('admin', 'superadmin', 'super_admin', 'support')
+         AND COALESCE(status, 'Active') <> 'Deleted'
+         AND COALESCE(is_deactivated, false) = false
+         AND id NOT IN (
+             SELECT blocked_user_id FROM user_blocks WHERE blocker_id = $3
+         )
+         AND id NOT IN (
+             SELECT blocker_id FROM user_blocks WHERE blocked_user_id = $3
+         )
+         ORDER BY
+            CASE
+                WHEN user_id = $2 THEN 0
+                WHEN LOWER(username) = LOWER($2) THEN 1
+                WHEN LOWER(full_name) = LOWER($2) THEN 2
+                WHEN username ILIKE ($2 || '%') THEN 3
+                WHEN user_id ILIKE ($2 || '%') THEN 4
+                ELSE 5
+            END,
+            id ASC
+         LIMIT 10`,
+        [`%${normalizedQuery}%`, normalizedQuery, viewerId]
     );
     return result.rows;
 };
@@ -458,6 +522,7 @@ module.exports = {
     insertProfileViewWithIp,
     insertProfileViewWithViewer,
     listBlockedUsers,
+    searchPeople,
     socialSubscriptionsRepository,
     updateProfileViewWithIp,
     updateProfileViewWithViewer,

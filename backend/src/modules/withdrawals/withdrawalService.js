@@ -1,11 +1,11 @@
-const { lockGoogerMainWalletUser, getLockedGoogerPooledState, normalizeMoney } = require('../../../../../shared/utils/financeBoundary');
+const { lockGoogerMainWalletUser, getLockedGoogerPooledState, normalizeMoney } = require('../../../../shared/utils/financeBoundary');
 const {
     reserveWalletFunds,
     refundHeldWalletFunds,
     insertWalletTransfer,
     consumeHeldWalletFunds,
     creditWalletAndRecordTransfer,
-} = require('../../../../../shared/utils/financeCommands');
+} = require('../../../../shared/utils/financeCommands');
 const withdrawalRepository = require('./withdrawalRepository');
 
 const getPaymentMethods = async () => {

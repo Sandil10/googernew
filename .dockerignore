@@ -1,0 +1,11 @@
+**/node_modules
+**/.next*
+**/build
+**/.env
+**/.env.*
+**/*.log
+**/*.dump
+**/uploads
+**/.git
+**/*credentials*
+googer-flutter

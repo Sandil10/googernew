@@ -86,9 +86,11 @@ const resolveGoogByShareCode = async (decodedShareCode) => {
 };
 
 const resolveAdByShortCode = async (decodedShareCode) => {
-    const adByCode = await pool.query('SELECT ad_id FROM ads');
+    const adByCode = await pool.query('SELECT id, ad_id, share_code FROM ads');
     const matchedAd = (adByCode.rows || []).find((row) => (
-        productReadRepository.buildShortShareCode('a', row.ad_id || '') === decodedShareCode
+        String(row.share_code || '').trim().toLowerCase() === String(decodedShareCode || '').trim().toLowerCase() ||
+        productReadRepository.buildShortShareCode('a', row.ad_id || '') === decodedShareCode ||
+        productReadRepository.buildShortShareCode('a', row.id || '') === decodedShareCode
     ));
 
     if (!matchedAd?.ad_id) return null;

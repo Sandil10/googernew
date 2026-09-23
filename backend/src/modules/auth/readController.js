@@ -47,6 +47,15 @@ const getUserByUsername = async (req, res) => {
     }
 };
 
+const searchPeople = async (req, res) => {
+    try {
+        const query = req.query.query || req.query.q || '';
+        return res.status(200).json(await readService.searchPeople(query, req.user.id));
+    } catch (error) {
+        return handleError(res, error, 'searchPeople', 'Server error searching users');
+    }
+};
+
 const getBlockedUsers = async (req, res) => {
     try {
         return res.status(200).json(await readService.getBlockedUsers(req.params.id));
@@ -91,5 +100,6 @@ module.exports = {
     getUserById,
     getUserByUsername,
     logProfileView,
+    searchPeople,
     toggleBlockUser,
 };

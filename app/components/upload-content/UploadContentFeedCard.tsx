@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import IonIcon from "@/app/components/IonIcon";
 import { InteractionButton } from "@/app/components/InteractionButton";
@@ -46,7 +46,7 @@ const canModerateUploadInsights = (viewer: any) => {
         viewer?.ownerUserType ??
         "",
     ).trim().toLowerCase().replace(/-/g, "_");
-    return ["admin", "administrator", "employee", "moderator", "super_admin", "superadmin"].includes(normalized);
+    return ["admin", "administrator", "super_admin", "superadmin"].includes(normalized);
 };
 
 const parseTimestamp = (value?: string | null) => {
@@ -56,6 +56,36 @@ const parseTimestamp = (value?: string | null) => {
         : `${value.replace(" ", "T")}Z`;
     const parsed = Date.parse(normalized);
     return Number.isFinite(parsed) ? parsed : null;
+};
+
+const formatUploadExpiry = (value?: number | null, unit?: string | null) => {
+    const safeValue = Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 30;
+    const rawUnit = String(unit || "days").toLowerCase().replace(/s$/, "");
+    const normalizedUnit = rawUnit === "minute"
+        ? "minutes"
+        : rawUnit === "hour"
+            ? "hours"
+            : rawUnit === "month"
+                ? "months"
+                : "days";
+    return `${safeValue} ${normalizedUnit}`;
+};
+
+const formatRemainingUploadExpiry = (
+    expiresAt?: string | null,
+    fallbackValue?: number | null,
+    fallbackUnit?: string | null,
+    now = Date.now(),
+) => {
+    const expiry = parseTimestamp(expiresAt);
+    if (expiry === null) return formatUploadExpiry(fallbackValue, fallbackUnit);
+    const remaining = Math.max(0, expiry - now);
+    const minute = 60_000;
+    const hour = 60 * minute;
+    const day = 24 * hour;
+    if (remaining >= day) return `${Math.ceil(remaining / day)} days`;
+    if (remaining >= hour) return `${Math.ceil(remaining / hour)} hours`;
+    return `${Math.max(1, Math.ceil(remaining / minute))} minutes`;
 };
 
 const getUploadVisibleTimestamp = (item: UploadContentRecord) => {
@@ -79,18 +109,9 @@ const getUploadVisibleTimestamp = (item: UploadContentRecord) => {
 };
 
 export const isUploadOwnedByViewer = (item: UploadContentRecord, viewer: any) => {
-    const viewerIds = new Set(
-        [viewer?.id, viewer?.user_id, viewer?.owner_user_id]
-            .map((value) => String(value ?? "").trim())
-            .filter(Boolean),
-    );
-
-    if (!viewerIds.size) return false;
-
-    return [item.user_id, item.owner_user_id]
-        .map((value) => String(value ?? "").trim())
-        .filter(Boolean)
-        .some((value) => viewerIds.has(value));
+    const viewerDbId = String(viewer?.id ?? "").trim();
+    const contentOwnerDbId = String(item.user_id ?? "").trim();
+    return !!viewerDbId && !!contentOwnerDbId && viewerDbId === contentOwnerDbId;
 };
 
 const getUploadContentStatusMeta = (status?: UploadContentRecord["status"]) => {
@@ -114,11 +135,11 @@ const getUploadContentStatusMeta = (status?: UploadContentRecord["status"]) => {
         label: "Reviewing",
         icon: "time-outline",
         className: "border-amber-400/25 bg-amber-500/10 text-amber-200",
-        helper: "Waiting for admin approval. Other users cannot see it yet.",
+        helper: "Waiting for admin approval.",
     };
 };
 
-export default function UploadContentFeedCard({
+function UploadContentFeedCard({
     item,
     currentUser,
     onOpenProfile,
@@ -142,6 +163,9 @@ export default function UploadContentFeedCard({
     articleClassName = "",
     autoOpenWatchKey,
     onFullViewClose,
+    priorityMedia = false,
+    previewOnly = false,
+    profilePresentation = false,
 }: {
     item: UploadContentRecord;
     currentUser: any;
@@ -151,7 +175,7 @@ export default function UploadContentFeedCard({
     onShare: (item: UploadContentRecord) => void;
     onRepost: (item: UploadContentRecord) => void | Promise<void | { reposts_count?: number; repostCount?: number }>;
     onRemoveRepost?: (item: UploadContentRecord) => void | Promise<void | { reposts_count?: number; repostCount?: number }>;
-    onLogView: (item: UploadContentRecord) => void;
+    onLogView: (item: UploadContentRecord, options?: { force?: boolean }) => void;
     onPin: (item: UploadContentRecord) => void;
     onReport: (item: UploadContentRecord) => void;
     onNotInterested: (item: UploadContentRecord) => void;
@@ -166,6 +190,9 @@ export default function UploadContentFeedCard({
     articleClassName?: string;
     autoOpenWatchKey?: string | number | null;
     onFullViewClose?: () => void;
+    priorityMedia?: boolean;
+    previewOnly?: boolean;
+    profilePresentation?: boolean;
 }) {
     const router = useRouter();
     const media = item.media_preview || item.media_gallery?.[0] || item.thumbnail_url;
@@ -190,9 +217,13 @@ export default function UploadContentFeedCard({
     const profileImage = normalizeMediaSrc(!isSupportAccount && hasLegacySupportAvatar ? "" : (item.profile_picture || ""));
     const visibleTimestamp = getUploadVisibleTimestamp(item);
     const createdLabel = visibleTimestamp ? formatRelativeTime(visibleTimestamp) : "Now";
+    const reachStage = String(item.homeExpansionStage || item.home_expansion_stage || "").trim();
+    const showSuggestedLabel = Boolean(item.homeCanExpand ?? item.home_can_expand ?? reachStage);
+    const suggestedTopic = String(item.topic || reachStage || "Suggested").trim();
     const likesCount = Number(item.likes_count ?? item.likeCount ?? 0);
     const viewsCount = Number(item.views_count ?? item.viewCount ?? 0);
-    const commentsCount = Number(item.comments_count ?? item.commentCount ?? 0);
+    const commentsEnabled = item.allow_comments !== false && item.allowComments !== false;
+    const commentsCount = commentsEnabled ? Number(item.comments_count ?? item.commentCount ?? 0) : 0;
     const serverRepostsCount = Number(item.reposts_count ?? item.repostCount ?? 0);
     const repostedByName = item.reposted_by_username || item.reposted_by_full_name || "";
     const repostedByUserId = String(item.reposted_by_user_id || "").trim();
@@ -204,10 +235,16 @@ export default function UploadContentFeedCard({
         || (!!item.reposted_by_full_name && String(item.reposted_by_full_name).toLowerCase() === String(currentUser?.full_name || "").toLowerCase());
     const subscriptionPackages = Array.isArray(item.subscription_packages) ? item.subscription_packages : [];
     const hasSubscriptionPackages = subscriptionPackages.length > 0;
+    const isPaidDirectContent = Number(item.price || 0) > 0;
+    const isPaidVaultContent = !isFlashContent && isPaidDirectContent;
     const [showFullVideo, setShowFullVideo] = useState(false);
     const [showWatchConfirm, setShowWatchConfirm] = useState(false);
     const [watchConfirmBalance, setWatchConfirmBalance] = useState<number | null>(null);
     const [watchConfirmLoading, setWatchConfirmLoading] = useState(false);
+    const openCommentsSheet = () => {
+        if (!commentsEnabled) return;
+        onOpenSheet("comments", item);
+    };
     const [watchPurchaseLoading, setWatchPurchaseLoading] = useState(false);
     const [watchConfirmError, setWatchConfirmError] = useState("");
     const [enableQuickUnlock, setEnableQuickUnlock] = useState(false);
@@ -229,17 +266,86 @@ export default function UploadContentFeedCard({
     const [flashPreviewStoppedAt, setFlashPreviewStoppedAt] = useState(0);
     const [localPurchaseExpiresAt, setLocalPurchaseExpiresAt] = useState<string | null>(item.user_purchase_expires_at || null);
     const [mediaAspectRatio, setMediaAspectRatio] = useState(1);
+    const [expiryClock, setExpiryClock] = useState(() => Date.now());
     const [currentImageIndex, setCurrentImageIndex] = useState(0);
     const [optimisticReposted, setOptimisticReposted] = useState(serverUserReposted);
     const [optimisticRepostsCount, setOptimisticRepostsCount] = useState(serverRepostsCount);
     const lastAutoOpenWatchKeyRef = useRef<string | number | null>(null);
+    const watchRequestInFlightRef = useRef(false);
+    const articleRef = useRef<HTMLElement | null>(null);
+    const loggedFeedViewRef = useRef(false);
     const selectedSubscriptionPlan = subscriptionPackages.find((plan) => String(plan.id) === selectedSubscriptionPlanId) || subscriptionPackages[0] || null;
     const isOwnContent = isUploadOwnedByViewer(item, currentUser);
     const canViewInsights = isOwnContent || canModerateUploadInsights(currentUser);
     const statusMeta = getUploadContentStatusMeta(item.status);
     const showStatusDetails = showStatusMeta && isOwnContent && item.status !== "Approved";
+    const approvalPlanSlug = String(item.approval_plan_slug || "").trim().toLowerCase();
+    // Older approved Basic uploads may not have the plan slug populated. On
+    // the owner's profile, an unassigned approval plan is the Basic fallback.
+    const isBasicApprovalPlan = approvalPlanSlug === "basic"
+        || (approvalPlanSlug === "" && profilePresentation && isOwnContent);
+    const subscriptionExpiredInGrace = item.owner_subscription_expired_in_grace === true;
+    const basicExpiryUnit = String(
+        subscriptionExpiredInGrace
+            ? item.owner_basic_content_expiry_unit
+            : item.approval_expiry_unit,
+    ).trim().toLowerCase();
+    const showProfileExpiryNotice = profilePresentation
+        && isOwnContent
+        && item.status === "Approved"
+        && (isBasicApprovalPlan || subscriptionExpiredInGrace)
+        && basicExpiryUnit !== "unlimited";
     const userReposted = optimisticReposted;
     const repostsCount = optimisticRepostsCount;
+    const hasServerGrantedAccess = !!item.user_has_access || !!item.user_purchased;
+    const localPurchaseExpiresAtMs = localPurchaseExpiresAt ? Date.parse(localPurchaseExpiresAt) : NaN;
+    const hasActiveLocalPurchase = hasUnlockedAccess
+        && Number.isFinite(localPurchaseExpiresAtMs)
+        && localPurchaseExpiresAtMs > Date.now();
+    const hasActivePaidContentAccess = !isPaidDirectContent
+        || previewOnly
+        || isOwnContent
+        || hasActiveLocalPurchase
+        || (hasServerGrantedAccess && !localPurchaseExpiresAt);
+    const canOpenPaidContentWithoutPurchase = !isPaidDirectContent || hasActivePaidContentAccess;
+
+    useEffect(() => {
+        if (!showProfileExpiryNotice) return;
+        setExpiryClock(Date.now());
+        const timer = window.setInterval(() => setExpiryClock(Date.now()), 60_000);
+        return () => window.clearInterval(timer);
+    }, [showProfileExpiryNotice, item.expires_at]);
+
+    useEffect(() => {
+        loggedFeedViewRef.current = false;
+    }, [item.id, item.reposted_at]);
+
+    const logFeedExposureViewOnce = useCallback(() => {
+        if (loggedFeedViewRef.current) return;
+        loggedFeedViewRef.current = true;
+        onLogView(item);
+    }, [item, onLogView]);
+
+    const logWatchView = useCallback(() => {
+        onLogView(item, { force: true });
+    }, [item, onLogView]);
+
+    useEffect(() => {
+        if (isFlashContent || isPaidVaultContent) return;
+        const element = articleRef.current;
+        if (!element) return;
+        if (typeof IntersectionObserver === "undefined") {
+            logFeedExposureViewOnce();
+            return;
+        }
+        const observer = new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= 0.35)) {
+                logFeedExposureViewOnce();
+            }
+        }, { threshold: [0.35] });
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, [isFlashContent, isPaidVaultContent, logFeedExposureViewOnce]);
 
     useEffect(() => {
         setOptimisticReposted(serverUserReposted);
@@ -255,11 +361,21 @@ export default function UploadContentFeedCard({
     );
 
     // Image carousel logic
-    const mediaGallery = Array.isArray(item.media_gallery) ? item.media_gallery : [];
+    const rawMediaGallery = Array.isArray(item.media_gallery) ? item.media_gallery : [];
+    const mediaGallery = isImage
+        ? Array.from(new Set(
+            [item.media_preview, ...rawMediaGallery]
+                .map((value) => normalizeMediaSrc(value || ""))
+                .filter(Boolean),
+        ))
+        : rawMediaGallery;
     const hasMultipleImages = mediaGallery.length > 1;
-    const currentDisplayImage = hasMultipleImages
+    const vaultThumbnail = !isFlashContent && hasCreatorThumbnail
+        ? normalizeMediaSrc(item.thumbnail_url || "")
+        : "";
+    const currentDisplayImage = vaultThumbnail || (hasMultipleImages
         ? mediaGallery[currentImageIndex]
-        : (item.media_preview || mediaGallery[0] || item.thumbnail_url);
+        : (item.media_preview || mediaGallery[0] || item.thumbnail_url));
     useEffect(() => {
         setHasUnlockedAccess(!!item.user_has_access || !!item.user_purchased);
         setLocalPurchaseExpiresAt(item.user_purchase_expires_at || null);
@@ -284,35 +400,48 @@ export default function UploadContentFeedCard({
         setMediaAspectRatio(1);
         setCurrentImageIndex(0);  // Reset to first image when item changes
         setFlashPreviewComplete(false);
+        setFlashPreviewStoppedAt(0);
     }, [item.id, item.media_preview, item.thumbnail_url, item.media_type]);
-    const blurredPreviewMedia = normalizeMediaSrc(
-        item.thumbnail_url
-        || linkPreviewImage
-        || item.media_preview
-        || item.media_gallery?.[0]
-        || "",
-    );
     const feedStaticPreviewMedia = normalizeMediaSrc(
         item.thumbnail_url
         || linkPreviewImage
         || (!isVideo ? (item.media_preview || item.media_gallery?.[0] || "") : "")
         || "",
     );
-    const feedVideoFirstFrameSource = isVideo && !feedStaticPreviewMedia
+    const canUseVaultVideoAsPreview = !isPaidVaultContent || hasActivePaidContentAccess;
+    const feedVideoFirstFrameSource = isVideo && !feedStaticPreviewMedia && canUseVaultVideoAsPreview
         ? normalizeMediaSrc(item.media_preview || mediaGallery[0] || media || "")
         : "";
-    const feedVideoMediaSource = normalizeMediaSrc(item.media_preview || mediaGallery[0] || media || watchSource || "");
+    const feedVideoMediaSource = canUseVaultVideoAsPreview
+        ? normalizeMediaSrc(item.media_preview || mediaGallery[0] || media || watchSource || "")
+        : "";
     const feedMediaPreviewSource = isVideo
         ? (shouldAutoPlayFeedVideo ? feedVideoMediaSource : (feedStaticPreviewMedia || feedVideoFirstFrameSource))
         : (currentDisplayImage || feedStaticPreviewMedia);
     const clampedMediaAspectRatio = Math.min(1.18, Math.max(0.72, mediaAspectRatio || 1));
     const mediaFrameStyle = { aspectRatio: `${clampedMediaAspectRatio}` };
-    const shouldShowWatchOverlay = (showBlur || hasSubscriptionPackages || ((isVideo || isPlayableFlash) && watchSource))
+    const shouldShowWatchOverlay = (showBlur
+        || hasSubscriptionPackages
+        || (!isFlashContent && isImage && mediaGallery.length > 0)
+        || ((isVideo || isPlayableFlash) && watchSource))
         && (!shouldAutoPlayFeedVideo || flashPreviewComplete || showBlur || hasSubscriptionPackages);
     const watchButtonLabel = shouldAutoPlayFeedVideo && flashPreviewComplete ? "Watch More" : "Watch Now";
-    const openWatchContent = () => {
+    useEffect(() => {
+        if (!shouldAutoPlayFeedVideo || flashPreviewComplete) return;
+        const previewStopAt = videoTrimStartSeconds + normalizedFlashPreviewSeconds;
+        const timeoutId = window.setTimeout(() => {
+            setFlashPreviewStoppedAt((current) => current || previewStopAt);
+            setFlashPreviewComplete(true);
+        }, (normalizedFlashPreviewSeconds + 0.35) * 1000);
+        return () => window.clearTimeout(timeoutId);
+    }, [flashPreviewComplete, normalizedFlashPreviewSeconds, shouldAutoPlayFeedVideo, videoTrimStartSeconds]);
+    const openWatchContent = (forceOpenAfterPurchase = false) => {
         if (showFullVideo) return;
-        onLogView(item);
+        if (isPaidDirectContent && !hasActivePaidContentAccess && !forceOpenAfterPurchase) {
+            void purchaseVaultAndWatch();
+            return;
+        }
+        logWatchView();
         if ((isVideo || isPlayableFlash) && watchSource) {
             setShowFullVideo(true);
             return;
@@ -335,11 +464,17 @@ export default function UploadContentFeedCard({
         return normalizedBalance;
     };
     const purchaseVaultAndWatch = async () => {
+        if (previewOnly) {
+            openWatchContent(true);
+            return;
+        }
+        if (watchRequestInFlightRef.current || watchPurchaseLoading) return;
         if (!authService.isAuthenticated()) {
             setWatchConfirmError("Please log in to purchase this content.");
             setShowWatchConfirm(false);
             return;
         }
+        watchRequestInFlightRef.current = true;
         setWatchPurchaseLoading(true);
         setWatchConfirmError("");
         try {
@@ -368,8 +503,10 @@ export default function UploadContentFeedCard({
                 user_purchased: true,
                 user_has_access: true,
                 user_purchase_expires_at: result.purchase?.expires_at || null,
+                views_count: result.purchase?.views_count ?? item.views_count,
+                viewCount: result.purchase?.views_count ?? item.viewCount,
             }, "content");
-            openWatchContent();
+            openWatchContent(true);
         } catch (error) {
             setShowWatchConfirm(true);
             const message = error instanceof Error ? error.message : "Unable to unlock this content right now.";
@@ -384,10 +521,16 @@ export default function UploadContentFeedCard({
                 );
             }
         } finally {
+            watchRequestInFlightRef.current = false;
             setWatchPurchaseLoading(false);
         }
     };
     const openWatchConfirmation = async () => {
+        if (previewOnly) {
+            openWatchContent(true);
+            return;
+        }
+        if (watchConfirmLoading || watchPurchaseLoading) return;
         if (!authService.isAuthenticated()) {
             setWatchConfirmError("Please log in to purchase this content.");
             return;
@@ -409,7 +552,8 @@ export default function UploadContentFeedCard({
         }
     };
     const continueWatchNow = () => {
-        if (isOwnContent || hasUnlockedAccess) {
+        if (watchConfirmLoading || watchPurchaseLoading || watchRequestInFlightRef.current) return;
+        if (isOwnContent || (hasUnlockedAccess && canOpenPaidContentWithoutPurchase)) {
             openWatchContent();
             return;
         }
@@ -437,6 +581,7 @@ export default function UploadContentFeedCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoOpenWatchKey]);
     const handleConfirmWatch = async () => {
+        if (watchConfirmLoading || watchPurchaseLoading || watchRequestInFlightRef.current) return;
         await purchaseVaultAndWatch();
     };
     const handleOpenSubscriptionPlans = (event: MouseEvent<HTMLButtonElement>) => {
@@ -457,7 +602,7 @@ export default function UploadContentFeedCard({
         setSubscriptionPurchaseError("");
         setSubscriptionPurchaseMessage("");
         try {
-            await uploadContentService.purchaseCreatorSubscription(
+            const subscription = await uploadContentService.purchaseCreatorSubscription(
                 item.id,
                 String(selectedSubscriptionPlan.id),
                 purchaseResellerRef,
@@ -465,10 +610,18 @@ export default function UploadContentFeedCard({
             setSubscriptionPurchaseMessage("Subscription active. You can now watch this creator's content.");
             window.dispatchEvent(new Event("wallet:changed"));
             setHasUnlockedAccess(true);
-            onAccessChanged(item, "creator_subscription");
+            setLocalPurchaseExpiresAt(subscription?.expires_at || null);
+            onAccessChanged({
+                ...item,
+                user_has_access: true,
+                user_purchase_expires_at: subscription?.expires_at || null,
+                views_count: subscription?.views_count ?? item.views_count,
+                viewCount: subscription?.views_count ?? item.viewCount,
+            }, "creator_subscription");
             setTimeout(() => {
                 setShowSubscriptionPlans(false);
                 if ((isVideo || isPlayableFlash) && watchSource) {
+                    logWatchView();
                     setShowFullVideo(true);
                 }
             }, 700);
@@ -632,8 +785,8 @@ export default function UploadContentFeedCard({
         <>
             <InteractionButton
                 type="shares"
-                icon="share-social-outline"
-                activeIcon="share-social"
+                icon="arrow-redo-outline"
+                activeIcon="arrow-redo"
                 count={isFlashContent ? "" : `${Number(item.affiliate_commission || 0)}%`}
                 activeColor="text-white"
                 color="text-white"
@@ -670,10 +823,7 @@ export default function UploadContentFeedCard({
                 count={viewsCount}
                 activeColor="text-white"
                 color="text-white"
-                onSingleClick={() => {
-                    onLogView(item);
-                    onOpenSheet("views", item);
-                }}
+                onSingleClick={() => onOpenSheet("views", item)}
                 onLongPress={() => onOpenSheet("views", item)}
                 appearance="compact"
                 orientation="vertical"
@@ -688,9 +838,9 @@ export default function UploadContentFeedCard({
                 activeIcon="chatbubble"
                 count={commentsCount}
                 activeColor="text-white"
-                color="text-white"
-                onSingleClick={() => onOpenSheet("comments", item)}
-                onLongPress={() => onOpenSheet("comments", item)}
+                color={commentsEnabled ? "text-white" : "text-white/25"}
+                onSingleClick={openCommentsSheet}
+                onLongPress={openCommentsSheet}
                 appearance="compact"
                 orientation="vertical"
                 iconSize="text-[17px]"
@@ -720,7 +870,7 @@ export default function UploadContentFeedCard({
 
     return (
         <>
-        <article className={`max-w-full overflow-hidden px-1 py-4 transition-colors sm:px-7 ${articleClassName}`.trim()} onClick={() => isMenuOpen && setIsMenuOpen(false)}>
+        <article ref={articleRef} className={`max-w-full overflow-hidden px-1 py-4 transition-colors sm:px-7 ${articleClassName}`.trim()} onClick={() => isMenuOpen && setIsMenuOpen(false)}>
             <div className={`relative group mx-auto flex w-full min-w-0 flex-col overflow-hidden rounded-[1.35rem] border border-white/5 bg-[#1a1a1a] transition-all duration-500 sm:rounded-[1.7rem] md:rounded-[2.3rem] ${showFullVideo ? "max-w-[860px] bg-black pb-0" : `${maxWidthClassName || "max-w-[360px]"} pb-3`}`}>
                 <header className="flex items-center justify-between gap-2 p-3">
                     <div className="flex min-w-0 items-center gap-2">
@@ -780,6 +930,12 @@ export default function UploadContentFeedCard({
                                     createdLabel
                                 )}
                             </div>
+                            {showSuggestedLabel && (
+                                <div className="mt-0.5 inline-flex max-w-full items-center gap-1 text-[7px] font-black uppercase tracking-[0.12em] text-yellow-300/80">
+                                    <IonIcon name="trending-up-outline" className="text-[8px]" />
+                                    <span className="truncate">Suggested · {suggestedTopic}</span>
+                                </div>
+                            )}
                         </div>
                     </div>
                     <div className="flex flex-shrink-0 items-center gap-2">
@@ -837,7 +993,7 @@ export default function UploadContentFeedCard({
                             </>
                         )}
                         <button type="button" onClick={() => { setIsMenuOpen(false); onShare(item); }} className="flex w-full items-center gap-3 border-t border-white/5 px-4 py-2.5 text-left text-[11px] font-bold text-white hover:bg-white/5">
-                            <IonIcon name="share-social-outline" className="text-base text-blue-300" />
+                            <IonIcon name="arrow-redo-outline" className="text-base text-blue-300" />
                             Share
                         </button>
                         <button
@@ -927,6 +1083,7 @@ export default function UploadContentFeedCard({
                             blurred={showBlur}
                             autoPlayVideo={shouldAutoPlayFeedVideo}
                             autoPlayMuted={false}
+                            priority={priorityMedia}
                             onPreviewProgress={(currentTime) => setFlashPreviewStoppedAt(currentTime)}
                             onPreviewComplete={() => {
                                 setFlashPreviewStoppedAt((current) => current || videoTrimStartSeconds + normalizedFlashPreviewSeconds);
@@ -956,7 +1113,8 @@ export default function UploadContentFeedCard({
                                 <button
                                     type="button"
                                     onClick={handleWatchNow}
-                                    className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-white/15 bg-black/80 px-3 text-white shadow-xl backdrop-blur-md transition hover:bg-black/90"
+                                    disabled={watchConfirmLoading || watchPurchaseLoading}
+                                    className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-white/15 bg-black/80 px-3 text-white shadow-xl backdrop-blur-md transition hover:bg-black/90 disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     <IonIcon name="play" className="text-[10px]" />
                                     <span className="text-[8px] font-black uppercase tracking-[0.12em]">{watchButtonLabel}</span>
@@ -967,7 +1125,7 @@ export default function UploadContentFeedCard({
                                         </>
                                     )}
                                 </button>
-                                {hasSubscriptionPackages && (
+                                {hasSubscriptionPackages && !hasUnlockedAccess && !isOwnContent && (
                                     <button
                                         type="button"
                                         onClick={handleOpenSubscriptionPlans}
@@ -1014,10 +1172,7 @@ export default function UploadContentFeedCard({
                             count={viewsCount}
                             activeColor="text-white"
                             color="text-white"
-                            onSingleClick={() => {
-                                onLogView(item);
-                                onOpenSheet("views", item);
-                            }}
+                            onSingleClick={() => onOpenSheet("views", item)}
                             onLongPress={() => onOpenSheet("views", item)}
                             appearance="compact"
                         />
@@ -1027,15 +1182,15 @@ export default function UploadContentFeedCard({
                             activeIcon="chatbubble"
                             count={commentsCount}
                             activeColor="text-white"
-                            color="text-white"
-                            onSingleClick={() => onOpenSheet("comments", item)}
-                            onLongPress={() => onOpenSheet("comments", item)}
+                            color={commentsEnabled ? "text-white" : "text-white/25"}
+                            onSingleClick={openCommentsSheet}
+                            onLongPress={openCommentsSheet}
                             appearance="compact"
                         />
                         <InteractionButton
                             type="shares"
-                            icon="share-social-outline"
-                            activeIcon="share-social"
+                            icon="arrow-redo-outline"
+                            activeIcon="arrow-redo"
                             count={isFlashContent ? "" : `${Number(item.affiliate_commission || 0)}%`}
                             activeColor="text-white"
                             color="text-white"
@@ -1049,6 +1204,13 @@ export default function UploadContentFeedCard({
                 {showStatusDetails && (
                     <p className="mx-4 mb-1 rounded-2xl border border-white/8 bg-white/[0.035] px-3 py-2 text-[10px] font-semibold leading-5 text-white/55">
                         {item.status === "Rejected" && item.rejection_reason ? item.rejection_reason : statusMeta.helper}
+                    </p>
+                )}
+                {showProfileExpiryNotice && (
+                    <p className="mx-4 mb-1 rounded-2xl border border-white/8 bg-white/[0.035] px-3 py-2 text-center text-[10px] font-semibold leading-5 text-white/55">
+                        {isBasicApprovalPlan
+                            ? `This content will be automatically deleted in ${formatRemainingUploadExpiry(item.expires_at, item.approval_expiry_value, item.approval_expiry_unit, expiryClock)}. Upgrade to a subscription plan to keep it longer.`
+                            : `Subscription Expired: Auto-delete in ${formatUploadExpiry(item.owner_basic_content_expiry_value, item.owner_basic_content_expiry_unit)} unless renewed.`}
                     </p>
                 )}
                 </>
@@ -1211,7 +1373,7 @@ export default function UploadContentFeedCard({
                                 <div>
                                     <p className="text-[8px] font-black uppercase tracking-[0.12em] text-white/40">Plan {index + 1}</p>
                                     <p className="mt-1 text-[11px] font-bold text-white">
-                                        {Number(plan.minutes || plan.days || 0)} Minute{Number(plan.minutes || plan.days || 0) === 1 ? "" : "s"} Full Access
+                                        {Number(plan.days || plan.minutes || 0)} Day{Number(plan.days || plan.minutes || 0) === 1 ? "" : "s"} Full Access
                                     </p>
                                 </div>
                                 <div className="text-right">
@@ -1257,3 +1419,5 @@ export default function UploadContentFeedCard({
         </>
     );
 }
+
+export default memo(UploadContentFeedCard);

@@ -118,6 +118,10 @@ const getRawMediaValue = (value) => {
     }
     return '';
 };
+const isDefaultAvatarValue = (value) => {
+    const text = String(value || '').trim().toLowerCase();
+    return !text || text.includes('/assets/images/avatars/avatar-default') || text.endsWith('/avatar-default.jpg') || text.endsWith('/avatar-default.png');
+};
 
 const getDataUrlFallback = (...sources) => {
     for (const source of sources) {
@@ -367,7 +371,7 @@ const mapActiveAdToHomeAd = (row) => {
         is_sponsored: true,
         user_liked: !!row.user_liked,
         ad_coin_collected: !!row.ad_coin_collected,
-        ad_like_locked: !!row.ad_coin_collected,
+        ad_like_locked: false,
     };
 };
 
@@ -476,6 +480,11 @@ const hydrateProductPromoteAds = async (ads) => {
         const dataUrlFallback = getDataUrlFallback(linked.image_url, linked.variants, ad.media_gallery, ad.image_url, ad.media_preview);
         const primaryImage = getMediaUrl(linked.image_url) || gallery[0] || getMediaUrl(ad.image_url) || dataUrlFallback || '/assets/images/googer.png';
         const { price, promo_price } = normalizeProductPromotePriceFields(linked, ad);
+        const advertiserId = ad.ad_owner_user_id || ad.user_id || ad.userId || ad.user?.id || null;
+        const advertiserPublicId = ad.owner_user_id || ad.ownerUserId || ad.user?.user_id || ad.user?.userId || advertiserId;
+        const advertiserUsername = ad.owner_username || ad.ownerUsername || ad.username || ad.user?.username || 'Ads';
+        const advertiserProfilePicture = stripDataUrl(ad.profile_picture || ad.user?.profile_picture) || null;
+        const productOwnerProfilePicture = stripDataUrl(linked.profile_picture) || null;
 
         return {
             ...ad,
@@ -501,9 +510,32 @@ const hydrateProductPromoteAds = async (ads) => {
             product_id: linked.id,
             linked_product_id: linked.id,
             linked_product_code: linked.product_code,
-            owner_username: linked.owner_username || ad.owner_username,
-            username: linked.owner_username || ad.username,
-            profile_picture: stripDataUrl(linked.profile_picture) || ad.profile_picture,
+            user_id: advertiserId,
+            userId: advertiserId,
+            owner_user_id: advertiserPublicId,
+            ownerUserId: advertiserPublicId,
+            ad_owner_user_id: advertiserId,
+            advertiser_id: advertiserId,
+            owner_username: advertiserUsername,
+            ownerUsername: advertiserUsername,
+            username: advertiserUsername,
+            profile_picture: advertiserProfilePicture,
+            owner_profile_picture: advertiserProfilePicture,
+            ad_display_username: advertiserUsername,
+            ad_display_full_name: ad.full_name || ad.user?.full_name || advertiserUsername,
+            ad_display_avatar: advertiserProfilePicture,
+            ad_display_user_id: advertiserPublicId,
+            linked_product_owner_id: linked.user_id,
+            linked_product_owner_username: linked.owner_username || '',
+            linked_product_profile_picture: productOwnerProfilePicture,
+            user: {
+                ...(ad.user || {}),
+                id: advertiserId,
+                user_id: advertiserPublicId,
+                userId: advertiserPublicId,
+                username: advertiserUsername,
+                profile_picture: advertiserProfilePicture,
+            },
         };
     }).filter(Boolean);
 };
@@ -576,7 +608,7 @@ const buildHomeFeedPayload = async ({ req, userId, isAnonymousRequest, limit, of
                 a.linked_product_id, a.linked_product_share_code,
                 u.username AS owner_username_joined, u.profile_picture,
                 EXISTS(SELECT 1 FROM ad_likes al WHERE al.ad_id = a.ad_id AND al.user_id = $1) AS user_liked,
-                EXISTS(SELECT 1 FROM ad_like_coin_rewards acr WHERE acr.ad_id = a.ad_id AND acr.user_id = $1) AS ad_coin_collected
+                EXISTS(SELECT 1 FROM ad_coin_collections acc WHERE acc.ad_id = a.ad_id AND acc.user_id = $1) AS ad_coin_collected
          FROM ads a
          JOIN users u ON u.id = a.user_id
          WHERE a.status = 'Active'

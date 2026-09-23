@@ -36,6 +36,10 @@ const getRawMediaValue = (value) => {
     }
     return '';
 };
+const isDefaultAvatarValue = (value) => {
+    const text = String(value || '').trim().toLowerCase();
+    return !text || text.includes('/assets/images/avatars/avatar-default') || text.endsWith('/avatar-default.jpg') || text.endsWith('/avatar-default.png');
+};
 
 const readDurationMs = (startNs) => Number(process.hrtime.bigint() - startNs) / 1e6;
 const shouldLogPublicAdsTiming = () => /^(1|true|yes|on)$/i.test(String(process.env.PUBLIC_ADS_TIMING_LOG || '').trim());
@@ -181,15 +185,12 @@ const findCandidateAds = async (fetchLimit, offset, viewerId, ownerUserId, rawPh
         ? `(
                a.status = 'Active'
                OR a.status IN ('Removed', 'Paused')
+               -- A finished photo/video ad (raw upload or link) stays on the profile
+               -- until the plan profile window has passed; a save keeps it past
+               -- that window (the window SQL already lets any save through).
                OR (
                    a.status = 'Completed'
-                   AND EXISTS (
-                       SELECT 1
-                       FROM ad_saves profile_save
-                       WHERE profile_save.ad_id = a.ad_id
-                         AND profile_save.user_id = a.user_id
-                         AND profile_save.ad_source_type = 'upload'
-                   )
+                   AND LOWER(COALESCE(a.campaign_type, '')) IN ('photo and video', 'photo & video')
                    AND ${rawPhotoVideoProfileNotExpiredSql}
                )
            )`
@@ -267,6 +268,7 @@ module.exports = {
     getOptionalViewerId,
     getProductPromoteTarget,
     getRawMediaValue,
+    isDefaultAvatarValue,
     isProductPromoteCampaign,
     loadViewerAdProfile,
     normalizeMediaGallery: savedAdsRepository.mapRow ? ((value, fallback = []) => {
@@ -278,4 +280,5 @@ module.exports = {
     setCachedAnonymousPublicAds,
     shouldLogPublicAdsTiming,
     shuffleRowsWithSeed,
+    syncExpiredAds: readAdsRepository.syncExpiredAds,
 };

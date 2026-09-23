@@ -443,7 +443,7 @@ const mapActiveAdToMarketCard = (row, adCoinValue = DEFAULT_AD_COIN_REWARD_SETTI
         seller_reported: false,
         user_liked: !!row.user_liked,
         ad_coin_collected: !!row.ad_coin_collected,
-        ad_like_locked: !!row.ad_coin_collected,
+        ad_like_locked: false,
         ad_coin_value: Number(row.ad_coin_value || adCoinValue),
         media_preview: mediaPreview,
         campaign_type: row.campaign_type || 'Ads',

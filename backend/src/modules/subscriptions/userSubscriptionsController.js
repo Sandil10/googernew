@@ -37,7 +37,13 @@ const subscribe = async (req, res) => {
                 price: error.price,
             });
         }
-        return res.status(error.statusCode || 500).json({ success: false, message: error.statusCode ? error.message : `Failed to subscribe: ${error.message || error.code || 'unknown error'}` });
+        // A refusal can carry machine-readable details the client acts on — a
+        // plan switch blocked on saved ads has to say which allowance it broke.
+        return res.status(error.statusCode || 500).json({
+            success: false,
+            message: error.statusCode ? error.message : `Failed to subscribe: ${error.message || error.code || 'unknown error'}`,
+            ...(error.details || {}),
+        });
     }
 };
 

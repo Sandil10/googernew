@@ -23,6 +23,13 @@ export const viewport = {
   themeColor: 'black',
   width: 'device-width',
   initialScale: 1,
+  // Required for env(safe-area-inset-*) to resolve; without it the value is 0
+  // and the bottom nav sits under the iPhone home indicator.
+  viewportFit: 'cover' as const,
+  // Stops iOS auto-zooming when a form field is focused, which made the app
+  // feel like a web page rather than a native one.
+  maximumScale: 1,
+  userScalable: false,
 };
 
 import { CartProvider } from "./context/CartContext";

@@ -1,0 +1,88 @@
+import 'package:flutter/widgets.dart';
+import 'web_video_stub.dart'
+    if (dart.library.html) 'web_video_web.dart'
+    as impl;
+
+/// Cross-platform video surface (real <video> tag on web).
+Widget webVideo(
+  String url, {
+  String poster = "",
+  bool interactive = true,
+  bool autoPlay = true,
+  bool feedControls = false,
+  String instanceKey = '',
+  double trimStartSeconds = 0,
+  double trimEndSeconds = 0,
+  double previewDurationSeconds = 0,
+  bool loopPreview = false,
+  double blurSigma = 0,
+  bool showSeekControls = true,
+  VoidCallback? onPreviewComplete,
+  VoidCallback? onFeedShare,
+  VoidCallback? onFeedRepost,
+  VoidCallback? onFeedView,
+  VoidCallback? onFeedComment,
+  VoidCallback? onFeedLike,
+  String feedReposts = '',
+  String feedViews = '',
+  String feedComments = '',
+  String feedLikes = '',
+  bool feedLiked = false,
+}) => impl.buildWebVideo(
+  url,
+  poster: poster,
+  interactive: interactive,
+  autoPlay: autoPlay,
+  feedControls: feedControls,
+  instanceKey: instanceKey,
+  trimStartSeconds: trimStartSeconds,
+  trimEndSeconds: trimEndSeconds,
+  previewDurationSeconds: previewDurationSeconds,
+  loopPreview: loopPreview,
+  blurSigma: blurSigma,
+  showSeekControls: showSeekControls,
+  onPreviewComplete: onPreviewComplete,
+  onFeedShare: onFeedShare,
+  onFeedRepost: onFeedRepost,
+  onFeedView: onFeedView,
+  onFeedComment: onFeedComment,
+  onFeedLike: onFeedLike,
+  feedReposts: feedReposts,
+  feedViews: feedViews,
+  feedComments: feedComments,
+  feedLikes: feedLikes,
+  feedLiked: feedLiked,
+);
+
+/// Cross-platform iframe embed (YouTube/Instagram/TikTok on web).
+Widget webEmbed(
+  String url, {
+  bool interactive = true,
+  bool feedControls = false,
+  String instanceKey = '',
+  VoidCallback? onFeedShare,
+  VoidCallback? onFeedRepost,
+  VoidCallback? onFeedView,
+  VoidCallback? onFeedComment,
+  VoidCallback? onFeedLike,
+  String feedReposts = '',
+  String feedViews = '',
+  String feedComments = '',
+  String feedLikes = '',
+  bool feedLiked = false,
+}) => impl.buildWebEmbed(
+  url,
+  interactive: interactive,
+  feedControls: feedControls,
+  instanceKey: instanceKey,
+  onFeedShare: onFeedShare,
+  onFeedRepost: onFeedRepost,
+  onFeedView: onFeedView,
+  onFeedComment: onFeedComment,
+  onFeedLike: onFeedLike,
+  feedReposts: feedReposts,
+  feedViews: feedViews,
+  feedComments: feedComments,
+  feedLikes: feedLikes,
+  feedLiked: feedLiked,
+);

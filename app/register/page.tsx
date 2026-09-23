@@ -72,7 +72,8 @@ function RegisterContent() {
             const response = await authService.register(userData);
             console.log("Registration successful:", response);
 
-            router.push(redirectTo.startsWith("/") ? redirectTo : "/dashboard");
+            const safeRedirect = redirectTo.startsWith("/") ? redirectTo : "/dashboard";
+            router.replace(`/dashboard/settings?completeProfile=1&next=${encodeURIComponent(safeRedirect)}`);
         } catch (err: any) {
             setError(err.message || "Registration failed. Please try again.");
         } finally {
@@ -266,7 +267,20 @@ function RegisterContent() {
                                 onChange={(e) => setAcceptedTerms(e.target.checked)}
                             />
                             <label htmlFor="terms" className="ml-2 block text-[10px] text-gray-400">
-                                I accept the <span className="text-red-500 font-bold">Terms & Conditions</span>
+                                I accept the{" "}
+                                {/* Was a plain <span>, so it looked like a link
+                                    but could not be opened. Anchored to the
+                                    legal page and opened in a new tab so the
+                                    half-filled register form is not lost. */}
+                                <a
+                                    href="/terms-and-policies"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-red-500 font-bold underline underline-offset-2 hover:text-red-400"
+                                >
+                                    Terms &amp; Conditions
+                                </a>
                             </label>
                         </div>
 

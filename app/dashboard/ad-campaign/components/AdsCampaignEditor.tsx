@@ -11,8 +11,9 @@ import { marketService } from "@/services/marketService";
 import { uploadContentService } from "@/services/uploadContentService";
 import { subscriptionService } from "@/services/subscriptionService";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
-import { addAdWalletRefund, getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
+import { getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
 import { calcReach, type ReachTier } from "@/utils/reachCalc";
+import { getCountryDialCode } from "@/app/lib/phoneCountryDialCodes";
 
 type PreviewMode = "mobile" | "desktop";
 type LinkPreviewType = "image" | "video" | "embed" | "website" | null;
@@ -191,8 +192,8 @@ const INTEREST_TOPIC_OPTIONS = [
     "Shopping",
 ];
 const PLACEMENT_OPTIONS = [
-    { label: "All", selectable: true },
-    { label: "Goog Msg", selectable: true },
+    { label: "All", selectable: false },
+    { label: "Goog Msg", selectable: false },
     { label: "Feed", selectable: false },
     { label: "Stories", selectable: false },
     { label: "Reels", selectable: false },
@@ -200,15 +201,10 @@ const PLACEMENT_OPTIONS = [
     { label: "Profile", selectable: false },
     { label: "Marketplace", selectable: false },
 ];
-const AVAILABLE_PLACEMENT_LABELS = PLACEMENT_OPTIONS.filter((placement) => placement.selectable && placement.label !== "All").map((placement) => placement.label);
+const AVAILABLE_PLACEMENT_LABELS = PLACEMENT_OPTIONS.filter((placement) => placement.label !== "All").map((placement) => placement.label);
+const placementUiLabel = (label: string) => label === "Goog Msg" ? "Goog Chat" : label;
 const PROFILE_PROMOTE_FEATURED_LIMIT = 3;
 const PROFILE_PROMOTE_PICKER_VISIBLE_COUNT = 5;
-
-function normalizePlacementLabel(value: unknown) {
-    if (value === "Chat") return "Goog Msg";
-    if (typeof value !== "string" || value === "Home" || value === "Shop") return null;
-    return value === "All" || AVAILABLE_PLACEMENT_LABELS.includes(value) ? value : null;
-}
 
 function getYouTubeEmbedUrl(value: string) {
     const id = getYouTubeVideoId(value);
@@ -396,7 +392,17 @@ function getProductImageSrc(product: any) {
     const imageArray = Array.isArray(product?.images) ? product.images : [];
     const galleryArray = Array.isArray(product?.media_gallery) ? product.media_gallery : [];
     const variantArray = Array.isArray(product?.variants) ? product.variants : [];
-    const candidates = [
+    const isUploadItem = getProfilePromoteItemType(product) === "upload";
+    const uploadCandidates = [
+        product?.thumbnail_url,
+        product?.thumbnailUrl,
+        product?.preview_url,
+        product?.previewUrl,
+        product?.media_preview,
+        product?.mediaPreview,
+        ...galleryArray.map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
+    ];
+    const productCandidates = [
         product?.image_url,
         product?.main_image,
         product?.thumbnail_url,
@@ -413,7 +419,8 @@ function getProductImageSrc(product: any) {
         product?.raw?.media_preview,
         ...(Array.isArray(product?.raw?.images) ? product.raw.images : []).map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
         ...(Array.isArray(product?.raw?.media_gallery) ? product.raw.media_gallery : []).map((value: any) => typeof value === "string" ? value : value?.url || value?.image_url || value?.image),
-    ]
+    ];
+    const candidates = (isUploadItem ? [...uploadCandidates, ...productCandidates] : productCandidates)
         .map((value) => String(value || "").trim())
         .filter((value) => !isPlaceholderImage(value));
     const selected = candidates[0] || "https://picsum.photos/400/400";
@@ -459,24 +466,14 @@ function getProductShareTarget(rawLink: string) {
         }
     };
 
-    const parsed = tryParseUrl(normalizeUrl(trimmed)) || tryParseUrl(`https://placeholder.local${trimmed.startsWith("/") ? trimmed : `/${trimmed}`}`);
+    const parsed = tryParseUrl(normalizeUrl(trimmed));
     if (parsed) {
         const parts = parsed.pathname.split("/").filter(Boolean);
-        const sectionIndex = parts.findIndex((part) => ["product", "share", "shop"].includes(part.toLowerCase()));
-        if (sectionIndex !== -1 && parts[sectionIndex + 1]) {
-            const section = parts[sectionIndex].toLowerCase();
-            const raw = parts[sectionIndex + 1];
+        if (parts.length === 2 && parts[0].toLowerCase() === "product") {
+            const raw = parts[1];
             const value = decodeURIComponent(raw);
-            if (section === "shop") {
-                return /^\d+$/.test(value) ? { mode: "id" as const, value } : { mode: "code" as const, value };
-            }
             return /^\d+$/.test(value) ? { mode: "id" as const, value } : { mode: "code" as const, value };
         }
-    }
-
-    // Fallback: treat the raw input as a bare product code/id
-    if (/^[A-Za-z0-9_-]+$/.test(trimmed)) {
-        return /^\d+$/.test(trimmed) ? { mode: "id" as const, value: trimmed } : { mode: "code" as const, value: trimmed };
     }
 
     return null;
@@ -687,6 +684,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [acceptedProfileNonRefundable, setAcceptedProfileNonRefundable] = useState(false);
     const [editingAdId, setEditingAdId] = useState("");
     const [editingOriginalBudget, setEditingOriginalBudget] = useState<number | null>(null);
+    // The promo code the ad being edited already had, if any. Kept apart from
+    // `promoCode`, which the user can clear — the rule below turns on what the
+    // ad *was*, not on what the form currently shows.
+    const [editingOriginalPromoCode, setEditingOriginalPromoCode] = useState("");
+    const [isEditingFreeAdBudgetLocked, setIsEditingFreeAdBudgetLocked] = useState(false);
     const [carryOverViews, setCarryOverViews] = useState(0);
     const [isPromoteAgain, setIsPromoteAgain] = useState(false);
     const [sourceOwnerDbId, setSourceOwnerDbId] = useState<number | string | null>(null);
@@ -793,11 +795,23 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const isFreeProfilePromotePromo = isProfilePromote && hasPromoCodeAdded;
     const showProfileNonRefundableNotice = isProfilePromote && !hasPromoCodeAdded;
     const hasInsufficientBalance = walletBalanceLoaded && budget !== null && effectivePaymentAmount > walletBalance;
+    const isEditingExistingAd = !isPromoteAgain && !!String(editingAdId || "").trim();
     const isPromoLockingBudget = hasPromoCodeAdded && (
         isProfilePromote
             ? true  // Profile Promote: freeze packages the moment any promo is applied
             : budget !== null && (promoDiscount?.discount_type === "rupee" || promoDiscount?.discount_type === "reach")
     );
+    const isBudgetLocked = isEditingFreeAdBudgetLocked || (!isEditingExistingAd && isPromoLockingBudget);
+    // That ad already had a promo code, so the field is here to replace it.
+    // `isEditingFreeAdBudgetLocked` is the same signal on older saved drafts,
+    // which carried only `freeAdBudgetLocked`.
+    const isEditingPromoAd = isEditingExistingAd
+        && (editingOriginalPromoCode.length > 0 || isEditingFreeAdBudgetLocked);
+    // A promo code is priced and issued against the ad it was applied to, so it
+    // cannot be bolted onto an ad that was already paid for and published. The
+    // backend refuses this too ("Promo codes cannot be changed while editing an
+    // existing ad"), so offering the field here only produced a dead end.
+    const isPromoCodeLocked = isEditingExistingAd && !isEditingPromoAd;
     const filteredCountries = useMemo(() => {
         const query = countrySearch.trim().toLowerCase();
         if (!query) return countries;
@@ -921,7 +935,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         : budget;
     const promoReachCap = hasPromoCodeAdded && promoDiscount?.discount_type === "reach" ? (promoDiscount.reach_cap ?? null) : null;
 
-    // For reach-type promos the backend pre-computes the exact reach values — use them directly
+    // For reach-type promos the backend pre-computes the exact reach values; use them directly.
     const promoDefinedReach = hasPromoCodeAdded
         && promoDiscount?.discount_type === "reach"
         && promoDiscount.min_reach_bonus != null
@@ -1324,26 +1338,6 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         setIsInterestTopicsOpen(false);
     };
 
-    const togglePlacement = (placementLabel: string) => {
-        if (placementLabel === "All") {
-            setSelectedPlacements((current) => {
-                const allSelected = AVAILABLE_PLACEMENT_LABELS.every((placement) => current.includes(placement));
-                return allSelected ? [] : ["All", ...AVAILABLE_PLACEMENT_LABELS];
-            });
-            return;
-        }
-
-        setSelectedPlacements((current) => {
-            const selectedWithoutAll = current.filter((placement) => placement !== "All");
-            const nextSelection = selectedWithoutAll.includes(placementLabel)
-                ? selectedWithoutAll.filter((placement) => placement !== placementLabel)
-                : [...selectedWithoutAll, placementLabel];
-            const allSelected = AVAILABLE_PLACEMENT_LABELS.every((placement) => nextSelection.includes(placement));
-
-            return allSelected ? ["All", ...AVAILABLE_PLACEMENT_LABELS] : nextSelection;
-        });
-    };
-
     const validateFinalForm = () => {
         const normalizedPhoneCta = ctaUsesCountryPhone(ctaTopic)
             ? buildInternationalPhoneValue(selectedCountry?.dialCode || "+1", ctaValue)
@@ -1364,7 +1358,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             return false;
         }
 
-        // CTA and description are not required for Product Promote / Profile Promote — they are hidden on those pages.
+        // CTA and description are not required for Product Promote / Profile Promote â€” they are hidden on those pages.
         if (!isProductPromote && !isProfilePromote) {
             if (!ctaTopic) {
                 showPopupError("Please select a call to action.");
@@ -1396,6 +1390,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
         if (budget === null && !isFreeProfilePromotePromo) {
             showPopupError(isProfileAd ? "Please select a budget package." : "Please set a budget.");
+            return false;
+        }
+
+        if (isEditingFreeAdBudgetLocked && !hasPromoCodeAdded) {
+            showPopupError("Please apply a replacement promo code before saving.");
             return false;
         }
 
@@ -1455,11 +1454,32 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const sponsorId = userProfile?.id ?? userProfile?._id ?? userProfile?.user_id;
         const sponsorPublicId = typeof userProfile?.user_id === "string" ? userProfile.user_id : String(userProfile?.user_id ?? "");
         const sponsorUsername = typeof userProfile?.username === "string" ? userProfile.username : "";
-        const existingReview = editingAdId ? await adsService.getAdById(editingAdId).catch(() => null) : null;
-        // Fall back to editingOriginalBudget from draft if the API fetch failed, so we never charge the full budget on an edit
+        const normalizedEditingAdId = String(editingAdId || "").trim();
+        let existingReview = normalizedEditingAdId ? await adsService.getAdById(normalizedEditingAdId).catch(() => null) : null;
+        if (isEditingExistingAd && !existingReview) {
+            const normalizedLookupId = normalizedEditingAdId.replace(/^ad-/i, "");
+            const myAds = await adsService.getMyAds().catch(() => []);
+            existingReview = Array.isArray(myAds)
+                ? myAds.find((item: any) => {
+                    const candidateIds = [
+                        item?.adId,
+                        item?.ad_id,
+                        item?.editDraft?.editingAdId,
+                        item?.edit_draft?.editingAdId,
+                        item?.id,
+                    ];
+                    return candidateIds.some((candidate) => String(candidate ?? "").trim().replace(/^ad-/i, "") === normalizedLookupId);
+                }) || null
+                : null;
+        }
+        if (isEditingExistingAd && !existingReview) {
+            showPopupError("Could not load the ad being edited. Please reopen the ad and try again.");
+            return;
+        }
+        const existingReviewAdId = String(existingReview?.adId || existingReview?.ad_id || "").trim();
         const existingBudget = isPromoteAgain ? 0 : Number(existingReview?.budget ?? editingOriginalBudget ?? 0);
-        const nextAdId = !isPromoteAgain && existingReview?.adId && typeof existingReview.adId === "string"
-            ? existingReview.adId
+        const nextAdId = isEditingExistingAd
+            ? (existingReviewAdId || normalizedEditingAdId)
             : createNextAdId();
         const carryOverViews = isPromoteAgain
             ? Number(existingReview?.views_count ?? existingReview?.viewCount ?? existingReview?.views ?? 0)
@@ -1467,6 +1487,11 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         const selectedBudget = budget ?? 0;
         const publishBudget = effectiveBudget ?? selectedBudget;
         const budgetDifference = selectedBudget - existingBudget;
+        if (isEditingFreeAdBudgetLocked && !isPromoteAgain && selectedBudget !== existingBudget) {
+            showPopupError("Ads published with a promo code cannot change budget.");
+            setIsPublishing(false);
+            return;
+        }
         const normalizedCtaValue = ctaUsesCountryPhone(ctaTopic)
             ? buildInternationalPhoneValue(selectedCountry?.dialCode || "+1", ctaValue).fullNumber
             : ctaValue.trim();
@@ -1494,11 +1519,15 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             ownerUsername: displayOwnerUsername || undefined,
             budget: publishBudget,
             durationDays: effectiveDurationDays,
+            // The card's own title is the Description field, matching the
+            // mobile editor and how the feed card renders it — it must never
+            // fall back to the link-derived previewTitle (or campaignType)
+            // while the advertiser has actually typed a description.
             title: isProductPromote && linkedProduct
                 ? linkedProduct.title
                 : isProfilePromote
                     ? profileDisplayName
-                    : previewTitle,
+                    : (description.trim() || previewTitle),
             description: description.trim(),
             mediaPreview: isProductPromote && linkedProduct
                 ? getProductImageSrc(linkedProduct)
@@ -1577,10 +1606,30 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 featuredItems: profilePromoteProducts.map((p) => ({
                     type: getProfilePromoteItemType(p),
                     id: p.id,
+                    content_id: p.content_id || p.contentId || null,
+                    contentId: p.contentId || p.content_id || null,
                     title: getProfilePromoteItemTitle(p),
                     image: getProductImageSrc(p),
+                    image_url: p.image_url || p.main_image || null,
+                    thumbnail_url: p.thumbnail_url || p.thumbnailUrl || null,
+                    thumbnailUrl: p.thumbnailUrl || p.thumbnail_url || null,
+                    media_preview: p.media_preview || p.mediaPreview || null,
+                    mediaPreview: p.mediaPreview || p.media_preview || null,
+                    preview_url: p.preview_url || p.previewUrl || null,
+                    previewUrl: p.previewUrl || p.preview_url || null,
+                    media_gallery: Array.isArray(p.media_gallery) ? p.media_gallery : Array.isArray(p.mediaGallery) ? p.mediaGallery : [],
+                    mediaGallery: Array.isArray(p.mediaGallery) ? p.mediaGallery : Array.isArray(p.media_gallery) ? p.media_gallery : [],
                     meta: getProfilePromoteItemMeta(p),
                     contentType: p.content_type || null,
+                    content_type: p.content_type || p.contentType || null,
+                    media_type: p.media_type || p.mediaType || null,
+                    mediaType: p.mediaType || p.media_type || null,
+                    content_access_mode: p.content_access_mode || p.contentAccessMode || null,
+                    contentAccessMode: p.contentAccessMode || p.content_access_mode || null,
+                    preview_mode: p.preview_mode || p.previewMode || null,
+                    previewMode: p.previewMode || p.preview_mode || null,
+                    blurred: p.content_access_mode === "blurred" || p.contentAccessMode === "blurred" || p.blurred === true || p.is_blurred === true || false,
+                    is_blurred: p.content_access_mode === "blurred" || p.contentAccessMode === "blurred" || p.blurred === true || p.is_blurred === true || false,
                 })),
                 promotedProfileUserId: promotedProfile?.id ?? promotedProfile?.user_id ?? null,
             } : {}),
@@ -1625,7 +1674,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
             // isEditMode: editing an existing Under Review ad (not promote-again)
             // Works even if the API fetch for existingReview failed, by falling back to editingOriginalBudget
-            const isEditMode = !isPromoteAgain && (!!existingReview || (!!editingAdId && editingOriginalBudget !== null));
+            const isEditMode = isEditingExistingAd;
             const payAmount = isEditMode ? budgetDifference : discountedBudget;
             if ((isEditMode && budgetDifference > 0) || (!isEditMode && discountedBudget > 0)) {
                 if (isProfilePromote) {
@@ -1641,8 +1690,17 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 }
             }
 
-            if (existingReview && isEditMode && budgetDifference < 0 && ownerKey) {
-                addAdWalletRefund(reviewRecord.adId, ownerKey, Math.abs(budgetDifference), `Ad Budget Refund - ${reviewRecord.adId}`);
+            if (existingReview && isEditMode && budgetDifference < 0) {
+                const refundAmount = Math.abs(budgetDifference);
+                const refundResult = await walletService.refundAdBudgetEdit(refundAmount, {
+                    adId: reviewRecord.adId,
+                    note: `Ad Budget Refund - ${reviewRecord.adId} - Budget Reduced During Review`,
+                    idempotencyKey: `ad-budget-refund:v2:${reviewRecord.adId}:${existingBudget}->${selectedBudget}`,
+                });
+                paymentResult = {
+                    ...(paymentResult || {}),
+                    currentBalance: refundResult?.currentBalance,
+                };
             }
 
             // Record a $0 wallet entry for free promo ads so they appear in transaction history
@@ -1650,15 +1708,13 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 try {
                     await walletService.recordPromoAd(reviewRecord.adId, promotionLabel);
                 } catch {
-                    // non-critical — don't block publish
+                    // non-critical â€” don't block publish
                 }
             }
 
             const currentBalance = Number(paymentResult?.currentBalance);
             if (Number.isFinite(currentBalance)) {
                 setWalletBalance(getWalletBalanceWithAdAdjustments(currentBalance, ownerKey));
-            } else if (isEditMode && budgetDifference < 0) {
-                setWalletBalance((current) => current + Math.abs(budgetDifference));
             } else {
                 setWalletBalance((current) => Math.max(0, current - (isEditMode ? Math.max(0, budgetDifference) : discountedBudget)));
             }
@@ -1691,16 +1747,16 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 formData.set("data", JSON.stringify(uploadAdPayload));
             }
 
-            const savedAd = (existingReview && !isPromoteAgain)
+            const savedAd = isEditMode
                 ? await adsService.updateAd(reviewRecord.adId, payload as any)
                 : await adsService.createAd(payload as any);
 
             // Redeem promo AFTER ad is successfully created (increments uses_count)
-            if (hasPromoCodeAdded && promoCode && (!existingReview || isPromoteAgain)) {
+            if (hasPromoCodeAdded && promoCode && !isEditMode) {
                 try {
                     await adsService.redeemPromoCode(promoCode, getAdTypeForCampaign(), reviewRecord.adId);
                 } catch {
-                    // Non-fatal — ad is already created and paid for; just skip redeem silently
+                    // Non-fatal â€” ad is already created and paid for; just skip redeem silently
                 }
             }
 
@@ -1713,7 +1769,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         } catch (error: any) {
             const errMsg = error?.message || "";
             const isPromoErr = errMsg.includes("promo") || errMsg.includes("Promo") || errMsg.includes("usage limit") || errMsg.includes("expired") || errMsg.includes("ad type");
-            if (!isPromoErr) {
+            if (isPromoErr) {
+                setPromoError(errMsg || "Could not save this promo code.");
+            } else {
                 showPopupError(errMsg || "Could not publish this ad. Please check your wallet balance.");
             }
         } finally {
@@ -1739,6 +1797,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     };
 
     const addPromoCode = async () => {
+        // The disabled input and button already say no; this closes the Enter
+        // key and any stale-state path to the same thing.
+        if (isPromoCodeLocked) return;
         const sanitizedCode = sanitizePromoCode(promoCode);
         if (!sanitizedCode) {
             if (hasPromoCodeAdded) {
@@ -1789,47 +1850,34 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
 
         if (isProductPromote) {
             const productTarget = getProductShareTarget(trimmedLink);
+            if (!productTarget) {
+                showPopupError("Please add a valid product link. Only a link containing /product/<code> can be used.");
+                return;
+            }
             const fetchByMode = async (mode: "id" | "code", value: string) => {
                 if (mode === "id") {
                     return marketService.getItemById(Number(value));
                 }
                 return marketService.getItemByCode(value);
             };
-            const searchProduct = async () => {
-                const searchText = getProductSearchText(trimmedLink);
-                if (!searchText || searchText.length < 2) return null;
-                const result = await marketService.getProducts({
-                    search: searchText,
-                    status: "approved,active",
-                    limit: 1,
-                });
-                return Array.isArray(result?.data) ? result.data[0] : null;
-            };
-
             try {
                 let product: any = null;
-                if (productTarget) {
-                    try {
-                        product = await fetchByMode(productTarget.mode, productTarget.value);
-                    } catch {
-                        product = null;
-                    }
-
-                    // Fallback: if first lookup failed, try the alternate mode
-                    if (!product?.id) {
-                        const altMode = productTarget.mode === "id" ? "code" : "id";
-                        if (altMode === "id" ? /^\d+$/.test(productTarget.value) : true) {
-                            try {
-                                product = await fetchByMode(altMode, productTarget.value);
-                            } catch {
-                                product = null;
-                            }
-                        }
-                    }
+                try {
+                    product = await fetchByMode(productTarget.mode, productTarget.value);
+                } catch {
+                    product = null;
                 }
 
+                // Existing numeric product links may refer to an internal ID.
                 if (!product?.id) {
-                    product = await searchProduct();
+                    const altMode = productTarget.mode === "id" ? "code" : "id";
+                    if (altMode === "id" ? /^\d+$/.test(productTarget.value) : true) {
+                        try {
+                            product = await fetchByMode(altMode, productTarget.value);
+                        } catch {
+                            product = null;
+                        }
+                    }
                 }
 
                 if (!product?.id) {
@@ -1838,7 +1886,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 }
 
                 setLinkedProduct(product);
-                setActiveLink(productTarget ? normalizeUrl(trimmedLink) : trimmedLink);
+                setActiveLink(normalizeUrl(trimmedLink));
                 return;
             } catch {
                 showPopupError("That product could not be found.");
@@ -2067,7 +2115,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                     setBudget(null);
                 }
             })
-            .catch(() => { /* tiers unavailable — UI will show "no packages" */ });
+            .catch(() => { /* tiers unavailable â€” UI will show "no packages" */ });
         return () => { active = false; };
     }, [campaignType]);
 
@@ -2103,6 +2151,10 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 if (typeof parsed.editingOriginalBudget === "number") {
                     setEditingOriginalBudget(parsed.editingOriginalBudget);
                 }
+                setEditingOriginalPromoCode(
+                    sanitizePromoCode(String(parsed.editingOriginalPromoCode ?? parsed.promoCode ?? ""))
+                );
+                setIsEditingFreeAdBudgetLocked(parsed.freeAdBudgetLocked === true);
             }
             if (typeof parsed.carryOverViews === "number") {
                 setCarryOverViews(Math.max(0, parsed.carryOverViews));
@@ -2137,23 +2189,21 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 setDraftInterestTopics(savedTopics);
             }
             if (Array.isArray(parsed.selectedPlacements)) {
-                const savedPlacements: string[] = parsed.selectedPlacements
-                    .map(normalizePlacementLabel)
-                    .filter((placement: string | null): placement is string => Boolean(placement));
-                const allSavedPlacementsSelected = AVAILABLE_PLACEMENT_LABELS.every((placement) => savedPlacements.includes(placement));
-                setSelectedPlacements(allSavedPlacementsSelected ? ["All", ...AVAILABLE_PLACEMENT_LABELS] : savedPlacements.filter((placement) => placement !== "All"));
+                setSelectedPlacements(["All", ...AVAILABLE_PLACEMENT_LABELS]);
             } else {
-                const savedPlacement = normalizePlacementLabel(parsed.selectedPlacement);
-                if (savedPlacement) {
-                    setSelectedPlacements(savedPlacement === "All" ? ["All", ...AVAILABLE_PLACEMENT_LABELS] : [savedPlacement]);
-                }
+                setSelectedPlacements(["All", ...AVAILABLE_PLACEMENT_LABELS]);
             }
             if (typeof parsed.budget === "number") {
-                // Only restore if it exactly matches a valid tier option
-                setBudget((prev) => {
-                    const validOption = reachTiers.find((t) => Number(t.budget_from) === parsed.budget);
-                    return validOption ? parsed.budget : prev;
-                });
+                if (typeof parsed.editingAdId === "string" && parsed.editingAdId.trim()) {
+                    setBudget(parsed.budget);
+                } else {
+                    // New ad drafts must still match a valid package. Edit drafts preserve
+                    // their stored budget even before reach tiers finish loading.
+                    setBudget((prev) => {
+                        const validOption = reachTiers.find((t) => Number(t.budget_from) === parsed.budget);
+                        return validOption ? parsed.budget : prev;
+                    });
+                }
             }
             if (typeof parsed.durationDays === "number") {
                 const durationLimit = parsed.hasPromoCodeAdded ? PROMO_DURATION_MAX : 30;
@@ -2164,7 +2214,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 const hasValidPromoDiscount = parsed.promoDiscount
                     && typeof parsed.promoDiscount === "object"
                     && typeof parsed.promoDiscount.discount_type === "string";
-                // Only restore as applied if we have the full discount data — otherwise reset so user re-validates
+                // Only restore as applied if we have the full discount data â€” otherwise reset so user re-validates
                 const restoredAsApplied = parsed.hasPromoCodeAdded && hasValidPromoDiscount;
                 setHasPromoCodeAdded(restoredAsApplied);
                 setIsPromoEditing(!restoredAsApplied);
@@ -2204,6 +2254,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             window.localStorage.setItem(draftStorageKey, JSON.stringify({
                 version: AD_DRAFT_VERSION,
                 editingAdId,
+                editingOriginalPromoCode,
+                freeAdBudgetLocked: isEditingFreeAdBudgetLocked,
                 promoteAgain: isPromoteAgain,
                 carryOverViews,
                 sourceOwnerDbId,
@@ -2235,7 +2287,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         }, 250);
 
         return () => window.clearTimeout(timeoutId);
-    }, [activeLink, ageMax, ageMin, budget, carryOverViews, ctaTopic, ctaValue, description, draftStorageKey, durationDays, editingAdId, genderTarget, hasPromoCodeAdded, historyMediaPreview, imageName, isPromoteAgain, persistedImageGallery, linkInput, promoCode, publishedAd, selectedCountryCode, selectedInterestTopics, selectedLocationCodes, selectedPlacements, sourceOwnerDbId, sourceOwnerProfilePicture, sourceOwnerPublicId, sourceOwnerUsername, uploadedMediaType]);
+    }, [activeLink, ageMax, ageMin, budget, carryOverViews, ctaTopic, ctaValue, description, draftStorageKey, durationDays, editingAdId, editingOriginalPromoCode, genderTarget, hasPromoCodeAdded, historyMediaPreview, imageName, isEditingFreeAdBudgetLocked, isPromoteAgain, persistedImageGallery, linkInput, promoCode, publishedAd, selectedCountryCode, selectedInterestTopics, selectedLocationCodes, selectedPlacements, sourceOwnerDbId, sourceOwnerProfilePicture, sourceOwnerPublicId, sourceOwnerUsername, uploadedMediaType]);
 
     useEffect(() => {
         const justCrossedIntoInsufficientBalance = hasInsufficientBalance && !wasInsufficientBalanceRef.current;
@@ -2311,41 +2363,38 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             })
             .catch(() => { if (!isCancelled) setAllowedCountryCodes(null); });
 
-        fetch("https://restcountries.com/v3.1/all?fields=name,flags,idd,cca2")
-            .then((response) => (response.ok ? response.json() : []))
-            .then((data) => {
-                if (isCancelled || !Array.isArray(data)) return;
-
-                const countryOptions = data
-                    .map((country: any) => {
-                        const root = country?.idd?.root || "";
-                        const suffix = country?.idd?.suffixes?.[0] || "";
-                        const dialCode = `${root}${suffix}`;
-
-                        if (!country?.cca2 || !country?.name?.common || !dialCode) return null;
-
-                        return {
-                            code: country.cca2,
-                            name: country.name.common,
-                            flag: country.flags?.svg || country.flags?.png || "",
-                            flagEmoji: country.flag || getFlagEmoji(country.cca2),
-                            dialCode,
-                        };
-                    })
-                    .filter((country): country is CountryOption => Boolean(country))
-                    .sort((a: CountryOption, b: CountryOption) => a.name.localeCompare(b.name));
-
-                setCountries(countryOptions);
-            })
-            .catch(() => {
-                if (isCancelled) return;
-                setCountries([
-                    { code: "US", name: "United States", flag: "https://flagcdn.com/us.svg", flagEmoji: "🇺🇸", dialCode: "+1" },
-                    { code: "LK", name: "Sri Lanka", flag: "https://flagcdn.com/lk.svg", flagEmoji: "🇱🇰", dialCode: "+94" },
-                    { code: "GB", name: "United Kingdom", flag: "https://flagcdn.com/gb.svg", flagEmoji: "🇬🇧", dialCode: "+44" },
-                    { code: "IN", name: "India", flag: "https://flagcdn.com/in.svg", flagEmoji: "🇮🇳", dialCode: "+91" },
-                ]);
-            });
+        Promise.allSettled([
+            fetch(`${API_URL}/admin/customization/country-catalog`).then((response) => response.ok ? response.json() : null),
+            fetch("https://restcountries.com/v3.1/all?fields=name,flags,idd,cca2").then((response) => response.ok ? response.json() : []),
+        ]).then(([catalogResult, restResult]) => {
+            if (isCancelled) return;
+            const catalogPayload = catalogResult.status === "fulfilled" ? catalogResult.value : null;
+            const catalogRows = Array.isArray(catalogPayload?.countries) ? catalogPayload.countries : [];
+            const restRows = restResult.status === "fulfilled" && Array.isArray(restResult.value) ? restResult.value : [];
+            const restByCode = new Map<string, any>(restRows.map((country: any) => [String(country?.cca2 || "").toUpperCase(), country]));
+            const sourceRows = catalogRows.length > 0
+                ? catalogRows
+                : restRows.map((country: any) => ({ code: country?.cca2, name: country?.name?.common }));
+            const countryOptions = sourceRows
+                .map((row: any) => {
+                    const code = String(row?.code || "").toUpperCase();
+                    const name = String(row?.name || "").trim();
+                    if (!code || !name) return null;
+                    const metadata = restByCode.get(code);
+                    const root = metadata?.idd?.root || "";
+                    const suffix = metadata?.idd?.suffixes?.[0] || "";
+                    return {
+                        code,
+                        name,
+                        flag: metadata?.flags?.svg || metadata?.flags?.png || `https://flagcdn.com/${code.toLowerCase()}.svg`,
+                        flagEmoji: getFlagEmoji(code),
+                        dialCode: getCountryDialCode(code, `${root}${suffix}`),
+                    };
+                })
+                .filter((country: CountryOption | null): country is CountryOption => Boolean(country))
+                .sort((a: CountryOption, b: CountryOption) => a.name.localeCompare(b.name));
+            setCountries(countryOptions);
+        });
 
         return () => {
             isCancelled = true;
@@ -2516,8 +2565,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isProductPromote, searchParams, activeLink, linkedProduct]);
 
-    // Profile Promote: pre-fill the link input with the user's profile link and load products
-    // for whichever public profile is currently being promoted.
+    // Profile Promote: pre-fill with the advertiser, then load products and
+    // contents for whichever public profile was applied.
     useEffect(() => {
         if (!isProfilePromote || !userProfile?.username) return;
         if (!linkInput && !activeLink) {
@@ -2554,7 +2603,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
             cancelled = true;
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isProfilePromote, userProfile?.username, userProfile?.id, promotedProfile?.id, promotedProfile?.user_id]);
+    }, [isProfilePromote, userProfile?.username, promotedProfile?.id, promotedProfile?._id, promotedProfile?.user_id]);
 
     const toggleProfilePromoteProduct = (product: any) => {
         setProfilePromoteProducts((current) => {
@@ -2825,7 +2874,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     <span>{linkedProduct?.comments_count || 0}</span>
                                 </div>
                                 <div className="flex items-center gap-0.5 text-[7px] font-black">
-                                    <IonIcon name="share-social-outline" className="text-[12px]" />
+                                    <IonIcon name="arrow-redo-outline" className="text-[12px]" />
                                     <span>{linkedProduct?.shares_count || 0}</span>
                                 </div>
                             </div>
@@ -3119,8 +3168,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             {filteredLocationCountries
                                 .slice()
                                 .sort((firstCountry, secondCountry) => {
-                                    if (firstCountry.code === "LK") return -1;
-                                    if (secondCountry.code === "LK") return 1;
+                                    const firstAvailable = allowedCountryCodes === null || allowedCountryCodes.includes(firstCountry.code);
+                                    const secondAvailable = allowedCountryCodes === null || allowedCountryCodes.includes(secondCountry.code);
+                                    if (firstAvailable !== secondAvailable) return firstAvailable ? -1 : 1;
                                     return firstCountry.name.localeCompare(secondCountry.name);
                                 })
                                 .map((country) => {
@@ -3731,20 +3781,20 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     <div className="flex flex-col gap-1.5">
                                         <div className="flex items-center gap-2 text-base font-black text-white">
                                             <span className="rounded-lg bg-white/[0.07] px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/55">Rupieer</span>
-                                            <span>{budget !== null ? formatRuppier(budget) : "—"}</span>
+                                            <span>{budget !== null ? formatRuppier(budget) : "Not selected"}</span>
                                             <span className="text-xs font-black text-white/45">Total Budget</span>
                                             {!isProfileAd && (
                                                 <button
                                                     type="button"
                                                     onClick={() => {
-                                                        if (isPromoLockingBudget) return;
+                                                        if (isBudgetLocked) return;
                                                         if (isBudgetEditing) { closeBudgetEditor(); return; }
                                                         setBudgetInput(budget !== null ? String(budget) : "");
                                                         setIsBudgetEditing(true);
                                                     }}
                                                     className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/[0.06] text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                                                     aria-label="Edit budget amount"
-                                                    disabled={isPromoLockingBudget}
+                                                    disabled={isBudgetLocked}
                                                 >
                                                     <IonIcon name={isBudgetEditing ? "checkmark-outline" : "create-outline"} className="text-sm" />
                                                 </button>
@@ -3760,7 +3810,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                 onKeyDown={(event) => { if (event.key === "Enter") closeBudgetEditor(); }}
                                                 maxLength={6}
                                                 className="min-h-8 w-32 rounded-lg border border-white/10 bg-black/20 px-2 text-[10px] font-black text-white outline-none transition focus:border-white/30 focus:bg-white/[0.08]"
-                                                disabled={isPromoLockingBudget}
+                                                disabled={isBudgetLocked}
                                                 autoFocus
                                             />
                                         )}
@@ -3779,7 +3829,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                         if (event.key === "Enter") addPromoCode();
                                                     }}
                                                     maxLength={15}
-                                                    disabled={hasPromoCodeAdded && !isPromoEditing}
+                                                    disabled={isPromoCodeLocked || (hasPromoCodeAdded && !isPromoEditing)}
                                                     placeholder="Promo Code"
                                                     className="h-7 w-32 bg-transparent px-2 text-[10px] font-black uppercase tracking-[0.08em] text-white outline-none placeholder:text-white/40 disabled:cursor-default disabled:opacity-100"
                                                 />
@@ -3793,8 +3843,8 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                             setPromoDiscount(null);
                                                             setPromoError("");
                                                         }}
-                                                        className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-500/15 text-red-400 transition hover:bg-red-500/25 hover:text-red-300"
-                                                        aria-label="Remove promo code"
+                                                        className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-500/15 text-red-400 transition hover:bg-red-500/25 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+                                                        aria-label={isEditingExistingAd ? "Change promo code" : "Remove promo code"}
                                                     >
                                                         <IonIcon name="close-outline" className="text-base" />
                                                     </button>
@@ -3803,7 +3853,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                         type="button"
                                                         onClick={addPromoCode}
                                                         className="flex h-7 min-w-10 items-center justify-center rounded-lg bg-rose-500 px-2 text-[9px] font-black uppercase tracking-[0.08em] text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
-                                                        disabled={(!promoCode.trim() && !hasPromoCodeAdded) || isValidatingPromo}
+                                                        disabled={isPromoCodeLocked || (!promoCode.trim() && !hasPromoCodeAdded) || isValidatingPromo}
                                                     >
                                                         {isValidatingPromo ? (
                                                             <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
@@ -3818,7 +3868,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                         {hasPromoCodeAdded && promoDiscount && !promoError && (
                                             <p className="text-right text-[9px] font-semibold text-emerald-400">
                                                 {promoDiscount.discount_type === "rupee"
-                                                    ? `–R${promoDiscount.discount_value.toLocaleString()} discount applied`
+                                                    ? `−R${promoDiscount.discount_value.toLocaleString()} discount applied`
                                                     : promoDiscount.discount_type === "reach"
                                                         ? "Promo code applied"
                                                         : `+${promoDiscount.discount_value} free day${promoDiscount.discount_value !== 1 ? "s" : ""} added`}
@@ -3826,16 +3876,16 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                         )}
                                     </div>
                                 </div>
-                                {/* Budget slider — full width, photo/video & product only */}
+                                {/* Budget slider â€” full width, photo/video & product only */}
                                 {!isProfileAd && tiersLoaded && (
-                                    <div className={`transition-opacity ${isPromoLockingBudget ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
+                                    <div className={`transition-opacity ${isBudgetLocked ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
                                         <input
                                             type="range"
                                             min={globalBudgetMin}
                                             max={globalBudgetMax}
                                             step={1}
                                             value={budget ?? globalBudgetMin}
-                                            disabled={isPromoLockingBudget}
+                                            disabled={isBudgetLocked}
                                             onChange={(event) => {
                                                 const val = Number(event.target.value);
                                                 setBudget(val);
@@ -3860,7 +3910,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                         No budget packages available right now.
                                     </p>
                                 ) : (
-                                    <div className={`mt-3 flex flex-wrap gap-2 transition-opacity ${isPromoLockingBudget ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
+                                    <div className={`mt-3 flex flex-wrap gap-2 transition-opacity ${isBudgetLocked ? "opacity-45 pointer-events-none" : "opacity-100"}`}>
                                         {budgetOptions.map((opt) => (
                                             <button
                                                 key={opt.value}
@@ -4141,11 +4191,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                     <button
                                                         key={placement.label}
                                                         type="button"
-                                                        disabled={!placement.selectable}
-                                                        onClick={() => {
-                                                            if (!placement.selectable) return;
-                                                            togglePlacement(placement.label);
-                                                        }}
+                                                        disabled
                                                         className={`flex min-h-8 w-full items-center justify-between gap-2 rounded-lg px-2.5 text-left text-[10px] font-bold transition ${
                                                             isSelectedPlacement
                                                                 ? "bg-rose-500 text-white"
@@ -4154,7 +4200,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                                                     : "cursor-not-allowed text-white/22"
                                                         }`}
                                                     >
-                                                        <span>{placement.label}</span>
+                                                        <span>{placementUiLabel(placement.label)}</span>
                                                         {isSelectedPlacement && <IonIcon name="checkmark-outline" className="text-base" />}
                                                     </button>
                                                 );
@@ -4198,7 +4244,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                 onClick={handlePublish}
                                 disabled={isPublishing}
                                 aria-busy={isPublishing}
-                                className="flex min-h-9 min-w-[132px] items-center justify-center gap-2 rounded-[0.9rem] bg-red-400 px-5 text-[10px] font-black uppercase tracking-[0.14em] text-white shadow-[0_12px_26px_rgba(248,113,113,0.22)] transition hover:bg-red-300 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                                className="flex min-h-9 min-w-[132px] items-center justify-center gap-2 rounded-[0.9rem] bg-rose-500 px-5 text-[10px] font-black uppercase tracking-[0.14em] text-white shadow-[0_12px_26px_rgba(244,63,94,0.22)] transition hover:bg-rose-400 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
                             >
                                 {isPublishing ? (
                                     <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/35 border-t-white" aria-hidden="true" />
@@ -4510,7 +4556,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             <div className="mt-1.5 grid grid-cols-2 gap-1">
                                 <div className="rounded-[0.75rem] bg-black/20 px-2 py-1">
                                     <p className="text-[8px] font-black uppercase tracking-[0.16em] text-white/35">Total Budget</p>
-                                    <p className="mt-0.5 truncate text-[9px] font-bold text-white/82">{isProfileAd && hasPromoCodeAdded ? "Rupieer 0" : (effectiveBudget !== null ? `Rupieer ${formatRuppier(effectiveBudget)}` : "—")}</p>
+                                    <p className="mt-0.5 truncate text-[9px] font-bold text-white/82">{isProfileAd && hasPromoCodeAdded ? "Rupieer 0" : (effectiveBudget !== null ? `Rupieer ${formatRuppier(effectiveBudget)}` : "Not selected")}</p>
                                 </div>
                                 <div className="rounded-[0.75rem] bg-black/20 px-2 py-1">
                                     <p className="text-[8px] font-black uppercase tracking-[0.16em] text-white/35">Duration</p>
@@ -4696,3 +4742,4 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         </div>
     );
 }
+

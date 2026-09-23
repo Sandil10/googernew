@@ -1,0 +1,15 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/terms-and-policies/layout,_N_T_/terms-and-policies/page,_N_T_/terms-and-policies"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/terms-and-policies/__PAGE__",
+    "/terms-and-policies",
+    "/_index",
+    "/_head"
+  ]
+}

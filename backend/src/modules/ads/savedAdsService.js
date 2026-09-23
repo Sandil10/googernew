@@ -113,6 +113,10 @@ const toggleAdSave = async (adIdValue, userId) => {
             : features.photo_ads_save_limit;
 
         if (limit !== null && limit >= 0) {
+            // Saves whose ad has expired out of every list are cleared first,
+            // so the limit is measured against what the owner can actually
+            // see and unsave rather than against invisible leftovers.
+            await savedAdsRepository.purgeExpiredUploadSaves(userId);
             const current = await savedAdsRepository.countUploadSavesByType(userId, ad_media_type);
             if (current >= limit) {
                 const error = new Error('You have reached your ad save limit. Please upgrade to a higher plan.');
@@ -137,6 +141,7 @@ const getMySavedAdIds = async (userId) => {
     await savedAdsRepository.ensureAdSavesSchema();
     if (!userId) return { success: true, savedAdIds: [] };
 
+    await savedAdsRepository.purgeExpiredUploadSaves(userId);
     const rows = await savedAdsRepository.listSavedAdIds(userId);
     return { success: true, savedAdIds: rows.map((r) => r.ad_id) };
 };
@@ -152,6 +157,7 @@ const getMySavedAds = async (userId) => {
         throw error;
     }
 
+    await savedAdsRepository.purgeExpiredUploadSaves(userId);
     const rows = await savedAdsRepository.listMySavedAds(userId);
     return { success: true, ads: rows.map(savedAdsRepository.mapRow) };
 };
@@ -181,6 +187,9 @@ const getMySavedAdCounts = async (userId) => {
         throw error;
     }
 
+    // Cleared here too, so the counts the save button reads are the same ones
+    // the limit check will apply a moment later.
+    await savedAdsRepository.purgeExpiredUploadSaves(userId);
     const rows = await savedAdsRepository.getSavedAdCounts(userId);
     const counts = { photo: 0, video: 0 };
     for (const r of rows) counts[r.ad_media_type] = r.c;

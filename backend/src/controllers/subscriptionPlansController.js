@@ -30,6 +30,38 @@ const invalidatePublicPlansCache = () => {
     publicPlansCache = null;
 };
 
+const syncApprovedUploadExpiryForPlan = async (plan) => {
+    const unit = String(plan?.extra?.content_expiry_unit || 'unlimited').toLowerCase();
+    const allowedUnits = new Set(['minutes', 'hours', 'days', 'months', 'unlimited']);
+    const expiryUnit = allowedUnits.has(unit) ? unit : 'unlimited';
+    const rawValue = Number(plan?.extra?.content_expiry_value ?? 1);
+    const expiryValue = Number.isFinite(rawValue) ? Math.max(1, Math.floor(rawValue)) : 1;
+
+    await pool.query(
+        `UPDATE upload_contents
+         SET approval_expiry_value = CASE WHEN $2 = 'unlimited' THEN NULL ELSE $3::int END,
+             approval_expiry_unit = $2,
+             expires_at = CASE $2
+                 WHEN 'minutes' THEN (CASE WHEN LOWER($4) = 'basic' AND basic_fallback_owner_only THEN CURRENT_TIMESTAMP ELSE approved_at END) + ($3::int * INTERVAL '1 minute')
+                 WHEN 'hours' THEN (CASE WHEN LOWER($4) = 'basic' AND basic_fallback_owner_only THEN CURRENT_TIMESTAMP ELSE approved_at END) + ($3::int * INTERVAL '1 hour')
+                 WHEN 'days' THEN (CASE WHEN LOWER($4) = 'basic' AND basic_fallback_owner_only THEN CURRENT_TIMESTAMP ELSE approved_at END) + ($3::int * INTERVAL '1 day')
+                 WHEN 'months' THEN (CASE WHEN LOWER($4) = 'basic' AND basic_fallback_owner_only THEN CURRENT_TIMESTAMP ELSE approved_at END) + ($3::int * INTERVAL '1 month')
+                 ELSE NULL
+             END,
+             updated_at = NOW()
+         WHERE status = 'Approved'
+           AND approved_at IS NOT NULL
+           AND (
+               approval_plan_id = $1
+               OR (
+                   approval_plan_id IS NULL
+                   AND LOWER(COALESCE(approval_plan_slug, '')) = LOWER($4)
+               )
+           )`,
+        [plan.id, expiryUnit, expiryValue, String(plan.slug || '')]
+    );
+};
+
 // Rebuild auto-generated feature lines from extra limit fields.
 // Manual features (not matching known auto patterns) are preserved.
 const syncAutoFeatures = (features = [], extra = {}) => {
@@ -294,6 +326,12 @@ exports.updatePlan = async (req, res) => {
         );
 
         if (rows.length === 0) return res.status(404).json({ success: false, message: 'Plan not found' });
+        if (
+            extra?.content_expiry_value !== undefined ||
+            extra?.content_expiry_unit !== undefined
+        ) {
+            await syncApprovedUploadExpiryForPlan(rows[0]);
+        }
         invalidatePublicPlansCache();
         return res.status(200).json({ success: true, plan: rows[0] });
     } catch (err) {

@@ -1,7 +1,7 @@
 const pool = require('../config/database');
 const subscriptionPlansCtrl = require('./subscriptionPlansController');
 const { getGraceDurationSeconds, getPlanDurationSeconds } = require('../utils/subscriptionRenewal');
-const { recordSubscriptionPayment } = require('../../../../shared/utils/financeCommands');
+const { recordSubscriptionPayment } = require('../../../shared/utils/financeCommands');
 
 let tableReady = false;
 
@@ -67,7 +67,7 @@ exports.getMySubscription = async (req, res) => {
              LEFT JOIN subscription_plans sp ON sp.id = ups.plan_id
              WHERE ups.user_id = $1 AND ups.status = 'active'
                AND (ups.expires_at IS NULL OR ups.expires_at + (($2::text || ' seconds')::interval) > NOW())
-             ORDER BY ups.started_at DESC
+             ORDER BY ups.started_at DESC, ups.id DESC
              LIMIT 1`,
             [userId, graceSeconds]
         );
@@ -122,7 +122,7 @@ exports.subscribe = async (req, res) => {
         const userId = getUserId(req);
         if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-        const { plan_id, switch_plan } = req.body || {};
+        const { plan_id, switch_plan, confirm_release_saves } = req.body || {};
         if (!plan_id) return res.status(400).json({ success: false, message: 'plan_id is required' });
         if (plan_id < 0) return res.status(400).json({ success: false, message: 'Demo plans cannot be purchased — please ensure plans are loaded from the server' });
 
@@ -178,6 +178,54 @@ exports.subscribe = async (req, res) => {
             await client.query('ROLLBACK');
             return res.status(409).json({ success: false, message: 'Confirm plan switch is required' });
         }
+        // A plan with a smaller save allowance costs the owner saved ads. Taking
+        // the wallet payment first and only then announcing what was deleted is
+        // not a choice they got to make, so the switch stops here and reports
+        // the new allowance plus exactly what would go. The client shows that as
+        // a confirmation; pressing OK repeats the call with confirm_release_saves.
+        const planExtra = plan.extra || {};
+        const savedAdsRepository = require('../modules/ads/savedAdsRepository');
+        const readLimit = (raw) => {
+            if (raw === null || raw === undefined || raw === '') return null;
+            const n = Number(raw);
+            return Number.isFinite(n) && n >= 0 ? n : null;
+        };
+        const saveLimits = {
+            photo: readLimit(planExtra.ad_photos ?? planExtra.photo_ads_save_limit),
+            video: readLimit(planExtra.ad_videos ?? planExtra.video_ads_save_limit),
+        };
+        const savedCounts = {};
+        const willRelease = {};
+        for (const mediaType of ['photo', 'video']) {
+            savedCounts[mediaType] = await savedAdsRepository.countUploadSavesByType(userId, mediaType, client);
+            willRelease[mediaType] = saveLimits[mediaType] === null
+                ? []
+                : await savedAdsRepository.previewUploadSaveTrim(userId, mediaType, saveLimits[mediaType], client);
+        }
+        const releaseCount = willRelease.photo.length + willRelease.video.length;
+        if (releaseCount > 0 && confirm_release_saves !== true) {
+            await client.query('ROLLBACK');
+            const allowanceParts = ['photo', 'video']
+                .filter((m) => saveLimits[m] !== null)
+                .map((m) => `${saveLimits[m]} saved ${m} ad${saveLimits[m] === 1 ? '' : 's'}`);
+            const lossParts = ['photo', 'video']
+                .filter((m) => willRelease[m].length > 0)
+                .map((m) => `${willRelease[m].length} ${m} ad${willRelease[m].length === 1 ? '' : 's'}`);
+            return res.status(409).json({
+                success: false,
+                code: 'SAVE_RELEASE_CONFIRM_REQUIRED',
+                planName: plan.name,
+                saveLimits,
+                savedCounts,
+                releaseCount,
+                willRelease,
+                message: `${plan.name} allows only ${allowanceParts.join(' and ')}. `
+                    + `You have ${savedCounts.photo} saved photo ad${savedCounts.photo === 1 ? '' : 's'} `
+                    + `and ${savedCounts.video} saved video ad${savedCounts.video === 1 ? '' : 's'}, so your most recent `
+                    + `${lossParts.join(' and ')} will be removed from your saved ads. Do you want to continue?`,
+            });
+        }
+
         if (existing.rows.length > 0) {
             // Cancel the existing subscription — whether it's a deleted plan or an active upgrade
             await client.query(
@@ -254,8 +302,33 @@ exports.subscribe = async (req, res) => {
             );
         }
 
+        // Moving to a plan that allows fewer saved ads leaves the owner over
+        // the new allowance, which would otherwise block every future save
+        // with no way to tell why. The excess is released newest-first — the
+        // owner already confirmed this loss above — and reported back so the
+        // caller can say what went.
+        const releasedSaves = [];
+        for (const mediaType of ['photo', 'video']) {
+            if (saveLimits[mediaType] === null) continue;
+            const released = await savedAdsRepository.trimUploadSavesToLimit(
+                userId,
+                mediaType,
+                saveLimits[mediaType],
+                client
+            );
+            releasedSaves.push(...released);
+        }
+
         await client.query('COMMIT');
-        return res.status(201).json({ success: true, subscription: rows[0] });
+        return res.status(201).json({
+            success: true,
+            subscription: rows[0],
+            releasedSaves,
+            releasedSavesMessage: releasedSaves.length
+                ? `${releasedSaves.length} saved ad${releasedSaves.length === 1 ? '' : 's'} `
+                  + `had to be removed because this plan allows fewer saved ads.`
+                : null,
+        });
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         console.error('[userSubscriptions] subscribe error:', err);
@@ -360,7 +433,15 @@ exports.getMyUsage = async (req, res) => {
         const { getUserPlanLimits } = require('../utils/planLimits');
         const limits = await getUserPlanLimits(userId);
 
-        const [googRes, productRes, savedRes, savedAdRes] = await Promise.all([
+        const [googDailyRes, googTotalRes, productRes, savedRes, savedAdRes] = await Promise.all([
+            pool.query(
+                `SELECT COUNT(*)::int AS c
+                 FROM goog_posts
+                 WHERE user_id = $1
+                   AND created_at >= CURRENT_DATE
+                   AND created_at < CURRENT_DATE + INTERVAL '1 day'`,
+                [userId]
+            ),
             pool.query('SELECT COUNT(*)::int AS c FROM goog_posts WHERE user_id = $1', [userId]),
             pool.query("SELECT COUNT(*)::int AS c FROM market WHERE user_id = $1 AND status != 'deleted'", [userId]),
             pool.query('SELECT COUNT(*)::int AS c FROM saved_googs WHERE user_id = $1', [userId]).catch(() => ({ rows: [{ c: 0 }] })),
@@ -379,21 +460,31 @@ exports.getMyUsage = async (req, res) => {
             }
         }
 
+        const isAtLimit = (count, limit) => Number(limit) > 0 && Number(count) >= Number(limit);
+        const googDailyAtLimit = isAtLimit(googDailyRes.rows[0].c, limits.writeGoogDailyLimit);
+        const googTotalAtLimit = isAtLimit(googTotalRes.rows[0].c, limits.writeGoogTotalLimit);
+
         return res.json({
             success: true,
             usage: {
-                googCount:       googRes.rows[0].c,
+                googCount:       googDailyRes.rows[0].c,
+                googDailyCount:  googDailyRes.rows[0].c,
+                googTotalCount:  googTotalRes.rows[0].c,
                 productCount:    productRes.rows[0].c,
                 savedGoogCount:  savedRes.rows[0].c,
                 savedPhotoAdCount: savedAdCounts.photo,
                 savedVideoAdCount: savedAdCounts.video,
                 writeGoogLimit:      limits.writeGoogLimit,
+                writeGoogDailyLimit: limits.writeGoogDailyLimit,
+                writeGoogTotalLimit: limits.writeGoogTotalLimit,
                 googLetterLimit:     limits.googLetterLimit,
                 productUploadLimit:  limits.productUploadLimit,
                 saveGoogLimit:       limits.saveGoogLimit,
                 photoAdsSaveLimit:   limits.photoAdsSaveLimit,
                 videoAdsSaveLimit:   limits.videoAdsSaveLimit,
-                googAtLimit:     googRes.rows[0].c >= limits.writeGoogLimit,
+                googAtLimit:     googDailyAtLimit || googTotalAtLimit,
+                googDailyAtLimit,
+                googTotalAtLimit,
                 productAtLimit:  productRes.rows[0].c >= limits.productUploadLimit,
             },
         });

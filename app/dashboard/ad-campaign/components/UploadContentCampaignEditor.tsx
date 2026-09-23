@@ -15,6 +15,7 @@ import { subscriptionService } from "@/services/subscriptionService";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
 import { addAdWalletRefund, getUserIdentityKey, getWalletBalanceWithAdAdjustments } from "@/utils/adWallet";
 import { calcReach, type ReachTier } from "@/utils/reachCalc";
+import { getCountryDialCode } from "@/app/lib/phoneCountryDialCodes";
 
 type PreviewMode = "mobile" | "desktop";
 type LinkPreviewType = "image" | "video" | "embed" | "website" | null;
@@ -857,6 +858,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
     const [currentSubscriptionPlan, setCurrentSubscriptionPlan] = useState<{ extra?: Record<string, any>; plan_slug?: string; slug?: string; price?: number | string; is_basic?: boolean } | null>(null);
     const [availableSubscriptionPlans, setAvailableSubscriptionPlans] = useState<Array<{ id: number; slug: string; name: string; price: number | string; extra?: Record<string, any> }>>([]);
     const [adsExpiryLabel, setAdsExpiryLabel] = useState<string>("30 days");
+    const [contentExpiryLabel, setContentExpiryLabel] = useState<string>("30 days");
 
     useEffect(() => {
         let active = true;
@@ -872,6 +874,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                     setCurrentSubscriptionPlan(plan || null);
                     setAvailableSubscriptionPlans(publicPlans || []);
                     setSubscriptionPlanExtra(plan?.extra || {});
+                    const contentExpiryValue = Math.max(1, Number(plan?.extra?.content_expiry_value || 1));
+                    const contentExpiryUnit = String(plan?.extra?.content_expiry_unit || "days").toLowerCase().replace(/s$/, "");
+                    setContentExpiryLabel(`${contentExpiryValue} ${contentExpiryUnit}${contentExpiryValue === 1 ? "" : "s"}`);
                     const expiryValue = Number(plan?.extra?.ads_expiry_value ?? plan?.extra?.ads_expiry_days ?? 0);
                     const expiryUnit = String(plan?.extra?.ads_expiry_unit || 'days').toLowerCase();
                     if (expiryValue > 0) {
@@ -912,6 +917,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 setCurrentSubscriptionPlan(plan || null);
                 setAvailableSubscriptionPlans(publicPlans || []);
                 setSubscriptionPlanExtra(plan?.extra || {});
+                const contentExpiryValue = Math.max(1, Number(plan?.extra?.content_expiry_value || 1));
+                const contentExpiryUnit = String(plan?.extra?.content_expiry_unit || "days").toLowerCase().replace(/s$/, "");
+                setContentExpiryLabel(`${contentExpiryValue} ${contentExpiryUnit}${contentExpiryValue === 1 ? "" : "s"}`);
             } catch {
                 setUserHasPaidSubscription(false);
                 setCurrentSubscriptionPlan(null);
@@ -2337,8 +2345,9 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         setPopupError("");
         try {
             if (isUploadContent) {
+                const hasNewUploadedVideo = hasUploadedVideo && uploadedFiles.length > 0;
                 let publishPreviewFile = autoPreviewFile;
-                if (uploadPreviewMode === "auto_preview" && hasUploadedVideo && !publishPreviewFile) {
+                if (uploadPreviewMode === "auto_preview" && hasNewUploadedVideo && !publishPreviewFile) {
                     publishPreviewFile = await generateThreeSecondPreview();
                     if (!publishPreviewFile) {
                         throw new Error("The three-second preview could not be created.");
@@ -2391,7 +2400,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                         uploadFormData.append("images", file);
                     });
                 }
-                if (uploadPreviewMode === "auto_preview" && publishPreviewFile) {
+                if (uploadPreviewMode === "auto_preview" && hasNewUploadedVideo && publishPreviewFile) {
                     uploadFormData.append("preview", publishPreviewFile);
                 }
                 const savedContent = await uploadContentService.createContent(
@@ -3298,7 +3307,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                             name: country.name.common,
                             flag: country.flags?.svg || country.flags?.png || "",
                             flagEmoji: country.flag || getFlagEmoji(country.cca2),
-                            dialCode,
+                            dialCode: getCountryDialCode(country.cca2, dialCode),
                         };
                     })
                     .filter((country): country is CountryOption => Boolean(country))
@@ -3835,7 +3844,7 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                     <span>{linkedProduct?.comments_count || 0}</span>
                                 </div>
                                 <div className="flex items-center gap-0.5 text-[7px] font-black">
-                                    <IonIcon name="share-social-outline" className="text-[12px]" />
+                                    <IonIcon name="arrow-redo-outline" className="text-[12px]" />
                                     <span>{linkedProduct?.shares_count || 0}</span>
                                 </div>
                             </div>
@@ -4223,17 +4232,22 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 <div className="min-w-0 flex-1">
                     <p className="text-[9px] font-black uppercase tracking-[0.22em] text-white/35">{editorChromeLabel}</p>
                     <div className="mt-0.5 flex flex-wrap items-center gap-2">
-                        <h1 className="truncate text-xl font-black tracking-tight text-white">{campaignType}</h1>
                         {isUploadContent ? (
-                            <button
-                                type="button"
-                                onClick={() => router.push(isFlashContent ? "/ad-campaign/upload-content" : "/ad-campaign/flash-content")}
-                                className="inline-flex min-h-8 items-center gap-2 rounded-xl border border-white/12 bg-white/[0.05] px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-white/78 transition hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
-                            >
-                                <IonIcon name={isFlashContent ? "cloud-upload-outline" : "flash-outline"} className="text-sm" />
-                                <span>{isFlashContent ? "Vault Content" : "Flash Content"}</span>
-                            </button>
-                        ) : null}
+                            <div className="flex flex-wrap items-center gap-2">
+                                <h1 className={`truncate text-xl font-black tracking-tight transition ${isFlashContent ? "text-white" : "text-white/58"}`}>Flash Content</h1>
+                                <button
+                                    type="button"
+                                    onClick={() => router.push(isFlashContent ? "/ad-campaign/upload-content" : "/ad-campaign/flash-content")}
+                                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/12 bg-white/[0.05] text-white/82 transition hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
+                                    aria-label={isFlashContent ? "Switch to Vault Content" : "Switch to Flash Content"}
+                                >
+                                    <IonIcon name="swap-horizontal-outline" className="text-base" />
+                                </button>
+                                <h1 className={`truncate text-xl font-black tracking-tight transition ${!isFlashContent ? "text-white" : "text-white/58"}`}>Vault Content</h1>
+                            </div>
+                        ) : (
+                            <h1 className="truncate text-xl font-black tracking-tight text-white">{campaignType}</h1>
+                        )}
                     </div>
                 </div>
             </div>
@@ -5665,10 +5679,25 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                                         className="mt-0.5 h-4 w-4 shrink-0 accent-white"
                                     />
                                     <span className="text-[10px] font-bold leading-5 text-white/75">
-                                        I agree to the <span className="underline underline-offset-2">terms and conditions</span>.
-                                        <span className="mt-2 block font-semibold text-white/45">
-                                            This content will be deleted from your profile after 30 days. Get a subscription package to keep it on your profile.
-                                        </span>
+                                        I agree to the{" "}
+                                        {/* Was a plain <span>: underlined like
+                                            a link but not clickable. Opens in a
+                                            new tab so the in-progress upload is
+                                            not lost. */}
+                                        <a
+                                            href="/terms-and-policies"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="underline underline-offset-2 hover:text-white"
+                                        >
+                                            terms and conditions
+                                        </a>.
+                                        {userHasPaidSubscription === false && (
+                                            <span className="mt-2 block font-semibold text-white/45">
+                                                This content will be automatically deleted in {contentExpiryLabel}. Upgrade to a subscription plan to keep it longer.
+                                            </span>
+                                        )}
                                     </span>
                                 </label>
                             </div>

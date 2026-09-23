@@ -52,6 +52,7 @@ router.patch('/admin/:contentId/status', uploadContentController.updateUploadCon
 router.post('/', upload.fields([
     { name: 'images', maxCount: 5 },
     { name: 'preview', maxCount: 1 },
+    { name: 'thumbnail', maxCount: 1 },
 ]), uploadContentController.createUploadContent);
 
 module.exports = router;

@@ -1,7 +1,9 @@
-import pool from '../../backend/src/config/database';
-
 export default async function handler(req, res) {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ success: false, message: 'Not found' });
+  }
   try {
+    const pool = require('../../backend/src/config/database');
     const results = [];
     
     // 1. Add shipping_address

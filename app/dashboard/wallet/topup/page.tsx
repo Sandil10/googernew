@@ -3023,7 +3023,7 @@ export default function Topup() {
                             </div>
                             <div className="min-w-0 flex-1">
                                 <h3 className="text-base font-bold text-white mb-0.5">Top Up</h3>
-                                <p className="text-xs text-gray-500">Recharge your wallet with Rupier coins</p>
+                                <p className="text-xs text-gray-500">Recharge your wallet with Rupieer coins</p>
                             </div>
                             <IonIcon name="chevron-forward-outline" className="text-gray-400 group-hover:text-white text-xl shrink-0 transition-colors" />
                         </div>

@@ -24,11 +24,11 @@ import { SharedAdSecondViewModal } from "@/app/components/ads/SharedAdSecondView
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { canShowCollectCoinButton, useAdActions } from "@/app/lib/ads/useAdActions";
 import { resolveProductPromoteProduct } from "@/app/lib/ads/resolveProductPromoteProduct";
-import { filterAdsForViewer } from "@/app/lib/ads/adVisibility";
 import { promotePhotoVideoAdAgain, promoteProductAdAgain } from "@/app/lib/ads/promoteAgain";
 import { useAdStore } from "@/app/lib/ads/adStore";
-import { normalizeAdData } from "@/app/lib/ads/adNormalizer";
+import { normalizeAdData, resolveAdDisplayTitle } from "@/app/lib/ads/adNormalizer";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
+import { filterAdsForViewer } from "@/app/lib/ads/adVisibility";
 import { formatRelativeTime } from "@/app/lib/relativeTime";
 import { getShareUrlForItem } from "@/app/lib/shareLinks";
 import { addTopbarNotification } from "@/app/lib/topbarNotifications";
@@ -37,6 +37,7 @@ import {
     getHiddenFeedItemIds,
     hideFeedItemFor24Hours,
     subscribeToHiddenFeedItems,
+    unhideFeedItems,
 } from "@/app/lib/feedHidePreferences";
 import { useCart } from "@/app/context/CartContext";
 import { GoogCard, type WritePost } from "@/app/components/googs/GoogCard";
@@ -297,14 +298,25 @@ const getSponsoredLinkPreviewType = (value: string) => {
     return "website";
 };
 
-const getSponsoredSecondViewKind = (ad: any, previewType: string | null): "image" | "video" | "embed" => {
+// Matches the shop page's own getSponsoredSecondViewKind — this copy was
+// missing the embed branch, so a link ad (a YouTube URL with no uploaded
+// file) opened from the home feed rendered as a plain image instead of
+// playing, even though the identical ad opened correctly from the shop.
+const getSponsoredSecondViewKind = (ad: any): "image" | "video" | "embed" => {
+    const campaignType = String(ad?.campaign_type || ad?.campaignType || "").trim().toLowerCase();
+    const isPhotoVideoPromoteCampaign = campaignType.includes("photo") && campaignType.includes("video");
+    if (!isPhotoVideoPromoteCampaign) return "image";
+
     const mediaPreview = String(ad?.media_preview || ad?.video_url || "").trim();
     const hasUploadedVideo =
         /video/i.test(String(ad?.media_type || "")) ||
         /\.(mp4|webm|ogg|mov|m4v)(\?.*)?$/i.test(mediaPreview);
+    if (hasUploadedVideo) return "video";
 
+    const activeLink = String(ad?.active_link || ad?.activeLink || "").trim();
+    const previewType = activeLink ? getSponsoredLinkPreviewType(activeLink) : null;
     if (previewType === "embed") return "embed";
-    if (previewType === "video" || hasUploadedVideo) return "video";
+    if (previewType === "video") return "video";
     return "image";
 };
 
@@ -452,9 +464,12 @@ function seededRandom(seed: number) {
 }
 
 function shuffleItemsWithSeed<T>(items: T[], seed: string, keyFn: (item: T) => string) {
-    const random = seededRandom(hashStringToSeed(seed));
     return [...items]
-        .map((item) => ({ item, rank: random(), key: keyFn(item) }))
+        .map((item) => {
+            const key = keyFn(item);
+            const random = seededRandom(hashStringToSeed(`${seed}:${key}`));
+            return { item, rank: random(), key };
+        })
         .sort((a, b) => a.rank - b.rank || a.key.localeCompare(b.key))
         .map(({ item }) => item);
 }
@@ -557,12 +572,9 @@ function interleaveHomeOrganicItemsWithAds<T extends { type: string }>(
     let organicCount = 0;
 
     if (!items.length) {
-        const firstAd = rotatedAds[0];
-        if (firstAd) {
-            rememberShownAdIds(storageKey, [firstAd.id]);
-            return [{ type: "ad" as const, ad: firstAd }];
-        }
-        return output;
+        const adOnlyItems = rotatedAds.map((ad) => ({ type: "ad" as const, ad }));
+        rememberShownAdIds(storageKey, rotatedAds.map((ad) => ad.id));
+        return adOnlyItems;
     }
 
     items.forEach((item) => {
@@ -570,6 +582,15 @@ function interleaveHomeOrganicItemsWithAds<T extends { type: string }>(
         if (item.type === "profilePromoteCarousel" || item.type === "ad") return;
 
         organicCount += 1;
+        if (organicCount === 1) {
+            const firstAd = rotatedAds[adIndex % rotatedAds.length];
+            if (firstAd) {
+                output.push({ type: "ad", ad: firstAd });
+                shownAdIds.push(firstAd.id);
+                adIndex += 1;
+            }
+            return;
+        }
         if (organicCount % organicRatio === 0) {
             const ad = rotatedAds[adIndex % rotatedAds.length];
             if (ad) {
@@ -603,6 +624,12 @@ function isHomeProfilePromoteAd(ad: any) {
         || campaignType === "profile promote ad"
         || mediaType === "profile"
         || Boolean(ad?.profile_id || ad?.profileId || ad?.is_profile_ad);
+}
+
+function isActiveHomeSponsoredAd(ad: any) {
+    const status = String(ad?.status || ad?.raw?.status || "").trim().toLowerCase();
+    const campaignType = String(ad?.campaign_type || ad?.campaignType || ad?.raw?.campaign_type || ad?.raw?.campaignType || "").trim();
+    return status === "active" && !!campaignType;
 }
 
 function hasHomeSearchMatch(normalizedSearch: string, ...values: any[]) {
@@ -699,6 +726,14 @@ function insertHomeProfilePromoteRows<T extends { type: string }>(items: T[], pr
         }
     });
 
+    if (carouselCount === 0) {
+        output.push({
+            type: "profilePromoteCarousel",
+            id: "home-profile-promote-carousel-1",
+            ads: getShuffledProfileAds(1),
+        });
+    }
+
     return output;
 }
 
@@ -735,7 +770,7 @@ function postMatchesGoogCategory(post: WritePost, category: string) {
 
 function uploadMatchesGoogCategory(item: UploadContentRecord, category: string) {
     if (category === "All" || category === "Subscriptions") return true;
-    if ((item as any)?.reposted_by_user_id || (item as any)?.reposted_by_username || (item as any)?.reposted_by_full_name) return true;
+    if ((item as any)?.reposted_by_user_id || (item as any)?.reposted_by_username || (item as any)?.reposted_by_full_name) return false;
     const upload = item as any;
     const normalizedCategory = String(category || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, " ").trim();
     if (!normalizedCategory) return true;
@@ -792,6 +827,7 @@ const mapPublicActiveAdToHomeAd = (ad: any) => {
     const campaignType = ad?.campaign_type || ad?.campaignType || "Ads";
     const isProductPromote = String(campaignType).trim().toLowerCase() === "product promote";
     const mediaPreview = ad?.media_preview || ad?.mediaPreview || "";
+    const activeLink = draft.activeLink || ad?.active_link || ad?.activeLink || draft.ctaValue || ad?.cta_value || "";
     const price = isProductPromote
         ? Number(ad?.price ?? ad?.main_price ?? ad?.product_price ?? 0)
         : Number(ad?.budget || 0);
@@ -801,16 +837,23 @@ const mapPublicActiveAdToHomeAd = (ad: any) => {
     const shareCode = isProductPromote
         ? (ad?.linked_product_share_code || ad?.share_code || ad?.shareCode || "")
         : `ad-${adId}`;
+    const ownerUserId = ad?.user_id ?? ad?.userId ?? ad?.ad_owner_user_id ?? ad?.adOwnerUserId ?? ad?.advertiser_id ?? ad?.advertiserId;
+    const ownerPublicUserId = ad?.owner_user_id ?? ad?.ownerUserId ?? ad?.user?.user_id ?? ad?.user?.userId;
+    const ownerUsername = ad?.owner_username || ad?.ownerUsername || ad?.username || ad?.user?.username || "Ads";
+    const ownerProfilePicture = ad?.profile_picture || ad?.profilePicture || ad?.owner_profile_picture || ad?.ownerProfilePicture || ad?.user?.profile_picture || null;
     return {
         ...ad,
         id: String(ad?.id || "").startsWith("ad-") ? ad.id : `ad-${adId || ad?.id}`,
         adId,
-        user_id: ad?.user_id ?? ad?.userId,
-        owner_user_id: ad?.owner_user_id ?? ad?.ownerUserId,
-        username: ad?.owner_username || ad?.ownerUsername || ad?.user?.username || "Ads",
-        owner_username: ad?.owner_username || ad?.ownerUsername || ad?.user?.username || "Ads",
-        user: ad?.user,
-        title: ad?.title || ad?.description || campaignType,
+        user_id: ownerUserId,
+        userId: ownerUserId,
+        owner_user_id: ownerPublicUserId,
+        ownerUserId: ownerPublicUserId,
+        username: ownerUsername,
+        owner_username: ownerUsername,
+        ownerUsername,
+        user: { ...(ad?.user || {}), id: ownerUserId, user_id: ownerPublicUserId, userId: ownerPublicUserId, username: ownerUsername, profile_picture: ownerProfilePicture },
+        title: resolveAdDisplayTitle(ad, draft, campaignType),
         description: ad?.description || "",
         category: campaignType,
         price,
@@ -818,22 +861,25 @@ const mapPublicActiveAdToHomeAd = (ad: any) => {
         media_preview: mediaPreview,
         media_gallery: ad?.media_gallery || ad?.mediaGallery || [],
         media_type: ad?.media_type || ad?.mediaType || "",
-        status: "approved",
+        status: ad?.status || ad?.delivery_status || ad?.deliveryStatus || "Active",
         likes_count: Number(ad?.likes_count || 0),
         comments_count: Number(ad?.comments_count || 0),
         shares_count: Number(ad?.shares_count || 0),
         views_count: Number(ad?.views_count ?? ad?.viewCount ?? 0),
         created_at: ad?.created_at || ad?.createdAt,
-        profile_picture: ad?.profile_picture || ad?.user?.profile_picture || null,
+        profile_picture: ownerProfilePicture,
+        profilePicture: ownerProfilePicture,
         product_code: productCode,
         share_code: shareCode,
         campaign_type: campaignType,
-        active_link: draft.activeLink || ad?.active_link || "",
+        active_link: activeLink,
         cta_topic: draft.ctaTopic || ad?.cta_topic || "Visit",
         cta_value: draft.ctaValue || ad?.cta_value || "",
         linked_product_id: ad?.linked_product_id ?? null,
         linked_product_share_code: ad?.linked_product_share_code || ad?.linked_product_code || null,
         linked_product_code: ad?.linked_product_share_code || ad?.linked_product_code || null,
+        raw: ad,
+        delivery_status: ad?.status || ad?.delivery_status || ad?.deliveryStatus || "Active",
         is_sponsored: true,
         user_liked: !!ad?.user_liked,
         ad_coin_collected: !!ad?.ad_coin_collected,
@@ -846,8 +892,8 @@ const mapPublicActiveAdToHomeAd = (ad: any) => {
 // InteractionButton moved to GoogCard.tsx or shared component
 
 export default function DashboardPage() {
-    const HOME_FEED_INITIAL_BATCH = 12;
-    const HOME_FEED_BATCH_SIZE = 8;
+    const HOME_FEED_INITIAL_BATCH = 6;
+    const HOME_FEED_BATCH_SIZE = 3;
     const searchParams = useSearchParams();
     const router = useRouter();
     const { addToCart } = useCart();
@@ -863,11 +909,13 @@ export default function DashboardPage() {
     const [googSearchDraft, setGoogSearchDraft] = useState("");
     const [googSearchQuery, setGoogSearchQuery] = useState("");
     const [showGoogSuggestions, setShowGoogSuggestions] = useState(false);
+    // Directory matches for the search box — lets people be found by username or
+    // Googer ID even when none of their content is in the current feed.
+    const [googSearchDirectory, setGoogSearchDirectory] = useState<any[]>([]);
     const [selectedGoogCategory, setSelectedGoogCategory] = useState("All");
     const [googCategoryPage, setGoogCategoryPage] = useState(0);
     const [ads, setAds] = useState<any[]>([]);
     const [homeAdShuffleSeed] = useState(() => getPersistentClientSeed("googer-home-ad-pool-seed-v1"));
-    const [homeGoogShuffleSeed] = useState(() => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     const syncAds = useAdStore((state) => state.syncAds);
     const updateAdState = useAdStore((state) => state.updateAdState);
     const adStates = useAdStore((state) => state.adStates);
@@ -884,6 +932,8 @@ export default function DashboardPage() {
     const [openMenuAdId, setOpenMenuAdId] = useState<string | number | null>(null);
     const [openPostMenu, setOpenPostMenu] = useState<FixedPostMenu | null>(null);
     const [postToDelete, setPostToDelete] = useState<WritePost | null>(null);
+    const [uploadContentToDelete, setUploadContentToDelete] = useState<UploadContentRecord | null>(null);
+    const [isDeletingUploadContent, setIsDeletingUploadContent] = useState(false);
     const [pendingAdCoinAd, setPendingAdCoinAd] = useState<any | null>(null);
     const [homeCoinReadyAdIds, setHomeCoinReadyAdIds] = useState<Set<string>>(() => new Set());
     const [requiredAdWatchSeconds, setRequiredAdWatchSeconds] = useState(5);
@@ -902,15 +952,7 @@ export default function DashboardPage() {
     const [profilePromoteUploadModal, setProfilePromoteUploadModal] = useState<UploadContentRecord | null>(null);
     const [profilePromoteUploadAutoOpenKey, setProfilePromoteUploadAutoOpenKey] = useState<string | null>(null);
     const [notification, setNotification] = useState<{ type: "error" | "success"; message: string; title?: string } | null>(null);
-    useEffect(() => {
-        if (!notification) return;
-        addTopbarNotification({
-            type: notification.type,
-            title: notification.title || (notification.type === "success" ? "Success" : "Error"),
-            message: notification.message,
-        });
-        setNotification(null);
-    }, [notification]);
+    const [coinToast, setCoinToast] = useState<{ type: "error" | "success"; message: string } | null>(null);
     const [isAdSheetOpen, setIsAdSheetOpen] = useState(false);
     const [adSheetType, setAdSheetType] = useState<SheetType>("comments");
     const [interactionAd, setInteractionAd] = useState<any | null>(null);
@@ -926,6 +968,24 @@ export default function DashboardPage() {
     const [interactionPost, setInteractionPost] = useState<WritePost | null>(null);
     const [postSheetData, setPostSheetData] = useState<any[]>([]);
     const [currentUser, setCurrentUser] = useState<any>(null);
+    const homeGoogShuffleSeed = useMemo(() => {
+        const viewerId = [
+            currentUser?.id,
+            currentUser?.user_id,
+            currentUser?.googer_id,
+            currentUser?.googerId,
+            currentUser?.username,
+            currentUser?.full_name,
+        ].map((id) => String(id || "").trim()).find(Boolean) || "guest";
+        return `googer-home-feed-v2:${viewerId}`;
+    }, [
+        currentUser?.full_name,
+        currentUser?.googerId,
+        currentUser?.googer_id,
+        currentUser?.id,
+        currentUser?.user_id,
+        currentUser?.username,
+    ]);
     const [followedUserIds, setFollowedUserIds] = useState<Set<string>>(new Set());
     const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
     const [hiddenHomeAdIds, setHiddenHomeAdIds] = useState<Set<string>>(new Set());
@@ -974,6 +1034,12 @@ export default function DashboardPage() {
     }, []);
 
     useEffect(() => {
+        if (!coinToast) return;
+        const timeoutId = window.setTimeout(() => setCoinToast(null), 2000);
+        return () => window.clearTimeout(timeoutId);
+    }, [coinToast]);
+
+    useEffect(() => {
         if (!currentUser?.id) {
             setBlockedUserIds(new Set());
             return;
@@ -1007,23 +1073,26 @@ export default function DashboardPage() {
             try {
                 const following = await authService.getFollowingUsers(currentUser.id);
                 if (cancelled) return;
-                setFollowedUserIds(new Set(
-                    (Array.isArray(following) ? following : [])
-                        .map((entry: any) => String(
-                            entry?.following_user_id ||
-                            entry?.following_id ||
-                            entry?.followed_user_id ||
-                            entry?.followed_id ||
-                            entry?.following?.id ||
-                            entry?.following?.user_id ||
-                            entry?.user?.id ||
-                            entry?.user?.user_id ||
-                            entry?.user_id ||
-                            entry?.id ||
-                            "",
-                        ))
-                        .filter(Boolean),
-                ));
+                const ids = new Set<string>();
+                (Array.isArray(following) ? following : []).forEach((entry: any) => {
+                    [
+                        entry?.following_user_id,
+                        entry?.following_id,
+                        entry?.followed_user_id,
+                        entry?.followed_id,
+                        entry?.subscribed_to_id,
+                        entry?.following?.id,
+                        entry?.following?.user_id,
+                        entry?.user?.id,
+                        entry?.user?.user_id,
+                        entry?.user_id,
+                        entry?.id,
+                    ].forEach((value) => {
+                        const id = String(value || "").trim();
+                        if (id) ids.add(id);
+                    });
+                });
+                setFollowedUserIds(ids);
             } catch {
                 if (!cancelled) setFollowedUserIds(new Set());
             }
@@ -1053,6 +1122,31 @@ export default function DashboardPage() {
         return subscribeToHiddenFeedItems(syncHiddenFeedItems);
     }, [currentUser?.id]);
 
+    useEffect(() => {
+        const activeAdIds = ads
+            .filter(isActiveHomeSponsoredAd)
+            .map(getAdInteractionId)
+            .map((id) => String(id || "").trim())
+            .filter(Boolean);
+        if (!activeAdIds.length) return;
+
+        const userStorageIds = [
+            currentUser?.id,
+            currentUser?.user_id,
+            currentUser?.googer_id,
+            currentUser?.googerId,
+        ].map((id) => String(id || "").trim()).filter(Boolean);
+
+        userStorageIds.forEach((userId) => {
+            unhideFeedItems(userId, "ad", activeAdIds);
+        });
+        setHiddenHomeAdIds((currentIds) => {
+            const nextIds = new Set(currentIds);
+            activeAdIds.forEach((id) => nextIds.delete(id));
+            return nextIds;
+        });
+    }, [ads, currentUser?.googerId, currentUser?.googer_id, currentUser?.id, currentUser?.user_id]);
+
     const syncWritePostProfile = (post: WritePost, user: any): WritePost => {
         if (!post || !user?.id) return post;
         if (String(post.user.id) !== String(user.id)) return post;
@@ -1074,26 +1168,93 @@ export default function DashboardPage() {
             name: getUserDisplayName(post.user, post.user?.name || "User"),
         },
     }), []);
-    const getBlockedOwnerId = useCallback((item: any) => String(
-        item?.user_id ||
-        item?.owner_user_id ||
-        item?.owner_id ||
-        item?.seller_id ||
-        item?.user?.id ||
-        item?.raw?.user_id ||
-        item?.raw?.owner_user_id ||
-        item?.raw?.owner_id ||
-        "",
-    ), []);
+    const getOwnerLookupIds = useCallback((item: any) => {
+        const campaignType = String(item?.campaign_type || item?.campaignType || item?.raw?.campaign_type || item?.raw?.campaignType || "").trim().toLowerCase();
+        const isSponsoredItem = !!(
+            item?.is_sponsored ||
+            item?.isAd ||
+            item?.adId ||
+            item?.ad_id ||
+            item?.raw?.is_sponsored ||
+            item?.raw?.isAd ||
+            item?.raw?.adId ||
+            item?.raw?.ad_id ||
+            campaignType.includes("promote") ||
+            campaignType.includes("photo")
+        );
+        const normalizeIds = (values: any[]) => values.map((value) => String(value || "").trim()).filter(Boolean);
+        const adOwnerIds = normalizeIds([
+            item?.ad_owner_user_id,
+            item?.adOwnerUserId,
+            item?.advertiser_id,
+            item?.advertiserId,
+            item?.owner_user_id,
+            item?.ownerUserId,
+            item?.user?.id,
+            item?.user?.user_id,
+            item?.user?.userId,
+            item?.raw?.ad_owner_user_id,
+            item?.raw?.adOwnerUserId,
+            item?.raw?.advertiser_id,
+            item?.raw?.advertiserId,
+            item?.raw?.owner_user_id,
+            item?.raw?.ownerUserId,
+            item?.raw?.user?.id,
+            item?.raw?.user?.user_id,
+            item?.raw?.user?.userId,
+        ]);
+
+        if (isSponsoredItem && adOwnerIds.length) return adOwnerIds;
+
+        return normalizeIds([
+            item?.user_id,
+            item?.userId,
+            item?.public_user_id,
+            item?.publicUserId,
+            item?.author_id,
+            item?.authorId,
+            item?.owner_user_id,
+            item?.ownerUserId,
+            item?.owner_id,
+            item?.ownerId,
+            item?.seller_id,
+            item?.sellerId,
+            item?.ad_owner_user_id,
+            item?.adOwnerUserId,
+            item?.advertiser_id,
+            item?.advertiserId,
+            item?.user?.id,
+            item?.user?.user_id,
+            item?.user?.userId,
+            item?.author?.id,
+            item?.author?.user_id,
+            item?.author?.userId,
+            item?.raw?.user_id,
+            item?.raw?.userId,
+            item?.raw?.public_user_id,
+            item?.raw?.publicUserId,
+            item?.raw?.author_id,
+            item?.raw?.authorId,
+            item?.raw?.owner_user_id,
+            item?.raw?.ownerUserId,
+            item?.raw?.owner_id,
+            item?.raw?.ownerId,
+            item?.raw?.seller_id,
+            item?.raw?.sellerId,
+            item?.raw?.ad_owner_user_id,
+            item?.raw?.adOwnerUserId,
+            item?.raw?.advertiser_id,
+            item?.raw?.advertiserId,
+        ]);
+    }, []);
+    const getBlockedOwnerId = useCallback((item: any) => getOwnerLookupIds(item)[0] || "", [getOwnerLookupIds]);
     const isBlockedOwnerItem = useCallback((item: any) => {
-        const ownerId = getBlockedOwnerId(item);
-        return !!ownerId && blockedUserIds.has(ownerId);
-    }, [blockedUserIds, getBlockedOwnerId]);
+        return getOwnerLookupIds(item).some((ownerId) => blockedUserIds.has(ownerId));
+    }, [blockedUserIds, getOwnerLookupIds]);
     const isFollowedOwnerItem = useCallback((item: any) => {
         if (!followedUserIds.size) return false;
-        const ownerId = getBlockedOwnerId(item);
-        return !!ownerId && followedUserIds.has(ownerId);
-    }, [followedUserIds, getBlockedOwnerId]);
+        return getOwnerLookupIds(item).some((ownerId) => followedUserIds.has(ownerId));
+    }, [followedUserIds, getOwnerLookupIds]);
     const getHomeLiveAd = useCallback((ad: any) => {
         if (!ad) return ad;
         const liveState = adStates[getAdInteractionId(ad)] || {};
@@ -1134,14 +1295,13 @@ export default function DashboardPage() {
         }
         void promotePhotoVideoAdAgain({ ad, router });
     }, [router]);
-    const liveHomeAds = useMemo(
+    const staticHomeAds = useMemo(
         () => dedupeAdsByIdentity(
             ads
-                .filter((ad) => !hiddenHomeAdIds.has(getAdInteractionId(ad)))
-                .filter((ad) => !isBlockedOwnerItem(ad))
-                .map((ad) => getHomeLiveAd(ad)),
+                .filter((ad) => isActiveHomeSponsoredAd(ad) || isHomeProfilePromoteAd(ad) || !hiddenHomeAdIds.has(getAdInteractionId(ad)))
+                .filter((ad) => !isBlockedOwnerItem(ad)),
         ),
-        [ads, getHomeLiveAd, hiddenHomeAdIds, isBlockedOwnerItem],
+        [ads, hiddenHomeAdIds, isBlockedOwnerItem],
     );
     const googCategoryOptions = useMemo(
         () => extractGoogCategories(),
@@ -1166,6 +1326,24 @@ export default function DashboardPage() {
     useEffect(() => {
         setGoogCategoryPage((currentPage) => Math.min(currentPage, googCategoryPageCount - 1));
     }, [googCategoryPageCount]);
+    // Debounced people lookup while typing in the Googs search box.
+    useEffect(() => {
+        const draft = googSearchDraft.trim();
+        if (!draft) {
+            setGoogSearchDirectory([]);
+            return;
+        }
+        let cancelled = false;
+        const timer = window.setTimeout(async () => {
+            const users = await authService.searchUsers(draft);
+            if (!cancelled) setGoogSearchDirectory(users);
+        }, 250);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+    }, [googSearchDraft]);
+
     const googSearchSuggestions = useMemo(() => {
         const normalizedDraft = googSearchDraft.trim().toLowerCase();
         if (!normalizedDraft) return [];
@@ -1220,7 +1398,7 @@ export default function DashboardPage() {
             const avatarUrl = normalizeMediaSrc(upload.profile_picture || upload.user_profile_picture || "");
             pushProfileSuggestion({ label: userName || username, value: username || userName, hint: username ? `@${username}` : "Profile", avatarUrl, username, userId });
         });
-        liveHomeAds.forEach((ad) => {
+        staticHomeAds.forEach((ad) => {
             if (suggestions.length >= 6) return;
             const userName = getItemUsername(ad, "").trim();
             const username = String(ad?.username || ad?.user?.username || ad?.raw?.username || "").trim();
@@ -1228,8 +1406,25 @@ export default function DashboardPage() {
             const avatarUrl = normalizeMediaSrc(getItemProfilePicture(ad) || "");
             pushProfileSuggestion({ label: userName || username, value: username || userName, hint: username ? `@${username}` : "Profile", avatarUrl, username, userId });
         });
+        // Then anyone else on Googer who matches by username, name or Googer ID.
+        // Feed authors come first because they are the most relevant; the
+        // directory fills the remaining slots so nobody is unfindable.
+        googSearchDirectory.forEach((entry: any) => {
+            if (suggestions.length >= 6) return;
+            const username = String(entry?.username || "").trim();
+            const userName = String(entry?.full_name || "").trim();
+            const avatarUrl = normalizeMediaSrc(String(entry?.profile_picture || ""));
+            pushProfileSuggestion({
+                label: userName || username,
+                value: username || userName,
+                hint: username ? `@${username}` : "Profile",
+                avatarUrl,
+                username,
+                userId: entry?.id,
+            });
+        });
         return suggestions;
-    }, [googSearchDraft, hiddenHomeGoogIds, hiddenHomeUploadIds, isBlockedOwnerItem, liveHomeAds, posts, uploadContents]);
+    }, [googSearchDirectory, googSearchDraft, hiddenHomeGoogIds, hiddenHomeUploadIds, isBlockedOwnerItem, posts, staticHomeAds, uploadContents]);
     const getRotatedAds = useCallback((sourceAds: any[], rotation: number) => {
         if (!sourceAds.length) return [];
         if (sourceAds.length === 1) return sourceAds;
@@ -1245,17 +1440,20 @@ export default function DashboardPage() {
         return String(selectedGoogCategory || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, " ").trim();
     }, [selectedGoogCategory]);
 
+    const homeProfilePromoteAds = useMemo(
+        () => dedupeAdsByIdentity(ads).filter(isHomeProfilePromoteAd),
+        [ads],
+    );
+
     const homeFeedItems = useMemo(() => {
-        const sourceAds = liveHomeAds.length > 0 ? liveHomeAds : dedupeAdsByIdentity(ads);
+        const sourceAds = staticHomeAds.length > 0 ? staticHomeAds : dedupeAdsByIdentity(ads);
         const normalizedSearch = googSearchQuery.trim().toLowerCase();
         const isSubscriptionsFilter = selectedGoogCategory === "Subscriptions";
         const searchableAds = normalizedSearch
             ? sourceAds.filter((ad) => matchesHomeAdSearch(ad, normalizedSearch))
             : sourceAds;
-        const filteredSearchableAds = isSubscriptionsFilter
-            ? searchableAds.filter((ad) => isFollowedOwnerItem(ad))
-            : searchableAds;
-        const profilePromoteAds = normalizedSearch ? [] : filteredSearchableAds.filter(isHomeProfilePromoteAd);
+        const filteredSearchableAds = searchableAds;
+        const profilePromoteAds = homeProfilePromoteAds;
         const nonProfilePromoteAds = normalizedSearch
             ? filteredSearchableAds
             : filteredSearchableAds.filter((ad) => !isHomeProfilePromoteAd(ad));
@@ -1291,7 +1489,10 @@ export default function DashboardPage() {
         );
         const visibleUploadContents = uploadContents.filter((item) => {
             if (item.status !== "Approved" || hiddenHomeUploadIds.has(String(item.id)) || isBlockedOwnerItem(item)) return false;
-            if (isSubscriptionsFilter && !isFollowedOwnerItem(item)) return false;
+            if (isSubscriptionsFilter) {
+                if (!isFollowedOwnerItem(item)) return false;
+                if (String((item as any).visibility || "").toLowerCase() === "private") return false;
+            }
             if (!uploadMatchesGoogCategory(item, selectedGoogCategory)) return false;
             return !normalizedSearch || matchesHomeUploadSearch(item, normalizedSearch);
         });
@@ -1307,13 +1508,17 @@ export default function DashboardPage() {
             4,
             true,
         );
-    }, [ads, getRotatedAds, googSearchQuery, hiddenHomeGoogIds, hiddenHomeUploadIds, homeAdOrder, homeAdRotation, homeGoogShuffleSeed, isBlockedOwnerItem, isFollowedOwnerItem, liveHomeAds, normalizedGoogCategory, posts, selectedGoogCategory, uploadContents]);
+    }, [ads, getRotatedAds, googSearchQuery, hiddenHomeGoogIds, hiddenHomeUploadIds, homeAdOrder, homeAdRotation, homeGoogShuffleSeed, homeProfilePromoteAds, isBlockedOwnerItem, isFollowedOwnerItem, normalizedGoogCategory, posts, selectedGoogCategory, staticHomeAds, uploadContents]);
     const visibleHomeFeedItems = useMemo(
         () => isLoadingFeed ? [] : homeFeedItems.slice(0, visibleHomeFeedCount),
         [homeFeedItems, isLoadingFeed, visibleHomeFeedCount],
     );
+    const visibleHomeHasProfilePromote = useMemo(
+        () => visibleHomeFeedItems.some((item) => item.type === "profilePromoteCarousel"),
+        [visibleHomeFeedItems],
+    );
     const trendingPosts = useMemo<TrendingPost[]>(() => {
-        const adTrends = liveHomeAds.slice(0, 5).map((ad) => {
+        const adTrends = staticHomeAds.slice(0, 5).map((ad) => {
             const activeLink = normalizeExternalUrl(ad.active_link || "");
             const previewType = getSponsoredLinkPreviewType(activeLink);
             return {
@@ -1340,22 +1545,27 @@ export default function DashboardPage() {
         }));
 
         return [...adTrends, ...writeTrends].slice(0, 6);
-    }, [liveHomeAds, posts]);
+    }, [posts, staticHomeAds]);
 
     useEffect(() => {
         if (!composeMode || !composeSectionRef.current) return;
         composeSectionRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }, [composeMode]);
 
+    const homeFeedViewKey = `${selectedGoogCategory}|${googSearchQuery.trim()}|${homeGoogShuffleSeed}`;
+    const lastHomeFeedViewKeyRef = useRef(homeFeedViewKey);
     useEffect(() => {
+        const viewChanged = lastHomeFeedViewKeyRef.current !== homeFeedViewKey;
+        lastHomeFeedViewKeyRef.current = homeFeedViewKey;
         setVisibleHomeFeedCount((current) => {
             if (googSearchQuery.trim()) return homeFeedItems.length;
+            if (viewChanged) return Math.min(homeFeedItems.length, HOME_FEED_INITIAL_BATCH);
             return Math.min(
                 homeFeedItems.length,
                 current > HOME_FEED_INITIAL_BATCH ? current : HOME_FEED_INITIAL_BATCH,
             );
         });
-    }, [googSearchQuery, homeFeedItems.length]);
+    }, [googSearchQuery, homeFeedItems.length, homeFeedViewKey]);
 
     useEffect(() => {
         const sentinel = homeFeedLoadMoreRef.current;
@@ -1366,7 +1576,7 @@ export default function DashboardPage() {
                 if (!entry.isIntersecting) return;
                 setVisibleHomeFeedCount((current) => Math.min(homeFeedItems.length, current + HOME_FEED_BATCH_SIZE));
             },
-            { rootMargin: "900px 0px" },
+            { rootMargin: "320px 0px" },
         );
 
         observer.observe(sentinel);
@@ -1383,26 +1593,17 @@ export default function DashboardPage() {
             } catch {}
         }
         const getPublicActiveAds = async () => {
-        const getApiUrl = () => {
-            const isClient = typeof window !== 'undefined';
-            if (!isClient) return '/api';
-            const hostname = window.location.hostname;
-            if (hostname === 'localhost' || hostname === '127.0.0.1') {
-                return 'http://localhost:5000';
-            }
-            return '/api';
-        };
-            const API_URL = getApiUrl();
             const token = typeof window !== "undefined" ? (window.sessionStorage.getItem("token") || window.localStorage.getItem("token")) : null;
+            const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
             const activeAds: any[] = [];
             let offset = 0;
             const limit = 50;
             let hasMore = true;
 
             while (hasMore && mounted) {
-                const response = await fetch(`${API_URL}/ads/active-public?limit=${limit}&offset=${offset}&shuffle=${encodeURIComponent(homeAdShuffleSeed)}`, {
+                const response = await fetch(`/api/ads/active-public?limit=${limit}&offset=${offset}&shuffle=${encodeURIComponent(homeAdShuffleSeed)}`, {
                     cache: "no-store",
-                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                    headers,
                 });
                 const contentType = response.headers.get("content-type") || "";
                 if (!contentType.includes("application/json")) {
@@ -1410,18 +1611,17 @@ export default function DashboardPage() {
                     console.error("Non-JSON response from ads endpoint:", {
                         status: response.status,
                         contentType,
-                        url: `${API_URL}/ads/active-public`,
+                        url: "/api/ads/active-public",
                         preview: text.substring(0, 200)
                     });
-                    throw new Error(`API returned ${contentType} instead of JSON. Is the backend running at ${API_URL}?`);
+                    throw new Error(`API returned ${contentType} instead of JSON from /api/ads/active-public.`);
                 }
                 const data = await response.json().catch(() => null);
                 if (!data) throw new Error("Failed to parse ads response");
                 if (!response.ok) throw new Error(data?.message || "Failed to fetch active ads");
 
                 const rawPageAds = Array.isArray(data?.ads) ? data.ads : [];
-                const pageAds = filterAdsForViewer(rawPageAds, currentUser);
-                activeAds.push(...pageAds);
+                activeAds.push(...filterAdsForViewer(rawPageAds, currentUser));
                 hasMore = !!data?.pagination?.hasMore && rawPageAds.length > 0;
                 offset = Number(data?.pagination?.nextOffset ?? offset + rawPageAds.length);
             }
@@ -1512,13 +1712,13 @@ export default function DashboardPage() {
         };
     }, []);
 
-    // Force periodic re-render so time labels (New → 2h → 3h ...) update in real-time
+    // Periodically refresh relative time labels without constantly repainting the whole feed.
     useEffect(() => {
-        const interval = setInterval(() => setTick((t) => t + 1), 60 * 1000);
+        const interval = setInterval(() => setTick((t) => t + 1), 5 * 60 * 1000);
         return () => clearInterval(interval);
     }, []);
 
-    // Real-time ad expiry watcher: polls the current user's own ads every 10s.
+    // Ad expiry watcher: polls the current user's own ads at a light cadence.
     // When a Photo & Video ad transitions Active → Expired, shows popup and
     // removes it from the visible feed without needing a page refresh.
     useEffect(() => {
@@ -1571,7 +1771,7 @@ export default function DashboardPage() {
         void checkExpiry();
         const interval = window.setInterval(() => {
             if (document.visibilityState !== "hidden") void checkExpiry();
-        }, 10000);
+        }, 60000);
 
         return () => {
             mounted = false;
@@ -1681,19 +1881,42 @@ export default function DashboardPage() {
         return () => window.removeEventListener("userProfileUpdated", handleProfileUpdated as EventListener);
     }, []);
 
+    const uploadLikeLocksRef = useRef(new Set<string>());
+    const googLikeLocksRef = useRef(new Set<string>());
+    const adLikeLocksRef = useRef(new Set<string>());
+    // Timestamp (ms) of the most recent like/unlike on ANY feed item.
+    // The background poll uses this to avoid refreshing/reordering the feed while the user is liking.
+    const lastLikeActionAtRef = useRef(0);
+    const likeThrottleRef = useRef<Record<string, number>>({});
+    const LIKE_RATE_LIMIT_BACKOFF_MS = 8000;
+
+    const isLikeBackedOff = useCallback((key: string) => {
+        return (likeThrottleRef.current[key] || 0) > Date.now();
+    }, []);
+
+    const extendLikeCooldown = useCallback((key: string, cooldownMs = LIKE_RATE_LIMIT_BACKOFF_MS) => {
+        likeThrottleRef.current[key] = Date.now() + cooldownMs;
+    }, []);
+
+    const isRateLimitedError = useCallback((error: unknown) => {
+        const status = (error as { status?: number } | null)?.status;
+        const message = String((error as { message?: string } | null)?.message || "");
+        return status === 429 || message.toLowerCase().includes("too many requests");
+    }, []);
+
     const toggleWriteLike = async (postId: number) => {
         if (!authService.isAuthenticated() || !currentUser?.id) {
             openLoginRequired({ message: "Please log in to like Googs." });
             return;
         }
         const likeKey = String(postId);
+        const throttleKey = `goog:${likeKey}`;
 
-        // Only prevent concurrent requests for the SAME post (not time-based)
         if (googLikeLocksRef.current.has(likeKey)) {
-            console.log(`[Like] Request already in flight for post ${postId}`);
             return;
         }
-        console.log(`[Like] Starting request for post ${postId}`);
+        if (isLikeBackedOff(throttleKey)) return;
+
         googLikeLocksRef.current.add(likeKey);
         lastLikeActionAtRef.current = Date.now();
         const currentPost = posts.find((post) => post.id === postId);
@@ -1720,7 +1943,6 @@ export default function DashboardPage() {
 
         try {
             const serverLiked = await googService.toggleLike(postId);
-            console.log(`[Like Debug] Post ${postId}: willBeLiked=${willBeLiked}, serverLiked=${serverLiked}`);
 
             // Trust server completely - like state from server is authoritative
             setPosts((currentPosts) =>
@@ -1734,14 +1956,13 @@ export default function DashboardPage() {
                         : post,
                 ),
             );
-            console.log(`[Like Debug] State updated for post ${postId} to liked=${serverLiked}`);
         } catch (error) {
-            console.error("Failed to save Goog like:", error);
-            const message = (error as any)?.message || 'Failed to update like';
-            if (message.includes('Too many requests')) {
-                addTopbarNotification({ type: 'warning', message: 'Too many likes. Please wait a moment.' });
+            if (isRateLimitedError(error)) {
+                extendLikeCooldown(throttleKey);
+                addTopbarNotification({ type: 'warning', title: 'Slow Down', message: 'Too many likes. Please wait a moment.' });
             } else {
-                addTopbarNotification({ type: 'error', message: 'Failed to like. Please try again.' });
+                console.error("Failed to save Goog like:", error);
+                addTopbarNotification({ type: 'error', title: 'Like Failed', message: 'Failed to like. Please try again.' });
             }
             // Revert to previous state on error
             setPosts((currentPosts) =>
@@ -1752,7 +1973,6 @@ export default function DashboardPage() {
                 ),
             );
         } finally {
-            console.log(`[Like] Removing lock for post ${postId}`);
             googLikeLocksRef.current.delete(likeKey);
         }
     };
@@ -1797,13 +2017,6 @@ export default function DashboardPage() {
             })
         );
     }, []);
-    const uploadLikeLocksRef = useRef(new Set<string>());
-    const googLikeLocksRef = useRef(new Set<string>());
-    // Timestamp (ms) of the most recent like/unlike on ANY feed item.
-    // The background poll uses this to avoid refreshing/reordering the feed while the user is liking.
-    const lastLikeActionAtRef = useRef(0);
-    const likeThrottleRef = useRef<Record<string, number>>({});
-    const LIKE_THROTTLE_MS = 2000; // Minimum 2 seconds between likes
 
     const openUploadSheet = useCallback(async (type: SheetType, uploadItem: UploadContentRecord) => {
         setUploadSheetType(type);
@@ -1836,43 +2049,49 @@ export default function DashboardPage() {
             openLoginRequired({ message: "Please log in to like upload content." });
             return;
         }
-        const likeKey = `upload-${uploadItem.id}`;
+        const lookupId = String(getUploadContentLookupId(uploadItem));
+        const currentUploadItem = uploadContents.find((entry) => {
+            const entryLookupId = String(getUploadContentLookupId(entry));
+            return String(entry.id) === String(uploadItem.id) || entryLookupId === lookupId;
+        }) || uploadItem;
+        const likeKey = `upload-${currentUploadItem.id}`;
+        const throttleKey = `upload:${currentUploadItem.id}`;
 
-        // Only prevent concurrent requests for the SAME content (not time-based)
         if (uploadLikeLocksRef.current.has(likeKey)) {
-            console.log(`[Upload Like] Request already in flight for content ${uploadItem.id}`);
             return;
         }
-        console.log(`[Upload Like] Starting request for content ${uploadItem.id}`);
+        if (isLikeBackedOff(throttleKey)) return;
+
         uploadLikeLocksRef.current.add(likeKey);
         lastLikeActionAtRef.current = Date.now();
 
-        const wasLiked = !!uploadItem.user_liked;
+        const wasLiked = !!currentUploadItem.user_liked;
+        const previousLikesCount = Math.max(0, Number(currentUploadItem.likes_count ?? currentUploadItem.likeCount ?? 0));
         const optimisticLiked = !wasLiked;
-        updateUploadFeedItem(uploadItem.id, (entry) => ({
+        updateUploadFeedItem(currentUploadItem.id, (entry) => ({
             ...entry,
             user_liked: optimisticLiked,
-            likes_count: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (optimisticLiked ? 1 : -1)),
-            likeCount: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (optimisticLiked ? 1 : -1)),
+            likes_count: Math.max(0, previousLikesCount + (optimisticLiked ? 1 : -1)),
+            likeCount: Math.max(0, previousLikesCount + (optimisticLiked ? 1 : -1)),
         }));
-        if (interactionUpload?.id === uploadItem.id) {
+        if (interactionUpload?.id === currentUploadItem.id) {
             setInteractionUpload((current) => current ? {
                 ...current,
                 user_liked: optimisticLiked,
-                likes_count: Math.max(0, Number(current.likes_count ?? current.likeCount ?? 0) + (optimisticLiked ? 1 : -1)),
-                likeCount: Math.max(0, Number(current.likes_count ?? current.likeCount ?? 0) + (optimisticLiked ? 1 : -1)),
+                likes_count: Math.max(0, previousLikesCount + (optimisticLiked ? 1 : -1)),
+                likeCount: Math.max(0, previousLikesCount + (optimisticLiked ? 1 : -1)),
             } : current);
         }
 
         try {
-            const result = await uploadContentService.toggleLike(uploadItem.id);
-            updateUploadFeedItem(uploadItem.id, (entry) => ({
+            const result = await uploadContentService.toggleLike(currentUploadItem.id);
+            updateUploadFeedItem(currentUploadItem.id, (entry) => ({
                 ...entry,
                 user_liked: !!result.liked,
                 likes_count: Number(result.likes_count || 0),
                 likeCount: Number(result.likes_count || 0),
             }));
-            if (interactionUpload?.id === uploadItem.id) {
+            if (interactionUpload?.id === currentUploadItem.id) {
                 setInteractionUpload((current) => current ? {
                     ...current,
                     user_liked: !!result.liked,
@@ -1880,26 +2099,35 @@ export default function DashboardPage() {
                     likeCount: Number(result.likes_count || 0),
                 } : current);
             }
-            if (isUploadSheetOpen && uploadSheetType === "likes" && interactionUpload?.id === uploadItem.id) {
-                setUploadSheetData(await uploadContentService.getLikes(uploadItem.id));
+            if (isUploadSheetOpen && uploadSheetType === "likes" && interactionUpload?.id === currentUploadItem.id) {
+                setUploadSheetData(await uploadContentService.getLikes(currentUploadItem.id));
             }
         } catch (error) {
-            updateUploadFeedItem(uploadItem.id, (entry) => ({
+            updateUploadFeedItem(currentUploadItem.id, (entry) => ({
                 ...entry,
                 user_liked: wasLiked,
-                likes_count: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (wasLiked ? 1 : -1)),
-                likeCount: Math.max(0, Number(entry.likes_count ?? entry.likeCount ?? 0) + (wasLiked ? 1 : -1)),
+                likes_count: previousLikesCount,
+                likeCount: previousLikesCount,
             }));
+            if (interactionUpload?.id === currentUploadItem.id) {
+                setInteractionUpload((current) => current ? {
+                    ...current,
+                    user_liked: wasLiked,
+                    likes_count: previousLikesCount,
+                    likeCount: previousLikesCount,
+                } : current);
+            }
             const errorStatus = (error as { status?: number } | null)?.status;
-            if (errorStatus === 429) {
-                addTopbarNotification({ type: 'warning', message: 'Too many likes. Please wait a moment.' });
+            if (errorStatus === 429 || isRateLimitedError(error)) {
+                extendLikeCooldown(throttleKey);
+                addTopbarNotification({ type: 'warning', title: 'Slow Down', message: 'Too many likes. Please wait a moment.' });
                 return;
             }
             console.error("Failed to toggle upload content like:", error);
         } finally {
             uploadLikeLocksRef.current.delete(likeKey);
         }
-    }, [currentUser?.id, interactionUpload, isUploadSheetOpen, updateUploadFeedItem, uploadSheetType]);
+    }, [currentUser?.id, extendLikeCooldown, getUploadContentLookupId, interactionUpload, isLikeBackedOff, isRateLimitedError, isUploadSheetOpen, updateUploadFeedItem, uploadContents, uploadSheetType]);
 
     const handleUploadShare = useCallback(async (uploadItem: UploadContentRecord) => {
         flushSync(() => {
@@ -1949,11 +2177,6 @@ export default function DashboardPage() {
                 ...updated,
                 pinned_at: updated?.pinned_at || null,
             }));
-            addTopbarNotification({
-                type: "success",
-                title: updated.pinned_at ? "Pinned" : "Unpinned",
-                message: updated.pinned_at ? "Content pinned on your profile." : "Content removed from pinned area.",
-            });
         } catch (error) {
             if (error instanceof Error && error.message.toLowerCase().includes("already reposted")) {
                 throw error;
@@ -2063,7 +2286,6 @@ export default function DashboardPage() {
     const handleUploadNotInterested = useCallback((uploadItem: UploadContentRecord) => {
         hideFeedItemFor24Hours(currentUser?.id, "uploadContent", uploadItem.id);
         setHiddenHomeUploadIds((previous) => new Set(previous).add(String(uploadItem.id)));
-        addTopbarNotification({ type: "success", title: "Hidden", message: "This content will be hidden for 24 hours." });
     }, [currentUser?.id]);
 
     const openUploadReportModal = useCallback((uploadItem: UploadContentRecord) => {
@@ -2140,9 +2362,9 @@ export default function DashboardPage() {
         router.push(uploadItem.content_type === "flash" ? "/ad-campaign/flash-content" : "/ad-campaign/upload-content");
     }, [router]);
 
-    const handleUploadView = useCallback(async (uploadItem: UploadContentRecord) => {
+    const handleUploadView = useCallback(async (uploadItem: UploadContentRecord, options: { force?: boolean } = {}) => {
         try {
-            const result = await uploadContentService.logView(uploadItem.id);
+            const result = await uploadContentService.logView(uploadItem.id, options);
             updateUploadFeedItem(uploadItem.id, (entry) => ({
                 ...entry,
                 views_count: Number(result.views_count || 0),
@@ -2410,7 +2632,7 @@ export default function DashboardPage() {
         void loadAdCoinSettings();
         const intervalId = window.setInterval(() => {
             void loadAdCoinSettings();
-        }, 30000);
+        }, 5 * 60 * 1000);
         return () => {
             cancelled = true;
             window.clearInterval(intervalId);
@@ -2423,18 +2645,82 @@ export default function DashboardPage() {
 
         // Block unlike if coin was already collected — guards in the card UI may miss
         // this when the Zustand subscriber hasn't re-rendered yet (stale reactive value).
-        if (liveAd.ad_like_locked || liveAd.ad_coin_collected) return;
+        if ((liveAd.ad_like_locked || liveAd.ad_coin_collected) && liveAd.user_liked) {
+            // Brief reaction to this one blocked tap, not a standing
+            // notification — same self-clearing store flag useAdActions.like() uses.
+            updateAdState(liveAd, { like_locked_hint: true });
+            setTimeout(() => updateAdState(liveAd, { like_locked_hint: false }), 2000);
+            return;
+        }
 
+        const likeKey = String(getAdInteractionId(liveAd) || liveAd.id);
+        const throttleKey = `ad:${likeKey}`;
+        if (adLikeLocksRef.current.has(likeKey)) return;
+        if (isLikeBackedOff(throttleKey)) return;
+
+        adLikeLocksRef.current.add(likeKey);
         lastLikeActionAtRef.current = Date.now();
         try {
             await adActions.like(liveAd);
         } catch (error: any) {
             if (error?.locked) return; // backend confirmed lock — silently ignore
-            if (error?.status === 429 || error?.message?.includes('Too many requests')) {
-                addTopbarNotification({ type: 'warning', message: 'Too many likes. Please wait a moment.' });
+            if (isRateLimitedError(error)) {
+                extendLikeCooldown(throttleKey);
+                addTopbarNotification({ type: 'warning', title: 'Slow Down', message: 'Too many likes. Please wait a moment.' });
                 return;
             }
             console.error("Failed to toggle ad like:", error);
+        } finally {
+            adLikeLocksRef.current.delete(likeKey);
+        }
+    };
+
+    const openDeleteUploadContentConfirm = (item: UploadContentRecord) => {
+        setUploadContentToDelete(item);
+    };
+
+    const deleteUploadContent = async () => {
+        if (!uploadContentToDelete || isDeletingUploadContent) return;
+        const deletingItem = uploadContentToDelete;
+        const deletingIds = new Set([
+            String(deletingItem.id || ""),
+            String(deletingItem.content_id || ""),
+            String((deletingItem as any).contentId || ""),
+        ].filter(Boolean));
+
+        setIsDeletingUploadContent(true);
+        setUploadContentToDelete(null);
+        setProfilePromoteUploadModal((current) => {
+            if (!current) return current;
+            const currentIds = [current.id, current.content_id, (current as any).contentId].map((value) => String(value || ""));
+            return currentIds.some((id) => deletingIds.has(id)) ? null : current;
+        });
+        setUploadContents((currentItems) =>
+            currentItems.filter((entry) => {
+                const entryIds = [entry.id, entry.content_id, (entry as any).contentId].map((value) => String(value || ""));
+                return !entryIds.some((id) => deletingIds.has(id));
+            })
+        );
+
+        try {
+            await uploadContentService.deleteContent(deletingItem.id);
+            addTopbarNotification({ type: "success", title: "Deleted", message: "Content removed from the feed." });
+        } catch (error) {
+            console.error("Failed to delete upload content:", error);
+            setUploadContents((currentItems) => {
+                const alreadyExists = currentItems.some((entry) => {
+                    const entryIds = [entry.id, entry.content_id, (entry as any).contentId].map((value) => String(value || ""));
+                    return entryIds.some((id) => deletingIds.has(id));
+                });
+                return alreadyExists ? currentItems : [deletingItem, ...currentItems];
+            });
+            addTopbarNotification({
+                type: "error",
+                title: "Delete failed",
+                message: error instanceof Error ? error.message : "Could not delete this content.",
+            });
+        } finally {
+            setIsDeletingUploadContent(false);
         }
     };
 
@@ -2460,10 +2746,6 @@ export default function DashboardPage() {
             campaign_type: "Product Promote",
         };
     };
-
-    const getFeedShareType = (item: any): "ad" | "product" => (
-        item?.campaign_type === "Product Promote" ? "product" : "ad"
-    );
 
     const shareFeedItem = async (item: any) => {
         if (!item) return;
@@ -2573,23 +2855,22 @@ export default function DashboardPage() {
             setShowAdShareModal(true);
         },
         onOpenSheet: (type, item) => openMarketAdSheet(type, item.raw || item),
-        onCoinCollected: (ad, collectionId) => {
+        onCoinCollected: (ad, collectionId, result) => {
             markAdCoinCollectedLocally(collectionId);
             setHomeCoinReadyAdIds((current) => {
                 const next = new Set(current);
                 next.delete(String(collectionId));
                 return next;
             });
-            setNotification({
+            const collectedAmount = Number(result?.amount ?? ad.raw?.ad_coin_value ?? 1);
+            setCoinToast({
                 type: "success",
-                title: "Coin Collected",
-                message: `Rupieer ${Number(ad.raw?.ad_coin_value || 1).toFixed(2)} added to your wallet.`,
+                message: "Coin collected",
             });
         },
         onCoinError: (_ad, error: any) => {
-            setNotification({
+            setCoinToast({
                 type: "error",
-                title: "Collection Failed",
                 message: error?.message || "Could not collect the ad coin.",
             });
         },
@@ -2607,7 +2888,7 @@ export default function DashboardPage() {
                 openLoginRequired({ message: notification.message });
                 return;
             }
-            setNotification(notification);
+            setCoinToast({ type: notification.type === "success" ? "success" : "error", message: notification.message });
         },
         onSubscribe: (ad) => {
             router.push(getPublicProfileHref(getItemUsername(ad, ""), ad.userId || ad.user_id));
@@ -2630,9 +2911,8 @@ export default function DashboardPage() {
     const handleAdCoinClick = (event: React.MouseEvent, ad: any) => {
         if (isWatchTimedPhotoVideoAd(ad) && !isAdWatchEligible(ad)) {
             event.stopPropagation();
-            setNotification({
+            setCoinToast({
                 type: "error",
-                title: "Watch Required",
                 message: `Please watch this ad for ${requiredAdWatchSeconds} seconds before collecting the coin.`,
             });
             return;
@@ -2654,24 +2934,90 @@ export default function DashboardPage() {
         window.open(href, "_blank", "noopener,noreferrer");
     };
 
-    const openAdInShop = (ad: any, previewType: string | null) => {
+    const openAdInShop = (ad: any) => {
         if (!ad?.id) return;
         if (ad?.campaign_type === "Product Promote" || ad?.campaignType === "Product Promote") {
             void openProductAdInShopSecondView(ad);
             return;
         }
-        const kind = getSponsoredSecondViewKind(ad, previewType);
+        const kind = getSponsoredSecondViewKind(ad);
         setAdPreviewModal({ ad, kind });
         void viewFeedItem(ad);
     };
 
     const hideAdFromHome = (adId: string | number) => {
         const interactionId = getAdInteractionId(adId);
+        const currentAd = ads.find((ad) => getAdInteractionId(ad) === interactionId);
+        if (currentAd && isActiveHomeSponsoredAd(currentAd)) {
+            setOpenMenuAdId(null);
+            setAdPreviewModal(null);
+            setProductAdModal(null);
+            return;
+        }
         hideFeedItemFor24Hours(currentUser?.id, "ad", interactionId);
         setAds((currentAds) => currentAds.filter((currentAd) => getAdInteractionId(currentAd) !== interactionId));
         setOpenMenuAdId(null);
         setAdPreviewModal(null);
         setProductAdModal(null);
+    };
+
+    const isCurrentUserAdOwner = (ad: any) => {
+        const raw = ad?.raw || ad || {};
+        const ownerIds = [
+            ad?.user_id,
+            ad?.userId,
+            ad?.owner_user_id,
+            ad?.ownerUserId,
+            ad?.ad_owner_user_id,
+            ad?.advertiser_id,
+            raw?.user_id,
+            raw?.userId,
+            raw?.owner_user_id,
+            raw?.ownerUserId,
+            raw?.ad_owner_user_id,
+            raw?.advertiser_id,
+        ].map((value) => String(value || "").trim()).filter(Boolean);
+        const viewerIds = [
+            currentUser?.id,
+            currentUser?.user_id,
+            currentUser?.userId,
+            currentUser?.googer_id,
+            currentUser?.googerId,
+        ].map((value) => String(value || "").trim()).filter(Boolean);
+        const ownerNames = [
+            ad?.username,
+            ad?.owner_username,
+            ad?.ownerUsername,
+            raw?.username,
+            raw?.owner_username,
+            raw?.ownerUsername,
+        ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+        const viewerNames = [
+            currentUser?.username,
+            currentUser?.name,
+            currentUser?.full_name,
+        ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+        return ownerIds.some((id) => viewerIds.includes(id))
+            || ownerNames.some((name) => viewerNames.includes(name));
+    };
+
+    const deleteOwnedAdFromHome = async (ad: any) => {
+        try {
+            const deletedAd = await adsService.deleteAd(ad);
+            const deletedInteractionId = getAdInteractionId(deletedAd || ad);
+            setAds((currentAds) => currentAds.filter((currentAd) => getAdInteractionId(currentAd) !== deletedInteractionId));
+            setOpenMenuAdId(null);
+            setAdPreviewModal(null);
+            setProductAdModal(null);
+            window.dispatchEvent(new Event("googer-ad-history-updated"));
+            addTopbarNotification({ type: "success", title: "Deleted", message: "Ad removed from feeds." });
+        } catch (error) {
+            addTopbarNotification({
+                type: "error",
+                title: "Delete failed",
+                message: error instanceof Error ? error.message : "Could not delete this ad.",
+            });
+        }
     };
 
     const hideGoogFromHome = (post: WritePost) => {
@@ -2731,16 +3077,18 @@ export default function DashboardPage() {
             hashtags: Array.isArray(source?.hashtags) ? source.hashtags : [],
             allow_comments: source?.allow_comments !== false,
             show_link_on_home: !!source?.show_link_on_home,
-            external_link: source?.external_link || "",
+            external_link: source?.external_link || source?.externalLink || "",
             media_type: source?.media_type || source?.mediaType || "",
-            media_preview: source?.media_preview || source?.preview_url || source?.media_url || source?.image || "",
+            media_preview: source?.media_preview || source?.mediaPreview || source?.preview_url || source?.previewUrl || source?.media_url || source?.mediaUrl || source?.image || "",
             media_gallery: Array.isArray(source?.media_gallery)
                 ? source.media_gallery
+                : Array.isArray(source?.mediaGallery)
+                    ? source.mediaGallery
                 : Array.isArray(source?.images)
                     ? source.images
                     : [],
-            thumbnail_url: source?.thumbnail_url || source?.image_url || "",
-            content_access_mode: source?.content_access_mode || "unblurred",
+            thumbnail_url: source?.thumbnail_url || source?.thumbnailUrl || source?.image_url || source?.imageUrl || "",
+            content_access_mode: source?.content_access_mode || source?.contentAccessMode || (source?.blurred || source?.is_blurred ? "blurred" : "unblurred"),
             visibility: source?.visibility || "public",
             status: source?.status || "Approved",
         } as UploadContentRecord;
@@ -2749,7 +3097,7 @@ export default function DashboardPage() {
             return;
         }
         setProfilePromoteUploadModal(normalized);
-        setProfilePromoteUploadAutoOpenKey(`${normalized.id}-${Date.now()}`);
+        setProfilePromoteUploadAutoOpenKey(null);
     }, [uploadContents]);
 
     const openProductAdAddToBag = async (product: any) => {
@@ -2758,8 +3106,7 @@ export default function DashboardPage() {
             openLoginRequired({ message: "Please log in to buy items." });
             return;
         }
-        setProductAdSizeError(true);
-        setNotification({ type: "error", title: "Size is required", message: "Size is required" });
+        setProductAdSizeError(false);
         const originalProduct = await resolveProductPromoteProduct(product);
         if (!originalProduct) {
             setNotification({ type: "error", title: "Product unavailable", message: "The promoted product could not be loaded." });
@@ -3036,7 +3383,7 @@ export default function DashboardPage() {
             </div>,
             googSearchPortalTarget
         )}
-        <main className="-mx-2 min-h-[calc(100vh-7rem)] max-w-full overflow-x-hidden bg-[#1c1917] px-0 py-0 text-white sm:-mx-4 sm:px-4 md:-mx-6 md:px-6 lg:min-h-[calc(100vh-5rem)]">
+        <main className="mx-0 min-h-[calc(100vh-7rem)] max-w-full overflow-x-hidden bg-[#1c1917] px-0 py-0 text-white sm:-mx-4 sm:px-4 md:-mx-6 md:px-6 lg:min-h-[calc(100vh-5rem)]">
             <div className="mx-auto grid min-h-0 w-full max-w-full gap-5 pb-3 pt-3 md:gap-6 lg:max-w-[1400px] lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start xl:grid-cols-[minmax(0,700px)_380px] xl:gap-7">
                 <section ref={composeSectionRef} className="hidden" aria-hidden="true">
                     <textarea value={postText} onChange={(event) => setPostText(event.target.value)} />
@@ -3093,7 +3440,7 @@ export default function DashboardPage() {
 
                 <div className="min-h-0 min-w-0 max-w-full overflow-hidden">
                     <section className="min-h-0 min-w-0 max-w-full overflow-hidden rounded-[1.25rem] border border-white/10 bg-[#211d1a] shadow-[0_18px_60px_rgba(0,0,0,0.24)] sm:rounded-[2rem]">
-                        <div className="scrollbar-dark min-h-0 overflow-x-hidden overflow-y-auto rounded-[inherit] pb-20 lg:pb-10">
+                        <div className="scrollbar-dark min-h-0 overflow-x-hidden overflow-y-auto rounded-[inherit] pb-20 [scrollbar-width:none] lg:pb-10 [&::-webkit-scrollbar]:hidden">
                         {isLoadingFeed ? (
                             <div className="flex items-center justify-center py-20">
                                 <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-white"></div>
@@ -3109,6 +3456,19 @@ export default function DashboardPage() {
                             }
                         >
                             <>
+                                {!isLoadingFeed && homeProfilePromoteAds.length > 0 && !visibleHomeHasProfilePromote && (
+                                    <ProfilePromoteCarousel
+                                        key="home-profile-promote-carousel-guaranteed"
+                                        ads={homeProfilePromoteAds}
+                                        className="px-2 py-4 transition-colors sm:px-7"
+                                        cardsPerView={2}
+                                        onProductClick={openProductAdInShopSecondView}
+                                        onContentClick={openProfilePromoteUploadContent}
+                                        onProfileClick={(clickedAd) => {
+                                            router.push(getPublicProfileHref(getItemUsername(clickedAd, ""), clickedAd.user_id || clickedAd.userId));
+                                        }}
+                                    />
+                                )}
                                 {visibleHomeFeedItems.map((item, feedIndex) => {
                                     if (item.type === "write") {
                                         const post = item.post;
@@ -3130,7 +3490,7 @@ export default function DashboardPage() {
                                         const uploadItem = item.item;
                                         return (
                                             <UploadContentFeedCard
-                                                key={item.id}
+                                                key={`${item.id}-${feedIndex}`}
                                                 item={uploadItem}
                                                 currentUser={currentUser}
                                                 onToggleLike={handleUploadLike}
@@ -3144,6 +3504,7 @@ export default function DashboardPage() {
                                                 onNotInterested={handleUploadNotInterested}
                                                 onInsights={handleOpenUploadInsights}
                                                 onEdit={handleEditUploadContent}
+                                                onDelete={openDeleteUploadContentConfirm}
                                                 onAccessChanged={(changedItem, accessType = "content") => {
                                                     const creatorId = String(changedItem.user_id || changedItem.owner_user_id || "");
                                                     setUploadContents((currentItems) =>
@@ -3161,14 +3522,21 @@ export default function DashboardPage() {
                                                                     user_purchase_expires_at: isSameContent
                                                                         ? changedItem.user_purchase_expires_at || entry.user_purchase_expires_at || null
                                                                         : entry.user_purchase_expires_at,
+                                                                    views_count: isSameContent && changedItem.views_count !== undefined
+                                                                        ? Number(changedItem.views_count || 0)
+                                                                        : entry.views_count,
+                                                                    viewCount: isSameContent && changedItem.viewCount !== undefined
+                                                                        ? Number(changedItem.viewCount || changedItem.views_count || 0)
+                                                                        : entry.viewCount,
                                                                 }
                                                                 : entry;
                                                         })
                                                     );
                                                 }}
                                                 flashContentAutoPlay={flashContentAutoPlay}
+                                                priorityMedia={feedIndex < 5}
                                                 flashPreviewSeconds={flashPreviewSeconds}
-                                                maxWidthClassName="max-w-[360px]"
+                                                maxWidthClassName="max-w-full sm:max-w-[360px]"
                                             articleClassName="w-full max-w-full overflow-hidden px-2 sm:px-7 [&>div]:mx-0 sm:[&>div]:mx-auto"
                                             onOpenProfile={() => {
                                                 router.push(getPublicProfileHref(uploadItem.username, uploadItem.user_id));
@@ -3180,7 +3548,7 @@ export default function DashboardPage() {
                                     if (item.type === "profilePromoteCarousel") {
                                         return (
                                             <ProfilePromoteCarousel
-                                                key={item.id}
+                                                key={`${item.id}-${feedIndex}`}
                                                 ads={item.ads}
                                                 className="px-2 py-4 transition-colors sm:px-7"
                                                 cardsPerView={2}
@@ -3194,8 +3562,6 @@ export default function DashboardPage() {
                                     }
 
                                     const ad = item.ad;
-                                    const activeLink = normalizeExternalUrl(ad.active_link || "");
-                                    const previewType = getSponsoredLinkPreviewType(activeLink);
 
                                     return (
                                         <AdImpressionTrigger
@@ -3213,7 +3579,7 @@ export default function DashboardPage() {
                                                         isMenuOpen={openMenuAdId === ad.id}
                                                         onToggleMenu={(adId) => setOpenMenuAdId(openMenuAdId === adId ? null : adId)}
                                                         onCloseMenu={() => setOpenMenuAdId(null)}
-                                                        onOpenSecondView={() => openAdInShop(ad, previewType)}
+                                                        onOpenSecondView={() => openAdInShop(ad)}
                                                         onProductClick={openProductAdInShopSecondView}
                                                         onContentClick={openProfilePromoteUploadContent}
                                                         onAddToBagClick={openProductAdAddToBag}
@@ -3239,6 +3605,7 @@ export default function DashboardPage() {
                                                             setReportSubmitted(false);
                                                         }}
                                                         onNotInterested={hideAdFromHome}
+                                                        onDeleteAd={deleteOwnedAdFromHome}
                                                         onPromoteAgain={handlePromoteAgain}
                                                         onCollectCoin={handleAdCoinClick}
                                                         onNavigateToProfile={navigateToAdProfile}
@@ -3280,9 +3647,9 @@ export default function DashboardPage() {
                                 }
                             >
                                 <div className="grid gap-3">
-                                    {trendingPosts.map((post) => (
+                                    {trendingPosts.map((post, index) => (
                                         <button
-                                            key={post.id}
+                                            key={`trending-${post.id}-${index}`}
                                             type="button"
                                             onClick={() => openTrendingPostDetails(post)}
                                             className="group grid grid-cols-[74px_minmax(0,1fr)] gap-3 rounded-xl border border-white/8 bg-white/[0.035] p-2.5 text-left shadow-[0_8px_24px_rgba(0,0,0,0.12)] transition duration-200 hover:-translate-y-0.5 hover:border-white/16 hover:bg-white/[0.055] hover:shadow-[0_16px_34px_rgba(0,0,0,0.22)]"
@@ -3341,7 +3708,7 @@ export default function DashboardPage() {
                             }}
                             className={`flex w-full items-center gap-3 ${!isOwnWritePost(openPostMenu.post) ? "border-t border-white/5" : ""} px-4 py-3 text-left text-[11px] font-bold text-white transition-colors hover:bg-white/5`}
                         >
-                            <IonIcon name="share-social-outline" className="text-lg text-blue-400" />
+                            <IonIcon name="arrow-redo-outline" className="text-lg text-blue-400" />
                             Share
                         </button>
                         {!isOwnWritePost(openPostMenu.post) && (
@@ -3407,6 +3774,7 @@ export default function DashboardPage() {
                         setReportSubmitted(false);
                     }}
                     onNotInterested={hideAdFromHome}
+                    onDeleteAd={isCurrentUserAdOwner(adPreviewModal.ad) ? deleteOwnedAdFromHome : undefined}
                     onCollectCoin={handleAdCoinClick}
                     onNavigateToProfile={navigateToAdProfile}
                     canShowCollectCoin={canShowAdCollectCoin}
@@ -3467,7 +3835,10 @@ export default function DashboardPage() {
                     onNotInterested={hideAdFromHome}
                     onCollectCoin={(event, product) => handleAdCoinClick(event, product)}
                     canShowCollectCoin={canShowAdCollectCoin}
-                    onSizeRequired={() => setNotification({ type: "error", title: "Size is required", message: "Size is required" })}
+                    onSizeRequired={() => {
+                        setProductAdSizeError(true);
+                        setNotification({ type: "error", title: "Size is required", message: "Size is required" });
+                    }}
                     onAddToBag={async (product, quantity, variant, size, country, variantIndex) => {
                         if (!authService.isAuthenticated() || !currentUser?.id) {
                             openLoginRequired({ message: "Please log in to buy items." });
@@ -3480,9 +3851,62 @@ export default function DashboardPage() {
                 />
             )}
 
+            {coinToast && (
+                <div className="fixed bottom-24 right-5 z-[10020] flex justify-end px-2">
+                    <div className={`flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border px-3 py-2 shadow-2xl ${coinToast.type === "success" ? "border-white/15 bg-black text-white" : "border-red-400/40 bg-black text-red-400"}`}>
+                        <IonIcon
+                            name={coinToast.type === "success" ? "checkmark-circle-outline" : "alert-circle-outline"}
+                            className={`shrink-0 text-base ${coinToast.type === "success" ? "text-neutral-200" : "text-red-400"}`}
+                        />
+                        <span className="text-xs font-bold tracking-tight">
+                        {coinToast.message}
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => setCoinToast(null)}
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-neutral-400 transition hover:bg-white/10 hover:text-white"
+                            aria-label="Dismiss coin notification"
+                        >
+                            <IonIcon name="close" className="text-sm" />
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {notification && (
+                <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm animate-in fade-in duration-300">
+                    <div className="relative w-full max-w-sm overflow-hidden rounded-[2rem] border border-white/10 bg-[#1a1a1a] shadow-2xl animate-in zoom-in-95 duration-300">
+                        <button
+                            type="button"
+                            onClick={() => setNotification(null)}
+                            className="absolute right-4 top-4 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-white/5 text-white/40 transition-all hover:bg-white/10 hover:text-white active:scale-90"
+                            aria-label="Close"
+                        >
+                            <IonIcon name="close" className="text-base" />
+                        </button>
+                        <div className="space-y-6 p-8 text-center">
+                            <div className={`mx-auto flex h-20 w-20 items-center justify-center rounded-full border-2 ${notification.type === "success" ? "border-green-500 bg-green-500/10 text-green-500" : "border-red-500 bg-red-500/10 text-red-500"}`}>
+                                <IonIcon name={notification.type === "success" ? "bag-check" : "alert-circle"} className="text-4xl" />
+                            </div>
+                            <div className="space-y-2">
+                                <h3 className="text-xl font-bold tracking-tight text-white">{notification.title || (notification.type === "success" ? "Success" : "Error")}</h3>
+                                <p className="text-sm font-medium leading-relaxed text-slate-400">{notification.message}</p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setNotification(null)}
+                                className={`w-full rounded-xl py-4 text-[10px] font-black uppercase tracking-[0.2em] shadow-lg transition-all active:scale-95 ${notification.type === "success" ? "bg-green-500 text-black hover:bg-green-400" : "bg-red-500 text-white hover:bg-red-400"}`}
+                            >
+                                {notification.type === "success" ? "Continue Shopping" : "Got it"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {profilePromoteUploadModal && mounted && createPortal(
                 <div className="fixed inset-0 z-[215] flex items-center justify-center bg-black/85 px-3 py-3 backdrop-blur-md" onClick={() => setProfilePromoteUploadModal(null)}>
-                    <div className="relative max-h-[82vh] w-full max-w-[390px] overflow-y-auto rounded-[1.7rem]" onClick={(event) => event.stopPropagation()}>
+                    <div className="relative max-h-[82vh] w-full max-w-[390px] overflow-y-auto rounded-[1.7rem] [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" onClick={(event) => event.stopPropagation()}>
                         <button
                             type="button"
                             onClick={() => setProfilePromoteUploadModal(null)}
@@ -3505,6 +3929,7 @@ export default function DashboardPage() {
                             onNotInterested={handleUploadNotInterested}
                             onInsights={handleOpenUploadInsights}
                             onEdit={handleEditUploadContent}
+                            onDelete={openDeleteUploadContentConfirm}
                             onAccessChanged={(changedItem, accessType = "content") => {
                                 const creatorId = String(changedItem.user_id || changedItem.owner_user_id || "");
                                 setUploadContents((currentItems) =>
@@ -3522,6 +3947,12 @@ export default function DashboardPage() {
                                                 user_purchase_expires_at: isSameContent
                                                     ? changedItem.user_purchase_expires_at || entry.user_purchase_expires_at || null
                                                     : entry.user_purchase_expires_at,
+                                                views_count: isSameContent && changedItem.views_count !== undefined
+                                                    ? Number(changedItem.views_count || 0)
+                                                    : entry.views_count,
+                                                viewCount: isSameContent && changedItem.viewCount !== undefined
+                                                    ? Number(changedItem.viewCount || changedItem.views_count || 0)
+                                                    : entry.viewCount,
                                             }
                                             : entry;
                                     })
@@ -3531,7 +3962,7 @@ export default function DashboardPage() {
                             flashPreviewSeconds={flashPreviewSeconds}
                             maxWidthClassName="max-w-[360px]"
                             articleClassName="w-full"
-                            autoOpenWatchKey={profilePromoteUploadAutoOpenKey}
+                            autoOpenWatchKey={null}
                             onFullViewClose={() => setProfilePromoteUploadModal(null)}
                             onOpenProfile={() => {
                                 router.push(getPublicProfileHref(profilePromoteUploadModal.username, profilePromoteUploadModal.user_id));
@@ -3590,11 +4021,13 @@ export default function DashboardPage() {
                 isOpen={showAdShareModal}
                 onClose={() => setShowAdShareModal(false)}
                 title={shareAdItem?.title || "Sponsored post"}
-                url={shareAdItem ? getShareUrlForItem(shareAdItem, getFeedShareType(shareAdItem)) : ""}
+                url={shareAdItem ? getShareUrlForItem(shareAdItem, "ad") : ""}
                 description={shareAdItem?.description || `Sponsored by ${getItemUsername(shareAdItem, "Ad")}`}
                 product={shareAdItem ? { ...shareAdItem, is_sponsored: true } : null}
                 initialView="share"
                 onCopyLink={handleAdCopyLink}
+                shareOnly
+                shareType="ad"
             />
 
             <ShareModal
@@ -3930,6 +4363,43 @@ export default function DashboardPage() {
                 </div>
             )}
 
+            {uploadContentToDelete && (
+                <div
+                    className="fixed inset-0 z-[146] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+                    onClick={() => !isDeletingUploadContent && setUploadContentToDelete(null)}
+                >
+                    <div
+                        className="w-full max-w-sm overflow-hidden rounded-2xl border border-white/10 bg-[#211d1a] shadow-[0_30px_90px_rgba(0,0,0,0.48)]"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="border-b border-white/8 px-6 py-5">
+                            <h3 className="text-sm font-black uppercase tracking-[0.18em] text-white">Delete Content</h3>
+                            <p className="mt-2 text-sm font-semibold leading-6 text-white/60">
+                                Are you sure you want to delete this upload content?
+                            </p>
+                        </div>
+                        <div className="flex items-center justify-end gap-3 px-6 py-5">
+                            <button
+                                type="button"
+                                disabled={isDeletingUploadContent}
+                                onClick={() => setUploadContentToDelete(null)}
+                                className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-white/70 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                No
+                            </button>
+                            <button
+                                type="button"
+                                disabled={isDeletingUploadContent}
+                                onClick={deleteUploadContent}
+                                className="rounded-full bg-red-600 px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-white transition hover:bg-red-500 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                {isDeletingUploadContent ? "Deleting..." : "Yes, Delete"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {reportTargetUpload && (
                 <div
                     className="fixed inset-0 z-[147] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm"
@@ -4095,3 +4565,4 @@ export default function DashboardPage() {
         </>
     );
 }
+

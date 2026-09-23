@@ -30,6 +30,7 @@ type UploadContentMediaProps = {
     blurred?: boolean;
     autoPlayVideo?: boolean;
     autoPlayMuted?: boolean;
+    priority?: boolean;
     onPreviewProgress?: (currentTime: number) => void;
     onPreviewComplete?: () => void;
     onAspectRatioChange?: (ratio: number) => void;
@@ -50,6 +51,7 @@ export default function UploadContentMedia({
     blurred = false,
     autoPlayVideo = false,
     autoPlayMuted = true,
+    priority = false,
     onPreviewProgress,
     onPreviewComplete,
     onAspectRatioChange,
@@ -206,16 +208,16 @@ export default function UploadContentMedia({
     };
 
     if (blurred && resolvedThumbnailUrl) {
-        return <Image src={resolvedThumbnailUrl} alt={alt} fill className="object-cover scale-110 blur-xl" onLoad={(event) => reportAspectRatio(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} unoptimized />;
+        return <Image src={resolvedThumbnailUrl} alt={alt} fill loading={priority ? "eager" : "lazy"} className="object-cover scale-110 blur-xl" onLoad={(event) => reportAspectRatio(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} unoptimized />;
     }
 
     if (isVideo && previewMode === "thumbnail" && resolvedThumbnailUrl) {
-        return <Image src={resolvedThumbnailUrl} alt={alt} fill className={mediaFitClassName} onLoad={(event) => reportAspectRatio(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} unoptimized />;
+        return <Image src={resolvedThumbnailUrl} alt={alt} fill loading={priority ? "eager" : "lazy"} className={mediaFitClassName} onLoad={(event) => reportAspectRatio(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} unoptimized />;
     }
 
     if (isVideo && !autoPreview && !autoPlayVideo) {
         if (resolvedThumbnailUrl) {
-            return <Image src={resolvedThumbnailUrl} alt={alt} fill className={mediaFitClassName} onLoad={(event) => reportAspectRatio(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} unoptimized />;
+            return <Image src={resolvedThumbnailUrl} alt={alt} fill loading={priority ? "eager" : "lazy"} className={mediaFitClassName} onLoad={(event) => reportAspectRatio(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} unoptimized />;
         }
         if (generatedPoster) {
             return (
@@ -350,6 +352,7 @@ export default function UploadContentMedia({
                 src={currentImage}
                 alt={`${alt}${images.length > 1 ? ` ${index + 1}` : ""}`}
                 fill
+                loading={priority ? "eager" : "lazy"}
                 draggable={false}
                 className={`select-none ${mediaFitClassName}`}
                 onLoad={(event) => reportAspectRatio(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)}

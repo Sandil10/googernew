@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/ad-campaign/layout,_N_T_/ad-campaign/product-promote/layout,_N_T_/ad-campaign/product-promote/page,_N_T_/ad-campaign/product-promote"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/ad-campaign/product-promote/__PAGE__",
+    "/ad-campaign/product-promote",
+    "/ad-campaign",
+    "/_index",
+    "/_head"
+  ]
+}

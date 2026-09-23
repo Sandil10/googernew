@@ -2,8 +2,8 @@ require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env'
 require('dotenv').config();
 
 const pool = require('../config/database');
-const { assertFinanceSchemaReady } = require('../../../../shared/utils/financeSchemaGuard');
-const { runBackgroundWorker } = require('../../../../shared/utils/backgroundWorkerRunner');
+const { assertFinanceSchemaReady } = require('../../../shared/utils/financeSchemaGuard');
+const { runBackgroundWorker } = require('../../../shared/utils/backgroundWorkerRunner');
 const { ensureAdminWalletGuard } = require('../utils/adminWalletGuard');
 const { createBackgroundJobHandlers, ensureBackgroundJobDependencies } = require('../jobs/handlers');
 const { getRecurringJobs } = require('../jobs/recurringJobs');

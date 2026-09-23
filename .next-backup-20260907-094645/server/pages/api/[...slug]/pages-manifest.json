@@ -1,0 +1,3 @@
+{
+  "/api/[...slug]": "pages/api/[...slug].js"
+}

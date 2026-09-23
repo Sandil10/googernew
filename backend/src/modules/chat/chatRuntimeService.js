@@ -1,6 +1,6 @@
 const pool = require('../../config/database');
 const { getUserPlanLimits, getUserSubscriptionFeatures } = require('../../utils/planLimits');
-const { normalizeRole } = require('../../../../../shared/contracts/userRoles');
+const { normalizeRole } = require('../../../../shared/contracts/userRoles');
 
 const lastPruneAt = new Map();
 const PRUNE_COOLDOWN_MS = 10 * 1000;
@@ -693,6 +693,12 @@ const pruneExpiredChatsForUser = async (userId) => {
         const features = await getUserSubscriptionFeatures(userId);
         const retentionMs = getChatRetentionMs(features.extra || {});
         if (!retentionMs) return;
+        // See the identical comment in chatController.js's pruneExpiredChatsForUser:
+        // bind an explicit UTC ISO string, not a raw JS Date — node-postgres
+        // serializes a bare Date using the Node process's OS timezone
+        // (Asia/Colombo, UTC+5:30 on this server), which pushed the cutoff
+        // 5.5 hours into the future and pruned brand-new messages instantly.
+        const cutoff = new Date(Date.now() - retentionMs).toISOString();
 
         await pool.query(
             `UPDATE chat_messages
@@ -703,8 +709,8 @@ const pruneExpiredChatsForUser = async (userId) => {
              WHERE (sender_id = $1 OR receiver_id = $1)
                AND deleted_for_everyone = FALSE
                AND NOT (deleted_for ? ($1::text))
-               AND created_at < NOW() - ($2::text || ' milliseconds')::interval`,
-            [userId, retentionMs]
+               AND created_at < $2`,
+            [userId, cutoff]
         );
     } catch (err) {
         console.error('[chat] pruneExpiredChatsForUser error:', err.message);

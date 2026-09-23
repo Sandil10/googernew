@@ -91,10 +91,97 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
   const adShareCode = String(source?.shareCode || source?.share_code || "").trim();
   const productShareCode = String(realProduct?.shareCode || realProduct?.share_code || realProduct?.product_code || "").trim();
   const shareCode = adShareCode || productShareCode;
+  const promoterUsername = String(
+    source?.username ||
+    source?.owner_username ||
+    source?.ownerUsername ||
+    source?.user?.username ||
+    ""
+  ).trim();
+  const promoterAvatar = String(
+    source?.profile_picture ||
+    source?.profilePicture ||
+    source?.avatar ||
+    source?.user?.profile_picture ||
+    source?.user?.avatar ||
+    ""
+  ).trim();
+  const promoterUserId =
+    source?.user_id ??
+    source?.userId ??
+    source?.owner_user_id ??
+    source?.ownerUserId ??
+    source?.user?.id;
+  const promoterFullName =
+    source?.full_name ||
+    source?.fullName ||
+    source?.user?.full_name ||
+    source?.user?.fullName;
+
   const productFirstSource = {
     ...source,
     ...realProduct,
+    ...(promoterUsername
+      ? {
+          username: promoterUsername,
+          owner_username: promoterUsername,
+          ownerUsername: promoterUsername,
+          seller: promoterUsername,
+        }
+      : {}),
+    ...(promoterAvatar
+      ? {
+          profile_picture: promoterAvatar,
+          profilePicture: promoterAvatar,
+          avatar: promoterAvatar,
+          profileImage: promoterAvatar,
+        }
+      : {}),
+    ...(promoterUserId
+      ? {
+          user_id: promoterUserId,
+          userId: promoterUserId,
+          owner_user_id: promoterUserId,
+          ownerUserId: promoterUserId,
+        }
+      : {}),
+    ...(promoterFullName
+      ? {
+          full_name: promoterFullName,
+          fullName: promoterFullName,
+        }
+      : {}),
+    ...(promoterUsername
+      ? {
+          user: {
+            ...(realProduct?.user || {}),
+            id: promoterUserId ?? realProduct?.user?.id,
+            username: promoterUsername,
+            profile_picture: promoterAvatar || realProduct?.user?.profile_picture,
+            full_name: promoterFullName || realProduct?.user?.full_name,
+          },
+        }
+      : {}),
   };
+  const variants = Array.isArray(realProduct?.variants)
+    ? realProduct.variants
+    : Array.isArray(source?.variants)
+      ? source.variants
+      : [];
+  const sizes = Array.isArray(realProduct?.sizes)
+    ? realProduct.sizes
+    : Array.isArray(source?.sizes)
+      ? source.sizes
+      : [];
+  const images = Array.isArray(realProduct?.images)
+    ? realProduct.images
+    : Array.isArray(realProduct?.media_gallery)
+      ? realProduct.media_gallery
+      : Array.isArray(source?.images)
+        ? source.images
+        : Array.isArray(source?.media_gallery)
+          ? source.media_gallery
+          : [];
 
   const resolvedProduct = normalizeProductAd({
     ...productFirstSource,
@@ -103,10 +190,21 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
     linked_product_id: productFirstSource?.linked_product_id ?? realProduct?.linked_product_id ?? resolvedId,
     linked_product_share_code: productFirstSource?.linked_product_share_code ?? realProduct?.product_code ?? source?.linked_product_share_code,
     linked_product_code: productFirstSource?.linked_product_code ?? realProduct?.product_code ?? source?.linked_product_code,
+    variants,
+    sizes,
+    images,
+    media_gallery: Array.isArray(productFirstSource?.media_gallery) ? productFirstSource.media_gallery : images,
     shareCode: shareCode || productShareCode || resolvedId,
     share_code: shareCode || productShareCode || resolvedId,
     is_sponsored: true,
     campaign_type: campaignType,
+    seller: promoterUsername || productFirstSource?.seller,
+    username: promoterUsername || productFirstSource?.username,
+    owner_username: promoterUsername || productFirstSource?.owner_username,
+    profile_picture: promoterAvatar || productFirstSource?.profile_picture,
+    profileImage: promoterAvatar || productFirstSource?.profileImage,
+    user_id: promoterUserId ?? productFirstSource?.user_id,
+    user: productFirstSource?.user,
     user_liked: source?.user_liked ?? realProduct?.user_liked,
     likes_count: source?.likes_count ?? source?.likeCount ?? realProduct?.likes_count ?? realProduct?.likeCount,
     views_count: source?.views_count ?? source?.viewCount ?? realProduct?.views_count ?? realProduct?.viewCount,
@@ -124,6 +222,10 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
       linked_product_id: realProduct?.id ?? resolvedId,
       linked_product_share_code: realProduct?.product_code ?? source?.linked_product_share_code,
       linked_product_code: realProduct?.product_code ?? source?.linked_product_code,
+      variants,
+      sizes,
+      images,
+      media_gallery: Array.isArray(realProduct?.media_gallery) ? realProduct.media_gallery : images,
       shareCode: shareCode || productShareCode || resolvedId,
       share_code: shareCode || productShareCode || resolvedId,
       is_sponsored: true,
@@ -137,6 +239,29 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
       shares_count: source?.shares_count ?? source?.shareCount ?? realProduct?.shares_count ?? realProduct?.shareCount,
       ad_coin_collected: source?.ad_coin_collected ?? source?.coinCollected ?? realProduct?.ad_coin_collected,
       ad_like_locked: source?.ad_like_locked ?? realProduct?.ad_like_locked,
+      ...(promoterUsername
+        ? {
+            username: promoterUsername,
+            owner_username: promoterUsername,
+            ownerUsername: promoterUsername,
+          }
+        : {}),
+      ...(promoterAvatar
+        ? {
+            profile_picture: promoterAvatar,
+            profilePicture: promoterAvatar,
+            avatar: promoterAvatar,
+          }
+        : {}),
+      ...(promoterUserId
+        ? {
+            user_id: promoterUserId,
+            userId: promoterUserId,
+            owner_user_id: promoterUserId,
+            ownerUserId: promoterUserId,
+          }
+        : {}),
+      user: productFirstSource?.user,
     },
   });
   const promotedProduct = resolvedProduct as any;
@@ -154,6 +279,10 @@ const mergeProductPromoteOverlay = (source: any, realProduct: any, resolvedId: s
     ad_owner_user_id: source?.ad_owner_user_id || source?.advertiser_id || source?.user_id || source?.userId,
     advertiser_id: source?.advertiser_id || source?.ad_owner_user_id || source?.user_id || source?.userId,
     campaign_type: campaignType,
+    status: source?.status ?? promotedProduct.status,
+    ad_status: source?.status ?? source?.delivery_status ?? source?.deliveryStatus ?? null,
+    delivery_status: source?.delivery_status ?? source?.deliveryStatus ?? source?.status ?? null,
+    product_status: realProduct?.status ?? promotedProduct.status,
     is_sponsored: true,
     isAd: true,
     isProductPromoteSecondView: true,

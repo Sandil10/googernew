@@ -18,7 +18,7 @@ async function resolveGoogerMainWalletUserId(client) {
 
     const adminResult = await client.query(
         `SELECT id FROM users
-         WHERE LOWER(COALESCE(user_type, '')) IN ('admin', 'super_admin')
+         WHERE LOWER(COALESCE(user_type, '')) IN ('admin', 'administrator', 'super_admin', 'superadmin')
          ORDER BY id ASC
          LIMIT 1`
     );
@@ -58,10 +58,44 @@ async function lockGoogerMainWalletUser(client) {
 }
 
 async function getGoogerPooledBalance(client) {
+    const tableFlags = await client.query(
+        `SELECT
+            to_regclass('public.upload_content_purchases') IS NOT NULL AS has_upload_purchases,
+            to_regclass('public.upload_content_subscriptions') IS NOT NULL AS has_upload_subscriptions`
+    );
+    const hasUploadPurchases = tableFlags.rows[0]?.has_upload_purchases === true;
+    const hasUploadSubscriptions = tableFlags.rows[0]?.has_upload_subscriptions === true;
+    const uploadPurchaseCommissionSql = hasUploadPurchases
+        ? '(SELECT SUM(commission_amount) FROM upload_content_purchases)'
+        : '0';
+    const uploadSubscriptionCommissionSql = hasUploadSubscriptions
+        ? '(SELECT SUM(commission_amount) FROM upload_content_subscriptions)'
+        : '0';
+
     const result = await client.query(
-        `SELECT COALESCE(SUM(commission), 0) AS balance
-         FROM wallet_transfers
-         WHERE status = 'accepted'`
+        `WITH commission_totals AS (
+            SELECT
+                COALESCE((
+                    SELECT SUM(commission)
+                    FROM wallet_transfers
+                    WHERE LOWER(TRIM(COALESCE(status, ''))) = 'accepted'
+                ), 0)::numeric AS wallet_commission,
+                COALESCE((
+                    SELECT SUM(commission)
+                    FROM wallet_transfers
+                    WHERE LOWER(TRIM(COALESCE(status, ''))) = 'accepted'
+                      AND LOWER(TRIM(COALESCE(type, ''))) = 'commission_hold'
+                ), 0)::numeric AS upload_transfer_commission,
+                (
+                    COALESCE(${uploadPurchaseCommissionSql}, 0)
+                    + COALESCE(${uploadSubscriptionCommissionSql}, 0)
+                )::numeric AS upload_record_commission
+         )
+         SELECT (
+            wallet_commission
+            + GREATEST(0, upload_record_commission - upload_transfer_commission)
+         )::numeric AS balance
+         FROM commission_totals`
     );
 
     return normalizeMoney(result.rows[0]?.balance || 0);

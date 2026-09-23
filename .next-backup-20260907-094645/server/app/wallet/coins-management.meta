@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/wallet/layout,_N_T_/wallet/coins-management/layout,_N_T_/wallet/coins-management/page,_N_T_/wallet/coins-management"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/wallet/coins-management/__PAGE__",
+    "/wallet/coins-management",
+    "/wallet",
+    "/_index",
+    "/_head"
+  ]
+}

@@ -82,7 +82,7 @@ export default function ShareProductPage() {
         },
         onCoinCollected: (ad, collectionId) => {
             updateAdState(collectionId, { ad_coin_collected: true, ad_like_locked: true });
-            setNotification({ type: "success", title: "Collected", message: "Ruppier collected." });
+            setNotification({ type: "success", title: "Collected", message: "Rupieer collected." });
         },
         onNotify: (n) => setNotification({ type: n.type, title: n.title, message: n.message }),
     });

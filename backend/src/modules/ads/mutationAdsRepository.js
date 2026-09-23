@@ -44,6 +44,52 @@ const supportsRemainingBudgetRefund = (campaignType) => {
         || normalized === 'photo & video';
 };
 
+const parseMaybeJson = (value) => {
+    if (!value || typeof value !== 'string') return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return value;
+    }
+};
+
+const isFreePromoDiscount = (value) => {
+    const discount = parseMaybeJson(value);
+    if (discount == null || discount === '') return false;
+    if (typeof discount === 'number') return discount >= 100;
+    if (typeof discount === 'string') {
+        const parsed = Number(discount);
+        return Number.isFinite(parsed) && parsed >= 100;
+    }
+    const type = String(discount.discount_type || discount.type || '').trim().toLowerCase();
+    const amount = Number(discount.discount_value ?? discount.value ?? discount.amount ?? 0);
+    return Number.isFinite(amount) && amount >= 100 && (type === 'reach' || type === 'percent' || type === 'percentage' || type === 'free');
+};
+
+const isFreeBudgetLockedAd = (row) => {
+    if (!supportsRemainingBudgetRefund(row?.campaign_type || row?.campaignType)) return false;
+    const draft = row?.edit_draft || row?.editDraft || {};
+    const hasPromo = Boolean(
+        row?.promo_code
+        || row?.promoCode
+        || draft?.promoCode
+        || draft?.promo_code
+    );
+    if (hasPromo) return true;
+    const hasFreeMarker = Boolean(
+        row?.is_free_promo
+        || row?.isFreePromo
+        || draft?.isFreePromo
+        || draft?.freeAd
+        || draft?.free_ad
+        || isFreePromoDiscount(row?.promo_discount)
+        || isFreePromoDiscount(row?.promoDiscount)
+        || isFreePromoDiscount(draft?.promoDiscount)
+        || isFreePromoDiscount(draft?.promo_discount)
+    );
+    return Number(row?.budget || 0) <= 0 || (!Number(row?.wallet_transfer_id || row?.walletTransferId || 0) && hasFreeMarker);
+};
+
 const toDateOrNull = (value) => {
     if (!value) return null;
     if (value instanceof Date) return value;
@@ -250,6 +296,23 @@ const normalizePayload = (body = {}, fallback = {}) => {
         promoCode: typeof body.promoCode === 'string' ? body.promoCode.trim() || null : (fallback.promoCode ?? null),
         promoDiscount: hasOwn(body, 'promoDiscount') || hasOwn(body, 'promo_discount') ? (Number.isFinite(Number(body.promoDiscount ?? body.promo_discount)) ? Number(body.promoDiscount ?? body.promo_discount) : null) : (fallback.promoDiscount ?? fallback.promo_discount ?? null),
         promoteAgain: body.promoteAgain === true || body.editDraft?.promoteAgain === true,
+        // The call-to-action was never read here, so it never reached its own
+        // columns — it survived only inside `editDraft`, and an ad published
+        // from the web (which sends it at the top level as `ctaTopic`) lost it
+        // altogether, leaving the card with no button to render. The clients
+        // disagree on the key, so all the shapes they send are accepted.
+        ctaTopic: typeof body.ctaTopic === 'string'
+            ? body.ctaTopic
+            : typeof body.ctaText === 'string'
+                ? body.ctaText
+                : typeof body.editDraft?.ctaTopic === 'string'
+                    ? body.editDraft.ctaTopic
+                    : (fallback.ctaTopic || ''),
+        ctaValue: typeof body.ctaValue === 'string'
+            ? body.ctaValue
+            : typeof body.editDraft?.ctaValue === 'string'
+                ? body.editDraft.ctaValue
+                : (fallback.ctaValue || ''),
         editDraft: body.editDraft && typeof body.editDraft === 'object' ? body.editDraft : (fallback.editDraft || {}),
         createdAt: body.createdAt ? new Date(body.createdAt) : (fallback.createdAt ? new Date(fallback.createdAt) : null),
     };
@@ -267,14 +330,6 @@ const resolveGoogerMainWalletUserId = async (client) => {
         }
     }
 
-    const adminResult = await client.query(
-        `SELECT id FROM users
-         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
-         ORDER BY id ASC
-         LIMIT 1`
-    );
-    if (adminResult.rows.length > 0) return adminResult.rows[0].id;
-
     const googerResult = await client.query(
         `SELECT id FROM users
          WHERE LOWER(username) = 'googer'
@@ -282,6 +337,14 @@ const resolveGoogerMainWalletUserId = async (client) => {
          LIMIT 1`
     );
     if (googerResult.rows.length > 0) return googerResult.rows[0].id;
+
+    const adminResult = await client.query(
+        `SELECT id FROM users
+         WHERE LOWER(COALESCE(user_type, '')) = 'admin'
+         ORDER BY id ASC
+         LIMIT 1`
+    );
+    if (adminResult.rows.length > 0) return adminResult.rows[0].id;
 
     const fallbackResult = await client.query(
         `SELECT id FROM users
@@ -308,8 +371,16 @@ const findSponsor = async (userId) => {
     return result.rows[0] || null;
 };
 
-const createAdRow = async (params) => {
+const findAdRowByAdId = async (adId) => {
     const result = await pool.query(
+        'SELECT * FROM ads WHERE ad_id = $1 LIMIT 1',
+        [adId]
+    );
+    return result.rows[0] || null;
+};
+
+const createAdRow = async (params, executor = pool) => {
+    const result = await executor.query(
         `INSERT INTO ads (
             ad_id, user_id, owner_user_id, owner_username, campaign_type, title, description,
             media_preview, media_gallery, media_type, gender_target, age_min, age_max, reach, impressions,
@@ -319,7 +390,8 @@ const createAdRow = async (params) => {
             tier_id, estimated_reach_min, estimated_reach_max, max_reach_cap,
             promo_code, promo_discount,
             active_start_time, started_at, last_resumed_at, paused_at, accumulated_active_ms, completed_at,
-            created_at, updated_at
+            created_at, updated_at,
+            cta_topic, cta_value
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12, $13, $14, $15,
@@ -328,7 +400,8 @@ const createAdRow = async (params) => {
             $29, $30, $31, $32,
             $33, $34,
             $35, $36, $37, $38, $39, $40,
-            COALESCE($41, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP
+            COALESCE($41, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP,
+            $42, $43
         )
         RETURNING *`,
         params
@@ -344,9 +417,11 @@ module.exports = {
     connect,
     createAdRow,
     ensureAdsTable: readAdsRepository.ensureAdsTable,
+    findAdRowByAdId,
     findSponsor,
     hasOwn,
     isPhotoVideoCampaign,
+    isFreeBudgetLockedAd,
     isRawUploadedPhotoVideoAd,
     mapRow: savedAdsRepository.mapRow,
     normalizePayload,

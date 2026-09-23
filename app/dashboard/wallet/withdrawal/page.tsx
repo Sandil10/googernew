@@ -322,7 +322,7 @@ export default function WithdrawalPage() {
                             {/* Balance card */}
                             <div className="bg-[#070707] border border-gray-700 rounded-xl p-5 mb-6 flex items-center justify-between">
                                 <div>
-                                    <p className="text-gray-400 text-xs font-medium uppercase tracking-wider mb-2">My Total Rupier Coins</p>
+                                    <p className="mb-2 text-xs font-medium tracking-wider text-gray-400">My Total Rupieer Coins</p>
                                     <h2 className="text-3xl font-bold text-white tracking-wide">{balance.toFixed(2)}</h2>
                                 </div>
                                 <div className="relative w-12 h-12 shrink-0">

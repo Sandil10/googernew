@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/settings/layout,_N_T_/settings/two-factor/layout,_N_T_/settings/two-factor/page,_N_T_/settings/two-factor"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/settings/two-factor/__PAGE__",
+    "/settings/two-factor",
+    "/settings",
+    "/_index",
+    "/_head"
+  ]
+}

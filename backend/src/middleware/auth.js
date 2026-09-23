@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const { error } = require('../utils/responseHandler');
 const pool = require('../config/database');
 const { processDueSubscriptionsForUser } = require('../utils/subscriptionRenewal');
-const { extractAuthToken, getJwtSecret } = require('../../../../shared/api/authToken');
+const { extractAuthToken, getJwtSecret } = require('../../../shared/api/authToken');
 
 // Ensure token_version column exists for JWT revocation support
 let tokenVersionColumnEnsured = false;
@@ -39,6 +39,26 @@ const authMiddleware = async (req, res, next) => {
         const tokenVersion = decoded.tokenVersion ?? 0;
         if (tokenVersion !== dbTokenVersion) {
             return error(res, 'Session has been invalidated. Please log in again.', 401);
+        }
+
+        if (decoded.sessionId) {
+            try {
+                const sessionResult = await pool.query(
+                    `SELECT status, logout_at
+                     FROM auth_sessions
+                     WHERE id = $1 AND user_id = $2
+                     LIMIT 1`,
+                    [decoded.sessionId, decoded.id]
+                );
+                const session = sessionResult.rows[0];
+                if (!session || session.status !== 'active' || session.logout_at) {
+                    return error(res, 'Session has been invalidated. Please log in again.', 401);
+                }
+            } catch (sessionError) {
+                if (sessionError?.code !== '42P01') {
+                    throw sessionError;
+                }
+            }
         }
 
         console.log('[AUTH] Token Decoded:', { id: decoded.id, userId: decoded.userId });

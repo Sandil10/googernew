@@ -9,6 +9,7 @@ const authMiddleware = require('../middleware/auth');
 router.post('/register', authController.register);
 router.get('/username/:username', readController.getUserByUsername);
 router.post('/login', authController.login);
+router.post('/login/verify-otp', authController.verifyLoginOtp);
 router.post('/login/device-approval/status', authController.getDeviceApprovalStatus);
 router.post('/forgot-password/request-otp', authController.requestPasswordResetOtp);
 router.post('/forgot-password/verify-otp', authController.verifyPasswordResetOtp);
@@ -24,6 +25,9 @@ const upload = require('../config/upload');
 
 // Protected routes
 router.get('/profile', authMiddleware, readController.getProfile);
+// People search behind the "Search Googs" suggestions (web + mobile).
+// Staff/support accounts are filtered out server-side.
+router.get('/search-users', authMiddleware, readController.searchPeople);
 router.get('/suspension', authMiddleware, accountController.getMySuspension);
 router.post('/suspension/appeal', authMiddleware, accountController.submitSuspensionAppeal);
 router.post('/self-deactivate', authMiddleware, accountController.selfDeactivateAccount);

@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import RupieerCoinButton from "../ads/RupieerCoinButton";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import IonIcon from "@/app/components/IonIcon";
@@ -354,26 +355,12 @@ export function ShopProductSecondViewModal({
                     </button>
                   )}
                   {showAdCoinButton && onCollectCoin && (
-                    <button
-                      type="button"
+                    <RupieerCoinButton
                       onClick={(event) => {
                         event.stopPropagation();
                         onCollectCoin(event, displayProduct);
                       }}
-                      className="flex items-center gap-1.5 rounded-full border border-red-400/30 bg-red-600 px-2 py-1 text-[8px] font-black uppercase tracking-[0.1em] text-white shadow-xl transition hover:bg-red-500 active:scale-95"
-                    >
-                      <span className="flex h-6.5 w-6.5 items-center justify-center overflow-hidden rounded-full bg-white/12 ring-1 ring-white/10">
-                        <Image
-                          src="/assets/images/rupee.png"
-                          alt="Ruppier coin"
-                          width={28}
-                          height={28}
-                          className="h-[1.35rem] w-[1.35rem] object-contain contrast-110 brightness-110"
-                          unoptimized
-                        />
-                      </span>
-                      <span className="leading-none">Ruppier</span>
-                    </button>
+                    />
                   )}
                   <div className="relative flex items-center gap-1.5">
                     <button
@@ -406,7 +393,7 @@ export function ShopProductSecondViewModal({
                           Resell Commission Link
                         </button>
                         <button type="button" onClick={() => { trackProductPromoteClick(); onShare?.(product, "share"); setIsMenuOpen(false); }} className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5">
-                          <IonIcon name="share-social-outline" className="text-blue-400 text-lg" />
+                          <IonIcon name="arrow-redo-outline" className="text-blue-400 text-lg" />
                           Share Link
                         </button>
                         {onPromote && (
@@ -487,10 +474,15 @@ export function ShopProductSecondViewModal({
                           <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78Z" />
                         </svg>
                         {!!displayProduct.likes_count && <span className={`text-[7px] font-black leading-none md:text-[10px] ${displayProduct.user_liked ? "text-red-500" : "text-white"}`}>{displayProduct.likes_count > 999 ? "999+" : displayProduct.likes_count}</span>}
+                        {/* Brief reaction to a blocked unlike tap, from the shared ad
+                            store — not shown for as long as the ad stays locked. */}
+                        {!!liveState.like_locked_hint && (
+                          <span className="text-[6px] font-black uppercase leading-tight text-red-500 md:text-[7px]">Like Locked</span>
+                        )}
                       </button>
                       <InteractionButton type="views" icon="eye-outline" activeIcon="eye" count={displayProduct.views_count} color="text-white" activeColor="text-white" onSingleClick={() => { onLogView?.(displayProduct.id); onOpenSheet?.("views", displayProduct); }} onLongPress={() => onOpenSheet?.("views", displayProduct)} orientation="vertical" iconSize="text-[13px] md:text-[10px]" buttonSize="h-6 w-6 md:h-8 md:w-8" countSize="text-[7px] md:text-[10px]" />
                       <InteractionButton type="comments" icon="chatbubble" activeIcon="chatbubble" count={displayProduct.comments_count} color="text-white" activeColor="text-white" onSingleClick={() => onOpenSheet?.("comments", displayProduct)} onLongPress={() => onOpenSheet?.("comments", displayProduct)} orientation="vertical" iconSize="text-[13px] md:text-[10px]" buttonSize="h-6 w-6 md:h-8 md:w-8" countSize="text-[7px] md:text-[10px]" />
-                      <InteractionButton type="shares" icon="share-social" activeIcon="share-social" count={displayProduct.shares_count || 0} color="text-white" activeColor="text-white" onSingleClick={() => { trackProductPromoteClick(); onShare?.(displayProduct); }} onLongPress={() => onOpenSheet?.("shares", displayProduct)} orientation="vertical" iconSize="text-[13px] md:text-[10px]" buttonSize="h-6 w-6 md:h-8 md:w-8" countSize="text-[7px] md:text-[10px]" />
+                      <InteractionButton type="shares" icon="arrow-redo" activeIcon="arrow-redo" count={displayProduct.shares_count || 0} color="text-white" activeColor="text-white" onSingleClick={() => { trackProductPromoteClick(); onShare?.(displayProduct); }} onLongPress={() => onOpenSheet?.("shares", displayProduct)} orientation="vertical" iconSize="text-[13px] md:text-[10px]" buttonSize="h-6 w-6 md:h-8 md:w-8" countSize="text-[7px] md:text-[10px]" />
                     </div>
                   </div>
                 )}
@@ -577,7 +569,7 @@ export function ShopProductSecondViewModal({
                 )}
 
                 <div className="mb-5 px-1">
-                  <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/50 mb-2">RUPIEER</p>
+                  <p className="mb-2 text-[9px] font-black tracking-[0.2em] text-white/50">Rupieer</p>
                   <div className="flex flex-wrap items-center gap-4 rounded-[1.5rem] border border-white/10 bg-white/[0.03] px-4 py-3 shadow-inner">
                     <div className="flex items-center gap-2.5 shrink-0">
                       <span className="text-[22px] font-black text-white leading-none">•</span>
@@ -770,7 +762,7 @@ export function ShopProductSecondViewModal({
                 </div>
               ) : (
                 <>
-                  <span className="text-[10px] font-black text-white uppercase tracking-[0.3em]">RUPIEER</span>
+                  <span className="text-[10px] font-black text-white tracking-[0.3em]">Rupieer</span>
                   <span className="text-[19px] font-black text-white tracking-widest leading-none">
                     {(parseFloat(activeVariant?.promo_price || activeVariant?.price || product.promo_price || product.price || 0) * quantity).toFixed(2)}
                   </span>

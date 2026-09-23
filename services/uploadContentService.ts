@@ -181,6 +181,7 @@ export type UploadContentRecord = {
     affiliate_commission: number;
     hashtags: string[];
     allow_comments: boolean;
+    allowComments?: boolean;
     show_link_on_home: boolean;
     external_link: string;
     media_type: string;
@@ -200,12 +201,27 @@ export type UploadContentRecord = {
     video_original_duration_seconds?: number;
     videoOriginalDurationSeconds?: number;
     status: "Pending Approval" | "Approved" | "Rejected";
+    pending_edit_status?: "Pending Approval" | null;
+    has_pending_edit?: boolean;
+    pending_edit_submitted_at?: string | null;
     rejection_reason?: string | null;
     admin_note?: string | null;
     created_at?: string | null;
     updated_at?: string | null;
     approved_at?: string | null;
     expires_at?: string | null;
+    approval_plan_id?: number | null;
+    approval_plan_slug?: string | null;
+    approval_plan_is_paid?: boolean;
+    approval_expiry_value?: number | null;
+    approval_expiry_unit?: string | null;
+    basic_fallback_owner_only?: boolean;
+    owner_has_paid_plan?: boolean;
+    owner_subscription_expired_in_grace?: boolean;
+    owner_subscription_grace_value?: number | null;
+    owner_subscription_grace_unit?: string | null;
+    owner_basic_content_expiry_value?: number | null;
+    owner_basic_content_expiry_unit?: string | null;
     username?: string | null;
     full_name?: string | null;
     profile_picture?: string | null;
@@ -228,6 +244,10 @@ export type UploadContentRecord = {
     views_count?: number;
     viewCount?: number;
     user_liked?: boolean;
+    homeExpansionStage?: string;
+    home_expansion_stage?: string;
+    homeCanExpand?: boolean;
+    home_can_expand?: boolean;
     user_purchased?: boolean;
     user_has_access?: boolean;
     user_purchase_expires_at?: string | null;
@@ -250,6 +270,7 @@ export type UploadContentSubscriptionPurchase = {
     wallet_transfer_id: number;
     starts_at?: string | null;
     expires_at?: string | null;
+    views_count?: number;
 };
 
 export type UploadContentPurchase = {
@@ -264,6 +285,7 @@ export type UploadContentPurchase = {
     wallet_transfer_id: number;
     created_at?: string | null;
     expires_at?: string | null;
+    views_count?: number;
 };
 
 export type UploadContentInsightsRange = "today" | "7d" | "30d" | "all";
@@ -287,7 +309,21 @@ export type UploadContentInsights = {
     range: UploadContentInsightsRange;
     totals: {
         views: number;
+        totalEarnings?: number;
+        total_earnings?: number;
         earnings: number;
+        creatorNetEarnings?: number;
+        creator_net_earnings?: number;
+        platformFee?: number;
+        platform_fee?: number;
+        platformFeePercentage?: number;
+        platform_fee_percentage?: number;
+        subscriptionCommissionPercentage?: number;
+        subscription_commission_percentage?: number;
+        shareCommission?: number;
+        share_commission?: number;
+        contentType?: "flash" | "vault" | string;
+        content_type?: "flash" | "vault" | string;
         sales: number;
         shares: number;
     };
@@ -567,8 +603,8 @@ export const uploadContentService = {
         return result;
     },
 
-    logView: async (contentId: string | number) => {
-        return getDedupedUploadView(contentId, async () => {
+    logView: async (contentId: string | number, options: { force?: boolean } = {}) => {
+        const loader = async () => {
             const response = await fetch(`${API_URL}/upload-content/${contentId}/view`, {
                 method: "POST",
                 headers: getHeaders(),
@@ -579,7 +615,8 @@ export const uploadContentService = {
             return {
                 views_count: Number(result?.views_count || 0),
             };
-        });
+        };
+        return options.force ? loader() : getDedupedUploadView(contentId, loader);
     },
 
     addComment: async (contentId: string | number, comment: string, parentId?: string | number) => {
