@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { importLinkMedia, videoEmbedForAsync } from "@/app/lib/mediaLinkImport";
 import IonIcon from "@/app/components/IonIcon";
 import UploadContentSettingsSection, { type UploadContentSubscriptionPackage } from "./upload-content/UploadContentSettingsSection";
 import { useUploadContentSettings } from "./upload-content/useUploadContentSettings";
@@ -1043,7 +1044,12 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
         ? historyMediaGallery
         : (historyMediaPreview ? [historyMediaPreview] : []);
     const youtubeEmbedUrl = useMemo(() => getYouTubeEmbedUrl(activeLink), [activeLink]);
-    const socialEmbedUrl = useMemo(() => getSocialEmbedUrl(activeLink), [activeLink]);
+    // App share links (vt.tiktok.com, fb.watch…) only get a player once the
+    // backend has resolved them — that lands in linkPreviewMeta.embedUrl.
+    const socialEmbedUrl = useMemo(
+        () => getSocialEmbedUrl(activeLink) || linkPreviewMeta?.embedUrl || null,
+        [activeLink, linkPreviewMeta?.embedUrl]
+    );
     const selectedCountry = countries.find((country) => country.code === selectedCountryCode) || countries[0];
     const effectivePaymentAmount = budget === null ? 0
         : hasPromoCodeAdded && isProfilePromote
@@ -3084,6 +3090,34 @@ export default function CampaignEditor({ campaignType }: { campaignType: string 
                 .catch(() => {
                     // Some platforms require server-side tokens for metadata. The URL still remains usable as a generic social preview.
                 });
+
+            // Any platform link: a share link's real player (resolved by the
+            // backend), and the real picture behind shop / web-page links
+            // stored on Googer instead of a page screenshot. The stored
+            // picture also becomes the ad's saved preview image.
+            (async () => {
+                let resolvedEmbed = embedUrl;
+                if (!resolvedEmbed && platform !== "Website") {
+                    resolvedEmbed = await videoEmbedForAsync(normalizedLink);
+                }
+                let storedThumb = "";
+                if (linkPreviewType !== "image" && (linkPreviewType === "website" || !resolvedEmbed)) {
+                    try {
+                        storedThumb = (await importLinkMedia(normalizedLink)).url;
+                    } catch {
+                        // No picture found: keep the current preview.
+                    }
+                }
+                if (isCancelled || (!resolvedEmbed && !storedThumb)) return;
+                setLinkPreviewMeta((current) => ({
+                    title: current?.title || getDefaultLinkTitle(activeLink),
+                    thumbnail: storedThumb || current?.thumbnail || thumbnail,
+                    isYouTube: false,
+                    platform,
+                    embedUrl: resolvedEmbed || current?.embedUrl || "",
+                    isPlayable: Boolean(resolvedEmbed || current?.isPlayable || linkPreviewType === "video"),
+                }));
+            })();
 
             return () => {
                 isCancelled = true;

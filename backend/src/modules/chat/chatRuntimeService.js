@@ -787,7 +787,9 @@ const createChatMessage = async (senderId, body = {}) => {
 
     if (type === 'sticker' || type === 'voice_tts') {
         const features = await getUserSubscriptionFeatures(senderId);
-        if (type === 'sticker' && !features.chat_stickers) {
+        // Admin's custom stickers/emojis are free for every package.
+        const isCustomSticker = type === 'sticker' && await require('../../utils/chatFeatureSettings').isCustomStickerUrl(body.text);
+        if (type === 'sticker' && !features.chat_stickers && !isCustomSticker) {
             const err = new Error('Stickers are available in higher plans. Please upgrade.');
             err.statusCode = 403;
             throw err;
@@ -831,7 +833,9 @@ const createChatMessage = async (senderId, body = {}) => {
         throw err;
     }
 
-    const mediaMaxBytes = type === 'video' ? CHAT_VIDEO_MAX_BYTES : CHAT_MEDIA_MAX_BYTES;
+    // Admin-editable limits (Subscription → Chat Features).
+    const chatLimits = await require('../../utils/chatFeatureSettings').getChatMediaLimits();
+    const mediaMaxBytes = Math.round((type === 'video' ? chatLimits.video_max_mb : chatLimits.photo_max_mb) * 1024 * 1024);
     if ((type === 'image' || type === 'video') && imageUrl?.startsWith('data:') && getDataUrlByteSize(imageUrl) > mediaMaxBytes) {
         const err = new Error('Media could not be compressed for chat. Please choose a smaller file.');
         err.statusCode = 413;
@@ -857,8 +861,8 @@ const createChatMessage = async (senderId, body = {}) => {
             [senderId]
         );
         const sentInWindow = Number(mediaCountResult.rows[0]?.count || 0);
-        if (sentInWindow >= DAILY_CHAT_MEDIA_LIMIT) {
-            const err = new Error('Daily media limit reached. You can send 10 images or videos every 24 hours.');
+        if (sentInWindow >= chatLimits.media_per_day) {
+            const err = new Error(`Daily media limit reached. You can send ${chatLimits.media_per_day} image${chatLimits.media_per_day === 1 ? '' : 's'} or videos every 24 hours.`);
             err.statusCode = 429;
             throw err;
         }

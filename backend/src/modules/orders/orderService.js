@@ -783,7 +783,10 @@ const updateOrderStatus = async ({ id, status, userId }) => {
         }
 
         if (status === 'cancelled') {
-            if (isBuyer && order.status !== 'pending') {
+            // The seller's rule wins when the same account is both buyer and
+            // seller (e.g. testing with your own product): a seller may cancel
+            // a processing order, a buyer only a pending one.
+            if (isBuyer && !isSeller && order.status !== 'pending') {
                 throw createHttpError(400, 'Buyers can only cancel orders that are still pending.');
             }
             if (!isSeller && !isBuyer) {

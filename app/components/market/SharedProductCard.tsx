@@ -8,6 +8,7 @@ import SubscribeButton from "@/app/components/SubscribeButton";
 import { RelativeTime } from "@/app/components/RelativeTime";
 import { getItemProfilePicture, getItemUsername, getItemUserId } from "@/app/lib/userDisplay";
 import { UserVerifiedBadge } from "@/app/components/VerifiedBadge";
+import { productNameCase } from "@/app/components/market/productName";
 import {
   AVATAR_IMAGE_SIZES,
   FEED_IMAGE_BLUR_DATA_URL,
@@ -334,7 +335,7 @@ export const SharedProductCard = memo(({
                       Share Link
                     </button>
                   )}
-                  {onPromoteProduct && product.status !== "reviewing" && (
+                  {onPromoteProduct && !["reviewing", "rejected", "deleted", "inactive"].includes(String(product.status || "")) && (
                     <button
                       onClick={() => { onPromoteProduct(product); setOpenMenu(false); }}
                       className="w-full px-4 py-3 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
@@ -450,8 +451,8 @@ export const SharedProductCard = memo(({
         {/* Content Section */}
         <div className={`${compactAdCard ? "px-1.5 pb-1 md:px-5 md:pb-1.5" : "px-2.5 md:px-5 pb-1.5"}`}>
           <div className="mb-1 flex items-start gap-1 flex-wrap">
-            <h3 className={`text-white font-black uppercase tracking-tight group-hover:text-amber-400 transition-colors break-words leading-tight ${compactAdCard ? "text-[8px] md:text-[12px]" : "text-[9px] md:text-[12px]"}`}>
-              {product.title}
+            <h3 className={`text-white font-black tracking-tight group-hover:text-amber-400 transition-colors break-words leading-tight ${compactAdCard ? "text-[8px] md:text-[12px]" : "text-[9px] md:text-[12px]"}`}>
+              {productNameCase(product.title)}
             </h3>
             {uniqueVariantColors.length > 0 && (
               <div className="flex items-center gap-0.5 flex-wrap mt-0.5">

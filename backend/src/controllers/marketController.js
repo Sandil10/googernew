@@ -2109,7 +2109,13 @@ exports.getMarketProducts = async (req, res) => {
                 });
             }
 
-            const requestShuffleSeed = `${feedSession}:${Date.now()}:${Math.random()}`;
+            // Deterministic per-viewer, not per-request: this used to append
+            // Date.now()/Math.random() on every single call, which meant the
+            // feed reshuffled on every refresh no matter what seed the client
+            // sent, and could never match between platforms for the same
+            // user. Now it only depends on who's asking, so the order is
+            // stable across refreshes and identical on web and mobile.
+            const requestShuffleSeed = `shop-feed-${viewerId || 'guest'}`;
             rows = rows
                 .filter((product) => !userInterestProfile.blockedSellerIds.has(Number(product.user_id)))
                 .map((product) => {
@@ -2308,7 +2314,7 @@ exports.getMarketProducts = async (req, res) => {
             }
 
             if (sponsoredRows.length > 1) {
-                const adShuffleSeed = `${feedSession}:ads:${Date.now()}`;
+                const adShuffleSeed = `shop-feed-ads-${viewerId || 'guest'}`;
                 sponsoredRows = shuffleItemsWithSeed(
                     sponsoredRows,
                     adShuffleSeed,
@@ -2510,7 +2516,7 @@ exports.getMarketItems = async (req, res) => {
                     searchKeyword: req.query.keyword,
                 });
 
-                const requestShuffleSeed = `${feedSession}:${Date.now()}:${Math.random()}`;
+                const requestShuffleSeed = `shop-feed-${viewerId || 'guest'}`;
                 rows = rows
                     .map((product) => {
                         const score = calculateProductScore(product, userInterestProfile, `${requestShuffleSeed}:${viewerId}:${product.id}`);
@@ -2654,7 +2660,7 @@ exports.getMarketItems = async (req, res) => {
                 });
             }
 
-            const requestShuffleSeed = `${feedSession}:${Date.now()}:${Math.random()}`;
+            const requestShuffleSeed = `shop-feed-${viewerId || 'guest'}`;
             let sponsoredRows = [];
 
             if (await hasTable('ads')) {
@@ -3000,7 +3006,20 @@ exports.updateMarketItemStatus = async (req, res) => {
     try {
         const { id } = req.params;
         const { status } = req.body;
-        await pool.query('UPDATE market SET status = $1 WHERE id = $2', [status, id]);
+        await pool.query('ALTER TABLE market ADD COLUMN IF NOT EXISTS active_start_time TIMESTAMP');
+        // Approval restarts the listing's "posted" clock (see mutationRepository).
+        await pool.query(
+            `UPDATE market
+                SET active_start_time = CASE
+                      WHEN $1 IN ('approved', 'active')
+                       AND COALESCE(status, '') NOT IN ('approved', 'active', 'inactive')
+                      THEN NOW()
+                      ELSE active_start_time
+                    END,
+                    status = $1
+              WHERE id = $2`,
+            [status, id]
+        );
         res.status(200).json({ success: true, message: 'Status updated successfully' });
     } catch (error) {
         console.error('Error updating status:', error);

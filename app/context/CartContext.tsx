@@ -57,7 +57,14 @@ const CART_STORAGE_KEY = 'googer_cart';
 const RESELL_ATTRIBUTION_STORAGE_KEY = 'googer:resell-attribution';
 const ADDRESS_STORAGE_KEY = 'googer-cart-address-1';
 const MANUAL_PAYMENT_LOCK_STORAGE_KEY = 'googer-manual-payment-lock';
+const MANUAL_PAYMENT_INTENT_STORAGE_KEY = 'googer-manual-payment-intent';
+const MANUAL_PAYMENT_RESET_EVENT = 'googer-manual-payment-reset';
+/** Fired when the shared (server) manual payment lock changed this page's copy. */
+export const MANUAL_PAYMENT_SYNC_EVENT = 'googer-manual-payment-sync';
+const MANUAL_PAYMENT_SYNC_INTERVAL_MS = 5000;
 const GOOGER_PAYMENT_LOCK_STORAGE_KEY = 'googer-payment-lock';
+// CartSidebar's key for the paid Googer Payment (transferId, amount, paidAt).
+const GOOGER_PAYMENT_INTENT_STORAGE_KEY = 'googer-payment-intent';
 const CART_POLL_INTERVAL_MS = 15000;
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
@@ -236,6 +243,123 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
     authTokenRef.current = getAuthToken();
   }, [readLocalCart, setCartItemsIfChanged]);
+
+  // Same account on web and mobile share one Googer Manual Payment lock: the
+  // server keeps it (/api/checkout-intent) and this mirrors it into the local
+  // keys the cart and wallet pages already read. Checked on load, on focus
+  // and every few seconds.
+  useEffect(() => {
+    if (!mounted || typeof window === 'undefined') return;
+    let cancelled = false;
+
+    const sync = async () => {
+      if (!hasAuthenticatedSession()) return;
+      let remote: any = null;
+      let clearedAtMs = 0;
+      try {
+        const state = await cartService.getPaymentIntentState();
+        remote = state.intent;
+        clearedAtMs = state.clearedAt ? Date.parse(state.clearedAt) || 0 : 0;
+      } catch {
+        return; // offline / server issue: keep whatever we have
+      }
+      if (cancelled) return;
+
+      // ---- Googer Payment paid, waiting for Place Order ----
+      const localGooger = safeParseJson(localStorage.getItem(GOOGER_PAYMENT_INTENT_STORAGE_KEY));
+      const localGoogerLocked = localStorage.getItem(GOOGER_PAYMENT_LOCK_STORAGE_KEY) === 'true';
+      if (remote?.kind === 'googer' && remote.transferId) {
+        const sameTransfer = localGooger && String(localGooger.transferId) === String(remote.transferId);
+        if (!sameTransfer || !localGoogerLocked) {
+          localStorage.setItem(GOOGER_PAYMENT_INTENT_STORAGE_KEY, JSON.stringify({
+            paymentMethod: 'wallet',
+            transferId: String(remote.transferId),
+            activeView: 'address',
+            paidAt: Date.parse(remote.createdAt || '') || Date.now(),
+            amount: Number(remote.amount) || 0,
+          }));
+          localStorage.setItem(GOOGER_PAYMENT_LOCK_STORAGE_KEY, 'true');
+          setIsGoogerPaymentCartLockedState(true);
+          // Paid on the other device: open the cart on Place Order, as a
+          // reload here would.
+          setIsCartOpenState(true);
+          window.dispatchEvent(new Event(MANUAL_PAYMENT_SYNC_EVENT));
+        }
+        return;
+      }
+      if (localGooger?.transferId && localGoogerLocked) {
+        const paidAt = Number(localGooger.paidAt) || 0;
+        if (clearedAtMs && clearedAtMs >= paidAt) {
+          // Order placed on the other device.
+          localStorage.removeItem(GOOGER_PAYMENT_INTENT_STORAGE_KEY);
+          localStorage.removeItem(GOOGER_PAYMENT_LOCK_STORAGE_KEY);
+          setIsGoogerPaymentCartLockedState(false);
+          window.dispatchEvent(new Event(MANUAL_PAYMENT_SYNC_EVENT));
+        } else if (!remote && Number(localGooger.amount) > 0) {
+          // Paid here but not shared yet (e.g. offline at the time): share it.
+          cartService.savePaymentIntent({
+            kind: 'googer',
+            transferId: String(localGooger.transferId),
+            amount: Number(localGooger.amount),
+            createdAt: new Date(paidAt || Date.now()).toISOString(),
+            source: 'web',
+          }).catch(() => {});
+        }
+        return;
+      }
+
+      const local = safeParseJson(localStorage.getItem(MANUAL_PAYMENT_INTENT_STORAGE_KEY));
+      const localLocked = localStorage.getItem(MANUAL_PAYMENT_LOCK_STORAGE_KEY) === 'true';
+
+      if (remote?.sellerId) {
+        const next = {
+          sellerId: String(remote.sellerId),
+          sellerName: remote.sellerName || null,
+          transactionId: remote.transactionId || '',
+          verifiedTransferId: remote.verifiedTransferId || null,
+          amount: Number(remote.amount),
+          discountPercent: Number(remote.discountPercent || 0),
+          createdAt: remote.createdAt || new Date().toISOString(),
+        };
+        const changed = !local
+          || String(local.sellerId) !== next.sellerId
+          || Number(local.amount) !== next.amount
+          || String(local.transactionId || '') !== next.transactionId
+          || (local.verifiedTransferId || null) !== next.verifiedTransferId;
+        // Edited here in the last few seconds (typing the transaction ID):
+        // our own save is still on its way, don't roll it back.
+        const localAge = Date.now() - Date.parse(local?.createdAt || '');
+        if (changed && localLocked && Number.isFinite(localAge) && localAge < 8000) return;
+        if (changed) localStorage.setItem(MANUAL_PAYMENT_INTENT_STORAGE_KEY, JSON.stringify(next));
+        if (!localLocked) {
+          localStorage.setItem(MANUAL_PAYMENT_LOCK_STORAGE_KEY, 'true');
+          setIsManualPaymentCartLockedState(true);
+        }
+        if (changed || !localLocked) window.dispatchEvent(new Event(MANUAL_PAYMENT_SYNC_EVENT));
+        return;
+      }
+
+      // Nothing on the server: verified, placed or cancelled on another device.
+      if (!localLocked && !local) return;
+      // A lock started here moments ago may still be on its way up.
+      const age = Date.now() - Date.parse(local?.createdAt || '');
+      if (Number.isFinite(age) && age < 20000) return;
+      localStorage.removeItem(MANUAL_PAYMENT_INTENT_STORAGE_KEY);
+      localStorage.removeItem(MANUAL_PAYMENT_LOCK_STORAGE_KEY);
+      setIsManualPaymentCartLockedState(false);
+      window.dispatchEvent(new Event(MANUAL_PAYMENT_RESET_EVENT));
+    };
+
+    void sync();
+    const timer = window.setInterval(() => { void sync(); }, MANUAL_PAYMENT_SYNC_INTERVAL_MS);
+    const onFocus = () => { void sync(); };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [mounted]);
 
   useEffect(() => {
     cartItemsRef.current = cartItems;

@@ -40,10 +40,24 @@ function encodeBase62(value) {
     return encoded;
 }
 
-function formatManualPaymentDisplayTransactionId(value) {
+const { mixedTransactionId } = require('../../../shared/utils/transactionDisplayId');
+
+// Previous recipe — kept so manual IDs shown before still match.
+function legacyManualPaymentDisplayTransactionId(value) {
     const normalized = String(value ?? '').replace(/\D/g, '').trim() || '0';
     const digitsOnly = `${hashString(`manual:${normalized}`)}${normalized}${hashString(`manual:receipt:${normalized}`)}`.replace(/\D/g, '');
     return digitsOnly.slice(0, 10).padEnd(10, '0');
+}
+
+// Manual payment IDs keep their original 10-digit format; the mixed "G"
+// manual code briefly issued is still accepted below.
+function formatManualPaymentDisplayTransactionId(value) {
+    return legacyManualPaymentDisplayTransactionId(value);
+}
+
+function mixedManualPaymentDisplayTransactionId(value) {
+    const normalized = String(value ?? '').replace(/\D/g, '').trim() || '0';
+    return mixedTransactionId(normalized, 'manual');
 }
 
 async function resolveGoogerMainWalletUserId(client) {
@@ -419,7 +433,8 @@ async function validateManualPaymentHoldTransfer(client, { buyerId, sellerId, tr
 
         transfer = candidateTransfersRes.rows.find((candidate) => {
             return String(candidate.id) === normalizedTransferId
-                || formatManualPaymentDisplayTransactionId(candidate.id) === normalizedTransferId;
+                || formatManualPaymentDisplayTransactionId(candidate.id) === normalizedTransferId
+                || mixedManualPaymentDisplayTransactionId(candidate.id).toLowerCase() === String(normalizedTransferId).toLowerCase();
         }) || null;
     }
 
@@ -984,8 +999,9 @@ exports.updateOrderStatus = async (req, res) => {
         }
 
         if (status === 'cancelled') {
-            // Allow Buyer to cancel only if status is pending
-            if (isBuyer && order.status !== 'pending') {
+            // Allow Buyer to cancel only if status is pending (the seller's
+            // rule wins when the same account is buyer and seller).
+            if (isBuyer && !isSeller && order.status !== 'pending') {
                 await client.query('ROLLBACK');
                 return res.status(400).json({ success: false, message: 'Buyers can only cancel orders that are still pending.' });
             }

@@ -142,13 +142,21 @@ const getIdentityCandidates = (...values: any[]) =>
 const getNameCandidates = (...values: any[]) =>
     getIdentityCandidates(...values).map((value) => value.toLowerCase());
 
+// A forwarded message carries its original sender inline as `[fwd=Name]…`
+// (same BBCode idea as colors) so no backend change is needed.
+const splitForwarded = (text: string): { from: string | null; text: string } => {
+    const match = String(text || "").match(/^\[fwd=([^\]]*)\]([\s\S]*)$/);
+    return match ? { from: match[1].trim() || "Unknown", text: match[2] } : { from: null, text: String(text || "") };
+};
+
 const stripColorTags = (text: string) =>
-    String(text || "").replace(/\[c=[^\]]+\]/gi, "").replace(/\[\/c\]/gi, "").trim();
+    splitForwarded(text).text.replace(/\[c=[^\]]+\]/gi, "").replace(/\[\/c\]/gi, "").trim();
 
 const encodeTtsMessage = (text: string, gender: "male" | "female") =>
     `[tts_voice=${gender}]${text}`;
 
-const decodeTtsMessage = (text: string): { text: string; gender: "male" | "female" } => {
+const decodeTtsMessage = (rawText: string): { text: string; gender: "male" | "female" } => {
+    const text = splitForwarded(rawText).text;
     const match = String(text || "").match(/^\[tts_voice=(male|female)\]([\s\S]*)$/i);
     return {
         text: match ? match[2] : String(text || ""),
@@ -194,6 +202,22 @@ const getMessagePreview = (message: any) => {
     return stripColorTags(message.text) || "New message";
 };
 
+const formatConversationTime = (value?: string | null) => {
+    const timestamp = value ? new Date(value).getTime() : NaN;
+    if (!Number.isFinite(timestamp)) return "";
+    // WhatsApp style: today → time, yesterday → "Yesterday", this past week →
+    // weekday name, older → year/month/day. Same rule as the mobile chat list.
+    const at = new Date(timestamp);
+    const now = new Date();
+    const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const daysAgo = Math.round((startOf(now) - startOf(at)) / 86_400_000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    if (daysAgo <= 0) return `${pad(at.getHours())}:${pad(at.getMinutes())}`;
+    if (daysAgo === 1) return "Yesterday";
+    if (daysAgo < 7) return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][at.getDay()];
+    return `${at.getFullYear()}/${pad(at.getMonth() + 1)}/${pad(at.getDate())}`;
+};
+
 const getPresenceKey = (userId?: number | string | null) => {
     if (!userId) return null;
     return `googer-chat-presence-${userId}`;
@@ -225,11 +249,21 @@ const getChatMobileViewKey = (userId?: number | string | null) => {
 };
 
 const MIN_CHAT_SEARCH_QUERY_LENGTH = 1;
-const CHAT_MEDIA_MAX_BYTES = 3 * 1024 * 1024;       // photo: 1–3 MB
-const CHAT_VIDEO_MAX_BYTES = 20 * 1024 * 1024;      // video: up to 20 MB
-const CHAT_VIDEO_MAX_DURATION_SECS = 60;             // video: 1 min
-const CHAT_VOICE_MAX_SECS = 120;                     // voice: 2 min
-const CHAT_DAILY_MEDIA_LIMIT = 10;                   // 10 photos/videos per day
+// Defaults; replaced on load by the admin's values (Admin → Subscription →
+// Shared Settings → Chat Features, GET /chat-features/limits).
+let CHAT_MEDIA_MAX_BYTES = 3 * 1024 * 1024;       // photo: 1–3 MB
+let CHAT_VIDEO_MAX_BYTES = 20 * 1024 * 1024;      // video: up to 20 MB
+let CHAT_VIDEO_MAX_DURATION_SECS = 60;             // video: 1 min
+let CHAT_VOICE_MAX_SECS = 120;                     // voice: 2 min
+let CHAT_DAILY_MEDIA_LIMIT = 10;                   // 10 photos/videos per day
+const applyChatLimits = (limits: any) => {
+    const n = (v: any, fallback: number) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : fallback);
+    CHAT_MEDIA_MAX_BYTES = Math.round(n(limits?.photo_max_mb, 3) * 1024 * 1024);
+    CHAT_VIDEO_MAX_BYTES = Math.round(n(limits?.video_max_mb, 20) * 1024 * 1024);
+    CHAT_VIDEO_MAX_DURATION_SECS = Math.floor(n(limits?.video_max_seconds, 60));
+    CHAT_VOICE_MAX_SECS = Math.floor(n(limits?.voice_max_seconds, 120));
+    CHAT_DAILY_MEDIA_LIMIT = Math.floor(Number.isFinite(Number(limits?.media_per_day)) ? Number(limits.media_per_day) : 10);
+};
 
 type ChatSendPayload = Parameters<typeof chatService.sendMessage>[0];
 
@@ -419,14 +453,41 @@ export default function ChatsPage() {
     const recordingChunksRef = useRef<Blob[]>([]);
     const recordingTimerRef = useRef<number | null>(null);
     const [isListening, setIsListening] = useState(false);
+    // Voice-to-text paused (bar stays open, dictated text kept) — mobile parity.
+    const [sttPaused, setSttPaused] = useState(false);
+    // Green send in the recording bar: stop capture, then send once the clip is ready.
+    const sendVoiceAfterStopRef = useRef(false);
+    const sendVoiceRecordingRef = useRef<((blob?: Blob, url?: string) => Promise<void>) | null>(null);
     const [recordingState, setRecordingState] = useState<"idle" | "recording" | "paused" | "ready" | "sending">("idle");
     const [recordingSeconds, setRecordingSeconds] = useState(0);
     const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
     const [recordingBlob, setRecordingBlob] = useState<Blob | null>(null);
+    const recordingUrlState = recordingUrl;
+    const recordingBlobState = recordingBlob;
     const [recordingPreviewPlaying, setRecordingPreviewPlaying] = useState(false);
     const recordingPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
     const [speakingMessageId, setSpeakingMessageId] = useState<number | string | null>(null);
     const features = useSubscriptionFeatures();
+    // Admin-set chat limits + custom stickers/emojis, refreshed every 30s so an
+    // admin change reaches open chats without a reload.
+    const [, setChatLimitsVersion] = useState(0);
+    const [customStickers, setCustomStickers] = useState<{ stickers: any[]; emojis: any[] }>({ stickers: [], emojis: [] });
+    useEffect(() => {
+        let active = true;
+        const loadChatFeatures = async () => {
+            try {
+                const res: any = await chatService.getChatLimits();
+                if (active && res?.limits) { applyChatLimits(res.limits); setChatLimitsVersion((v) => v + 1); }
+            } catch { /* keep defaults */ }
+            try {
+                const res: any = await chatService.getCustomStickers();
+                if (active && res) setCustomStickers({ stickers: res.stickers || [], emojis: res.emojis || [] });
+            } catch { /* none */ }
+        };
+        void loadChatFeatures();
+        const timer = window.setInterval(loadChatFeatures, 30_000);
+        return () => { active = false; window.clearInterval(timer); };
+    }, []);
     const canUseVoiceCall = features.voice_calls !== false;
     const canUseVideoCall = features.video_calls === true;
     const [ttsEnabled, setTtsEnabled] = useState(false);
@@ -441,6 +502,11 @@ export default function ChatsPage() {
     const [colorPickerOpen, setColorPickerOpen] = useState(false);
     const [pickedColor, setPickedColor] = useState("#ef4444");
     const [activeTypingColor, setActiveTypingColor] = useState<string | null>(null);
+    // The chosen color is remembered per user, but only takes effect while the
+    // plan includes text colors: after that plan expires the composer and sent
+    // messages fall back to the default white (and come back if they renew).
+    const colorAllowed = features.chat_text_colors === true;
+    const effectiveTypingColor = colorAllowed ? activeTypingColor : null;
     const [activeStickerCategory, setActiveStickerCategory] = useState<string>("trending");
     const [giphyStickers, setGiphyStickers] = useState<{ id: string; url: string; title: string }[]>([]);
     const [giphyLoading, setGiphyLoading] = useState(false);
@@ -574,6 +640,27 @@ export default function ChatsPage() {
     const [selectMode, setSelectMode] = useState(false);
     const [forwardMessage, setForwardMessage] = useState<any>(null);
     const [forwardSearchQuery, setForwardSearchQuery] = useState("");
+    const [forwardUserResults, setForwardUserResults] = useState<any[]>([]);
+    useEffect(() => {
+        const query = forwardSearchQuery.trim();
+        if (!forwardMessage || query.length < 2) {
+            setForwardUserResults([]);
+            return;
+        }
+        let active = true;
+        const timeoutId = window.setTimeout(async () => {
+            try {
+                const users = await walletService.searchUsers(query);
+                if (active) setForwardUserResults(Array.isArray(users) ? users : []);
+            } catch {
+                if (active) setForwardUserResults([]);
+            }
+        }, 250);
+        return () => {
+            active = false;
+            window.clearTimeout(timeoutId);
+        };
+    }, [forwardSearchQuery, forwardMessage]);
     const [hoveredMessageId, setHoveredMessageId] = useState<string | number | null>(null);
     const [pinnedChats, setPinnedChats] = useState<Set<string>>(() => {
         try {
@@ -702,10 +789,10 @@ export default function ChatsPage() {
     const formatCallDuration = (answeredAt?: string | null, endedAt?: string | null) => {
         if (!answeredAt || !endedAt) return null;
         const secs = Math.max(0, Math.round((new Date(endedAt).getTime() - new Date(answeredAt).getTime()) / 1000));
-        if (secs < 60) return `${secs} sec`;
-        const m = Math.floor(secs / 60);
-        const s = secs % 60;
-        return s > 0 ? `${m} min ${s} sec` : `${m} min`;
+        // WhatsApp-style clock: 0:42, 12:05, 1:02:09.
+        const pad = (n: number) => String(n).padStart(2, "0");
+        if (secs >= 3600) return `${Math.floor(secs / 3600)}:${pad(Math.floor((secs % 3600) / 60))}:${pad(secs % 60)}`;
+        return `${Math.floor(secs / 60)}:${pad(secs % 60)}`;
     };
 
     const formatVideoDuration = (duration: number) => {
@@ -719,10 +806,13 @@ export default function ChatsPage() {
         const base = call.call_type === "video" ? "Video Call" : "Voice Call";
         const duration = call.call_status === "completed" ? formatCallDuration(call.answered_at, call.ended_at) : null;
 
-        if (call.call_status === "missed") return `Missed ${base}`;
+        // WhatsApp-style: the caller sees "No answer", only the receiver sees "Missed".
+        if (call.call_status === "missed") {
+            return String(call.caller_id) === String(currentUser?.id) ? `${base} · No answer` : `Missed ${base}`;
+        }
         if (call.call_status === "rejected") return `${base} Rejected`;
         if (call.call_status === "completed") return duration ? `${base} · ${duration}` : base;
-        if (call.call_status === "active") return `${base} (active)`;
+        if (call.call_status === "active") return `${base} Answered`;
         return `${base} (${call.call_status || "ringing"})`;
     };
 
@@ -1153,8 +1243,22 @@ export default function ChatsPage() {
                 })))
                 : [];
             const cachedSummaries = readConversationListSnapshot();
+            // The state captured by this async callback can be one render
+            // behind a just-sent message. The synchronous cache write done by
+            // the optimistic send is fresher in that window, so merge both
+            // sources instead of ignoring the cache whenever state is nonempty.
+            const cachedKeys = new Set(cachedSummaries.map((entry: any) =>
+                getChatConversationKey(entry?.participant) || String(entry?.participant?.id || "")
+            ));
+            const preservationSource = [
+                ...cachedSummaries,
+                ...conversationList.filter((entry: any) => {
+                    const key = getChatConversationKey(entry?.participant) || String(entry?.participant?.id || "");
+                    return key && !cachedKeys.has(key);
+                }),
+            ];
             const preservedSummaries = sanitizeConversationSummaries(
-                (conversationList.length > 0 ? conversationList : cachedSummaries)
+                preservationSource
                     .filter((entry: any) => {
                         const key = getChatConversationKey(entry?.participant) || String(entry?.participant?.id || "");
                         return key && !clearedConversationIds.current.has(key);
@@ -1459,6 +1563,15 @@ export default function ChatsPage() {
                 convListSignatureRef.current = getConversationSignature(cachedList);
                 setConversationList(cachedList);
             }
+            // Phone-width layout: opening Chats shows the list only. Restoring the
+            // last chat here made it "active" in the background, so a new
+            // message in it was marked seen without the user ever opening it.
+            if (window.matchMedia("(max-width: 767px)").matches) {
+                window.localStorage.removeItem(lastOpenKey);
+                if (mobileViewKey) window.localStorage.setItem(mobileViewKey, "list");
+                return;
+            }
+
             const lastConversationKey = String(window.localStorage.getItem(lastOpenKey) || "");
             if (!lastConversationKey) return;
 
@@ -2760,7 +2873,7 @@ export default function ChatsPage() {
         setParticipantTyping(false);
         clearEditable();
         resetVoiceRecording();
-        if (isListening) stopSpeechToText();
+        if (isListening || sttPaused) stopSpeechToText();
         scrollMessagesToBottom("auto");
     };
 
@@ -3020,7 +3133,7 @@ export default function ChatsPage() {
         try { recognition.start(); } catch { setIsListening(false); sttActiveRef.current = false; }
     };
 
-    const startSpeechToText = async () => {
+    const startSpeechToText = async (resuming = false) => {
         if (typeof window === "undefined") return;
         const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
         if (!SR) {
@@ -3046,7 +3159,8 @@ export default function ChatsPage() {
 
         // Reset and start the STT timer
         if (sttTimerRef.current) window.clearInterval(sttTimerRef.current);
-        setRecordingSeconds(0);
+        if (!resuming) setRecordingSeconds(0);
+        setSttPaused(false);
         sttTimerRef.current = window.setInterval(() => {
             setRecordingSeconds((v) => v + 1);
         }, 1000);
@@ -3062,6 +3176,7 @@ export default function ChatsPage() {
         try { speechRecognitionRef.current?.stop?.(); } catch {}
         speechRecognitionRef.current = null;
         setIsListening(false);
+        setSttPaused(false);
         if (clearText) {
             clearEditable();
         } else {
@@ -3115,6 +3230,10 @@ export default function ChatsPage() {
                     recordingTimerRef.current = null;
                 }
                 stream.getTracks().forEach((track) => track.stop());
+                if (sendVoiceAfterStopRef.current) {
+                    sendVoiceAfterStopRef.current = false;
+                    void sendVoiceRecordingRef.current?.(blob, url);
+                }
             };
 
             mediaRecorderRef.current = recorder;
@@ -3207,6 +3326,32 @@ export default function ChatsPage() {
         recorder.stop();
     };
 
+    // Mobile parity: the green send button stops the recording and sends it.
+    const finishAndSendVoiceRecording = () => {
+        const recorder = mediaRecorderRef.current;
+        if (!recorder || recorder.state === "inactive") return;
+        recordingPreviewAudioRef.current?.pause();
+        setRecordingPreviewPlaying(false);
+        sendVoiceAfterStopRef.current = true;
+        recorder.stop();
+    };
+
+    const pauseSpeechToText = () => {
+        sttActiveRef.current = false;
+        if (sttTimerRef.current) { window.clearInterval(sttTimerRef.current); sttTimerRef.current = null; }
+        try { speechRecognitionRef.current?.stop?.(); } catch {}
+        speechRecognitionRef.current = null;
+        setIsListening(false);
+        setSttPaused(true);
+        setMessageInput(getEditableContent());
+        setComposerMode("stt");
+    };
+
+    const resumeSpeechToText = () => {
+        setSttPaused(false);
+        void startSpeechToText(true);
+    };
+
     const handleMicClick = () => {
         if (!ttsEnabled) {
             // Tick OFF → voice recording mode (sends audio message)
@@ -3229,7 +3374,9 @@ export default function ChatsPage() {
             reader.readAsDataURL(blob);
         });
 
-    const sendVoiceRecording = async () => {
+    const sendVoiceRecording = async (blobArg?: Blob, urlArg?: string) => {
+        const recordingBlob = blobArg || recordingBlobState;
+        const recordingUrl = urlArg || recordingUrlState;
         if (!recordingBlob || !activeConversation?.id || !currentUser?.id) return;
 
         setRecordingState("sending");
@@ -3288,8 +3435,12 @@ export default function ChatsPage() {
             setRecordingState("ready");
         }
     };
+    sendVoiceRecordingRef.current = sendVoiceRecording;
 
+    const hasCustomStickers = customStickers.stickers.length + customStickers.emojis.length > 0;
     const STICKER_CATEGORIES = [
+        // Admin's custom stickers & emojis — free for every package.
+        ...(hasCustomStickers ? [{ id: "googer", label: "⭐ Googer" }] : []),
         { id: "trending", label: "🔥 Trending" },
         { id: "happy",    label: "😄 Happy" },
         { id: "love",     label: "❤️ Love" },
@@ -3319,14 +3470,18 @@ export default function ChatsPage() {
     const handleStickerButtonClick = () => {
         const opening = !stickerPanelOpen;
         setStickerPanelOpen(opening);
-        if (opening && features.chat_stickers) {
+        if (opening && hasCustomStickers && !features.chat_stickers) {
+            setActiveStickerCategory("googer");
+            return;
+        }
+        if (opening && features.chat_stickers && activeStickerCategory !== "googer") {
             fetchGiphyStickers(activeStickerCategory);
         }
     };
 
     const handleStickerCategoryChange = (cat: string) => {
         setActiveStickerCategory(cat);
-        if (features.chat_stickers) fetchGiphyStickers(cat);
+        if (cat !== "googer" && features.chat_stickers) fetchGiphyStickers(cat);
     };
 
     const sendSticker = async (stickerUrl: string) => {
@@ -3448,7 +3603,7 @@ export default function ChatsPage() {
         }
         if (ttsEnabled) {
             // Turning tick OFF: stop STT if running, disable
-            if (isListening) stopSpeechToText();
+            if (isListening || sttPaused) stopSpeechToText();
             setTtsEnabled(false);
         } else {
             setTtsEnabled(true);
@@ -3457,9 +3612,11 @@ export default function ChatsPage() {
 
     const handleSendMessage = async () => {
         const rawTrimmed = getEditableContent().trim();
-        const trimmed = activeTypingColor && rawTrimmed && !rawTrimmed.includes("[c=")
-            ? `[c=${activeTypingColor}]${rawTrimmed}[/c]`
-            : rawTrimmed;
+        // Only while the current plan includes text colors — once it expires the
+        // remembered color stops applying and messages go out in default white.
+        const trimmed = colorAllowed && effectiveTypingColor && rawTrimmed && !rawTrimmed.includes("[c=")
+            ? `[c=${effectiveTypingColor}]${rawTrimmed}[/c]`
+            : colorAllowed ? rawTrimmed : rawTrimmed.replace(/\[c=[^\]]+\]/gi, "").replace(/\[\/c\]/gi, "");
         if ((!trimmed && pendingAttachments.length === 0) || !currentUser?.id || !activeConversation?.id) return;
 
         const nextMessages = [...messages];
@@ -3471,7 +3628,9 @@ export default function ChatsPage() {
         //  - typed manually with tick on (composerMode !== "stt")
         const wasSttSend = sttSendAsTtsRef.current;
         sttSendAsTtsRef.current = false;
-        const sendAsTts = !!(features.text_to_voice && ttsEnabled && trimmed && (isListening || wasSttSend || composerMode !== "stt"));
+        // Text that came from speech-to-text always goes out as a normal text
+        // message; only manually typed text becomes a TTS voice message.
+        const sendAsTts = !!(features.text_to_voice && ttsEnabled && trimmed && !isListening && !wasSttSend && composerMode !== "stt");
         const replyToId = replyTo?.id ?? null;
 
         const hasMediaAttachments = pendingAttachments.length > 0;
@@ -3514,6 +3673,7 @@ export default function ChatsPage() {
         }
 
         clearEditable();
+        setSttPaused(false);
         setPendingAttachments([]);
         setReplyTo(null);
         setMessages(nextMessages);
@@ -3755,6 +3915,14 @@ export default function ChatsPage() {
             .then(async (call: any) => {
                 if (!call) return;
                 setActiveCall((prev: any) => ({ ...(prev || {}), ...(call || {}) }));
+
+                if (call.call_status === "active") {
+                    setCallPhase("active");
+                    if (!callStartTimeRef.current) {
+                        callStartTimeRef.current = Date.now();
+                        startCallDurationTimer();
+                    }
+                }
 
                 if (["missed", "rejected", "completed"].includes(call.call_status)) {
                     const participantId =
@@ -4011,7 +4179,10 @@ export default function ChatsPage() {
         }
 
         try {
-            await chatService.completeCall(Number(activeCall.id), "completed");
+            await chatService.completeCall(
+                Number(activeCall.id),
+                callPhase === "active" ? "completed" : "missed",
+            );
             try {
                 const updated = await chatService.getCall(Number(activeCall.id));
                 const participantId =
@@ -4406,10 +4577,18 @@ export default function ChatsPage() {
         if (!forwardMessage || !currentUser?.id) return;
         setForwardMessage(null);
         try {
+            const fwdType = forwardMessage.type === "image" ? "image" : forwardMessage.type === "video" ? "video" : forwardMessage.type === "sticker" ? "sticker" : forwardMessage.type === "voice_tts" ? "voice_tts" : forwardMessage.type === "voice" ? "voice" : "text";
+            // Keep the very first origin when a message is forwarded again.
+            const existing = splitForwarded(forwardMessage.text || "");
+            const originalSender = existing.from
+                || (String(forwardMessage.sender_id) === String(currentUser.id)
+                    ? (currentUser.full_name || currentUser.username || "You")
+                    : (activeConversationDisplayName || "Unknown"));
+            const safeSender = String(originalSender).replace(/[\[\]]/g, "").trim();
             await chatService.forwardMessage({
                 receiverId: targetParticipantId,
-                type: forwardMessage.type === "image" ? "image" : forwardMessage.type === "video" ? "video" : forwardMessage.type === "sticker" ? "sticker" : forwardMessage.type === "voice_tts" ? "voice_tts" : "text",
-                text: forwardMessage.text,
+                type: fwdType,
+                text: fwdType === "sticker" ? forwardMessage.text : `[fwd=${safeSender}]${existing.text}`,
                 image_url: forwardMessage.image_url,
                 file_name: forwardMessage.file_name,
             });
@@ -4999,6 +5178,11 @@ export default function ChatsPage() {
                                                                 {entry.participant.id && <UserVerifiedBadge userId={entry.participant.id} size={10} />}
                                                             </div>
                                                             <div className="flex items-center gap-1.5 shrink-0">
+                                                                {entry.lastMessage?.created_at && (
+                                                                    <span className="text-[7.5px] font-bold text-white/30">
+                                                                        {formatConversationTime(entry.lastMessage.created_at)}
+                                                                    </span>
+                                                                )}
                                                                 {(() => {
                                                                     const lm = entry.lastMessage;
                                                                     const isLmMine = lm && String(lm.sender_id) === String(currentUser?.id);
@@ -5329,12 +5513,22 @@ export default function ChatsPage() {
 
                             {/* Forward message modal */}
                             {forwardMessage && (() => {
-                                const fwdList = forwardSearchQuery.trim()
+                                const fwdQuery = forwardSearchQuery.trim().toLowerCase();
+                                const fwdChatted = fwdQuery
                                     ? visibleConversationList.filter((e) =>
-                                        (e.participant.name || "").toLowerCase().includes(forwardSearchQuery.trim().toLowerCase()) ||
-                                        (e.participant.username || "").toLowerCase().includes(forwardSearchQuery.trim().toLowerCase())
+                                        (e.participant.name || "").toLowerCase().includes(fwdQuery) ||
+                                        (e.participant.username || "").toLowerCase().includes(fwdQuery)
                                       )
                                     : visibleConversationList;
+                                // Searching also reaches people you have never chatted with.
+                                const fwdKnownIds = new Set(fwdChatted.map((e) => String(e.participant.id)));
+                                const fwdBlockedIds = new Set(blockedUsers.map((u: any) => String(u.id)));
+                                const fwdExtra = fwdQuery
+                                    ? forwardUserResults
+                                        .filter((u: any) => String(u.id) !== String(currentUser?.id) && !fwdKnownIds.has(String(u.id)) && !fwdBlockedIds.has(String(u.id)))
+                                        .map((u: any) => ({ participant: u }))
+                                    : [];
+                                const fwdList = [...fwdChatted, ...fwdExtra];
                                 return (
                                     <div className="fixed inset-0 z-[59] bg-black/60 backdrop-blur-sm flex items-end md:items-center justify-center p-4">
                                         <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#101014] shadow-2xl overflow-hidden">
@@ -5771,10 +5965,21 @@ export default function ChatsPage() {
                                                         </div>
                                                     )}
 
+                                                    {(() => {
+                                                        const fwdFrom = ["text", "image", "video", "voice_tts", "voice"].includes(message.type)
+                                                            ? splitForwarded(message.text || "").from
+                                                            : null;
+                                                        return fwdFrom ? (
+                                                            <div className="mb-1.5 flex items-center gap-1 text-[8px] font-black uppercase tracking-widest text-white/45">
+                                                                <IonIcon name="arrow-redo-outline" className="text-[10px]" />
+                                                                <span className="truncate">Forwarded from {fwdFrom}</span>
+                                                            </div>
+                                                        ) : null;
+                                                    })()}
                                                     {message.type === "text" && (
                                                         <>
                                                             <ChatRichText
-                                                                text={message.text}
+                                                                text={splitForwarded(message.text).text}
                                                                 className="text-[10px] leading-relaxed break-words"
                                                             />
                                                             {(() => {
@@ -5840,9 +6045,6 @@ export default function ChatsPage() {
                                                                     <div className="text-[9px] font-black uppercase tracking-widest text-red-400">
                                                                         Voice message
                                                                     </div>
-                                                                    <div className="mt-0.5 text-[8px] font-bold uppercase tracking-widest text-white/35">
-                                                                        {decoded.gender} voice
-                                                                    </div>
                                                                 </div>
                                                             </div>
                                                         );
@@ -5903,15 +6105,24 @@ export default function ChatsPage() {
                                                             <span>{message.text}</span>
                                                         </div>
                                                     )}
-                                                    {message.type === "call_record" && (
-                                                        <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest">
-                                                            <IonIcon
-                                                                name={message.call_status === "missed" ? "call-outline" : message.call_type === "video" ? "videocam-outline" : "call-outline"}
-                                                                className={`text-sm ${message.call_status === "missed" ? "text-red-400" : ""}`}
-                                                            />
-                                                            <span className={message.call_status === "missed" ? "text-red-300" : ""}>{message.text}</span>
-                                                        </div>
-                                                    )}
+                                                    {message.type === "call_record" && (() => {
+                                                        // Decided at render time so call records already cached in
+                                                        // localStorage with the old "Missed" text read correctly too.
+                                                        const iCalled = String(message.caller_id) === String(currentUser?.id);
+                                                        const missedForMe = message.call_status === "missed" && !iCalled;
+                                                        const label = message.call_status === "missed"
+                                                            ? `${message.call_type === "video" ? "Video Call" : "Voice Call"}${iCalled ? " · No answer" : ""}`
+                                                            : message.text;
+                                                        return (
+                                                            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest">
+                                                                <IonIcon
+                                                                    name={message.call_status === "missed" ? "call-outline" : message.call_type === "video" ? "videocam-outline" : "call-outline"}
+                                                                    className={`text-sm ${message.call_status === "missed" ? "text-red-400" : "text-white"}`}
+                                                                />
+                                                                <span className={message.call_status === "missed" ? "text-red-400" : "text-white"}>{missedForMe ? `Missed ${label}` : label}</span>
+                                                            </div>
+                                                        );
+                                                    })()}
                                                     {(message.type === "image" || message.type === "video") && (
                                                         <div className="chat-message-media relative w-40 max-w-full space-y-1.5 overflow-hidden">
                                                             {message.type === "video" ? (
@@ -5951,9 +6162,9 @@ export default function ChatsPage() {
                                                             >
                                                                 <IonIcon name="download-outline" className="text-sm" />
                                                             </a>
-                                                            {message.text && (
+                                                            {splitForwarded(message.text || "").text && (
                                                                 <ChatRichText
-                                                                    text={message.text}
+                                                                    text={splitForwarded(message.text).text}
                                                                     className="pt-1 text-[10px] leading-relaxed break-words text-white/90"
                                                                 />
                                                             )}
@@ -6215,7 +6426,32 @@ export default function ChatsPage() {
                                         </div>
 
                                         {/* Sticker grid */}
-                                        {!features.chat_stickers ? (
+                                        {activeStickerCategory === "googer" && hasCustomStickers ? (
+                                            <div className="max-h-44 overflow-y-auto space-y-2">
+                                                {([
+                                                    ["Stickers", customStickers.stickers, "w-12 h-12", "w-10 h-10"],
+                                                    ["Emojis", customStickers.emojis, "w-9 h-9", "w-7 h-7"],
+                                                ] as [string, any[], string, string][]).map(([title, list, box, img]) => list.length > 0 && (
+                                                    <div key={title}>
+                                                        <div className="mb-1 text-[8px] font-black uppercase tracking-widest text-white/35">{title}</div>
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {list.map((item: any) => (
+                                                                <button
+                                                                    key={item.id}
+                                                                    type="button"
+                                                                    title={item.name || title}
+                                                                    onClick={() => sendSticker(item.url)}
+                                                                    className={`${box} rounded-md bg-white/[0.04] flex items-center justify-center transition hover:bg-white/10 hover:scale-110 active:scale-95 p-0.5`}
+                                                                >
+                                                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                                                    <img src={item.url} alt={item.name || title} className={`${img} object-contain`} draggable={false} loading="lazy" />
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : !features.chat_stickers ? (
                                             <div className="py-5 flex flex-col items-center gap-2 text-center">
                                                 <IonIcon name="lock-closed-outline" className="text-2xl text-amber-400/70" />
                                                 <p className="text-[10px] font-bold text-amber-300/80">Stickers require Plan 02</p>
@@ -6251,22 +6487,55 @@ export default function ChatsPage() {
                                         )}
                                     </div>
                                 )}
-                                {(recordingState !== "idle" || isListening) && (
-                                    <div className="mb-2 flex items-center gap-2 rounded-2xl border border-red-500/20 bg-[#121010] px-3 py-2">
+                                {(isListening || sttPaused) && recordingState === "idle" && (
+                                    /* Voice to text — same layout as the mobile app: trash · red send ·
+                                       label + timer · pause/resume. */
+                                    <div className="mb-2 flex items-center gap-3 rounded-2xl border border-red-500/35 bg-red-500/[0.08] px-3 py-2.5">
+                                        <button
+                                            type="button"
+                                            onClick={() => stopSpeechToText(true)}
+                                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/50 hover:text-white/80"
+                                            title="Discard"
+                                        >
+                                            <IonIcon name="trash-outline" className="text-base" />
+                                        </button>
                                         <button
                                             type="button"
                                             onClick={() => {
-                                                if (isListening) {
-                                                    // Stop STT and clear the typed speech text
-                                                    stopSpeechToText(true);
-                                                } else {
-                                                    resetVoiceRecording();
-                                                }
+                                                sttSendAsTtsRef.current = true;
+                                                stopSpeechToText();
+                                                window.setTimeout(handleSendMessage, 50);
                                             }}
-                                            className="flex h-9 w-9 items-center justify-center rounded-full bg-red-500/10 text-red-300 hover:bg-red-500/20"
+                                            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-lg shadow-red-600/20 hover:bg-red-500"
+                                            title="Send as text"
+                                        >
+                                            <IonIcon name="send" className="text-sm" />
+                                        </button>
+                                        <div className="min-w-0 flex-1">
+                                            <div className="text-[9px] font-semibold uppercase tracking-[0.13em] text-white/50">
+                                                {sttPaused ? "Paused" : "Voice to text"}
+                                            </div>
+                                            <div className="text-[13px] font-semibold text-white">{formatRecordingTime(recordingSeconds)}</div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={sttPaused ? resumeSpeechToText : pauseSpeechToText}
+                                            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.08] text-white hover:bg-white/15"
+                                            title={sttPaused ? "Resume" : "Pause"}
+                                        >
+                                            <IonIcon name={sttPaused ? "mic" : "pause"} className="text-base" />
+                                        </button>
+                                    </div>
+                                )}
+                                {recordingState !== "idle" && (
+                                    <div className="mb-2 flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                                        <button
+                                            type="button"
+                                            onClick={() => resetVoiceRecording()}
+                                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/50 hover:text-white/80"
                                             title="Delete recording"
                                         >
-                                            <IonIcon name="trash-outline" className="text-sm" />
+                                            <IonIcon name="trash-outline" className="text-base" />
                                         </button>
                                         <div className="flex min-w-0 flex-1 items-center gap-2">
                                             {!isListening && (recordingState === "recording" || recordingState === "paused") ? (
@@ -6276,7 +6545,7 @@ export default function ChatsPage() {
                                                     <button
                                                         type="button"
                                                         onClick={listenToRecordingSoFar}
-                                                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-lg shadow-red-600/20 hover:bg-red-500"
+                                                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-lg shadow-red-600/20 hover:bg-red-500"
                                                         title={recordingPreviewPlaying ? "Stop listening" : "Listen back"}
                                                     >
                                                         <IonIcon name={recordingPreviewPlaying ? "pause-outline" : "play-outline"} className="text-lg" />
@@ -6285,7 +6554,7 @@ export default function ChatsPage() {
                                                     <button
                                                         type="button"
                                                         onClick={pauseOrResumeVoiceRecording}
-                                                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-red-600/70 text-white hover:bg-red-500"
+                                                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-600/70 text-white hover:bg-red-500"
                                                         title={recordingState === "paused" ? "Resume" : "Pause"}
                                                     >
                                                         <IonIcon name={recordingState === "paused" ? "mic-outline" : "pause-outline"} className="text-lg" />
@@ -6297,53 +6566,29 @@ export default function ChatsPage() {
                                                 </div>
                                             )}
                                             <div className="min-w-0 flex-1">
-                                                <div className="text-[8px] font-black uppercase tracking-widest text-red-200">
-                                                    {isListening ? "Listening..." : recordingState === "sending" ? "Voice sending" : recordingState === "ready" ? "Voice ready" : "Recording"}
+                                                <div className="text-[9px] font-semibold uppercase tracking-[0.13em] text-white/50">
+                                                    {recordingState === "sending" ? "Voice sending" : recordingState === "ready" ? "Voice ready" : recordingState === "paused" ? "Paused" : "Recording"}
                                                 </div>
-                                                <div className="text-sm font-black text-white">{formatRecordingTime(recordingSeconds)}</div>
+                                                <div className="text-[13px] font-semibold text-white">{formatRecordingTime(recordingSeconds)}</div>
                                                 {recordingUrl && (
                                                     <audio src={recordingUrl} controls className="mt-1 h-7 w-full max-w-[220px]" />
                                                 )}
                                             </div>
                                         </div>
-                                        {isListening && (
-                                            <button
-                                                type="button"
-                                                onClick={() => stopSpeechToText()}
-                                                className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
-                                                title="Pause — keep text, send as normal message"
-                                            >
-                                                <IonIcon name="pause-outline" className="text-base" />
-                                            </button>
-                                        )}
-                                        {isListening && (
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    sttSendAsTtsRef.current = ttsEnabled;
-                                                    stopSpeechToText();
-                                                    window.setTimeout(handleSendMessage, 50);
-                                                }}
-                                                className="flex h-9 w-9 items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-500"
-                                                title="Send as voice message"
-                                            >
-                                                <IonIcon name="send-outline" className="text-base" />
-                                            </button>
-                                        )}
                                         {!isListening && recordingState !== "ready" && recordingState !== "sending" && (
                                             <button
                                                 type="button"
-                                                onClick={finishVoiceRecording}
-                                                className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black hover:bg-zinc-200"
-                                                title="Done"
+                                                onClick={finishAndSendVoiceRecording}
+                                                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-500"
+                                                title="Send voice"
                                             >
-                                                <IonIcon name="checkmark-outline" className="text-base" />
+                                                <IonIcon name="send" className="text-sm" />
                                             </button>
                                         )}
                                         {!isListening && recordingState === "ready" && (
                                             <button
                                                 type="button"
-                                                onClick={sendVoiceRecording}
+                                                onClick={() => sendVoiceRecording()}
                                                 className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-500"
                                                 title="Send voice"
                                             >
@@ -6353,9 +6598,11 @@ export default function ChatsPage() {
                                     </div>
                                 )}
                                 {/* Main composer row — hidden while recording (but shown while listening so text appears) */}
-                                {recordingState === "idle" && (
+                                {/* Mobile parity: the composer stays visible under the
+                                    recording / voice-to-text bar, with all its buttons. */}
+                                {recordingState !== "sending" && (
                                 <div className="flex items-end gap-2">
-                                    {!isListening && (
+                                    {recordingState === "idle" && (
                                         <>
                                             <button
                                                 type="button"
@@ -6388,7 +6635,7 @@ export default function ChatsPage() {
                                                 className="w-8 h-8 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 transition-all flex items-center justify-center shrink-0 relative"
                                             >
                                                 <IonIcon name="happy-outline" className="text-base" />
-                                                {!features.chat_stickers && (
+                                                {!features.chat_stickers && !hasCustomStickers && (
                                                     <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-[#111] border border-white/20 flex items-center justify-center">
                                                         <IonIcon name="lock-closed" className="text-[7px] text-white/50" />
                                                     </span>
@@ -6414,7 +6661,7 @@ export default function ChatsPage() {
                                                     handleSendMessage();
                                                 }
                                             }}
-                                            style={activeTypingColor ? { color: activeTypingColor } : undefined}
+                                            style={effectiveTypingColor ? { color: effectiveTypingColor } : undefined}
                                             className="chat-editable w-full bg-transparent outline-none text-[10px] leading-5 text-white max-h-24 overflow-y-auto"
                                         />
                                         {/* ── Attachment preview strip (image BELOW typed text) ── */}

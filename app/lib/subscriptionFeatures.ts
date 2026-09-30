@@ -79,10 +79,17 @@ export function useSubscriptionFeatures(): SubscriptionFeatures {
 
         const onChange = () => { void refreshSubscriptionFeatures(); };
         window.addEventListener("subscription:changed", onChange);
+        window.addEventListener("focus", onChange);
+        // Plan settings edited in the admin panel reach open pages within ~20s.
+        const poll = window.setInterval(() => {
+            if (document.visibilityState === "visible") void refreshSubscriptionFeatures();
+        }, 20_000);
 
         return () => {
             listeners.delete(setFeatures);
             window.removeEventListener("subscription:changed", onChange);
+            window.removeEventListener("focus", onChange);
+            window.clearInterval(poll);
         };
     }, []);
 

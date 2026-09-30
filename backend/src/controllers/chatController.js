@@ -59,8 +59,8 @@ const pruneExpiredChatsForUser = async (userId) => {
         if (Date.now() - last < PRUNE_COOLDOWN_MS) return;
         lastPruneAt.set(userId, Date.now());
 
-        const features = await getUserSubscriptionFeatures(userId);
-        const retentionMs = getChatRetentionMs(features.extra || {});
+        await ensureChatTables();
+        const retentionMs = await getEffectiveChatRetentionMs(userId);
         if (!retentionMs) return;
         // Bind the cutoff as an explicit UTC ISO string, NOT a raw JS Date.
         // node-postgres serializes a bare Date parameter using the Node
@@ -85,10 +85,69 @@ const pruneExpiredChatsForUser = async (userId) => {
                AND created_at < $2`,
             [userId, cutoff]
         );
+        // Call records (missed voice/video call, no answer, answered) are part
+        // of the chat too and expire on the same timer.
+        await pool.query(
+            `UPDATE chat_call_sessions
+             SET deleted_for = deleted_for || to_jsonb($1::text)
+             WHERE (caller_id = $1 OR receiver_id = $1)
+               AND call_status IN ('missed', 'completed', 'rejected')
+               AND NOT (deleted_for ? ($1::text))
+               AND created_at < $2`,
+            [userId, cutoff]
+        );
     } catch (err) {
         console.error('[chat] pruneExpiredChatsForUser error:', err.message);
     }
 };
+
+// Package limit set by the admin (null = no limit / lifetime).
+const getPlanChatRetentionMs = async (userId) => {
+    const features = await getUserSubscriptionFeatures(userId);
+    return getChatRetentionMs(features.extra || {});
+};
+
+// What actually applies: the user's own timer when set, never longer than the
+// package limit.
+const getEffectiveChatRetentionMs = async (userId) => {
+    const planMs = await getPlanChatRetentionMs(userId);
+    let userMs = null;
+    try {
+        const r = await pool.query('SELECT chat_auto_delete_ms FROM chat_presence WHERE user_id = $1', [userId]);
+        const raw = Number(r.rows[0]?.chat_auto_delete_ms);
+        userMs = Number.isFinite(raw) && raw > 0 ? raw : null;
+    } catch { userMs = null; }
+    if (userMs && (!planMs || userMs <= planMs)) return userMs;
+    return planMs;
+};
+
+// Auto-delete used to run only when a user opened their chat list, so a user
+// who stayed away kept messages far past their plan's window. Sweep everyone
+// with chat history every few minutes, using whatever the admin panel has set
+// on their plan right now.
+const CHAT_PRUNE_SWEEP_MS = 5 * 60 * 1000;
+const pruneAllChatUsers = async () => {
+    try {
+        const result = await pool.query(
+            `SELECT DISTINCT user_id FROM (
+                 SELECT sender_id AS user_id FROM chat_messages
+                 UNION
+                 SELECT receiver_id AS user_id FROM chat_messages
+             ) participants
+             WHERE user_id IS NOT NULL`
+        );
+        for (const row of result.rows) {
+            lastPruneAt.delete(Number(row.user_id));
+            await pruneExpiredChatsForUser(Number(row.user_id));
+        }
+    } catch (err) {
+        console.error('[chat] auto-delete sweep error:', err.message);
+    }
+};
+if (process.env.NODE_ENV !== 'test') {
+    setTimeout(() => { void pruneAllChatUsers(); }, 30 * 1000).unref();
+    setInterval(() => { void pruneAllChatUsers(); }, CHAT_PRUNE_SWEEP_MS).unref();
+}
 
 const ACTIVE_SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate']);
 const CALL_TYPES = new Set(['voice', 'video']);
@@ -350,6 +409,29 @@ const ensureChatTables = async () => {
             await pool.query(`
                 ALTER TABLE chat_call_sessions
                     ADD COLUMN IF NOT EXISTS encryption JSONB NOT NULL DEFAULT '{}'::jsonb;
+            `);
+
+            // Missed incoming calls count as "unread" in the chat list until the
+            // receiver opens that chat. Rows that already exist stay seen.
+            await pool.query(`
+                ALTER TABLE chat_call_sessions
+                    ADD COLUMN IF NOT EXISTS receiver_seen BOOLEAN NOT NULL DEFAULT TRUE;
+            `);
+            await pool.query(`
+                ALTER TABLE chat_call_sessions
+                    ALTER COLUMN receiver_seen SET DEFAULT FALSE;
+            `);
+            // Call records (missed / answered / no answer) follow the same chat
+            // auto-delete window as messages, per participant.
+            await pool.query(`
+                ALTER TABLE chat_call_sessions
+                    ADD COLUMN IF NOT EXISTS deleted_for JSONB NOT NULL DEFAULT '[]'::jsonb;
+            `);
+            // The user's own auto-delete timer (ms). Never longer than their
+            // package's admin-set limit; NULL = use the package limit.
+            await pool.query(`
+                ALTER TABLE chat_presence
+                    ADD COLUMN IF NOT EXISTS chat_auto_delete_ms BIGINT;
             `);
 
             await pool.query(`
@@ -1317,10 +1399,53 @@ exports.getConversations = async (req, res) => {
             [userId, hiddenIds, `${ASSIGNMENT_NOTICE_PREFIX}%`]
         );
 
+        // Unseen missed incoming calls behave like unread messages: they bump
+        // the badge and become the row's preview when newer than the last message.
+        let missedByCaller = new Map();
+        try {
+            await normalizeExpiredCalls(userId);
+            const missedRes = await pool.query(
+                `
+                    SELECT caller_id,
+                           COUNT(*) FILTER (WHERE receiver_seen = FALSE)::int AS cnt,
+                           MAX(created_at) AS last_at,
+                           (ARRAY_AGG(call_type ORDER BY created_at DESC))[1] AS last_type,
+                           (ARRAY_AGG(id ORDER BY created_at DESC))[1] AS last_id
+                    FROM chat_call_sessions
+                    WHERE receiver_id = $1 AND call_status = 'missed'
+                      AND NOT (COALESCE(deleted_for, '[]'::jsonb) ? ($1::text))
+                    GROUP BY caller_id
+                `,
+                [userId]
+            );
+            missedByCaller = new Map(missedRes.rows.map((r) => [Number(r.caller_id), r]));
+        } catch (missedErr) {
+            console.error('missed-call summary error:', missedErr.message);
+        }
+
         const conversations = result.rows.map((row) => {
             const hasAssignedSupportAlias =
                 row.assigned_admin_id != null &&
                 ['superadmin', 'super_admin'].includes(String(row.participant_role || '').toLowerCase());
+            const missed = row.assigned_admin_id == null ? missedByCaller.get(Number(row.participant_id)) : null;
+            let lastMessage = mapMessageRow(row);
+            let unreadCount = Number(row.unread_count || 0);
+            if (missed) {
+                unreadCount += Number(missed.cnt || 0);
+                if (new Date(missed.last_at).getTime() >= new Date(row.created_at).getTime()) {
+                    lastMessage = {
+                        ...lastMessage,
+                        id: `call-${missed.last_id}`,
+                        type: 'call_record',
+                        call_status: 'missed',
+                        text: `Missed ${missed.last_type === 'video' ? 'video' : 'voice'} call`,
+                        sender_id: Number(row.participant_id),
+                        receiver_id: userId,
+                        status: 'delivered',
+                        created_at: missed.last_at,
+                    };
+                }
+            }
             return {
                 participant: {
                     id: Number(row.participant_id),
@@ -1342,10 +1467,59 @@ exports.getConversations = async (req, res) => {
                             : row.participant_role === 'seller' ? 'Seller' : 'Buyer',
                     ...getPresenceStatus(row.participant_last_seen_at),
                 },
-                unread_count: Number(row.unread_count || 0),
-                lastMessage: mapMessageRow(row),
+                unread_count: unreadCount,
+                lastMessage,
             };
         });
+
+        // A caller you have never messaged still gets a row: the missed call is
+        // the conversation's only entry, like a missed call in WhatsApp.
+        try {
+            const known = new Set(conversations.map((c) => Number(c.participant.id)));
+            const callOnlyIds = [...missedByCaller.keys()]
+                .filter((id) => !known.has(id) && !hiddenIds.includes(id));
+            if (callOnlyIds.length > 0) {
+                const usersRes = await pool.query(
+                    `SELECT id, full_name, username, profile_picture, user_type FROM users WHERE id = ANY($1::int[])`,
+                    [callOnlyIds]
+                );
+                usersRes.rows.forEach((u) => {
+                    const missed = missedByCaller.get(Number(u.id));
+                    conversations.push({
+                        participant: {
+                            id: Number(u.id),
+                            name: u.full_name || u.username || 'User',
+                            username: u.username,
+                            user_type: u.user_type,
+                            assigned_admin_alias: false,
+                            assigned_admin_id: null,
+                            product_status_id: null,
+                            topup_request_id: null,
+                            conversation_key: `${Number(u.id)}:base`,
+                            profile_picture: u.profile_picture,
+                            roleLabel: u.user_type === 'seller' ? 'Seller' : 'Buyer',
+                        },
+                        unread_count: Number(missed.cnt || 0),
+                        lastMessage: {
+                            id: `call-${missed.last_id}`,
+                            type: 'call_record',
+                            call_status: 'missed',
+                            text: `Missed ${missed.last_type === 'video' ? 'video' : 'voice'} call`,
+                            sender_id: Number(u.id),
+                            receiver_id: userId,
+                            status: 'delivered',
+                            created_at: missed.last_at,
+                        },
+                    });
+                });
+            }
+        } catch (callOnlyErr) {
+            console.error('call-only conversations error:', callOnlyErr.message);
+        }
+
+        // Newest activity first, so a fresh missed call floats its chat to the top.
+        conversations.sort((a, b) =>
+            new Date(b.lastMessage?.created_at || 0).getTime() - new Date(a.lastMessage?.created_at || 0).getTime());
 
         return success(res, conversations, 'Conversations fetched');
     } catch (err) {
@@ -1596,7 +1770,9 @@ const createChatMessage = async (senderId, body = {}) => {
 
     if (type === 'sticker' || type === 'voice_tts') {
         const features = await getUserSubscriptionFeatures(senderId);
-        if (type === 'sticker' && !features.chat_stickers) {
+        // Admin's custom stickers/emojis are free for every package.
+        const isCustomSticker = type === 'sticker' && await require('../utils/chatFeatureSettings').isCustomStickerUrl(body.text);
+        if (type === 'sticker' && !features.chat_stickers && !isCustomSticker) {
             const err = new Error('Stickers are available in higher plans. Please upgrade.');
             err.statusCode = 403;
             throw err;
@@ -1639,7 +1815,9 @@ const createChatMessage = async (senderId, body = {}) => {
         throw err;
     }
 
-    const mediaMaxBytes = type === 'video' ? CHAT_VIDEO_MAX_BYTES : CHAT_MEDIA_MAX_BYTES;
+    // Admin-editable limits (Subscription → Chat Features).
+    const chatLimits = await require('../utils/chatFeatureSettings').getChatMediaLimits();
+    const mediaMaxBytes = Math.round((type === 'video' ? chatLimits.video_max_mb : chatLimits.photo_max_mb) * 1024 * 1024);
     if ((type === 'image' || type === 'video') && imageUrl?.startsWith('data:') && getDataUrlByteSize(imageUrl) > mediaMaxBytes) {
         const err = new Error('Media could not be compressed for chat. Please choose a smaller file.');
         err.statusCode = 413;
@@ -1665,8 +1843,8 @@ const createChatMessage = async (senderId, body = {}) => {
             [senderId]
         );
         const sentInWindow = Number(mediaCountResult.rows[0]?.count || 0);
-        if (sentInWindow >= DAILY_CHAT_MEDIA_LIMIT) {
-            const err = new Error('Daily media limit reached. You can send 10 images or videos every 24 hours.');
+        if (sentInWindow >= chatLimits.media_per_day) {
+            const err = new Error(`Daily media limit reached. You can send ${chatLimits.media_per_day} image${chatLimits.media_per_day === 1 ? '' : 's'} or videos every 24 hours.`);
             err.statusCode = 429;
             throw err;
         }
@@ -2840,6 +3018,17 @@ exports.completeCall = async (req, res) => {
             return error(res, 'Not authorized to end this call', 403);
         }
 
+        // Keep call history truthful even if a client hangs up in the small
+        // window between the receiver accepting and the caller's next status
+        // poll. Ringing calls end as missed; answered calls end as completed;
+        // and a terminal record is immutable on later duplicate requests.
+        if (['completed', 'missed', 'rejected'].includes(call.call_status)) {
+            return success(res, mapCallRow(call, userId), 'Call already closed');
+        }
+        const persistedStatus = call.call_status === 'active'
+            ? 'completed'
+            : finalStatus === 'rejected' ? 'rejected' : 'missed';
+
         await pool.query(
             `
                 UPDATE chat_call_sessions
@@ -2848,7 +3037,7 @@ exports.completeCall = async (req, res) => {
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = $1
             `,
-            [callId, finalStatus]
+            [callId, persistedStatus]
         );
 
         const updatedCall = await getCallWithUsers(callId);
@@ -3084,12 +3273,20 @@ exports.getCallHistory = async (req, res) => {
                 FROM chat_call_sessions s
                 JOIN users caller ON caller.id = s.caller_id
                 JOIN users receiver ON receiver.id = s.receiver_id
-                WHERE (s.caller_id = $1 AND s.receiver_id = $2)
-                   OR (s.caller_id = $2 AND s.receiver_id = $1)
+                WHERE ((s.caller_id = $1 AND s.receiver_id = $2)
+                   OR (s.caller_id = $2 AND s.receiver_id = $1))
+                  AND NOT (COALESCE(s.deleted_for, '[]'::jsonb) ? ($1::text))
                 ORDER BY s.created_at ASC, s.id ASC
             `,
             [userId, participantId]
         );
+
+        // Opening the chat acknowledges its missed calls.
+        pool.query(
+            `UPDATE chat_call_sessions SET receiver_seen = TRUE
+             WHERE receiver_id = $1 AND caller_id = $2 AND receiver_seen = FALSE`,
+            [userId, participantId]
+        ).catch(() => { });
 
         return success(
             res,
@@ -3099,6 +3296,59 @@ exports.getCallHistory = async (req, res) => {
     } catch (err) {
         console.error('getCallHistory error:', err);
         return error(res, 'Server error fetching call history', 500);
+    }
+};
+
+// GET /chat/settings/auto-delete — the user's own chat timer and the package
+// limit it may not exceed.
+exports.getAutoDeleteSetting = async (req, res) => {
+    try {
+        await ensureChatTables();
+        const userId = Number(req.user.id);
+        const planMs = await getPlanChatRetentionMs(userId);
+        const r = await pool.query('SELECT chat_auto_delete_ms FROM chat_presence WHERE user_id = $1', [userId]);
+        const raw = Number(r.rows[0]?.chat_auto_delete_ms);
+        const userMs = Number.isFinite(raw) && raw > 0 ? raw : null;
+        return success(res, {
+            plan_max_ms: planMs,
+            user_ms: userMs && (!planMs || userMs <= planMs) ? userMs : null,
+            effective_ms: await getEffectiveChatRetentionMs(userId),
+        }, 'Chat timer fetched');
+    } catch (err) {
+        console.error('getAutoDeleteSetting error:', err);
+        return error(res, 'Server error fetching chat timer', 500);
+    }
+};
+
+// PUT /chat/settings/auto-delete {ms} — null/0 resets to the package limit.
+exports.setAutoDeleteSetting = async (req, res) => {
+    try {
+        await ensureChatTables();
+        const userId = Number(req.user.id);
+        const planMs = await getPlanChatRetentionMs(userId);
+        const requested = req.body?.ms == null || req.body.ms === '' ? null : Number(req.body.ms);
+        if (requested !== null && (!Number.isFinite(requested) || requested < 60 * 1000)) {
+            return error(res, 'The chat timer must be at least 1 minute.', 400);
+        }
+        if (requested !== null && planMs && requested > planMs) {
+            return error(res, 'That is longer than your package allows.', 400);
+        }
+        await pool.query(
+            `INSERT INTO chat_presence (user_id, chat_auto_delete_ms)
+             VALUES ($1, $2)
+             ON CONFLICT (user_id) DO UPDATE SET chat_auto_delete_ms = EXCLUDED.chat_auto_delete_ms`,
+            [userId, requested === null ? null : Math.round(requested)]
+        );
+        lastPruneAt.delete(userId);
+        void pruneExpiredChatsForUser(userId);
+        return success(res, {
+            plan_max_ms: planMs,
+            user_ms: requested,
+            effective_ms: await getEffectiveChatRetentionMs(userId),
+        }, 'Chat timer saved');
+    } catch (err) {
+        console.error('setAutoDeleteSetting error:', err);
+        return error(res, 'Server error saving chat timer', 500);
     }
 };
 
@@ -3117,7 +3367,8 @@ exports.getCallSummaries = async (req, res) => {
                             ELSE s.caller_id
                         END AS participant_id
                     FROM chat_call_sessions s
-                    WHERE s.caller_id = $1 OR s.receiver_id = $1
+                    WHERE (s.caller_id = $1 OR s.receiver_id = $1)
+                      AND NOT (COALESCE(s.deleted_for, '[]'::jsonb) ? ($1::text))
                 )
                 SELECT DISTINCT ON (cc.participant_id)
                     cc.*,

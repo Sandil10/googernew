@@ -665,12 +665,15 @@ export const authService = {
         }
     },
 
-    getWallet: async () => {
+    getWallet: async (includeReferrals = false) => {
         try {
             const token = storage.get('token');
             if (!token) throw new Error('No session found');
 
-            const response = await fetch(`${API_URL}/auth/wallet`, {
+            // The backend only returns the referral rows when asked
+            // (`include_referrals=true`) — the Referrals tab needs them.
+            const query = includeReferrals ? '?include_referrals=true&limit=200' : '';
+            const response = await fetch(`${API_URL}/auth/wallet${query}`, {
                 method: 'GET',
                 headers: {
                     'Authorization': `Bearer ${token}`,

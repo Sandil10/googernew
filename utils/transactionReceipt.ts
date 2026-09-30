@@ -39,6 +39,58 @@ const isManualPaymentTransaction = (transaction: any) => {
     return type === "order_hold" && /manual payment/i.test(note);
 };
 
+// Shared "G" + 9 mixed letters/digits recipe — identical to the backend
+// (shared/utils/transactionDisplayId.js) and the mobile app, so a fallback
+// computed here matches the ID the server shows.
+const TX_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+const mul32 = (a: number, b: number) => {
+    const ah = (a >>> 16) & 0xffff;
+    const al = a & 0xffff;
+    const bh = (b >>> 16) & 0xffff;
+    const bl = b & 0xffff;
+    return ((al * bl) + ((((ah * bl) + (al * bh)) & 0xffff) * 65536)) % 4294967296;
+};
+
+const hash32 = (text: string, seed: number) => {
+    let h = seed >>> 0;
+    for (let i = 0; i < text.length; i += 1) {
+        h = (h ^ text.charCodeAt(i)) >>> 0;
+        h = mul32(h, 0x01000193);
+    }
+    h = (h ^ (h >>> 16)) >>> 0;
+    h = mul32(h, 0x85ebca6b);
+    h = (h ^ (h >>> 13)) >>> 0;
+    h = mul32(h, 0xc2b2ae35);
+    h = (h ^ (h >>> 16)) >>> 0;
+    return h;
+};
+
+const base62Chars = (value: number, count: number) => {
+    let out = "";
+    let current = value;
+    for (let i = 0; i < count; i += 1) {
+        out += TRANSACTION_ID_ALPHABET[current % 62];
+        current = Math.floor(current / 62);
+    }
+    return out;
+};
+
+export const mixedTransactionId = (id: string | number, kind: string = "wallet") => {
+    const seed = `googer-tx:${kind}:${String(id ?? "").trim() || "0"}`;
+    const h1 = hash32(seed, 0x9747b28c);
+    const h2 = hash32(seed, 0x1b873593);
+    const h3 = hash32(seed, 0xcc9e2d51);
+    const chars = (base62Chars(h1, 5) + base62Chars(h2, 5)).slice(0, 9).split("");
+    chars[h3 % 9] = String(h3 % 10);
+    let letterPos = (h3 >>> 8) % 9;
+    if (letterPos === h3 % 9) letterPos = (letterPos + 1) % 9;
+    chars[letterPos] = TX_LETTERS[(h3 >>> 16) % 52];
+    return `G${chars.join("")}`;
+};
+
+// Manual payment IDs keep their original 10-digit format (only the other
+// payment IDs use the mixed "G" codes).
 const formatManualPaymentDisplayTransactionId = (value: string | number | undefined) => {
     const normalized = String(value ?? "").replace(/\D/g, "").trim() || "0";
     const digitsOnly = `${hashString(`manual:${normalized}`)}${normalized}${hashString(`manual:receipt:${normalized}`)}`.replace(/\D/g, "");
@@ -56,6 +108,9 @@ export const formatDisplayTransactionId = (value: string | number | undefined, t
     const normalized = String(value ?? "").replace(/[^a-zA-Z0-9]/g, "").trim();
 
     if (!normalized) return "G35hfSj5g7";
+
+    // A plain row id gets the shared mixed code.
+    if (/^\d+$/.test(normalized)) return mixedTransactionId(normalized);
 
     const body = normalized.replace(/^[gG]/, "");
 

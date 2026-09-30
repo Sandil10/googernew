@@ -20,6 +20,9 @@ import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
 import { ProfilePromoteCarousel } from "@/app/components/ads/ProfilePromoteCarousel";
 import { ShopProductSecondViewModal } from "@/app/components/market/ShopProductSecondViewModal";
 import { SharedProductCard } from "@/app/components/market/SharedProductCard";
+import { variantColorHex } from "@/app/components/market/productColors";
+import { UserVerifiedBadge } from "@/app/components/VerifiedBadge";
+import { productNameCase } from "@/app/components/market/productName";
 import UploadContentFeedCard, { type UploadContentSheetType } from "@/app/components/upload-content/UploadContentFeedCard";
 import { uploadContentService, type UploadContentRecord } from "@/services/uploadContentService";
 import { normalizeAdData, resolveAdDisplayTitle } from "@/app/lib/ads/adNormalizer";
@@ -73,18 +76,6 @@ const formatCategoryLabel = (value: any) => String(value || "")
   .replace(/\bUsa\b/g, "USA")
   .replace(/\bUk\b/g, "UK");
 
-const getSessionClientSeed = (storageKey: string) => {
-  if (typeof window === "undefined") return storageKey;
-  try {
-    const existing = window.sessionStorage.getItem(storageKey);
-    if (existing) return existing;
-    const next = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    window.sessionStorage.setItem(storageKey, next);
-    return next;
-  } catch {
-    return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-};
 type ShopSortOption = typeof SHOP_SORT_OPTIONS[number]["id"];
 const MARKET_ALGORITHM_OPTIONS = [
   { id: "trending", label: "Trending Now" },
@@ -714,7 +705,7 @@ const getShippingAddressSummary = (raw: any, fallbackFee?: any) => {
     return `${addr.fullAddress || "Standard Delivery Address"}${deliveryDisplay}`;
   }
 
-  const base = [addr.houseNo, addr.street, addr.city, addr.country]
+  const base = [addr.houseNo, addr.buildingNo, addr.street, addr.city, addr.country]
     .filter(Boolean)
     .join(", ");
 
@@ -735,6 +726,11 @@ const getShippingBlueBoxLines = (raw: any, fallbackOrder?: any) => {
     address,
   ].filter(Boolean);
 };
+
+// A seller's own listing that is not live in the market: under review,
+// rejected, or inactive (deleted). These can't be resold or promoted.
+const isNotLiveListing = (product: any) =>
+  ["reviewing", "rejected", "deleted", "inactive"].includes(String(product?.status || "").toLowerCase());
 
 const ORDER_STAGE_FILTERS = {
   all: "pending,processing,shipped,delivered,received,reshipped,cancelled,returned,rejected",
@@ -775,12 +771,14 @@ function ShippingInfoModal({
     ? []
     : [
       { label: "Phone Number", value: address.phone },
+      { label: "Phone Number 2", value: address.phone2 },
       { label: "Country", value: address.country },
       { label: "Province", value: address.province },
       { label: "District", value: address.district },
       { label: "City", value: address.city },
+      { label: "House No", value: address.houseNo },
       { label: "Street Name", value: address.street },
-      { label: "Building Number", value: address.houseNo },
+      { label: "Building Number", value: address.buildingNo },
       { label: "Required Note", value: address.requiredNote || address.deliveryNote || address.note },
       { label: "Optional Note", value: address.optionalNote || address.noteOptional },
     ].filter((entry) => entry.value);
@@ -1597,13 +1595,22 @@ function interleaveShopProductsWithAds(
   return output;
 }
 
-function insertProfilePromoteCarouselRows(items: any[], profilePromoteAds: any[]) {
+// Each profile-ad row starts from a different ad, so two consecutive rows never
+// repeat the same cards.
+function rotateProfilePromoteAdsForRow(ads: any[], row: number) {
+  if (ads.length <= 1) return ads;
+  const step = ads.length > 2 ? 2 : 1;
+  const offset = (row * step) % ads.length;
+  return [...ads.slice(offset), ...ads.slice(0, offset)];
+}
+
+function insertProfilePromoteCarouselRows(items: any[], profilePromoteAds: any[], rowOffset = 0) {
   if (!profilePromoteAds.length) return items;
   if (!items.length) {
     return [{
       type: "profilePromoteCarousel",
-      id: "shop-profile-promote-carousel-1",
-      ads: profilePromoteAds,
+      id: `shop-profile-promote-carousel-${rowOffset}-1`,
+      ads: rotateProfilePromoteAdsForRow(profilePromoteAds, rowOffset),
     }];
   }
 
@@ -1626,8 +1633,8 @@ function insertProfilePromoteCarouselRows(items: any[], profilePromoteAds: any[]
       carouselCount += 1;
       output.push({
         type: "profilePromoteCarousel",
-        id: `shop-profile-promote-carousel-${carouselCount}`,
-        ads: profilePromoteAds,
+        id: `shop-profile-promote-carousel-${rowOffset}-${carouselCount}`,
+        ads: rotateProfilePromoteAdsForRow(profilePromoteAds, rowOffset + carouselCount - 1),
       });
       slotsSinceCarousel = 0;
       if (intervalIndex < intervals.length - 1) intervalIndex += 1;
@@ -1922,19 +1929,53 @@ export default function ShopPage() {
   const [marketNextOffset, setMarketNextOffset] = useState(0);
   const [isLoadingMoreProducts, setIsLoadingMoreProducts] = useState(false);
   const marketLoadMoreRef = useRef<HTMLDivElement | null>(null);
-  const [shopAdShuffleSeed] = useState(() => getSessionClientSeed("googer-shop-ad-pool-seed-v2"));
-  const [shopAdRotation] = useState(() => {
-    if (typeof window === "undefined") return 0;
-    try {
-      const previousRotation = Number.parseInt(window.localStorage.getItem("googer-shop-ad-row-rotation-v1") || "0", 10) || 0;
-      const nextRotation = previousRotation + 1;
-      window.localStorage.setItem("googer-shop-ad-row-rotation-v1", String(nextRotation));
-      return nextRotation;
-    } catch {
-      return 0;
+  // Deterministic per user, not per session/visit — these used to be
+  // randomized or incremented on every load (a fresh Date.now()/Math.random()
+  // seed, and a rotation counter that advanced in localStorage each visit),
+  // so the shop feed reshuffled on every refresh and could never match
+  // between web and mobile for the same account. Keying purely off the
+  // user's id makes both stable across refreshes and identical cross-platform.
+  // Changes on every page load / refresh, so products, ads and profile ads come
+  // out in a fresh order each visit, and stay put while the page is scrolled.
+  const [shopFeedSession] = useState(() => Math.random().toString(36).slice(2, 10));
+  const shopAdShuffleSeed = `shop-feed-ads-${currentUser?.id || "guest"}-${shopFeedSession}`;
+  const shopAdRotation = 0;
+  const productShuffleSeed = `shop-feed-${currentUser?.id || "guest"}-${shopFeedSession}`;
+
+  // The server's shared arrangement of the shop feed (which products, in what
+  // order, where the ads and profile carousels sit). Web and mobile both render
+  // this, so the same account sees the same feed on either. It only describes
+  // the unfiltered default view; any search/category/country/sort falls back to
+  // the local arrangement below.
+  const [shopLayout, setShopLayout] = useState<any>(null);
+  const shopLayoutEligible =
+    activeTab === "market" &&
+    !!currentUser?.id &&
+    !selectedCategory && !selectedSubCategory && !selectedLevel3 &&
+    !marketSearchQuery.trim() && !searchDraft.trim() &&
+    !selectedFilterCountry && !marketSortOption &&
+    activeMarketAlgorithm === "recommended";
+  useEffect(() => {
+    if (!shopLayoutEligible) {
+      setShopLayout(null);
+      return;
     }
-  });
-  const [productShuffleSeed, setProductShuffleSeed] = useState(() => `${Date.now()}-${Math.random()}`);
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = typeof window !== "undefined" ? (window.sessionStorage.getItem("token") || window.localStorage.getItem("token")) : null;
+        const response = await fetch("/api/market/shop-layout", {
+          cache: "no-store",
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+        const payload = await response.json().catch(() => null);
+        if (!cancelled && response.ok && payload?.data?.sections) setShopLayout(payload.data);
+      } catch {
+        // Falls back to the local arrangement.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [shopLayoutEligible, currentUser?.id]);
   const marketFeedSessionRef = useRef<string>("");
   const marketShuffleTokenRef = useRef<string>("");
   const productDwellRef = useRef<{ key: string; startedAt: number } | null>(null);
@@ -2757,13 +2798,22 @@ export default function ShopPage() {
       // Default the shipping country to match the user's saved address if available
       const standardized = parseShippingData(selectedProduct);
       const isSavedCountryAvailable = standardized.find(c => c.country === savedAddress?.country);
-      if (savedAddress?.country && isSavedCountryAvailable) {
+      // A shop Country filter wins: the product was listed because it ships
+      // there (or worldwide), so SHIPS TO opens on that country.
+      const filterCountry = activeTab === "market" ? selectedFilterCountry : "";
+      const shipsToFilterCountry = !!filterCountry && standardized.some((c: any) => {
+        const name = String(c?.country || "").toLowerCase();
+        return name === filterCountry.toLowerCase() || name.includes("world");
+      });
+      if (shipsToFilterCountry) {
+        setSelectedShippingCountry(filterCountry);
+      } else if (savedAddress?.country && isSavedCountryAvailable) {
         setSelectedShippingCountry(savedAddress.country);
       } else {
         setSelectedShippingCountry(standardized[0]?.country || 'Worldwide');
       }
     }
-  }, [selectedProduct?.id, selectedProduct?.adId, selectedProduct?.ad_id, savedAddress?.country]);
+  }, [selectedProduct?.id, selectedProduct?.adId, selectedProduct?.ad_id, savedAddress?.country, selectedFilterCountry, activeTab]);
 
   useEffect(() => {
     if (!searchParams) return;
@@ -3816,11 +3866,12 @@ export default function ShopPage() {
         if (marketSearchQuery.trim()) {
           filters.search = marketSearchQuery.trim();
         }
-        filters._shuffle = Date.now().toString();
-        filters._feedSession = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        // The backend now ranks purely off the authenticated viewer, not
+        // these — sent for backward compatibility only.
+        filters._shuffle = productShuffleSeed;
+        filters._feedSession = productShuffleSeed;
         marketFeedSessionRef.current = filters._feedSession;
         marketShuffleTokenRef.current = filters._shuffle;
-        setProductShuffleSeed(`${Date.now()}-${Math.random()}`);
         filters.limit = String(MARKET_PAGE_SIZE);
         filters.offset = "0";
         if (seenProductIds.length > 0) {
@@ -4710,7 +4761,7 @@ export default function ShopPage() {
       };
     }).filter((section) => section.products.length > 0)
     : [];
-  const orderedMarketAlgorithmSections = activeTab === "market"
+  const localOrderedMarketAlgorithmSections: any[] = activeTab === "market"
     ? [
       ...marketAlgorithmSections.filter((section) => section.id === "recommended"),
       ...marketAlgorithmSections.filter((section) => section.id !== "recommended"),
@@ -4730,8 +4781,63 @@ export default function ShopPage() {
           .values(),
       )
     : [];
-  const profilePromoteAds = marketApprovedAds.filter(isProfilePromoteItem);
-  const remainingMarketplaceProducts = activeTab === "market"
+  const profilePromoteAds = shuffleItemsWithSeed(
+    marketApprovedAds.filter(isProfilePromoteItem),
+    `${shopAdShuffleSeed}:profile-ads`,
+    (ad) => String(getShopAdRotationKey(ad)),
+  );
+
+  // ── Server layout → objects ──
+  // Tokens are "p:<productId>", "a:<adId>", "c:<n>" (profile carousel). Anything
+  // this device can't show (hidden, blocked, not loaded) is skipped, so the rest
+  // keep the server's relative order.
+  const layoutProductById = new Map<string, any>();
+  const layoutAdById = new Map<string, any>();
+  if (shopLayout) {
+    products.forEach((p) => {
+      if (p?.is_sponsored || p?.type === "profilePromoteCarousel") return;
+      if (hiddenProductIds.includes(p.id) || isBlockedOwnerItem(p)) return;
+      layoutProductById.set(String(p.id), p);
+    });
+    marketApprovedAds.forEach((ad) => {
+      layoutAdById.set(String(getShopAdRotationKey(ad)).replace(/^ad-/, ""), ad);
+    });
+  }
+  const resolveLayoutTokens = (tokens: string[] = []) =>
+    tokens
+      .map((token) => {
+        if (token.startsWith("p:")) return layoutProductById.get(token.slice(2)) ?? null;
+        if (token.startsWith("a:")) return layoutAdById.get(token.slice(2)) ?? null;
+        if (token.startsWith("c:")) {
+          return profilePromoteAds.length
+            ? { type: "profilePromoteCarousel", id: `shop-profile-promote-carousel-${token.slice(2)}`, ads: profilePromoteAds }
+            : null;
+        }
+        return null;
+      })
+      .filter(Boolean);
+
+  const orderedMarketAlgorithmSections: any[] = shopLayout && activeTab === "market"
+    ? (shopLayout.sections as any[])
+        .map((section) => ({
+          id: section.id,
+          label: section.label,
+          products: resolveLayoutTokens(section.row),
+          gridItems: resolveLayoutTokens(section.grid),
+        }))
+        .filter((section) => section.products.length > 0)
+    : localOrderedMarketAlgorithmSections;
+
+  const layoutMainItems: any[] | null = shopLayout && activeTab === "market"
+    ? (() => {
+        const head = resolveLayoutTokens(shopLayout.main);
+        const used = new Set((shopLayout.main as string[]).filter((t) => t.startsWith("p:")).map((t) => t.slice(2)));
+        const tail = Array.from(layoutProductById.values()).filter((p) => !used.has(String(p.id)));
+        return [...head, ...tail];
+      })()
+    : null;
+
+  const remainingMarketplaceProducts = layoutMainItems ?? (activeTab === "market"
     ? (() => {
       const remainingNormalProducts = visibleMarketplaceProducts.filter((product) => (
         !product?.is_sponsored &&
@@ -4749,7 +4855,7 @@ export default function ShopPage() {
 
       return insertProfilePromoteCarouselRows(interleavedItems, profilePromoteAds);
     })()
-    : [];
+    : []);
 
   const mobileShopSearchPortalTarget = mounted && typeof document !== "undefined"
     ? document.getElementById("mobile-shop-search-portal")
@@ -5306,7 +5412,8 @@ export default function ShopPage() {
                             pool[(index * 12 + sectionProducts.length + i) % pool.length]
                           ),
                         ];
-                    const sectionItemsWithProfileRows = insertProfilePromoteCarouselRows(sectionItems, profilePromoteAds);
+                    const sectionItemsWithProfileRows: any[] = (section as any).gridItems
+                      ?? insertProfilePromoteCarouselRows(sectionItems, profilePromoteAds, index);
                     return (
                     <Fragment key={`market-row-${section.id}`}>
                       {/* Topic section */}
@@ -5342,7 +5449,7 @@ export default function ShopPage() {
                             className="flex snap-x snap-mandatory gap-2 overflow-x-auto scroll-smooth pb-1 pr-2 [scrollbar-width:none] [-ms-overflow-style:none]"
                             style={{ scrollbarWidth: "none" }}
                           >
-                            {section.products.map((product, productIndex) => (
+                            {section.products.map((product: any, productIndex: number) => (
                               <div
                                 key={`${section.id}-${product?.id || productIndex}`}
                                 className="min-w-[calc(50%-0.25rem)] snap-start sm:min-w-[calc(50%-0.25rem)] lg:min-w-[calc(25%-0.95rem)]"
@@ -5493,7 +5600,7 @@ export default function ShopPage() {
                         {items.map((item, itemIndex) => (
                           <div
                             key={`order-${orderNumber}-item-${item.id}-${itemIndex}`}
-                            className={`bg-[#1a1a1a] rounded-[1.2rem] border transition-all p-2.5 flex flex-col sm:flex-row gap-3 group relative overflow-hidden sm:items-center ${(activeTab === "orders" || myListingsTab === "all") ? "cursor-default select-none" : "cursor-pointer"} ${selectedOrderIds.includes(item.id) ? 'border-amber-500/50 bg-amber-500/[0.03]' : 'border-white/5 hover:border-white/10'}`}
+                            className={`bg-[#1a1a1a] rounded-[1.2rem] border transition-all p-2.5 flex flex-col sm:flex-row sm:flex-wrap gap-3 group relative overflow-hidden sm:items-center ${(activeTab === "orders" || myListingsTab === "all") ? "cursor-default select-none" : "cursor-pointer"} ${selectedOrderIds.includes(item.id) ? 'border-amber-500/50 bg-amber-500/[0.03]' : 'border-white/5 hover:border-white/10'}`}
                             onClick={(e) => {
                               if (activeTab === "orders" || myListingsTab === "all") return;
                               if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('input')) return;
@@ -5647,7 +5754,9 @@ export default function ShopPage() {
 
 
                             {/* Actions & Status */}
-                            <div className="shrink-0 flex items-center justify-between sm:justify-end gap-3 px-1 sm:px-0">
+                            {/* Wraps (instead of pushing report tags off the card's
+                                right edge) on any screen width. */}
+                            <div className="min-w-0 max-w-full flex flex-wrap items-center justify-between sm:justify-end gap-3 px-1 sm:px-0">
                               <div className="flex items-center gap-2">
                                 <div className="px-2 py-1 bg-white/5 rounded-lg border border-white/10">
                                   <span className={`text-[7px] font-black uppercase tracking-widest leading-none ${item.status === 'cancelled' ? 'text-red-400' :
@@ -5770,7 +5879,7 @@ export default function ShopPage() {
                                           </div>
                                         )}
                                         {(item.buyer_report || item.seller_report) && (
-                                          <div className="flex flex-col items-start gap-2 mt-2">
+                                          <div className="basis-full w-full min-w-0 flex flex-col items-start gap-2 mt-2 break-words">
                                             {item.buyer_report && (
                                               <button
                                                 onClick={(e) => {
@@ -5894,7 +6003,7 @@ export default function ShopPage() {
                                           </div>
                                         )}
                                         {(item.buyer_report || item.seller_report) && (
-                                          <div className="flex flex-col items-start gap-2 mt-2">
+                                          <div className="basis-full w-full min-w-0 flex flex-col items-start gap-2 mt-2 break-words">
                                             {item.buyer_report && (
                                               <button
                                                 onClick={(e) => {
@@ -6517,8 +6626,9 @@ export default function ShopPage() {
                             )}
                           </div>
                           <div className="flex flex-col items-start">
-                            <span className="mb-0.5 text-[11px] font-black uppercase leading-none tracking-tight text-white transition-colors group-hover/profile:text-blue-400">
+                            <span className="mb-0.5 flex items-center gap-1 text-[11px] font-black uppercase leading-none tracking-tight text-white transition-colors group-hover/profile:text-blue-400">
                               {getItemUsername(selectedProduct, "Seller")}
+                              {selectedProduct.user_id && <UserVerifiedBadge userId={selectedProduct.user_id} size={12} />}
                             </span>
                             <span className="text-[7px] font-black text-white/50 tracking-[0.2em]">
                               <RelativeTime timestamp={selectedProduct.created_at} />
@@ -6562,7 +6672,9 @@ export default function ShopPage() {
                             {/* Menu Popup */}
                             {isMenuOpenModal && (
                               <div className="absolute top-full right-0 mt-2 w-56 bg-[#1a1a1a] border border-white/10 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] py-2 z-[80] overflow-hidden animate-in zoom-in-95 fade-in duration-200" onClick={(e) => e.stopPropagation()}>
-                                {/* Global options */}
+                                {/* Global options — a listing that is not live (under review,
+                                    rejected or inactive) can't be resold or promoted. */}
+                                {!isNotLiveListing(selectedProduct) && (
                                 <button
                                   onClick={() => { handleShareClick(selectedProduct, "resell"); setIsMenuOpenModal(false); }}
                                   className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors"
@@ -6570,6 +6682,7 @@ export default function ShopPage() {
                                   <IonIcon name="cash-outline" className="text-amber-500 text-lg" />
                                   Resell Commission Link
                                 </button>
+                                )}
                                 <button
                                   onClick={() => { handleShareClick(selectedProduct, "share"); setIsMenuOpenModal(false); }}
                                   className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
@@ -6577,6 +6690,7 @@ export default function ShopPage() {
                                   <IonIcon name="arrow-redo-outline" className="text-blue-400 text-lg" />
                                   Share Link
                                 </button>
+                                {!isNotLiveListing(selectedProduct) && (
                                 <button
                                   onClick={() => { handlePromoteProduct(selectedProduct); setIsMenuOpenModal(false); }}
                                   className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5"
@@ -6584,6 +6698,7 @@ export default function ShopPage() {
                                   <IonIcon name="megaphone-outline" className="text-emerald-400 text-lg" />
                                   Promote
                                 </button>
+                                )}
 
                                 {/* User's own product options */}
                                 {String(currentUser?.id || "") === String(selectedProduct.user_id || "") && (
@@ -6816,7 +6931,7 @@ export default function ShopPage() {
                       {/* Product Title + Size/Subtitle */}
                       <div className="mb-3">
                         <h2 className="overflow-hidden text-[24px] md:text-[28px] font-black text-white tracking-tight leading-tight mb-1.5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] break-words">
-                          {selectedProduct.title}
+                          {productNameCase(selectedProduct.title)}
                         </h2>
                         <div className="flex flex-wrap items-center gap-y-1">
                           <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">
@@ -6902,8 +7017,8 @@ export default function ShopPage() {
                               <div className="flex items-center gap-3 shrink-0">
                                 <div className="flex flex-col items-end mr-1">
                                   <span className="text-[7px] font-black uppercase tracking-[0.2em] text-slate-500">QTY</span>
-                                  <span className={`text-[6px] font-black uppercase tracking-widest mt-0.5 ${currentVariantStock <= 0 ? 'text-red-500' : 'text-blue-400'}`}>
-                                    {currentVariantStock > 0 ? `${currentVariantStock} IN STOCK` : 'OUT OF STOCK'}
+                                  <span className={`text-[6px] font-black uppercase tracking-widest mt-0.5 ${currentVariantStock <= 0 ? 'text-red-500' : 'text-white'}`}>
+                                    {currentVariantStock > 0 ? (<><span className="text-red-500">{currentVariantStock}</span> IN STOCK</>) : 'OUT OF STOCK'}
                                   </span>
                                 </div>
                                 <div className="flex items-center gap-0 border border-white/20 rounded-full overflow-hidden h-8 bg-black/20">
@@ -6974,7 +7089,7 @@ export default function ShopPage() {
                                   ) : (
                                     <div
                                       className="w-full h-full"
-                                      style={{ backgroundColor: variant.color_hex || "#333" }}
+                                      style={{ backgroundColor: variantColorHex(variant) }}
                                     />
                                   )}
                                   {selectedVariantIndex === idx && (
@@ -7245,8 +7360,8 @@ export default function ShopPage() {
                         </div>
                       </div>
 
-                      {/* Add to Bag - Centered Minimalist */}
-                      {!isReviewMode && (
+                      {/* Add to Bag - Centered Minimalist (not for inactive listings) */}
+                      {!isReviewMode && !(activeTab === "my-products" && myListingsTab === "deleted") && (
                         <div className="pt-4 flex justify-center">
                           <button
                             onClick={() => handleBuyItem(selectedProduct.id)}

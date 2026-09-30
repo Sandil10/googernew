@@ -54,10 +54,33 @@ const updateMarketItemDetails = async (values) => pool.query(
     values
 );
 
-const updateMarketItemStatus = async ({ id, status }) => pool.query(
-    'UPDATE market SET status = $1 WHERE id = $2',
-    [status, id]
-);
+// Feed "posted" time counts from approval: stamp active_start_time when a
+// listing leaves review for approved/active (active <-> inactive keeps it).
+let activeStartColumnReady = null;
+const ensureActiveStartColumn = () => {
+    if (!activeStartColumnReady) {
+        activeStartColumnReady = pool
+            .query('ALTER TABLE market ADD COLUMN IF NOT EXISTS active_start_time TIMESTAMP')
+            .catch((err) => { activeStartColumnReady = null; throw err; });
+    }
+    return activeStartColumnReady;
+};
+
+const updateMarketItemStatus = async ({ id, status }) => {
+    await ensureActiveStartColumn();
+    return pool.query(
+        `UPDATE market
+            SET active_start_time = CASE
+                  WHEN $1 IN ('approved', 'active')
+                   AND COALESCE(status, '') NOT IN ('approved', 'active', 'inactive')
+                  THEN NOW()
+                  ELSE active_start_time
+                END,
+                status = $1
+          WHERE id = $2`,
+        [status, id]
+    );
+};
 
 const softDeleteMarketItem = async (id) => pool.query(
     "UPDATE market SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = $1",

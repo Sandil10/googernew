@@ -11,6 +11,7 @@ import IonIcon from "@/app/components/IonIcon";
 import ShareModal from "@/app/components/ShareModal";
 import InteractionBottomSheet from "@/app/components/InteractionBottomSheet";
 import { getProfileShareUrl, getShareUrlForItem } from "@/app/lib/shareLinks";
+import { getPublicProfileHref } from "@/app/lib/profileRoute";
 import { GoogCard, type WritePost } from "@/app/components/googs/GoogCard";
 import { SharedProductCard } from "@/app/components/market/SharedProductCard";
 import { PromotedAdCard } from "@/app/components/ads/PromotedAdCard";
@@ -122,7 +123,12 @@ function renderBioText(text: string, username?: string): ReactNode[] {
             const canonicalLink = getCanonicalProfileLink(part, username);
             return <a key={index} href={canonicalLink} target="_blank" rel="noreferrer" className="text-sky-400 transition hover:text-sky-300">{formatDisplayUrl(canonicalLink)}</a>;
         }
-        if (part.startsWith("@") || part.startsWith("#")) return <span key={index} className="text-sky-400">{part}</span>;
+        // @username in the bio opens that Googer's profile.
+        if (part.startsWith("@")) {
+            const mention = part.slice(1).replace(/\.+$/, "");
+            return <a key={index} href={getPublicProfileHref(mention)} className="text-sky-400 transition hover:text-sky-300">{part}</a>;
+        }
+        if (part.startsWith("#")) return <span key={index} className="text-sky-400">{part}</span>;
         return <span key={index}>{part}</span>;
     });
 }

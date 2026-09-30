@@ -168,6 +168,12 @@ export const chatService = {
     getTyping: async (participantId: number) =>
         request(`/chat/typing/${participantId}`),
 
+    // Admin-set chat limits (voice length, photo/video size & length, per day).
+    getChatLimits: async () => request('/chat-features/limits'),
+
+    // Admin's custom stickers & emojis — free for every package.
+    getCustomStickers: async () => request('/chat-features/custom-stickers'),
+
     forwardMessage: async (payload: {
         receiverId: number;
         type: 'text' | 'image' | 'video' | 'sticker' | 'voice_tts' | 'voice';

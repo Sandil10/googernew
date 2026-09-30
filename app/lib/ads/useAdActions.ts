@@ -168,6 +168,18 @@ const flashLikeLockedHint = (
 
 const getEngagementRequestId = (targetAd: NormalizedAd) => {
   const raw = targetAd.raw || {};
+  // A plain shop product (e.g. opened from a pasted share link) is not an ad:
+  // the normalizer fills adId with the product's own id, which used to send the
+  // like to "ad-<productId>" — a different ad, or "Ad not found".
+  const isPlainShopProduct =
+    !raw.is_sponsored &&
+    !raw.isAd &&
+    !raw.campaign_type &&
+    raw.adId == null &&
+    raw.ad_id == null &&
+    !String(raw.id || "").startsWith("ad-") &&
+    !!(raw.product_code || raw.linked_product_code);
+  if (isPlainShopProduct) return raw.id ?? targetAd.targetId ?? targetAd.id;
   const sponsoredId =
     raw.adId ??
     raw.ad_id ??

@@ -39,13 +39,36 @@ function encodeBase62(value) {
     return encoded;
 }
 
-function formatManualPaymentDisplayTransactionId(value) {
+const { mixedTransactionId } = require('../../../shared/utils/transactionDisplayId');
+
+// Previous recipe (id embedded, nearly sequential) — kept only so IDs that
+// were already shown/copied still verify.
+function legacyManualPaymentDisplayTransactionId(value) {
     const normalized = String(value ?? '').replace(/\D/g, '').trim() || '0';
     const digitsOnly = `${hashString(`manual:${normalized}`)}${normalized}${hashString(`manual:receipt:${normalized}`)}`.replace(/\D/g, '');
     return digitsOnly.slice(0, 10).padEnd(10, '0');
 }
 
+// Manual payment IDs keep their original 10-digit format (only the other
+// payment IDs use the mixed "G" codes).
+function formatManualPaymentDisplayTransactionId(value) {
+    return legacyManualPaymentDisplayTransactionId(value);
+}
+
+// The mixed "G" manual code briefly issued — still accepted when verifying.
+function mixedManualPaymentDisplayTransactionId(value) {
+    const normalized = String(value ?? '').replace(/\D/g, '').trim() || '0';
+    return mixedTransactionId(normalized, 'manual');
+}
+
 function formatGenericDisplayTransactionId(value) {
+    const normalized = String(value ?? '').replace(/[^a-zA-Z0-9]/g, '').trim();
+    if (!normalized) return 'G35hfSj5g7';
+    if (/^\d+$/.test(normalized)) return mixedTransactionId(normalized);
+    return legacyGenericDisplayTransactionId(normalized);
+}
+
+function legacyGenericDisplayTransactionId(value) {
     const normalized = String(value ?? '').replace(/[^a-zA-Z0-9]/g, '').trim();
     if (!normalized) return 'G35hfSj5g7';
 
@@ -124,10 +147,16 @@ exports.searchUsers = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Query too short' });
         }
 
+        // Admin / super admin accounts stay private: only staff can look staff up.
+        const requesterType = await pool.query('SELECT user_type FROM users WHERE id = $1', [req.user.id]);
+        const requesterIsStaff = ['admin', 'superadmin', 'super_admin', 'support']
+            .includes(String(requesterType.rows[0]?.user_type || '').toLowerCase());
+
         const result = await pool.query(
             `SELECT id, user_id, username, full_name, profile_picture, user_type
              FROM users
-             WHERE (
+             WHERE ($5::boolean = true OR LOWER(COALESCE(user_type, '')) NOT IN ('admin', 'superadmin', 'super_admin', 'support'))
+             AND (
                 user_id = $2
                 OR (
                     LENGTH($2) >= 1
@@ -157,7 +186,7 @@ exports.searchUsers = async (req, res) => {
                 END,
                 id ASC
              LIMIT 10`,
-            [`%${normalizedQuery}%`, normalizedQuery, req.user.id, includeSelf]
+            [`%${normalizedQuery}%`, normalizedQuery, req.user.id, includeSelf, requesterIsStaff]
         );
 
         res.status(200).json({
@@ -433,12 +462,18 @@ exports.verifyManualPaymentHold = async (req, res) => {
             [buyerId, seller.id]
         );
 
+        const typedLower = normalizedTransactionId.toLowerCase();
         const transfer = transferResult.rows.find((candidate) => {
             const manualDisplayId = formatManualPaymentDisplayTransactionId(candidate.id);
+            const legacyManualId = legacyManualPaymentDisplayTransactionId(candidate.id);
             return String(candidate.id) === normalizedTransactionId
-                || manualDisplayId === normalizedTransactionId
-                || formatManualPaymentDisplayTransactionId(manualDisplayId) === normalizedTransactionId
-                || formatGenericDisplayTransactionId(candidate.id).toLowerCase() === normalizedTransactionId.toLowerCase();
+                || manualDisplayId.toLowerCase() === typedLower
+                || formatGenericDisplayTransactionId(candidate.id).toLowerCase() === typedLower
+                // IDs shown before the mixed "G" codes still verify.
+                || legacyManualId === normalizedTransactionId
+                || legacyManualPaymentDisplayTransactionId(legacyManualId) === normalizedTransactionId
+                || legacyGenericDisplayTransactionId(candidate.id).toLowerCase() === typedLower
+                || mixedManualPaymentDisplayTransactionId(candidate.id).toLowerCase() === typedLower;
         });
 
         if (!transfer) {

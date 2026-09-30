@@ -8,6 +8,9 @@ import IonIcon from "@/app/components/IonIcon";
 import { InteractionButton } from "@/app/components/InteractionButton";
 import { useCart } from "@/app/context/CartContext";
 import { useRelativeTime } from "@/app/lib/relativeTime";
+import { variantColorHex } from "@/app/components/market/productColors";
+import { UserVerifiedBadge } from "@/app/components/VerifiedBadge";
+import { productNameCase } from "@/app/components/market/productName";
 import { getItemProfilePicture, getItemUsername } from "@/app/lib/userDisplay";
 import { useAdStore } from "@/app/lib/ads/adStore";
 import { getAdInteractionId } from "@/app/lib/ads/adIdentity";
@@ -253,6 +256,11 @@ export function ShopProductSecondViewModal({
   const uniqueImages = getProductImages(product);
   const currentImg = uniqueImages[activePreviewIndex] || uniqueImages[0];
   const isReviewMode = activeTab === "my-products" && myListingsTab === "reviewing";
+  // Inactive Products: the price shows, but there is no Add to Bag.
+  const isInactiveMode = activeTab === "my-products" && myListingsTab === "deleted";
+  // Not live in the market (under review, rejected or inactive): can't be
+  // resold or promoted.
+  const isNotLiveListing = ["reviewing", "rejected", "deleted", "inactive"].includes(String(product?.status || "").toLowerCase());
   const commissionInfo = safeParse(product.commission_info);
   const activeVariant = selectedVariantIndex !== null ? productVariants[selectedVariantIndex] : productVariants[0] || product;
   const sellerId = getSellerId?.(product) || product?.user_id || product?.owner_id || product?.seller_id || product?.user?.id;
@@ -332,8 +340,11 @@ export function ShopProductSecondViewModal({
                     )}
                   </div>
                   <div className="flex flex-col items-start">
-                    <span className="mb-0.5 text-[11px] font-black normal-case leading-none tracking-tight text-white transition-colors group-hover/profile:text-blue-400">
+                    <span className="mb-0.5 flex items-center gap-1 text-[11px] font-black normal-case leading-none tracking-tight text-white transition-colors group-hover/profile:text-blue-400">
                       {sellerName}
+                      {(product?.ad_display_user_id || product?.user_id) && (
+                        <UserVerifiedBadge userId={product.ad_display_user_id || product.user_id} size={12} />
+                      )}
                     </span>
                     <span className="text-[7px] font-black text-white/50 tracking-[0.2em]">
                       {product.is_sponsored || product.isAd ? "Ad" : timeLabel}
@@ -388,15 +399,18 @@ export function ShopProductSecondViewModal({
                     </button>
                     {isMenuOpen && (
                       <div className="absolute top-full right-0 mt-2 w-56 bg-[#1a1a1a] border border-white/10 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] py-2 z-[80] overflow-hidden animate-in zoom-in-95 fade-in duration-200" onClick={(event) => event.stopPropagation()}>
-                        <button type="button" onClick={() => { trackProductPromoteClick(); onShare?.(product, "resell"); setIsMenuOpen(false); }} className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors">
-                          <IonIcon name="cash-outline" className="text-amber-500 text-lg" />
-                          Resell Commission Link
-                        </button>
+                        {/* A listing that is not live (under review, rejected or inactive) can't be resold. */}
+                        {!isNotLiveListing && (
+                          <button type="button" onClick={() => { trackProductPromoteClick(); onShare?.(product, "resell"); setIsMenuOpen(false); }} className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors">
+                            <IonIcon name="cash-outline" className="text-amber-500 text-lg" />
+                            Resell Commission Link
+                          </button>
+                        )}
                         <button type="button" onClick={() => { trackProductPromoteClick(); onShare?.(product, "share"); setIsMenuOpen(false); }} className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5">
                           <IonIcon name="arrow-redo-outline" className="text-blue-400 text-lg" />
                           Share Link
                         </button>
-                        {onPromote && (
+                        {onPromote && !isNotLiveListing && (
                           <button type="button" onClick={() => { onPromote(product); setIsMenuOpen(false); }} className="w-full px-5 py-4 text-left text-[11px] font-bold text-white hover:bg-white/5 flex items-center gap-3 transition-colors border-t border-white/5">
                             <IonIcon name="megaphone-outline" className="text-emerald-400 text-lg" />
                             Promote
@@ -542,7 +556,7 @@ export function ShopProductSecondViewModal({
 
                 <div className="mb-2">
                   <h2 className="overflow-hidden text-[17px] md:text-[28px] font-black text-white tracking-tight leading-tight mb-1 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] md:[-webkit-line-clamp:3] break-words">
-                    {product.title}
+                    {productNameCase(product.title)}
                   </h2>
                   <div className="flex flex-wrap items-center gap-y-1">
                     <span className="text-[9px] md:text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">{product.category || "General"}</span>
@@ -592,7 +606,7 @@ export function ShopProductSecondViewModal({
                       <div className="flex items-center gap-3 shrink-0">
                         <div className="flex flex-col items-end mr-1">
                           <span className="text-[7px] font-black uppercase tracking-[0.2em] text-slate-500">QTY</span>
-                          <span className="text-[6px] font-black uppercase tracking-widest mt-0.5 text-blue-400">{currentVariantStock > 0 ? `${currentVariantStock} IN STOCK` : "OUT OF STOCK"}</span>
+                          <span className={`text-[6px] font-black uppercase tracking-widest mt-0.5 ${currentVariantStock > 0 ? "text-white" : "text-red-500"}`}>{currentVariantStock > 0 ? (<><span className="text-red-500">{currentVariantStock}</span> IN STOCK</>) : "OUT OF STOCK"}</span>
                         </div>
                         <div className="flex items-center gap-0 border border-white/20 rounded-full overflow-hidden h-8 bg-black/20">
                           <button type="button" onClick={() => setQuantity(Math.max(1, quantity - 1))} className="w-9 h-full flex items-center justify-center text-white hover:bg-white/10 transition-all text-base font-bold">-</button>
@@ -629,7 +643,7 @@ export function ShopProductSecondViewModal({
                             {variant.image_url || variant.url || variant.image ? (
                               <Image src={normalizeImageSrc(variant.image_url || variant.url || variant.image)} alt="" fill className="object-cover" unoptimized />
                             ) : (
-                              <div className="w-full h-full" style={{ backgroundColor: variant.color_hex || "#333" }} />
+                              <div className="w-full h-full" style={{ backgroundColor: variantColorHex(variant) }} />
                             )}
                             {selectedVariantIndex === idx && <div className="absolute inset-0 bg-white/5 backdrop-blur-[0.5px] flex items-center justify-center"><IonIcon name="checkmark-circle" className="text-white text-base" /></div>}
                           </button>
@@ -720,18 +734,17 @@ export function ShopProductSecondViewModal({
                         </div>
                       </div>
                     </div>
-                    {!isReviewMode && (
-                      <div className="flex flex-col gap-0.5">
-                        <div className="flex flex-col gap-1 px-4 py-2 bg-white border border-white/20 rounded-xl shadow-2xl relative justify-center">
-                          <span className="text-[7px] font-black uppercase text-black/40 tracking-wider mb-0.5">SHIPS TO</span>
-                          <ShippingSection product={product} selectedCountry={selectedShippingCountry} onCountryChange={setSelectedShippingCountry} />
-                        </div>
+                    {/* Ships To — also in review mode, so the seller can check their shipping. */}
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex flex-col gap-1 px-4 py-2 bg-white border border-white/20 rounded-xl shadow-2xl relative justify-center">
+                        <span className="text-[7px] font-black uppercase text-black/40 tracking-wider mb-0.5">SHIPS TO</span>
+                        <ShippingSection product={product} selectedCountry={selectedShippingCountry} onCountryChange={setSelectedShippingCountry} />
                       </div>
-                    )}
+                    </div>
                   </div>
                 </div>
 
-                {!isReviewMode && (
+                {!isReviewMode && !isInactiveMode && (
                   <div className="pt-4 flex justify-center">
                     <button type="button" onClick={handleAddToBag} className="text-white text-[11px] md:text-[13px] font-black uppercase tracking-[0.4em] hover:opacity-80 transition-opacity active:scale-95">
                       ADD TO BAG

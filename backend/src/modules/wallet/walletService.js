@@ -21,13 +21,31 @@ function encodeBase62(value) {
     return encoded;
 }
 
-function formatManualPaymentDisplayTransactionId(value) {
+const { mixedTransactionId } = require('../../../../shared/utils/transactionDisplayId');
+
+// Previous recipe (id embedded, nearly sequential) — kept only so IDs that
+// were already shown/copied still verify.
+function legacyManualPaymentDisplayTransactionId(value) {
     const normalized = String(value ?? '').replace(/\D/g, '').trim() || '0';
     const digitsOnly = `${hashString(`manual:${normalized}`)}${normalized}${hashString(`manual:receipt:${normalized}`)}`.replace(/\D/g, '');
     return digitsOnly.slice(0, 10).padEnd(10, '0');
 }
 
+// Manual payment IDs keep their original 10-digit format (only the other
+// payment IDs use the mixed "G" codes).
+function formatManualPaymentDisplayTransactionId(value) {
+    return legacyManualPaymentDisplayTransactionId(value);
+}
+
 function formatGenericDisplayTransactionId(value) {
+    const normalized = String(value ?? '').replace(/[^a-zA-Z0-9]/g, '').trim();
+    if (!normalized) return 'G35hfSj5g7';
+    // A plain row id gets the shared mixed code.
+    if (/^\d+$/.test(normalized)) return mixedTransactionId(normalized);
+    return legacyGenericDisplayTransactionId(normalized);
+}
+
+function legacyGenericDisplayTransactionId(value) {
     const normalized = String(value ?? '').replace(/[^a-zA-Z0-9]/g, '').trim();
     if (!normalized) return 'G35hfSj5g7';
 

@@ -1,8 +1,20 @@
 const express = require('express');
+const path = require('node:path');
 const { pipeline } = require('stream');
 const { getMediaStorageConfig } = require('./mediaConfig');
 
 const PUBLIC_UPLOAD_MOUNT_PATH = '/uploads';
+// Folders whose files are public anyway (avatars, product photos/videos, ad
+// media, free previews). A bare `/uploads/<file>` is looked up in these.
+const FLAT_URL_PUBLIC_FOLDERS = [
+    'profiles',
+    'products',
+    'product-videos',
+    'ads',
+    'upload-content-previews',
+    'upload-content-thumbnails',
+    'stickers',
+];
 
 const getPublicUploadMountPath = () => PUBLIC_UPLOAD_MOUNT_PATH;
 
@@ -26,6 +38,10 @@ const getUploadContentType = (filePath = '') => {
 
 const mountPublicUploads = (app) => {
     const mediaStorageConfig = getMediaStorageConfig();
+    // Built-in default avatars are stored as `/assets/images/avatars/<file>` but
+    // several clients rebuild the URL as `/uploads/<file>`. Serve them there too
+    // (falls through untouched when the file is not a built-in avatar).
+    app.use(PUBLIC_UPLOAD_MOUNT_PATH, express.static(path.join(__dirname, '../../../../public/assets/images/avatars'), { maxAge: '30d' }));
     if (mediaStorageConfig.provider === 's3' && process.env.S3_SERVE_THROUGH_BACKEND === 'true') {
         const { S3Client, GetObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
         const client = new S3Client({ region: mediaStorageConfig.s3.region });
@@ -46,7 +62,32 @@ const mountPublicUploads = (app) => {
             try {
                 const input = { Bucket: mediaStorageConfig.s3.bucket, Key: key };
                 if (req.headers.range) input.Range = req.headers.range;
-                const result = await client.send(req.method === 'HEAD' ? new HeadObjectCommand(input) : new GetObjectCommand(input));
+                const fetchObject = (k) => {
+                    const withKey = { ...input, Key: k };
+                    return client.send(req.method === 'HEAD' ? new HeadObjectCommand(withKey) : new GetObjectCommand(withKey));
+                };
+                const isMissing = (e) => e?.$metadata?.httpStatusCode === 404 || e?.name === 'NoSuchKey' || e?.name === 'NotFound';
+                let result;
+                try {
+                    result = await fetchObject(key);
+                } catch (firstError) {
+                    // Clients that rebuild URLs from the bare file name
+                    // (`/uploads/<file>`) drop the folder the file really lives
+                    // in. Retry the public folders only — never private ones
+                    // (verification documents, payment proofs, paid content).
+                    if (!isMissing(firstError) || key.includes('/')) throw firstError;
+                    let lastError = firstError;
+                    for (const folder of FLAT_URL_PUBLIC_FOLDERS) {
+                        try {
+                            result = await fetchObject(`${folder}/${key}`);
+                            break;
+                        } catch (retryError) {
+                            if (!isMissing(retryError)) throw retryError;
+                            lastError = retryError;
+                        }
+                    }
+                    if (!result) throw lastError;
+                }
                 res.status(result.ContentRange ? 206 : 200);
                 res.set('Content-Type', result.ContentType || getUploadContentType(key) || 'application/octet-stream');
                 res.set('Accept-Ranges', 'bytes');
@@ -66,14 +107,21 @@ const mountPublicUploads = (app) => {
         });
         return;
     }
-    app.use(PUBLIC_UPLOAD_MOUNT_PATH, express.static(mediaStorageConfig.publicUploadRoot, {
+    const staticOptions = {
         immutable: true,
         maxAge: '30d',
         setHeaders: (res, filePath) => {
             const contentType = getUploadContentType(filePath);
             if (contentType) res.setHeader('Content-Type', contentType);
         },
-    }));
+    };
+    app.use(PUBLIC_UPLOAD_MOUNT_PATH, express.static(mediaStorageConfig.publicUploadRoot, staticOptions));
+    // Several clients build URLs from the bare file name (`/uploads/<file>`),
+    // dropping the folder the file really lives in. Fall back to the public
+    // folders so those resolve instead of 404ing.
+    for (const folder of FLAT_URL_PUBLIC_FOLDERS) {
+        app.use(PUBLIC_UPLOAD_MOUNT_PATH, express.static(path.join(mediaStorageConfig.publicUploadRoot, folder), staticOptions));
+    }
 };
 
 module.exports = {

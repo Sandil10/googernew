@@ -21,6 +21,19 @@ const normalizePublicUserShape = async (user, authUser) => {
     return user;
 };
 
+// Admin / super admin accounts are private: no public profile lookup by id or
+// username (the same rule `searchPeople` applies). Only the account itself or
+// another staff account may load one; everyone else, logged in or not, gets the
+// same "not found" a missing user gets, so the account cannot even be confirmed.
+const assertProfileViewable = async (user, authUser) => {
+    if (!readRepository.isStaffUserType(user?.user_type)) return;
+    if (authUser?.id && Number(authUser.id) === Number(user.id)) return;
+    if (authUser?.id && readRepository.isStaffUserType(await readRepository.getUserTypeById(authUser.id))) return;
+    const error = new Error('User not found');
+    error.statusCode = 404;
+    throw error;
+};
+
 const getUserById = async (req) => {
     const { id } = req.params;
     const authUser = readRepository.getOptionalAuthUser(req);
@@ -36,6 +49,8 @@ const getUserById = async (req) => {
         error.statusCode = 404;
         throw error;
     }
+
+    await assertProfileViewable(user, authUser);
 
     return {
         success: true,
@@ -107,6 +122,8 @@ const getUserByUsername = async (req) => {
         error.statusCode = 404;
         throw error;
     }
+
+    await assertProfileViewable(user, authUser);
 
     return {
         success: true,

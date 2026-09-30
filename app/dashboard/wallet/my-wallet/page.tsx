@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { MANUAL_PAYMENT_SYNC_EVENT } from '@/app/context/CartContext';
+import { cartService } from '@/services/cartService';
 import { authService } from '@/services/authService';
 import { walletService } from '@/services/walletService';
 import { orderService } from '@/services/orderService';
@@ -377,6 +379,7 @@ export default function MyWallet() {
     const [cancelTransaction, setCancelTransaction] = useState<any>(null);
     const [lockedManualPayment, setLockedManualPayment] = useState<{ sellerId: string; sellerName?: string; amount?: string } | null>(null);
     const [lockedSellerUser, setLockedSellerUser] = useState<any>(null);
+    const lockedManualPaymentRef = useRef<{ sellerId: string; sellerName?: string; amount?: string } | null>(null);
     const [showAmountValidationModal, setShowAmountValidationModal] = useState(false);
     const [lastInvalidAmount, setLastInvalidAmount] = useState<string | null>(null);
 
@@ -452,7 +455,7 @@ export default function MyWallet() {
     };
 
     const refreshReferralData = async () => {
-        const walletData = await authService.getWallet();
+        const walletData = await authService.getWallet(true);
         if (walletData.success) {
             setReferrals(walletData.referrals || []);
             setReferralStats({
@@ -515,7 +518,31 @@ export default function MyWallet() {
         };
 
         loadLockedManualPayment();
+
+        // The shared lock arrived from / changed on this account's other
+        // device (mobile app): lock this page too, without wiping what the
+        // buyer is typing when nothing actually changed.
+        const onSync = () => {
+            try {
+                const stored = JSON.parse(localStorage.getItem(MANUAL_PAYMENT_INTENT_STORAGE_KEY) || 'null');
+                const current = lockedManualPaymentRef.current;
+                if (current && stored
+                    && String(stored.sellerId) === String(current.sellerId)
+                    && formatLockedAmount(stored.amount) === current.amount) {
+                    return;
+                }
+            } catch {
+                // fall through and reload
+            }
+            loadLockedManualPayment();
+        };
+        window.addEventListener(MANUAL_PAYMENT_SYNC_EVENT, onSync);
+        return () => window.removeEventListener(MANUAL_PAYMENT_SYNC_EVENT, onSync);
     }, []);
+
+    useEffect(() => {
+        lockedManualPaymentRef.current = lockedManualPayment;
+    }, [lockedManualPayment]);
 
     useEffect(() => {
         const loadQrTargetUser = async () => {
@@ -566,6 +593,8 @@ export default function MyWallet() {
         if (typeof window !== 'undefined') {
             localStorage.removeItem(MANUAL_PAYMENT_INTENT_STORAGE_KEY);
             localStorage.removeItem(MANUAL_PAYMENT_LOCK_STORAGE_KEY);
+            // Unlock the same account's other devices too.
+            cartService.clearPaymentIntent().catch(() => {});
         }
 
         resetLockedManualPaymentState();

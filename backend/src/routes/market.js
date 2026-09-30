@@ -28,6 +28,10 @@ router.get(
     marketController.getMarketProducts
 );
 
+// GET the one shared arrangement of the shop feed (products + ad slots) that
+// web and mobile both render, so the same user sees the same feed everywhere.
+router.get('/shop-layout', require('../modules/market/shopLayoutController').getShopLayout);
+
 // GET all market items
 router.get('/', marketController.getMarketItems);
 

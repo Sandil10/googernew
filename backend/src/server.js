@@ -231,6 +231,9 @@ apiRoutes.use('/p2p-sell-ads', p2pSellAdsRoutes);
 apiRoutes.use('/subscriptions', subscriptionsRoutes);
 apiRoutes.use('/subscription-plans', subscriptionPlansRoutes);
 apiRoutes.use('/stickers', stickersRoutes);
+apiRoutes.use('/chat-features', require('./routes/chatFeatures'));
+apiRoutes.use('/media-links', require('./routes/mediaLinks'));
+apiRoutes.use('/checkout-intent', require('./routes/checkoutIntent'));
 
 // Mount API routes
 app.use('/api', apiRoutes);

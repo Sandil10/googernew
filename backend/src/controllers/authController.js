@@ -711,11 +711,8 @@ const getSubscriberCount = async (userId) => {
 
 const getProfileViewCount = async (userId) => {
     await ensureProfileViewsTable();
-    const result = await pool.query(
-        'SELECT COUNT(*)::int AS count FROM profile_views WHERE profile_user_id = $1',
-        [userId]
-    );
-    return result.rows[0]?.count || 0;
+    // Same count as the profile read module: one per viewer per 24 hours.
+    return require('../modules/auth/readRepository').getProfileViewCount(userId);
 };
 
 const getFollowingCount = async (userId) => {

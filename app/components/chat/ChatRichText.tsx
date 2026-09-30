@@ -31,8 +31,10 @@ const safeColor = (raw: string): string | null => {
 // verbatim so the message is never lost. Plain text without tags returns as-is.
 export function ChatRichText({ text, className }: { text?: string | null; className?: string }) {
     const value = text || "";
+    // Keep the sender's line breaks ("hi" ⏎ "hi" stays on two lines).
+    const lineStyle: React.CSSProperties = { whiteSpace: "pre-wrap" };
     if (!value.includes("[c=") && !value.includes("[/c]")) {
-        return <p className={className}>{value}</p>;
+        return <p className={className} style={lineStyle}>{value}</p>;
     }
 
     const out: React.ReactNode[] = [];
@@ -54,7 +56,7 @@ export function ChatRichText({ text, className }: { text?: string | null; classN
     }
     if (cursor < value.length) out.push(value.slice(cursor));
 
-    return <p className={className}>{out}</p>;
+    return <p className={className} style={lineStyle}>{out}</p>;
 }
 
 export const CHAT_COLOR_PALETTE: { name: string; hex: string }[] = Object.keys(NAMED_COLORS)

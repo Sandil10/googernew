@@ -19,6 +19,15 @@ const searchUsers = async ({ query, viewerUserId, includeSelf }) => {
             )
          )
          AND ($4::boolean = true OR id != $3)
+         -- Admin / super admin accounts are private: only staff can look staff up.
+         AND (
+             LOWER(COALESCE(user_type, '')) NOT IN ('admin', 'superadmin', 'super_admin', 'support')
+             OR EXISTS (
+                 SELECT 1 FROM users viewer
+                 WHERE viewer.id = $3
+                   AND LOWER(COALESCE(viewer.user_type, '')) IN ('admin', 'superadmin', 'super_admin', 'support')
+             )
+         )
          AND id NOT IN (
              SELECT blocked_user_id FROM user_blocks WHERE blocker_id = $3
          )

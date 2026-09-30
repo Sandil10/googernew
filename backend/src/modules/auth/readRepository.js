@@ -36,6 +36,13 @@ const ensureProfileViewsTable = async () => {
         ON profile_views(viewer_user_id);
     `);
 
+    // One row per viewer; views_total counts that viewer once per 24 hours
+    // (existing rows start at 1, i.e. the view they already recorded).
+    await pool.query(`
+        ALTER TABLE profile_views
+        ADD COLUMN IF NOT EXISTS views_total INTEGER NOT NULL DEFAULT 1;
+    `);
+
     profileViewsTableEnsured = true;
 };
 
@@ -126,7 +133,7 @@ const getOptionalAuthUser = (req) => {
 const getProfileViewCount = async (userId) => {
     await ensureProfileViewsTable();
     const result = await pool.query(
-        'SELECT COUNT(*)::int AS count FROM profile_views WHERE profile_user_id = $1',
+        'SELECT COALESCE(SUM(COALESCE(views_total, 1)), 0)::int AS count FROM profile_views WHERE profile_user_id = $1',
         [userId]
     );
     return result.rows[0]?.count || 0;
@@ -433,6 +440,15 @@ const searchPeople = async ({ query, viewerId }) => {
     return result.rows;
 };
 
+const STAFF_USER_TYPES = ['admin', 'superadmin', 'super_admin', 'support'];
+const isStaffUserType = (userType) => STAFF_USER_TYPES.includes(String(userType || '').toLowerCase());
+
+const getUserTypeById = async (userId) => {
+    if (!userId) return null;
+    const result = await pool.query('SELECT user_type FROM users WHERE id = $1', [userId]);
+    return result.rows[0]?.user_type ?? null;
+};
+
 const findBlock = async (blockerId, blockedUserId) => {
     await ensureUserBlocksTable();
     const result = await pool.query(
@@ -488,14 +504,14 @@ const insertProfileViewWithIp = async (targetUserId, ipAddress) => {
 
 const updateProfileViewWithViewer = async (ipAddress, targetUserId, viewerUserId) => {
     await pool.query(
-        'UPDATE profile_views SET last_viewed_at = CURRENT_TIMESTAMP, ip_address = $1 WHERE profile_user_id = $2 AND viewer_user_id = $3',
+        'UPDATE profile_views SET last_viewed_at = CURRENT_TIMESTAMP, ip_address = $1, views_total = COALESCE(views_total, 1) + 1 WHERE profile_user_id = $2 AND viewer_user_id = $3',
         [ipAddress, targetUserId, viewerUserId]
     );
 };
 
 const updateProfileViewWithIp = async (targetUserId, ipAddress) => {
     await pool.query(
-        'UPDATE profile_views SET last_viewed_at = CURRENT_TIMESTAMP WHERE profile_user_id = $1 AND ip_address = $2 AND viewer_user_id IS NULL',
+        'UPDATE profile_views SET last_viewed_at = CURRENT_TIMESTAMP, views_total = COALESCE(views_total, 1) + 1 WHERE profile_user_id = $1 AND ip_address = $2 AND viewer_user_id IS NULL',
         [targetUserId, ipAddress]
     );
 };
@@ -523,6 +539,8 @@ module.exports = {
     insertProfileViewWithViewer,
     listBlockedUsers,
     searchPeople,
+    isStaffUserType,
+    getUserTypeById,
     socialSubscriptionsRepository,
     updateProfileViewWithIp,
     updateProfileViewWithViewer,

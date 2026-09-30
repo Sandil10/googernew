@@ -87,15 +87,25 @@ const resolveGoogByShareCode = async (decodedShareCode) => {
 
 const resolveAdByShortCode = async (decodedShareCode) => {
     const adByCode = await pool.query('SELECT id, ad_id, share_code FROM ads');
-    const matchedAd = (adByCode.rows || []).find((row) => (
+    const matchedAds = (adByCode.rows || []).filter((row) => (
         String(row.share_code || '').trim().toLowerCase() === String(decodedShareCode || '').trim().toLowerCase() ||
         productReadRepository.buildShortShareCode('a', row.ad_id || '') === decodedShareCode ||
         productReadRepository.buildShortShareCode('a', row.id || '') === decodedShareCode
     ));
 
-    if (!matchedAd?.ad_id) return null;
-    const payload = await productReadService.getAdPublic(matchedAd.ad_id);
-    return payload.ad || null;
+    // A code can match more than one row (ad_id vs row id). Use the first one
+    // that is publicly visible; a matched-but-inactive ad is "not found", not a
+    // server error (it used to throw here and turn the whole link into a 500).
+    for (const matchedAd of matchedAds) {
+        if (!matchedAd?.ad_id) continue;
+        try {
+            const payload = await productReadService.getAdPublic(matchedAd.ad_id);
+            if (payload?.ad) return payload.ad;
+        } catch (error) {
+            if (error?.statusCode !== 404) throw error;
+        }
+    }
+    return null;
 };
 
 const getUnifiedShareItem = async (req, res) => {

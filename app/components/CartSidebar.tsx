@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Image from 'next/image';
 import { useRouter, usePathname } from 'next/navigation';
-import { useCart } from '../context/CartContext';
+import { useCart, MANUAL_PAYMENT_SYNC_EVENT } from '../context/CartContext';
+import { cartService } from '@/services/cartService';
 import IonIcon from './IonIcon';
 import { authService } from '@/services/authService';
 import { marketService } from '@/services/marketService';
@@ -248,12 +249,26 @@ export default function CartSidebar() {
   const persistGoogerPaymentIntent = (transferId: string) => {
     if (typeof window === 'undefined') return;
 
+    const paidAt = Date.now();
+    const amount = Number(payableTotal.toFixed(2));
     localStorage.setItem(GOOGER_PAYMENT_INTENT_STORAGE_KEY, JSON.stringify({
       paymentMethod: 'wallet',
       transferId,
       activeView: 'address',
-      paidAt: Date.now(),
+      paidAt,
+      amount,
     }));
+    // Same account on the mobile app: it opens on this paid step too, until
+    // the order is placed.
+    cartService.savePaymentIntent({
+      kind: 'googer',
+      transferId,
+      amount,
+      createdAt: new Date(paidAt).toISOString(),
+      source: 'web',
+    }).catch((error) => {
+      console.error('Failed to share Googer payment state', error);
+    });
   };
 
   const clearGoogerPaymentIntent = () => {
@@ -321,7 +336,7 @@ export default function CartSidebar() {
   const persistManualPaymentIntent = (sellerId: string, sellerName?: string, transactionId = '', verifiedTransferId: string | null = null) => {
     if (typeof window === 'undefined' || !sellerId) return;
 
-    localStorage.setItem(MANUAL_PAYMENT_INTENT_STORAGE_KEY, JSON.stringify({
+    const intent = {
       sellerId,
       sellerName: sellerName || null,
       transactionId,
@@ -329,7 +344,12 @@ export default function CartSidebar() {
       amount: Number(payableTotal.toFixed(2)),
       discountPercent: Number(manualDiscountPercent.toFixed(0)),
       createdAt: new Date().toISOString(),
-    }));
+    };
+    localStorage.setItem(MANUAL_PAYMENT_INTENT_STORAGE_KEY, JSON.stringify(intent));
+    // Share the lock with this account's other devices (mobile app).
+    cartService.savePaymentIntent({ ...intent, source: 'web' }).catch((error) => {
+      console.error('Failed to share manual payment intent', error);
+    });
   };
 
   const updateManualPaymentIntentTransactionId = (transactionId: string, verifiedTransferId: string | null = null) => {
@@ -345,9 +365,14 @@ export default function CartSidebar() {
     }
   };
 
-  const clearManualPaymentIntent = () => {
+  const clearManualPaymentIntent = (shared = true) => {
     if (typeof window === 'undefined') return;
     localStorage.removeItem(MANUAL_PAYMENT_INTENT_STORAGE_KEY);
+    if (!shared) return;
+    // Unlock this account's other devices too (Cancel / order placed).
+    cartService.clearPaymentIntent().catch((error) => {
+      console.error('Failed to clear shared manual payment intent', error);
+    });
   };
 
   const startManualPaymentFlow = async () => {
@@ -471,10 +496,11 @@ export default function CartSidebar() {
         setLatestOrderNumbers(successfullyOrdered);
 
       if (successfullyOrdered.length > 0) {
-        if (paymentMethod === 'wallet_manual') {
-          await Promise.all(selectedItems.map(item => removeFromCart(item.id)));
-        } else {
-          await clearCart();
+        // Only the items just ordered leave the cart; unselected ones stay
+        // for later (clearCart used to wipe them too). One at a time, since
+        // each removal re-syncs the cart from the server.
+        for (const item of selectedItems) {
+          await removeFromCart(item.id);
         }
 
         setIsManualPaymentCartLocked(false);
@@ -570,14 +596,18 @@ export default function CartSidebar() {
   }, [isCartOpen, paymentMethod, activeView]);
 
   useEffect(() => {
+    // An empty cart just means it hasn't loaded yet (page load / a lock just
+    // synced from the mobile app) — not a multi-seller selection.
+    if (cartItems.length === 0) return;
     if (paymentMethod === 'wallet_manual' && !isSingleSellerCart) {
       setPaymentMethod('cod');
       setManualPaymentStep(1);
       setManualTransactionId('');
       setIsManualPaymentCartLocked(false);
-      clearManualPaymentIntent();
+      // Local tidy-up only; the shared lock is cleared by Cancel / order.
+      clearManualPaymentIntent(false);
     }
-  }, [paymentMethod, isSingleSellerCart]);
+  }, [paymentMethod, isSingleSellerCart, cartItems.length]);
 
   // Handle wallet selection and auto-mode popup logic
   useEffect(() => {
@@ -613,6 +643,16 @@ export default function CartSidebar() {
     setManualSellerIdCopied(false);
   }, [selectedCount, selectedTotal, deliveryTotal, totalDiscount, manualPaymentSellerId, isManualPaymentCartLocked, isGoogerPaymentCartLocked]);
 
+  const [manualIntentSyncTick, setManualIntentSyncTick] = useState(0);
+
+  // The shared lock changed on another device: restore from the fresh copy.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onSync = () => setManualIntentSyncTick((tick) => tick + 1);
+    window.addEventListener(MANUAL_PAYMENT_SYNC_EVENT, onSync);
+    return () => window.removeEventListener(MANUAL_PAYMENT_SYNC_EVENT, onSync);
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined' || !isManualPaymentCartLocked) return;
 
@@ -633,9 +673,11 @@ export default function CartSidebar() {
     } catch (error) {
       console.error('Failed to restore manual payment intent', error);
     }
-  }, [isManualPaymentCartLocked]);
+  }, [isManualPaymentCartLocked, manualIntentSyncTick]);
 
   useEffect(() => {
+    // Also re-runs when the shared state changed on the other device.
+    void manualIntentSyncTick;
     if (typeof window === 'undefined' || !isGoogerPaymentCartLocked) return;
 
     try {
@@ -650,7 +692,7 @@ export default function CartSidebar() {
     } catch (error) {
       console.error('Failed to restore Googer payment intent', error);
     }
-  }, [isGoogerPaymentCartLocked]);
+  }, [isGoogerPaymentCartLocked, manualIntentSyncTick]);
 
   const recheckStock = async () => {
     setIsCheckingStock(true);
@@ -1090,7 +1132,7 @@ export default function CartSidebar() {
                             <div className="whitespace-pre-wrap">{savedAddress.fullAddress}</div>
                           ) : (
                             <>
-                              {savedAddress.houseNo}, {savedAddress.street}, {savedAddress.city}<br />
+                              {[savedAddress.houseNo, savedAddress.buildingNo ? `Building ${savedAddress.buildingNo}` : '', savedAddress.street, savedAddress.city].filter(Boolean).join(', ')}<br />
                               {savedAddress.district}, {savedAddress.province}, {savedAddress.country}
                             </>
                           )}
@@ -1202,7 +1244,7 @@ export default function CartSidebar() {
                               }`}
                           >
                             <div className="flex items-center gap-3">
-                              <div className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${paymentMethod === method.id ? 'bg-blue-500/20 text-blue-400' : 'bg-white/5 text-white/20'
+                              <div className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${paymentMethod === method.id ? 'bg-white/15 text-white' : 'bg-white/5 text-white/20'
                                 }`}>
                                 <IonIcon name={method.icon} className="text-sm" />
                               </div>
@@ -1211,9 +1253,9 @@ export default function CartSidebar() {
                                 {method.label}
                               </span>
                             </div>
-                            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center transition-all ${paymentMethod === method.id ? 'border-blue-500 bg-blue-500' : 'border-white/10'
+                            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center transition-all ${paymentMethod === method.id ? 'border-white bg-white' : 'border-white/10'
                               }`}>
-                              {paymentMethod === method.id && <IonIcon name="checkmark" className="text-white text-[10px]" />}
+                              {paymentMethod === method.id && <IonIcon name="checkmark" className="text-black text-[10px]" />}
                             </div>
                           </div>
                         ))}
@@ -1240,7 +1282,7 @@ export default function CartSidebar() {
                                 <div className="p-4 bg-black/50 rounded-2xl border border-white/10 flex flex-col gap-1 shadow-2xl">
                                   <div className="flex items-center justify-between">
                                     <span className="text-[10px] font-black uppercase tracking-[0.1em] text-white/20">Total Amount</span>
-                                    <span className="text-xl font-black text-blue-400 tracking-tighter shrink-0">R {(selectedTotal + deliveryTotal).toFixed(2)}</span>
+                                    <span className="text-xl font-black text-white tracking-tighter shrink-0">R {(selectedTotal + deliveryTotal).toFixed(2)}</span>
                                   </div>
                                   {totalDiscount > 0 && (
                                     <div className="flex items-center justify-between border-t border-white/[0.05] pt-1.5 mt-0.5">
@@ -1292,7 +1334,7 @@ export default function CartSidebar() {
                                               console.error('Failed to copy seller ID', error);
                                             }
                                           }}
-                                          className="text-[8px] font-black uppercase tracking-[0.12em] text-blue-400 hover:text-blue-300 transition-colors"
+                                          className="text-[8px] font-black uppercase tracking-[0.12em] text-white hover:text-white/70 transition-colors"
                                         >
                                           {manualSellerIdCopied ? 'Copied' : 'Copy'}
                                         </button>

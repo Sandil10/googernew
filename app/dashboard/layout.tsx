@@ -20,6 +20,7 @@ import { subscriptionService } from "@/services/subscriptionService";
 import { useSubscriptionFeatures } from "@/app/lib/subscriptionFeatures";
 import { LOGIN_REQUIRED_EVENT, OPEN_LOGIN_MODAL_EVENT } from "@/app/lib/loginRequired";
 import { addTopbarNotification } from "@/app/lib/topbarNotifications";
+import { useUnreadChatCount } from "@/app/lib/useUnreadChatCount";
 
 // Mobile Bottom Nav Items
 const menuItems = [
@@ -61,6 +62,7 @@ export default function DashboardLayout({
     const [editingProduct, setEditingProduct] = useState<any>(null);
     const [loginRequiredPrompt, setLoginRequiredPrompt] = useState<{ title: string; message: string; redirectTo: string } | null>(null);
     const [showLoginModal, setShowLoginModal] = useState(false);
+    const unreadChatCount = useUnreadChatCount();
     const { setIsCartOpen, isCartOpen, cartCount, isGoogerPaymentCartLocked } = useCart();
     const isCartLocked = isGoogerPaymentCartLocked;
     const isSuspendedWalletPath = (path: string | null) => path === "/wallet/my-wallet";
@@ -400,7 +402,7 @@ export default function DashboardLayout({
             <LivePresenceHeartbeat />
             <GlobalSecurityDeviceAlert />
             {/* Topbar (Unified) */}
-            <Topbar />
+            <Topbar unreadChatCount={unreadChatCount} />
 
             {/* Mobile Cart Floating Button â€” above bottom nav */}
             {!isHomeRoute && (
@@ -471,8 +473,13 @@ export default function DashboardLayout({
                                 className={`flex flex-col items-center justify-center p-2 rounded-lg transition-colors ${isActive ? "text-white" : "text-gray-500 hover:text-gray-300"
                                     }`}
                             >
-                                <div className="text-2xl flex items-center justify-center">
+                                <div className="relative text-2xl flex items-center justify-center">
                                     <IonIcon name={isActive ? item.icon : item.icon + "-outline"} />
+                                    {item.name === "Chats" && unreadChatCount > 0 && (
+                                        <span className="absolute -right-3 -top-2 flex h-4 min-w-4 items-center justify-center rounded-full border border-zinc-900 bg-red-500 px-1 text-[8px] font-black leading-none text-white">
+                                            {unreadChatCount > 99 ? "99+" : unreadChatCount}
+                                        </span>
+                                    )}
                                 </div>
                                 <span className="text-[10px] mt-1 font-medium">{item.name}</span>
                             </button>

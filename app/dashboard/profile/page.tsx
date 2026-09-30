@@ -202,7 +202,17 @@ function renderBioText(text: string, username?: string): ReactNode[] {
             );
         }
 
-        if (part.startsWith("@") || part.startsWith("#")) {
+        // @username in the bio opens that Googer's profile.
+        if (part.startsWith("@")) {
+            const mention = part.slice(1).replace(/\.+$/, "");
+            return (
+                <a key={`${part}-${index}`} href={getPublicProfileHref(mention)} className="text-sky-400 transition hover:text-sky-300">
+                    {part}
+                </a>
+            );
+        }
+
+        if (part.startsWith("#")) {
             return <span key={`${part}-${index}`} className="text-sky-400">{part}</span>;
         }
 
@@ -2488,9 +2498,9 @@ export default function ProfilePage() {
                                             aria-label={isOwnProfile ? "Change profile picture" : undefined}
                                         >
                                             {profileImage ? <Image src={profileImage} alt={displayName} fill className="object-cover" unoptimized /> : <div className="flex h-full w-full items-center justify-center bg-zinc-800 text-xl font-black">{getInitials(displayName)}</div>}
-                                            {isOwnProfile && (
-                                                <span className="absolute bottom-0 right-0 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[#0c0c0f] bg-white text-black">
-                                                    {uploadingProfilePhoto ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-black/25 border-t-black" /> : <IonIcon name="camera-outline" className="text-[13px]" />}
+                                            {isOwnProfile && uploadingProfilePhoto && (
+                                                <span className="absolute inset-0 flex items-center justify-center bg-black/50">
+                                                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
                                                 </span>
                                             )}
                                         </button>

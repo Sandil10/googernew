@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import IonIcon from "./IonIcon";
 import { marketService } from "@/services/marketService";
+import { importLinkMedia, videoEmbedForAsync, isEmbedPlayerUrl, videoEmbedFor } from "@/app/lib/mediaLinkImport";
 import { categoryService } from "@/services/categoryService";
 
 interface AddProductModalProps {
@@ -165,6 +166,17 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
     const [isAddingLink, setIsAddingLink] = useState(false);
     const [imageLink, setImageLink] = useState("");
     const [linkPreview, setLinkPreview] = useState<{ url: string, isVideo: boolean } | null>(null);
+    // Backend-resolved media for the pasted link (real picture / video thumb
+    // stored on Googer + the platform player URL).
+    const [linkImport, setLinkImport] = useState<{
+        link: string;
+        loading: boolean;
+        url?: string;
+        isVideo?: boolean;
+        embed?: string;
+        error?: string;
+    } | null>(null);
+    const linkImportRequestRef = useRef("");
     const [uploadMode, setUploadMode] = useState<'single' | 'variants' | null>(null);
     const [imageSource, setImageSource] = useState<'file' | 'link' | null>(null);
     const [formErrors, setFormErrors] = useState<string[]>([]);
@@ -901,18 +913,58 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
         return { finalUrl, isVideo, videoUrl };
     };
 
-    // Auto-preview effect
+    /** Any link → stored picture (or video thumbnail) + player URL. */
+    const resolveLinkMedia = async (link: string): Promise<{
+        link: string;
+        loading: boolean;
+        url?: string;
+        isVideo?: boolean;
+        embed?: string;
+        error?: string;
+    }> => {
+        const clean = link.trim();
+        linkImportRequestRef.current = clean;
+        setLinkImport({ link: clean, loading: true });
+        try {
+            const media = await importLinkMedia(clean);
+            const embed = media.video ? await videoEmbedForAsync(clean) : "";
+            const next = {
+                link: clean,
+                loading: false,
+                url: media.url,
+                isVideo: media.video,
+                embed,
+                error: media.video && !embed
+                    ? "This video link can't be played here — try the video's own share link"
+                    : undefined,
+            };
+            if (linkImportRequestRef.current === clean) {
+                setLinkImport(next);
+                if (!next.error) setLinkPreview({ url: media.url, isVideo: media.video });
+            }
+            return next;
+        } catch (err: any) {
+            const next = { link: clean, loading: false, error: err?.message || "Could not get a picture from that link" };
+            if (linkImportRequestRef.current === clean) {
+                setLinkImport(next);
+                setLinkPreview(null);
+            }
+            return next;
+        }
+    };
+
+    // Auto-preview effect: the real picture / video behind any link.
     useEffect(() => {
         if (!imageLink || !imageLink.startsWith('http')) {
             setLinkPreview(null);
+            setLinkImport(null);
+            linkImportRequestRef.current = "";
             return;
         }
 
         const timeoutId = setTimeout(() => {
-            const processed = processMediaLink(imageLink);
-            if (processed) {
-                setLinkPreview({ url: processed.finalUrl, isVideo: processed.isVideo });
-            }
+            setLinkPreview(null);
+            void resolveLinkMedia(imageLink);
         }, 500); // Debounce
 
         return () => clearTimeout(timeoutId);
@@ -966,6 +1018,9 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             setIsAddingLink(false);
         };
 
+        // Previous client-side handling, kept as the fallback for when the
+        // Googer server can't be reached at all.
+        const legacyAdd = () => {
         if (isVideo) {
             addImage(finalUrl, true, videoUrl);
         } else {
@@ -987,6 +1042,26 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
             };
             img.src = finalUrl;
         }
+        };
+
+        // The real picture / video behind the link, stored on Googer (any
+        // shop, social or image-search link; app share links too).
+        void (async () => {
+            const clean = linkToProcess.trim();
+            const media = linkImport && linkImport.link === clean && !linkImport.loading
+                ? linkImport
+                : await resolveLinkMedia(clean);
+            if (media.url && !media.error) {
+                addImage(media.url, Boolean(media.isVideo), media.isVideo ? (media.embed || null) : null);
+                return;
+            }
+            if (/failed to fetch|network/i.test(media.error || "")) {
+                legacyAdd();
+                return;
+            }
+            setIsAddingLink(false);
+            alert(media.error || "Could not get a picture from that link");
+        })();
     };
 
 
@@ -2180,7 +2255,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                                             }}
                                                             className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${s.charge === '0' ? 'bg-white text-black shadow-lg' : 'text-slate-400/80 hover:text-white'}`}
                                                         >
-                                                            Free
+                                                            Free Shipping
                                                         </button>
                                                         <button
                                                             type="button"
@@ -2598,7 +2673,34 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                     ) : 'Add Media'}
                                 </button>
 
-                                {linkPreview && (
+                                {linkImport?.loading && (
+                                    <div className="mt-6 flex flex-col items-center gap-3 text-[8px] font-black uppercase tracking-widest text-white/40">
+                                        <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                                        Finding the picture…
+                                    </div>
+                                )}
+                                {!linkImport?.loading && linkImport?.error && (
+                                    <p className="mt-6 text-center text-[11px] font-bold text-red-400">{linkImport.error}</p>
+                                )}
+                                {linkPreview && linkPreview.isVideo && linkImport?.embed && !linkImport.loading && (
+                                    <div className="mt-6 animate-in fade-in zoom-in-95 duration-300">
+                                        <div className="text-[8px] font-black text-white/40 uppercase tracking-widest mb-3 flex items-center gap-2">
+                                            <div className="h-px flex-1 bg-white/10"></div>
+                                            Live Preview
+                                            <div className="h-px flex-1 bg-white/10"></div>
+                                        </div>
+                                        {/* The platform's own player, playable right here. */}
+                                        <div className="relative w-full max-w-[320px] aspect-[9/12] mx-auto rounded-3xl overflow-hidden border border-white/10 bg-black shadow-2xl">
+                                            <iframe
+                                                src={linkImport.embed}
+                                                className="absolute inset-0 w-full h-full"
+                                                allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                                                allowFullScreen
+                                            />
+                                        </div>
+                                    </div>
+                                )}
+                                {linkPreview && !(linkPreview.isVideo && linkImport?.embed) && (
                                     <div className="mt-6 animate-in fade-in zoom-in-95 duration-300">
                                         <div className="text-[8px] font-black text-white/40 uppercase tracking-widest mb-3 flex items-center gap-2">
                                             <div className="h-px flex-1 bg-white/10"></div>
@@ -2972,7 +3074,7 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                             </div>
                             <h3 className="text-xl font-black text-white italic uppercase tracking-[0.2em] mb-2">{initialData ? 'Resubmitted' : 'Submission Received'}</h3>
                             <p className="text-[10px] text-slate-400/80 font-bold uppercase tracking-widest leading-relaxed px-4">
-                                Product submitted for review. Please wait for admin approval within 5 business days. If you have any inquiries, please contact the admin.
+                                Product submitted for review. Please wait for approval within 5 business days. If you have any inquiries, please contact Googer support.
                             </p>
                         </div>
                     </div>
@@ -3000,20 +3102,24 @@ export default function AddProductModal({ onClose, onSuccess, initialData }: Add
                                 allow="autoplay; encrypted-media"
                                 allowFullScreen
                             />
+                        ) : (isEmbedPlayerUrl(activeVideo) || videoEmbedFor(activeVideo)) ? (
+                            // TikTok, Instagram, Facebook, Dailymotion… play in
+                            // their own player right here (older listings saved the
+                            // page link, so it is turned into the player URL).
+                            <iframe
+                                src={isEmbedPlayerUrl(activeVideo) ? activeVideo : videoEmbedFor(activeVideo)}
+                                className="w-full h-full"
+                                allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                                allowFullScreen
+                            />
+                        ) : /^(blob:|data:)|\.(mp4|webm|ogg|mov|m4v)(\?|#|$)/i.test(activeVideo) ? (
+                            <video src={activeVideo} className="w-full h-full object-contain bg-black" controls autoPlay playsInline />
                         ) : (
                             <div className="w-full h-full flex flex-col items-center justify-center gap-6 p-8">
                                 <IonIcon name="videocam-outline" className="text-6xl text-blue-400" />
                                 <div className="text-center">
                                     <h3 className="text-xl font-black text-white uppercase tracking-widest italic mb-2">Video Preview</h3>
-                                    <p className="text-xs text-slate-400/80 font-bold uppercase tracking-wider mb-6">External video links may need to be viewed on the source platform</p>
-                                    <a
-                                        href={activeVideo}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="px-8 py-4 bg-white text-black text-[10px] font-black uppercase tracking-widest rounded-2xl hover:bg-blue-400 hover:text-white transition-all inline-block"
-                                    >
-                                        Open Original Link
-                                    </a>
+                                    <p className="text-xs text-slate-400/80 font-bold uppercase tracking-wider">This video can't be played here</p>
                                 </div>
                             </div>
                         )}

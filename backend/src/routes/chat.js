@@ -27,6 +27,8 @@ router.get('/messages/:participantId', chatController.getMessages);
 router.post('/messages', chatController.sendMessage);
 router.delete('/messages', chatController.deleteMessages);
 
+router.get('/settings/auto-delete', chatController.getAutoDeleteSetting);
+router.put('/settings/auto-delete', chatController.setAutoDeleteSetting);
 router.post('/calls/start', chatController.startCall);
 router.get('/calls/incoming', chatController.getIncomingCalls);
 router.get('/calls/summaries', chatController.getCallSummaries);

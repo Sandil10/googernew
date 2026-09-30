@@ -20,7 +20,7 @@ const menuItems = [
     { name: "Chats", icon: "chatbubbles", href: "/chats" },
 ];
 
-export default function Topbar() {
+export default function Topbar({ unreadChatCount = 0 }: { unreadChatCount?: number }) {
     const router = useRouter();
     const pathname = usePathname();
     const searchParams = useSearchParams();
@@ -419,8 +419,13 @@ export default function Topbar() {
                                         : "text-gray-400 hover:bg-white/5 hover:text-white"
                                         }`}
                                 >
-                                    <div className="text-lg flex items-center">
+                                    <div className="relative text-lg flex items-center">
                                         <IonIcon name={isActive ? item.icon : item.icon + "-outline"} />
+                                        {item.name === "Chats" && unreadChatCount > 0 && (
+                                            <span className="absolute -right-3 -top-2 flex h-4 min-w-4 items-center justify-center rounded-full border border-[#18181b] bg-red-500 px-1 text-[8px] font-black leading-none text-white">
+                                                {unreadChatCount > 99 ? "99+" : unreadChatCount}
+                                            </span>
+                                        )}
                                     </div>
                                     <span className="font-bold text-[9px] uppercase tracking-widest">{item.name}</span>
                                 </Link>
@@ -455,8 +460,13 @@ export default function Topbar() {
                                         : "text-gray-400 hover:bg-white/5 hover:text-white"
                                         }`}
                                 >
-                                    <div className="text-lg flex items-center">
+                                    <div className="relative text-lg flex items-center">
                                         <IonIcon name={isActive ? item.icon : item.icon + "-outline"} />
+                                        {item.name === "Chats" && unreadChatCount > 0 && (
+                                            <span className="absolute -right-3 -top-2 flex h-4 min-w-4 items-center justify-center rounded-full border border-[#18181b] bg-red-500 px-1 text-[8px] font-black leading-none text-white">
+                                                {unreadChatCount > 99 ? "99+" : unreadChatCount}
+                                            </span>
+                                        )}
                                     </div>
                                     <span className="font-bold text-[9px] uppercase tracking-widest">{item.name}</span>
                                 </button>
